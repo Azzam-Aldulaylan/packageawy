@@ -1,0 +1,137 @@
+{
+  "name": "packageawy",
+  "displayName": "Packageawy: npm & pnpm Upgrade Assistant",
+  "description": "Audit, review, upgrade, and clean npm or pnpm dependencies safely inside VS Code.",
+  "version": "1.0.0",
+  "private": true,
+  "preview": false,
+  "license": "MIT",
+  "publisher": "Azzam",
+  "icon": "media/icon.png",
+  "author": "Azzam Aldulaylan",
+  "homepage": "https://github.com/Azzam-Aldulaylan/packageawy#readme",
+  "bugs": {
+    "url": "https://github.com/Azzam-Aldulaylan/packageawy/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Azzam-Aldulaylan/packageawy.git"
+  },
+  "keywords": [
+    "npm",
+    "dependencies",
+    "outdated",
+    "vulnerabilities",
+    "security",
+    "audit",
+    "dependency dashboard",
+    "package management",
+    "monorepo"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/package.json",
+    "onWebviewPanel:packageawy"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "This extension reads .npmrc and can run npm install, which executes code from the workspace. It stays disabled until the workspace is trusted."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "packageawy.open",
+        "title": "Packageawy: Open"
+      },
+      {
+        "command": "packageawy.refresh",
+        "title": "Packageawy: Refresh"
+      }
+    ],
+    "configuration": {
+      "title": "Packageawy",
+      "properties": {
+        "packageawy.registry.useProjectNpmrc": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read the registry from the project's .npmrc. Values containing ${ are always rejected. Turn this off to use only your user-level .npmrc."
+        },
+        "packageawy.upgrade.ignoreScripts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pass --ignore-scripts when upgrading, so package lifecycle scripts don't run."
+        },
+        "packageawy.upgrade.verificationScripts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Package.json script names to run after an install as explicit upgrade verification (for example test, build, or typecheck). No scripts run by default."
+        },
+        "packageawy.cacheTtlMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "How long cached dependency data stays fresh before it's rescanned, in minutes. 0 means always revalidate."
+        },
+        "packageawy.debug.performance": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log local Packageawy performance measurements to the extension and webview developer consoles. No telemetry is sent."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:core": "tsc -p src/core/tsconfig.json",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/core/tsconfig.json && tsc --noEmit -p webview/tsconfig.json",
+    "pretest": "tsc -p tsconfig.json",
+    "test": "node --test",
+    "pretest:live": "npm run build:core",
+    "test:live": "node --test scripts/live-checks/advisories-bulk-live.mjs",
+    "pretest:extension-host": "npm run build",
+    "test:extension-host": "node scripts/integration/run-extension-host-tests.mjs",
+    "pretest:real-projects": "tsc -p tsconfig.json",
+    "test:real-projects": "node scripts/integration/run-real-project-fixtures.mjs",
+    "test:release": "npm run typecheck && npm test && npm run test:real-projects && npm run test:extension-host",
+    "benchmark:performance": "npm run pretest && npm run build:core && node scripts/performance/benchmark.mjs",
+    "benchmark:actions": "npm run pretest && npm run build:core && node scripts/performance/action-benchmark.mjs",
+    "benchmark:workspace-reads": "npm run pretest && npm run build:core && node scripts/performance/workspace-read-benchmark.mjs",
+    "vscode:prepublish": "node esbuild.mjs --production",
+    "package": "vsce package",
+    "marketplace:publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@types/semver": "^7.5.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "^0.28.0",
+    "pnpm": "11.19.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.3.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "semver": "^7.6.0"
+  }
+}

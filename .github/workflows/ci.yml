@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Windows is not optional here: the lockfile parser handles path separators,
+    # and npm resolves to npm.cmd on win32. Both are real bug sources.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 20 reached EOL; 22 is also what @vscode/vsce's own resolved
+          # dependency tree (path-scurry, lru-cache, etc.) declares support
+          # for going forward (see their package.json "engines" fields).
+          node-version: 22
+          cache: npm
+
+      # `npm ci` installs exactly the committed lockfile and fails if
+      # package.json and package-lock.json have drifted apart.
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Disposable npm and pnpm project transactions
+        run: npm run test:real-projects
+
+      - name: Build
+        run: npm run build
+
+      # Packaging smoke check: vsce package fails on a missing required
+      # manifest field, a broken .vscodeignore, or a build vscode:prepublish
+      # can't reproduce. @vscode/vsce is a pinned devDependency (no global
+      # tool, no publish credentials needed for `package`), so this is fully
+      # deterministic and runs offline. The resulting .vsix is not uploaded
+      # or committed. It is discarded with the runner.
+      - name: Package (smoke check)
+        run: npm run package
+
+  extension-host:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        vscode: [stable, 1.90.0]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # VS Code is an Electron application even though the assertions use its
+      # Extension Host API, so Linux needs a virtual display.
+      - name: Extension Host lifecycle and watcher tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:extension-host
+        env:
+          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+
+      - name: Extension Host lifecycle and watcher tests (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:extension-host
+        env:
+          VSCODE_TEST_VERSION: ${{ matrix.vscode }}

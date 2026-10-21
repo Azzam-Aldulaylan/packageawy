@@ -1,0 +1,9 @@
+# Package only what the extension needs at runtime.
+**
+!dist/extension.js
+!dist/webview.js
+!dist/webview.css
+!media/icon.png
+!README.md
+!CHANGELOG.md
+!LICENSE
