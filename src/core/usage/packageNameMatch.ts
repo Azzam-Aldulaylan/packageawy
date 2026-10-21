@@ -27,3 +27,19 @@ export function importedPackageName(specifier: string): string | null {
 export function specifierMatchesPackage(specifier: string, packageName: string): boolean {
   return specifier === packageName || specifier.startsWith(`${packageName}/`);
 }
+
+/**
+ * The package a DefinitelyTyped package provides types for, or null when
+ * `packageName` is not one. `@types/react` is for `react`, and
+ * `@types/babel__core` is for `@babel/core`.
+ */
+export function typesPackageTarget(packageName: string): string | null {
+  if (!packageName.startsWith('@types/')) return null;
+  const name = packageName.slice('@types/'.length);
+  if (name === '' || name.includes('/')) return null;
+  const separator = name.indexOf('__');
+  if (separator === -1) return name;
+  const scope = name.slice(0, separator);
+  const rest = name.slice(separator + 2);
+  return scope === '' || rest === '' ? null : `@${scope}/${rest}`;
+}

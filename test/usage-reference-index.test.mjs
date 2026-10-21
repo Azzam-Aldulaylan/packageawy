@@ -50,3 +50,13 @@ test('usage indexing treats a static require.resolve package subpath as a refere
   }]);
   assert.deepEqual(index.forPackage('unused-package'), []);
 });
+
+test('an import of a package also counts for its requested @types package', () => {
+  const index = new UsageReferenceIndex(['@types/react', '@types/babel__core', '@types/lodash']);
+  index.addSourceFile('src/app.tsx', `import React from 'react';\nimport { transform } from '@babel/core/lib/transform';`);
+
+  assert.deepEqual(index.forPackage('@types/react').map((reference) => reference.line), [1]);
+  assert.deepEqual(index.forPackage('@types/babel__core').map((reference) => reference.line), [2]);
+  assert.deepEqual(index.forPackage('@types/lodash'), []);
+  assert.deepEqual(index.forPackage('react'), [], 'an unrequested package never gains references');
+});

@@ -46,6 +46,8 @@ import type { DependencyFinding } from '../../core/hygiene/types.js';
 import { buildWhyInstalledIndex } from '../../core/hygiene/whyInstalled.js';
 import { isFrameworkConventionPackage } from '../../core/usage/frameworkConventions.js';
 import { buildPeerRequirementIndex, peerRequirementsFor } from '../../core/upgrade/peerRequirement.js';
+import type { PeerRequirementEvidence } from '../../core/upgrade/peerRequirement.js';
+import type { DependencyGraph } from '../../core/types.js';
 import { stillRequiredBy } from '../../core/upgrade/removeImpact.js';
 import { assessRemoval } from '../../core/upgrade/removalAssessment.js';
 import { createPerformanceSession } from '../../core/performance/measurement.js';
@@ -67,6 +69,32 @@ import {
   type UsageSourceIdentity,
 } from './usageAnalysisState.js';
 import { UsageReferenceStore } from './usageReferenceStore.js';
+
+/**
+ * Peer requirements from the project's lockfile, used to keep peer-required
+ * packages out of "likely unused". A lockfile the graph builder cannot read
+ * only loses this evidence. It never fails the cleanup analysis.
+ */
+function cleanupPeerRequirementLookup(
+  root: string,
+  source: DashboardController['upgradeSource']
+): (packageName: string) => PeerRequirementEvidence[] {
+  let graph: DependencyGraph;
+  try {
+    graph = buildDependencyGraph({
+      root,
+      manifest: parseManifest(source.manifestText),
+      lockfileText: source.lockfileText,
+      packageManager: source.packageManager,
+      importerId: source.importerId,
+    });
+  } catch {
+    return () => [];
+  }
+  const index = buildPeerRequirementIndex(graph);
+  const noRemovals = new Set<string>();
+  return (packageName) => peerRequirementsFor(graph, packageName, noRemovals, index);
+}
 
 export interface WhereUsedMessage {
   package: string;
@@ -658,11 +686,16 @@ export class UsageAnalysisCoordinator {
       const findings: DependencyFinding[] = [];
       let analyzedAt = new Date().toISOString();
       let cacheExpiresAt = new Date(Date.now() + USAGE_CACHE_TTL_MS).toISOString();
+      const peerRequirementsOf = cleanupPeerRequirementLookup(controller.root, source);
+      const directDependencies = new Set(packageNames);
       for (const [name, result] of resultsByPackage) {
         const cachedEntry = this.analysisState.set(selected.id, name, identity, result);
         analyzedAt = result.scannedAt;
         cacheExpiresAt = new Date(cachedEntry.cachedAt + USAGE_CACHE_TTL_MS).toISOString();
-        const finding = buildUnusedFinding(name, result);
+        const finding = buildUnusedFinding(name, result, {
+          peerRequirements: peerRequirementsOf(name),
+          directDependencies,
+        });
         if (finding !== null) findings.push(finding);
       }
       this.visibleCleanup = { projectId: selected.id, analyzedAt };

@@ -41,9 +41,46 @@ function candidateTokens(packageName: string): string[] {
   return slash === -1 ? [packageName] : [packageName, packageName.slice(slash + 1)];
 }
 
-/** True when `packageName` appears in `content` as a whole word: e.g. inside a quoted plugin/preset/extends entry. */
-export function configReferencesPackage(content: string, packageName: string): boolean {
+const QUOTED_SEGMENT = '[^"\'\\x60\\s/]+';
+
+function isEslintConfigFile(fileName: string): boolean {
+  return /^\.eslintrc(\.|$)/.test(fileName) || /^eslint\.config\./.test(fileName);
+}
+
+/**
+ * The short names ESLint resolves to this package inside `extends` and
+ * `plugins`. `eslint-config-next` is written `next` or
+ * `next/core-web-vitals`, `eslint-plugin-react` is written `react` or
+ * `plugin:react/recommended`, and `@scope/eslint-plugin-foo` is written
+ * `@scope/foo` or `plugin:@scope/foo/recommended`.
+ */
+function eslintShorthandPatterns(packageName: string): string[] {
+  const match = /^(?:(@[^/]+)\/)?eslint-(config|plugin)(?:-(.+))?$/.exec(packageName);
+  if (match === null) return [];
+  const [, scope, kind, rest] = match;
+  const name = scope === undefined ? rest : rest === undefined ? scope : `${scope}/${rest}`;
+  if (name === undefined) return [];
+
+  const shortName = escapeForRegex(name);
+  if (kind === 'plugin') return [shortName, `plugin:${shortName}/${QUOTED_SEGMENT}`];
+  // `@scope/foo` names `@scope/eslint-config-foo`, so a bare scope takes no subpath.
+  return rest === undefined ? [shortName] : [shortName, `${shortName}/${QUOTED_SEGMENT}`];
+}
+
+/**
+ * True when `content` references `packageName`. Any config file counts a
+ * whole-word mention of the package name, as in a quoted plugin, preset, or
+ * extends entry. ESLint config files also count the shorthand names ESLint
+ * resolves to the package, but only as a whole quoted value, never an
+ * object key.
+ */
+export function configReferencesPackage(content: string, packageName: string, fileName?: string): boolean {
   const tokens = candidateTokens(packageName);
   const pattern = new RegExp(`(?:^|[^\\w@./-])(${tokens.map(escapeForRegex).join('|')})(?:[^\\w./-]|$)`);
-  return pattern.test(content);
+  if (pattern.test(content)) return true;
+
+  if (fileName === undefined || !isEslintConfigFile(fileName)) return false;
+  const shorthand = eslintShorthandPatterns(packageName);
+  if (shorthand.length === 0) return false;
+  return new RegExp(`(["'\\x60])(?:${shorthand.join('|')})\\1(?!\\s*:)`).test(content);
 }
