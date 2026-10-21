@@ -2,9 +2,9 @@
 
 All notable changes to Packageawy are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/).
 
-## [1.0.0] - Unreleased
+## [0.9.0] - 2026-10-21
 
-First public release.
+First public pre-release.
 
 ### Added
 
@@ -23,3 +23,5 @@ First public release.
 - Runs only in trusted workspaces.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
 - Re-reads the project right before every change and refuses to roll back over edits made in the meantime.
+
+[0.9.0]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.0

@@ -16,7 +16,7 @@ Review, upgrade, and clean up npm and pnpm dependencies without leaving VS Code.
 
 ## Getting started
 
-1. Install Packageawy from the VS Code Marketplace.
+1. Install Packageawy from the VS Code Marketplace. It is a pre-release for now, so please [report anything that feels off](https://github.com/Azzam-Aldulaylan/packageawy/issues).
 2. Open a folder that contains a `package.json`.
 3. Run **Packageawy: Open** from the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows and Linux).
 4. If the workspace has more than one `package.json`, pick the project you want to see. You can switch later with **Change Project**.
