@@ -87,7 +87,7 @@ export async function analyzeDependencyUsage(
       if (!file.config) return;
       const configName = file.filePath.slice(file.filePath.lastIndexOf('/') + 1);
       for (const name of requested) {
-        if (configReferencesPackage(text, name)) {
+        if (configReferencesPackage(text, name, configName)) {
           referenceIndex.addReference(name, {
             filePath: file.filePath,
             line: 0,

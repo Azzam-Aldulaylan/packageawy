@@ -14,6 +14,7 @@ First public release.
 - Upgrade Review with peer, engine, export, and import checks, focused Next.js migration rules, and coordinated upgrade plans when peers conflict.
 - Transitive fixes that move a vulnerable child package to a patched version without changing its direct parent.
 - Removal Review, bulk dependency management, and Smart Cleanup for unused, deprecated, and duplicate packages.
+- "Likely unused" detection that counts peer requirements, `@types/*` packages, and ESLint shorthand names such as `next/core-web-vitals` as usage.
 - Safe changes: install scripts off by default, optional verification scripts, a visible VS Code task, and rollback of `package.json` and the lockfile.
 - Cached results with background refresh and automatic reloads when dependency files or the Git branch change.
 

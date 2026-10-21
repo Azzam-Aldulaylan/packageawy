@@ -32,6 +32,8 @@ const CONVENTION_PATTERNS: RegExp[] = [
   /^react-native-/,
   /^@react-native\//,
   /^@react-native-community\//,
+  // TypeScript loads every installed @types package unless tsconfig narrows `types`.
+  /^@types\//,
 ];
 
 /** Well-known CLI/tooling packages, invoked by convention (a config file, a `bin` script) more often than a static import. */

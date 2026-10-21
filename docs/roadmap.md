@@ -4,7 +4,7 @@ Planned work, roughly in priority order. Nothing here is promised for a specific
 
 ## Next
 
-- **Fewer false "likely unused" results.** Treat packages required as peers by other direct dependencies, and `@types/*` packages, as used. Consider building on [knip](https://knip.dev). Until then, the signal stays a prompt to look, not a recommendation.
+- **Fewer false "likely unused" results.** Peer requirements, `@types/*` packages, and ESLint shorthand config names count as usage. Remaining gaps include Prettier and commitlint config files and Git hook scripts. Consider building on [knip](https://knip.dev). Until then, the signal stays a prompt to look, not a recommendation.
 - **Simpler review screens.** Show each check once, give one clear recommendation, and keep routine minor and patch updates calm.
 - **A private-project option.** Let users keep private package names out of the public npm advisory check and GitHub lookups.
 - **Troubleshooting report.** A user-triggered, redacted summary of timings, failure codes, and versions that can be copied into a bug report. No background telemetry.

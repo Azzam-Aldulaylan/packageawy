@@ -12,6 +12,8 @@ import {
   resolveCleanupSelection,
   summarizeCleanup,
 } from '../out/core/cleanup/index.js';
+import { buildPeerRequirementIndex, peerRequirementsFor } from '../out/core/upgrade/peerRequirement.js';
+import { buildUnusedFinding } from '../out/core/usage/unused.js';
 import { compareProposedGraphSecurityImpact } from '../out/host/proposedGraphSecurityImpact.js';
 import { buildSmartCleanupCompletionReport } from '../out/host/smartCleanupCompletionReport.js';
 import { isHostToWebviewMessage, isWebviewToHostMessage } from '../out/host/webviewProtocol.js';
@@ -164,6 +166,28 @@ test('fixture: a peer-blocked dependency remains visible but cannot become execu
   assert.equal(result.action, null);
   assert.deepEqual(result.finding.relatedActionIds, []);
   assert.match(result.finding.evidence.at(-1).summary, /requires @tiptap\/pm as a peer dependency/i);
+});
+
+test('fixture: a peer-required direct dependency is not reported as likely unused', () => {
+  const peerEdge = { ...edge('@tiptap/pm', 'node_modules/@tiptap/pm'), kind: 'peer' };
+  const dependencyGraph = graph([
+    node('@tiptap/starter-kit', 'node_modules/@tiptap/starter-kit', {
+      direct: true,
+      edges: [edge('@tiptap/core', 'node_modules/@tiptap/core')],
+    }),
+    node('@tiptap/core', 'node_modules/@tiptap/core', { edges: [peerEdge] }),
+    node('@tiptap/pm', 'node_modules/@tiptap/pm', { direct: true }),
+    node('unused-tool', 'node_modules/unused-tool', { direct: true }),
+  ]);
+  const index = buildPeerRequirementIndex(dependencyGraph);
+  const findingFor = (packageName) => buildUnusedFinding(
+    packageName,
+    { packageName, references: [], truncated: false, scannedFileCount: 12, scannedAt: '2026-08-29T00:00:00.000Z' },
+    { peerRequirements: peerRequirementsFor(dependencyGraph, packageName, new Set(), index) }
+  );
+
+  assert.equal(findingFor('@tiptap/pm'), null);
+  assert.equal(findingFor('unused-tool')?.confidence, 'high');
 });
 
 test('fixture: deprecated plus unused reuses the separately justified removal action', () => {
