@@ -10,6 +10,8 @@ npm run test:release
 npm run package -- --out packageawy-<version>.vsix
 ```
 
+For a pre-release, add `--pre-release` to the package command. Use an odd minor version for pre-releases (for example `0.9.0`) and an even one for stable releases, as the Marketplace recommends.
+
 - [ ] CI passes on Ubuntu and Windows for both the current and the minimum supported VS Code version.
 - [ ] `npx vsce ls` lists only the runtime bundles, `package.json`, README, changelog, license, and icon.
 - [ ] The VSIX installs into a clean VS Code profile and the dashboard opens against a throwaway npm project.
@@ -24,7 +26,7 @@ npm run package -- --out packageawy-<version>.vsix
 
 - [ ] Tag the release commit `v<version>`.
 - [ ] Create GitHub release notes from the changelog and attach the tested VSIX.
-- [ ] Publish the same VSIX to the Marketplace with `npx vsce publish --packagePath packageawy-<version>.vsix`.
+- [ ] Publish the same VSIX to the Marketplace with `npx @vscode/vsce publish --packagePath packageawy-<version>.vsix`. Add `--pre-release` for a pre-release.
 - [ ] Install from the Marketplace on a clean profile and confirm the version, commands, and one refresh.
 
 ## Manual smoke test
