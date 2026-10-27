@@ -11,7 +11,7 @@ test('the Activity Bar container has a view and an icon that ships in the packag
   const container = contributes.viewsContainers.activitybar.find((entry) => entry.id === 'packageawy');
   assert.ok(container, 'missing Activity Bar container');
   assert.ok(existsSync(join(root, container.icon)), `icon file ${container.icon} does not exist`);
-  const allowlist = readFileSync(join(root, '.vscodeignore'), 'utf8').split('\n');
+  const allowlist = readFileSync(join(root, '.vscodeignore'), 'utf8').split(/\r?\n/);
   assert.ok(allowlist.includes(`!${container.icon}`), 'the icon is not in the .vscodeignore allowlist, so it would not ship');
 
   const views = contributes.views[container.id];
