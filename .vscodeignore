@@ -4,6 +4,7 @@
 !dist/webview.js
 !dist/webview.css
 !media/icon.png
+!media/activity-bar.svg
 !README.md
 !CHANGELOG.md
 !LICENSE

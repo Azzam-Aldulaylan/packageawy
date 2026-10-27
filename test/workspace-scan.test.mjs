@@ -32,6 +32,7 @@ test('node_modules and build output are excluded from the scan', () => {
   assert.equal(isExcluded('packages/app/node_modules/x/package.json'), true);
   assert.equal(isExcluded('dist/package.json'), true);
   assert.equal(isExcluded('.git/package.json'), true);
+  assert.equal(isExcluded('.vscode-test/vscode-darwin-arm64/app/package.json'), true);
   assert.equal(isExcluded('packages/app/package.json'), false);
   assert.equal(isExcluded('package.json'), false);
 });

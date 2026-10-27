@@ -239,6 +239,12 @@ async function run() {
   await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
   await waitFor(() => !api.dashboard.snapshot().open, 'Dashboard panel did not dispose after closing');
 
+  // Clicking the Activity Bar icon reveals the sidebar view, which opens the dashboard.
+  await vscode.commands.executeCommand('workbench.view.extension.packageawy');
+  await waitFor(() => api.dashboard.snapshot().open, 'Revealing the Packageawy sidebar did not open the dashboard');
+  await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+  await waitFor(() => !api.dashboard.snapshot().open, 'Dashboard panel did not dispose after closing');
+
   const reopenStarted = performance.now();
   await vscode.commands.executeCommand('packageawy.open');
   const reopened = await waitFor(
