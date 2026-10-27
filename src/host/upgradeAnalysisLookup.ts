@@ -4,13 +4,11 @@
  * (or doesn't), and an untrusted `{analysisId, wantsSmartPlan}` request, is
  * there a real, still-fresh, applicable stored analysis to execute?
  *
- * Extracted out of UpgradeAssistantCoordinator (which imports `vscode` and
- * so cannot be unit-tested outside the extension host. See
- * dashboardController.ts's equivalent split for `validateUpgradeRequest`)
- * so this one decision: the part that actually matters for "can a forged or
- * stale request execute anything": has a real, fast, vscode-free test
- * suite. The coordinator calls this first, before touching disk or the
- * package manager at all.
+ * Extracted out of UpgradeAssistantCoordinator (see dashboardController.ts's
+ * equivalent split for `validateUpgradeRequest`) so this one decision: the
+ * part that actually matters for "can a forged or stale request execute
+ * anything": has a real, fast, isolated test suite. The coordinator calls
+ * this first, before touching disk or the package manager at all.
  */
 
 export interface StoredAnalysisSummary {

@@ -1,10 +1,7 @@
 /**
- * The vscode-free pieces of the Upgrade action's execution bookkeeping, kept
- * separate from upgradeRunner.ts so they can be unit-tested directly. Files
- * that `import * as vscode from 'vscode'` (upgradeRunner.ts, dashboardPanel.ts,
- * projectResolution.ts) have no node:test coverage in this repo: there is no
- * real `vscode` package outside the extension host for a plain `node --test`
- * process to resolve, so anything worth testing has to live outside them.
+ * The small, self-contained pieces of the Upgrade action's execution
+ * bookkeeping, kept separate from upgradeRunner.ts so they can be unit-tested
+ * directly.
  */
 
 /**
@@ -40,9 +37,9 @@ export class UpgradeLock {
 }
 
 /**
- * Only a literal exit code of `0` counts as success. `vscode.TaskProcessEndEvent`
- * types `exitCode` as `number | undefined`: undefined must never be treated
- * as success, since it means the process ended without VS Code observing a
+ * Only a literal exit code of `0` counts as success. `RunningProcess.onDidExit`
+ * reports `number | undefined`: undefined must never be treated
+ * as success, since it means the process ended without the editor observing a
  * code at all (e.g. it was killed), not that it succeeded.
  */
 export function isSuccessfulExitCode(exitCode: number | undefined): boolean {
@@ -53,8 +50,8 @@ export function isSuccessfulExitCode(exitCode: number | undefined): boolean {
  * Tracks callbacks for upgrade runs that are still awaiting a real outcome
  * (a task ending, or a task failing to start), so panel disposal can settle
  * every one of them instead of leaving their promises pending forever. A
- * `vscode.Disposable` only stops future events: disposing the
- * `onDidEndTaskProcess` listener a run was waiting on does not, by itself,
+ * Disposable only stops future events: disposing the
+ * `onDidExit` listener a run was waiting on does not, by itself,
  * resolve that run's already-pending Promise.
  */
 export class PendingUpgradeRuns {

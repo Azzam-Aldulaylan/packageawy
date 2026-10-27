@@ -14,8 +14,6 @@
  * same file I/O as checking a single package.
  */
 
-import * as vscode from 'vscode';
-
 import { configReferencesPackage } from '../../core/usage/configHeuristics.js';
 import { scanFilesBounded } from '../../core/usage/boundedFileScan.js';
 import { findPackageInScripts } from '../../core/usage/packageScripts.js';
@@ -23,6 +21,7 @@ import type { DependencyUsageResult } from '../../core/usage/types.js';
 import { UsageReferenceIndex } from '../../core/usage/referenceIndex.js';
 import type { PerformanceRecorder } from '../../core/performance/measurement.js';
 import { NOOP_PERFORMANCE_RECORDER } from '../../core/performance/measurement.js';
+import type { CancellationToken, HostPlatform, WorkspaceFolder } from '../platform/hostPlatform.js';
 import {
   findConfigFiles,
   findSourceFiles,
@@ -33,14 +32,15 @@ import {
 const DEFAULT_MAX_FILES = 6000;
 
 export interface AnalyzeUsageOptions {
-  folder: vscode.WorkspaceFolder;
+  platform: HostPlatform;
+  folder: WorkspaceFolder;
   /** The project's workspace-folder-relative directory ("" for the folder root): scan is scoped to this subtree, not sibling monorepo members. */
   dir: string;
   manifestText: string;
   packageNames: readonly string[];
   maxFiles?: number;
   onProgress?: (scanned: number, total: number) => void;
-  token: vscode.CancellationToken;
+  token: CancellationToken;
   performance?: PerformanceRecorder;
 }
 
@@ -54,8 +54,8 @@ export async function analyzeDependencyUsage(
 
   const endDiscovery = performance.start('usage file discovery');
   const [sourceFiles, configFiles] = await Promise.all([
-    findSourceFiles(options.folder, options.dir, maxFiles, options.token),
-    findConfigFiles(options.folder, options.dir, options.token),
+    findSourceFiles(options.platform, options.folder, options.dir, maxFiles, options.token),
+    findConfigFiles(options.platform, options.folder, options.dir, options.token),
   ]);
   const files = planWorkspaceFiles(options.folder, sourceFiles, configFiles);
   const overlappingFiles = sourceFiles.length + configFiles.length - files.length;
@@ -75,7 +75,7 @@ export async function analyzeDependencyUsage(
   const endWorkspaceScan = performance.start('usage workspace scan');
   const workspaceScan = await scanFilesBounded({
     items: files,
-    read: ({ uri }) => readTextFileCapped(uri, {
+    read: ({ absolutePath }) => readTextFileCapped(options.platform, absolutePath, {
       onStat: () => performance.increment('usage stats'),
       onRead: (bytes) => {
         performance.increment('usage reads');

@@ -1,20 +1,18 @@
 /**
- * The vscode-facing half of the Upgrade action: modal confirmation, the
+ * The editor-facing half of the Upgrade action: modal confirmation, the
  * Workspace Trust re-check, npm resolution, and running `npm install` as a
- * visible vscode.Task. Everything decidable without `vscode` (argv
- * construction, save-flag/ignore-scripts logic, major-version detection)
- * lives in src/core/upgrade/plan.ts instead: this file only wires that
- * output into real VS Code APIs.
+ * visible process through HostPlatform.runProcess. Everything decidable
+ * without the editor (argv construction, save-flag/ignore-scripts logic,
+ * major-version detection) lives in src/core/upgrade/plan.ts instead: this
+ * file only wires that output into the platform.
  *
- * SECURITY: ProcessExecution is given the resolved `node` executable and an
+ * SECURITY: runProcess is given the resolved `node` executable and an
  * argument array starting with `npm-cli.js`, never a shell command string,
  * never `npm`/`npm.cmd` directly, so nothing here ever concatenates a
  * package name, version, path, or setting into text a shell would parse, and
  * nothing here relies on a shebang or a Windows batch-file layer. See
  * npmResolver.ts for why.
  */
-
-import * as vscode from 'vscode';
 
 import type { DependencyClassification } from '../core/upgrade/plan.js';
 import {
@@ -25,6 +23,7 @@ import {
   buildManifestReconciliationArgs,
 } from '../core/upgrade/plan.js';
 import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.js';
+import type { Disposable, HostPlatform } from './platform/hostPlatform.js';
 import { resolveInstalledPnpmInvocation } from './pnpmResolver.js';
 import type { PackageManagerInvocation } from './resolverVerifier.js';
 import { PendingUpgradeRuns, UpgradeLock, isSuccessfulExitCode } from './upgradeTracker.js';
@@ -107,8 +106,10 @@ const DISPOSED_OUTCOME: UpgradeRunOutcome = {
  */
 export class UpgradeExecutionSession {
   private readonly lock = new UpgradeLock();
-  private readonly listeners = new Set<vscode.Disposable>();
+  private readonly listeners = new Set<Disposable>();
   private readonly pendingRuns = new PendingUpgradeRuns();
+
+  constructor(private readonly platform: HostPlatform) {}
 
   /**
    * Reserves the panel's single upgrade slot for `packageName` for the whole
@@ -145,7 +146,7 @@ export class UpgradeExecutionSession {
    * not itself track or release one.
    */
   async run(params: UpgradeRunParams): Promise<UpgradeRunOutcome> {
-    if (!vscode.workspace.isTrusted) {
+    if (!this.platform.isWorkspaceTrusted()) {
       return {
         ok: false,
         code: 'UNTRUSTED_WORKSPACE',
@@ -159,7 +160,7 @@ export class UpgradeExecutionSession {
     // will during the actual visible task.
     const invocation = this.resolveInvocation(params.cwd, params.packageManager);
     if (invocation === null) {
-      void vscode.window.showErrorMessage(
+      this.platform.showErrorMessage(
         `Packageawy could not locate a working ${params.packageManager} installation.`
       );
       return {
@@ -201,7 +202,7 @@ export class UpgradeExecutionSession {
   prepareManifestReconciliation(
     params: UpgradeManifestReconciliationParams
   ): PreparedManifestReconciliation {
-    if (!vscode.workspace.isTrusted) {
+    if (!this.platform.isWorkspaceTrusted()) {
       return {
         ok: false,
         code: 'UNTRUSTED_WORKSPACE',
@@ -212,7 +213,7 @@ export class UpgradeExecutionSession {
     const { cwd, packageManager, ignoreScripts } = params;
     const invocation = this.resolveInvocation(cwd, packageManager);
     if (invocation === null) {
-      void vscode.window.showErrorMessage(
+      this.platform.showErrorMessage(
         `Packageawy could not locate a working ${packageManager} installation.`
       );
       return {
@@ -236,7 +237,7 @@ export class UpgradeExecutionSession {
           };
         }
         executed = true;
-        if (!vscode.workspace.isTrusted) {
+        if (!this.platform.isWorkspaceTrusted()) {
           return {
             ok: false,
             code: 'UNTRUSTED_WORKSPACE',
@@ -278,7 +279,7 @@ export class UpgradeExecutionSession {
   prepareLockfileReconciliation(
     params: UpgradeLockfileReconciliationParams
   ): PreparedLockfileReconciliation {
-    if (!vscode.workspace.isTrusted) {
+    if (!this.platform.isWorkspaceTrusted()) {
       return {
         ok: false,
         code: 'UNTRUSTED_WORKSPACE',
@@ -289,7 +290,7 @@ export class UpgradeExecutionSession {
     const { cwd, packageManager, ignoreScripts } = params;
     const invocation = this.resolveInvocation(cwd, packageManager);
     if (invocation === null) {
-      void vscode.window.showErrorMessage(
+      this.platform.showErrorMessage(
         `Packageawy could not locate a working ${packageManager} installation.`
       );
       return {
@@ -312,7 +313,7 @@ export class UpgradeExecutionSession {
           };
         }
         executed = true;
-        if (!vscode.workspace.isTrusted) {
+        if (!this.platform.isWorkspaceTrusted()) {
           return {
             ok: false,
             code: 'UNTRUSTED_WORKSPACE',
@@ -333,7 +334,7 @@ export class UpgradeExecutionSession {
 
   /** Runs only host-selected package.json script names, one visible task at a time. */
   async verify(params: UpgradeVerificationParams): Promise<VerificationExecutionResult> {
-    if (!vscode.workspace.isTrusted) {
+    if (!this.platform.isWorkspaceTrusted()) {
       return { status: 'failed', checks: [], message: 'Verification is disabled in untrusted workspaces.' };
     }
     const invocation = this.resolveInvocation(params.cwd, params.packageManager);
@@ -387,26 +388,18 @@ export class UpgradeExecutionSession {
     // `params.cwd` here is the same single-read value passed to
     // `createNodeNpmResolverDeps` in `run` above: resolution and execution
     // never see different working directories.
-    const execution = new vscode.ProcessExecution(invocation.executable, [...invocation.prefixArgs, ...args], {
+    const request = {
+      executable: invocation.executable,
+      args: [...invocation.prefixArgs, ...args],
       cwd,
-    });
-    const task = new vscode.Task(
-      { type: 'packageawy.upgrade', package: packageName },
-      vscode.TaskScope.Workspace,
-      taskName,
-      'Packageawy',
-      execution
-    );
-    task.presentationOptions = {
-      reveal: vscode.TaskRevealKind.Always,
-      panel: vscode.TaskPanelKind.Dedicated,
-      clear: true,
+      title: taskName,
+      scope: packageName,
     };
 
     return await new Promise<UpgradeRunOutcome>((resolve) => {
       let settled = false;
-      // A vscode.Disposable only stops future events: disposing the
-      // onDidEndTaskProcess listener below does not, by itself, resolve this
+      // A Disposable only stops future events: disposing the
+      // onDidExit listener below does not, by itself, resolve this
       // Promise. `untrack` (called on the normal completion path) removes
       // this callback so `dispose()` doesn't double-settle an already-
       // finished run. If `dispose()` fires first, it calls this and the
@@ -423,26 +416,23 @@ export class UpgradeExecutionSession {
         resolve(outcome);
       };
 
-      vscode.tasks.executeTask(task).then(
+      this.platform.runProcess(request).then(
         (started) => {
-          // dispose() already settled this run (DISPOSED) while executeTask
+          // dispose() already settled this run (DISPOSED) while runProcess
           // was still pending: don't register a listener for a session that
-          // is already torn down. The task itself keeps running regardless,
+          // is already torn down. The process itself keeps running regardless,
           // we simply stop caring about its outcome from here.
           if (settled) return;
-          const disposable = vscode.tasks.onDidEndTaskProcess((event) => {
-            // Filtered to this exact execution: onDidEndTaskProcess fires
-            // for every task in the workspace, not just ours.
-            if (event.execution !== started) return;
+          const disposable = started.onDidExit((exitCode) => {
             disposable.dispose();
             this.listeners.delete(disposable);
             finish(
-              isSuccessfulExitCode(event.exitCode)
+              isSuccessfulExitCode(exitCode)
                 ? { ok: true }
                 : {
                     ok: false,
                     code: 'TASK_FAILED',
-                    message: `${failureCommand} exited with code ${event.exitCode ?? 'unknown'}.`,
+                    message: `${failureCommand} exited with code ${exitCode ?? 'unknown'}.`,
                   }
             );
           });
@@ -464,7 +454,7 @@ export class UpgradeExecutionSession {
     this.listeners.clear();
     // Settle every still-pending run (DISPOSED) so nothing awaits forever,
     // a running npm install itself is deliberately left to finish on its own
-    // in its VS Code task terminal rather than being killed: aborting a
+    // in its own terminal rather than being killed: aborting a
     // package.json/lockfile write mid-flight would be worse than letting it
     // complete after the dashboard closed.
     this.pendingRuns.settleAll();

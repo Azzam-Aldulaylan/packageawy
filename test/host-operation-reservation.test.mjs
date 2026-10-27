@@ -1,33 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
 
 import { OperationReservation, SourceGenerationGuard } from '../out/host/operationReservation.js';
 
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    if (specifier === 'vscode') return { shortCircuit: true, url: 'test:vscode' };
-    return nextResolve(specifier, context);
-  },
-  load(url, context, nextLoad) {
-    if (url === 'test:vscode') {
-      return {
-        shortCircuit: true,
-        format: 'module',
-        source: `
-          export const workspace = { getConfiguration: () => ({ get: (_key, fallback) => fallback }) };
-          export const window = {};
-          export const commands = {};
-          export const tasks = {};
-          export const ProgressLocation = { Notification: 15 };
-          export const TaskRevealKind = { Always: 1 };
-          export const TaskPanelKind = { Dedicated: 2 };
-        `,
-      };
-    }
-    return nextLoad(url, context);
-  },
-});
+// The coordinator only reads settings from the platform in these paths.
+const platform = { getSetting: (_key, fallback) => fallback };
 
 function fixture({ flushFails = false, disposed = false } = {}) {
   let held = false;
@@ -135,6 +112,7 @@ test('a host source change terminates a real in-flight Upgrade analysis exactly 
     markProjectLoadStarted = resolve;
   });
   const coordinator = new UpgradeAssistantCoordinator({
+    platform,
     sink: { postMessage: (message) => messages.push(message) },
     httpClient: {},
     etagStore: {},
@@ -196,6 +174,7 @@ test('a webview remount abandons an in-flight read-only review without publishin
     markProjectLoadStarted = resolve;
   });
   const coordinator = new UpgradeAssistantCoordinator({
+    platform,
     sink: { postMessage: (message) => messages.push(message) },
     httpClient: {},
     etagStore: {},
@@ -264,6 +243,7 @@ test('bulk upgrade review prefers a publisher-declared LTS target over the dashb
     },
   };
   const coordinator = new UpgradeAssistantCoordinator({
+    platform,
     sink: { postMessage: (message) => messages.push(message) },
     httpClient: {
       get: async (url) => {
@@ -303,6 +283,7 @@ test('publisher LTS lookup uses bounded registry concurrency', async () => {
   let peak = 0;
   let validations = 0;
   const coordinator = new UpgradeAssistantCoordinator({
+    platform,
     sink: { postMessage: () => {} },
     httpClient: {
       get: async () => {
@@ -373,6 +354,7 @@ test('cancel-remove with a null id cancels a pending project load and releases w
     importerId: '.',
   };
   const coordinator = new UpgradeAssistantCoordinator({
+    platform,
     sink: { postMessage: (message) => messages.push(message) },
     httpClient: {},
     etagStore: {},
@@ -445,6 +427,7 @@ test('Smart Cleanup removal is capability-gated and rechecks host usage evidence
     let validationCalls = 0;
     const source = { ...baseSource, importerId };
     const coordinator = new UpgradeAssistantCoordinator({
+      platform,
       sink: { postMessage: (message) => messages.push(message) },
       httpClient: {},
       etagStore: {},
@@ -536,6 +519,7 @@ test('bulk removal preflight blocks a required peer unless its direct owner is i
     const messages = [];
     const removals = changes.map(({ package: packageName }) => ({ packageName, classification: 'prod' }));
     const coordinator = new UpgradeAssistantCoordinator({
+      platform,
       sink: { postMessage: (message) => messages.push(message) },
       httpClient: {},
       etagStore: {},

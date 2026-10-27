@@ -16,15 +16,14 @@
 
 import { randomBytes } from 'node:crypto';
 
-import * as vscode from 'vscode';
-
 import type { DependencyReference, DependencyUsageResult } from '../../core/usage/types.js';
+import type { WorkspaceFolder } from '../platform/hostPlatform.js';
 import { USAGE_ANALYSIS_REUSE_MS } from './usageAnalysisState.js';
 
 interface StoredUsageResult {
   packageName: string;
   result: DependencyUsageResult;
-  folder: vscode.WorkspaceFolder;
+  folder: WorkspaceFolder;
   expiresAt: number;
 }
 
@@ -41,7 +40,7 @@ export class UsageReferenceStore {
   }
 
   /** Stores one completed usage result and returns the opaque id future open-reference requests must present. */
-  store(packageName: string, result: DependencyUsageResult, folder: vscode.WorkspaceFolder): string {
+  store(packageName: string, result: DependencyUsageResult, folder: WorkspaceFolder): string {
     this.sweep();
     const id = randomBytes(16).toString('hex');
     this.entries.set(id, { packageName, result, folder, expiresAt: Date.now() + this.ttlMs });
@@ -52,7 +51,7 @@ export class UsageReferenceStore {
   resolveReference(
     usageId: string,
     referenceIndex: number
-  ): { folder: vscode.WorkspaceFolder; reference: DependencyReference } | null {
+  ): { folder: WorkspaceFolder; reference: DependencyReference } | null {
     const entry = this.entries.get(usageId);
     if (entry === undefined || Date.now() >= entry.expiresAt) return null;
     const reference = entry.result.references[referenceIndex];

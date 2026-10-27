@@ -34,7 +34,7 @@
  * click is never `background` and keeps today's visible progress/error UI.
  */
 
-import * as vscode from 'vscode';
+import * as path from 'node:path';
 
 import { buildDependencyGraph } from '../../core/lockfile/build.js';
 import { parseManifest } from '../../core/manifest/parse.js';
@@ -52,6 +52,8 @@ import { stillRequiredBy } from '../../core/upgrade/removeImpact.js';
 import { assessRemoval } from '../../core/upgrade/removalAssessment.js';
 import { createPerformanceSession } from '../../core/performance/measurement.js';
 import type { DashboardController, MessageSink } from '../dashboardController.js';
+import { CancellationTokenSource } from '../platform/cancellation.js';
+import type { CancellationToken, HostPlatform, ProgressReporter, WorkspaceFolder } from '../platform/hostPlatform.js';
 import type { DiscoveredProject } from '../projectResolution.js';
 import type { RemovalImpactAssessment } from '../webviewProtocol.js';
 import { shouldRunBackgroundUsageRefresh } from './backgroundUsageRefreshGate.js';
@@ -115,6 +117,7 @@ export interface OpenUsageReferenceMessage {
 }
 
 export interface UsageCoordinatorOptions {
+  platform: HostPlatform;
   sink: MessageSink;
   ensureController(): Promise<DashboardController | undefined>;
   getSelectedProject(): DiscoveredProject | undefined;
@@ -131,7 +134,7 @@ interface ActiveUsageScan {
   identity: UsageSourceIdentity;
   packageNames: ReadonlySet<string>;
   backgroundOwner: boolean;
-  cts: vscode.CancellationTokenSource;
+  cts: CancellationTokenSource;
   progressSubscribers: Set<(scanned: number, total: number) => void>;
   promise: Promise<Map<string, DependencyUsageResult>>;
 }
@@ -269,7 +272,7 @@ export class UsageAnalysisCoordinator {
   storeProjectCompatibilityReferences(
     packageName: string,
     references: readonly DependencyReference[],
-    folder: vscode.WorkspaceFolder
+    folder: WorkspaceFolder
   ): string | null {
     if (references.length === 0) return null;
     return this.referenceStore.store(packageName, {
@@ -362,7 +365,7 @@ export class UsageAnalysisCoordinator {
     performance: ReturnType<typeof createPerformanceSession>;
     onProgress?: (scanned: number, total: number) => void;
   }): ActiveUsageScan {
-    const cts = new vscode.CancellationTokenSource();
+    const cts = new CancellationTokenSource();
     const progressSubscribers = new Set<(scanned: number, total: number) => void>();
     if (input.onProgress !== undefined) progressSubscribers.add(input.onProgress);
     const scan = {
@@ -375,6 +378,7 @@ export class UsageAnalysisCoordinator {
       promise: Promise.resolve(new Map<string, DependencyUsageResult>()),
     } satisfies ActiveUsageScan;
     scan.promise = analyzeDependencyUsage({
+      platform: this.options.platform,
       folder: input.selected.folder,
       dir: input.selected.dir,
       manifestText: input.manifestText,
@@ -636,8 +640,8 @@ export class UsageAnalysisCoordinator {
     try {
       const source = controller.upgradeSource;
       const runScan = async (
-        progress: vscode.Progress<{ message?: string; increment?: number }> | undefined,
-        onCancellationToken: vscode.CancellationToken | undefined
+        progress: ProgressReporter | undefined,
+        onCancellationToken: CancellationToken | undefined
       ): Promise<Map<string, DependencyUsageResult>> => {
         let lastScanned = 0;
         const scan = this.startScan({
@@ -673,8 +677,8 @@ export class UsageAnalysisCoordinator {
       };
       const resultsByPackage = background
         ? await runScan(undefined, undefined)
-        : await vscode.window.withProgress(
-            { location: vscode.ProgressLocation.Notification, title: 'Analyzing dependency usage', cancellable: true },
+        : await this.options.platform.withProgress(
+            'Analyzing dependency usage',
             (progress, token) => runScan(progress, token)
           );
       if (
@@ -1103,12 +1107,9 @@ export class UsageAnalysisCoordinator {
     const resolved = this.referenceStore.resolveReference(message.usageId, message.referenceIndex);
     if (resolved === null) return;
     const { folder, reference } = resolved;
-    const uri = vscode.Uri.joinPath(folder.uri, ...reference.filePath.split('/'));
-    void vscode.window.showTextDocument(uri).then((editor) => {
-      if (reference.line <= 0) return;
-      const position = new vscode.Position(Math.max(0, reference.line - 1), Math.max(0, reference.column - 1));
-      editor.selection = new vscode.Selection(position, position);
-      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
-    });
+    this.options.platform.openFile(
+      path.join(folder.path, ...reference.filePath.split('/')),
+      reference.line > 0 ? { line: reference.line, column: reference.column } : undefined
+    );
   }
 }

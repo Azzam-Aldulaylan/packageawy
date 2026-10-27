@@ -28,8 +28,6 @@ import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import * as vscode from 'vscode';
-
 import { buildDependencyGraph } from '../core/lockfile/build.js';
 import { cleanupGraphSignature } from '../core/cleanup/graphSignature.js';
 import { computeSourceFingerprint } from '../core/cache/sourceFingerprint.js';
@@ -84,6 +82,7 @@ import { createNodeUpgradeTransactionFileAdapter } from './nodeUpgradeTransactio
 import { resolveInstalledPnpmInvocation } from './pnpmResolver.js';
 import { combineSecurityOutcomes } from './securityOutcomeBatch.js';
 import { materializeUpgradeSecurityGraph } from './upgradeSecurityGraph.js';
+import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
 import { loadProject } from './projectResolution.js';
 import { IsolatedResolverVerifier, NodeResolverProcessRunner } from './resolverVerifier.js';
@@ -206,6 +205,7 @@ export interface CancelRemoveMessage extends CancelUpgradeMessage {
 }
 
 export interface UpgradeAssistantCoordinatorOptions {
+  platform: HostPlatform;
   sink: MessageSink;
   httpClient: HttpClient;
   etagStore: EtagStore;
@@ -243,7 +243,7 @@ export interface UpgradeAssistantCoordinatorOptions {
   performanceEnabled?(): boolean;
   /** Test seam. Production always uses the host-owned project loader. */
   loadProject?: (candidate: DiscoveredProject) => Promise<ResolvedProject>;
-  /** Test seam. Production always uses vscode.window.withProgress with a real cancellation token. See defaultWithCompatibilityProgress. */
+  /** Test seam. Production always uses the platform's cancellable progress. See defaultWithCompatibilityProgress. */
   withCompatibilityProgress?: <T>(title: string, run: (signal: AbortSignal) => Promise<T>) => Promise<T>;
   /** Test seam. Production always reads the real `packageawy` upgrade configuration (see defaultGetUpgradeConfiguration). */
   getUpgradeConfiguration?: () => { ignoreScripts: boolean; verificationScripts: unknown[] };
@@ -251,7 +251,7 @@ export interface UpgradeAssistantCoordinatorOptions {
   storeProjectCompatibilityReferences?(
     packageName: string,
     references: readonly DependencyReference[],
-    folder: vscode.WorkspaceFolder
+    folder: WorkspaceFolder
   ): string | null;
   /** Monotonic generation advanced synchronously by relevant source/config watcher events. */
   projectCompatibilitySourceGeneration?: () => number;
@@ -264,10 +264,14 @@ export interface UpgradeAssistantCoordinatorOptions {
 
 const MAX_REMEDIATION_PRESENTED_ADVISORIES = 400;
 
-/** Production default for `UpgradeAssistantCoordinatorOptions.withCompatibilityProgress`: the exact `vscode.window.withProgress`/`AbortController` wiring `handleAnalyzeUpgradeRequests`'s compatibility preflight used inline before this seam existed. */
-async function defaultWithCompatibilityProgress<T>(title: string, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  return vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+/** Production default for `UpgradeAssistantCoordinatorOptions.withCompatibilityProgress`: the exact `withProgress`/`AbortController` wiring `handleAnalyzeUpgradeRequests`'s compatibility preflight used inline before this seam existed. */
+async function defaultWithCompatibilityProgress<T>(
+  platform: HostPlatform,
+  title: string,
+  run: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  return platform.withProgress(
+    title,
     async (_progress, token) => {
       const abort = new AbortController();
       const cancellation = token.onCancellationRequested(() => abort.abort());
@@ -281,11 +285,10 @@ async function defaultWithCompatibilityProgress<T>(title: string, run: (signal: 
 }
 
 /** Production default for `UpgradeAssistantCoordinatorOptions.getUpgradeConfiguration`. */
-function defaultGetUpgradeConfiguration(): { ignoreScripts: boolean; verificationScripts: unknown[] } {
-  const configuration = vscode.workspace.getConfiguration('packageawy');
+function defaultGetUpgradeConfiguration(platform: HostPlatform): { ignoreScripts: boolean; verificationScripts: unknown[] } {
   return {
-    ignoreScripts: configuration.get<boolean>('upgrade.ignoreScripts', true),
-    verificationScripts: configuration.get<unknown[]>('upgrade.verificationScripts', []),
+    ignoreScripts: platform.getSetting<boolean>('upgrade.ignoreScripts', true),
+    verificationScripts: platform.getSetting<unknown[]>('upgrade.verificationScripts', []),
   };
 }
 
@@ -343,7 +346,7 @@ function resolvedProjectSourceMatches(left: ResolvedProject, right: ResolvedProj
 function attachTrustedProjectCompatibilityNavigation(input: {
   analysis: ProjectCompatibilityAnalysis;
   packageName: string;
-  folder: vscode.WorkspaceFolder;
+  folder: WorkspaceFolder;
   store?: UpgradeAssistantCoordinatorOptions['storeProjectCompatibilityReferences'];
 }): void {
   if (input.store === undefined) return;
@@ -570,7 +573,7 @@ function toSmartCleanupCompletionPresentation(
 }
 
 export class UpgradeAssistantCoordinator {
-  private readonly session = new UpgradeExecutionSession();
+  private readonly session: UpgradeExecutionSession;
   private readonly reservation: OperationReservation;
   /** Advanced synchronously by host watcher/HEAD notifications. */
   private readonly sourceGeneration = new SourceGenerationGuard();
@@ -604,6 +607,7 @@ export class UpgradeAssistantCoordinator {
   private readonly targetPackageSurfaceCache = new TargetPackageSurfaceCache();
 
   constructor(private readonly options: UpgradeAssistantCoordinatorOptions) {
+    this.session = new UpgradeExecutionSession(options.platform);
     this.reservation = new OperationReservation({
       reserve: (packageName) => this.session.reserve(packageName),
       release: (packageName) => this.session.release(packageName),
@@ -612,9 +616,11 @@ export class UpgradeAssistantCoordinator {
       isDisposed: () => options.isDisposed(),
       dispose: () => this.session.dispose(),
     });
-    this.projectLoader = options.loadProject ?? loadProject;
-    this.withCompatibilityProgress = options.withCompatibilityProgress ?? defaultWithCompatibilityProgress;
-    this.getUpgradeConfiguration = options.getUpgradeConfiguration ?? defaultGetUpgradeConfiguration;
+    this.projectLoader = options.loadProject ?? ((candidate) => loadProject(options.platform, candidate));
+    this.withCompatibilityProgress = options.withCompatibilityProgress ??
+      ((title, run) => defaultWithCompatibilityProgress(options.platform, title, run));
+    this.getUpgradeConfiguration = options.getUpgradeConfiguration ??
+      (() => defaultGetUpgradeConfiguration(options.platform));
   }
 
   isBusy(): boolean {
@@ -1155,6 +1161,7 @@ export class UpgradeAssistantCoordinator {
       // represented as partial evidence later. It never fails Upgrade Review.
       const manifestProjectEvidence = parseProjectManifestCompatibilityEvidence(preflightProject.manifestText);
       const projectEvidencePromise = collectProjectCompatibilityEvidence({
+        platform: this.options.platform,
         folder: selected.folder,
         dir: selected.dir,
         manifestText: preflightProject.manifestText,
@@ -1473,6 +1480,7 @@ export class UpgradeAssistantCoordinator {
       const finalReadGeneration = this.options.projectCompatibilitySourceGeneration?.() ?? 0;
       const [finalProjectEvidence, finalDiskSnapshot] = await Promise.all([
         collectProjectCompatibilityEvidence({
+          platform: this.options.platform,
           folder: selected.folder,
           dir: selected.dir,
           manifestText: preflightProject.manifestText,
@@ -1647,6 +1655,7 @@ export class UpgradeAssistantCoordinator {
     let matches = resolvedProjectSourceMatches(disk, stored.snapshot);
     if (matches && stored.projectCompatibilityEvidenceFingerprint !== null) {
       const evidence = await collectProjectCompatibilityEvidence({
+        platform: this.options.platform,
         folder: selected.folder,
         dir: selected.dir,
         manifestText: disk.manifestText,
@@ -1668,10 +1677,7 @@ export class UpgradeAssistantCoordinator {
   }
 
   handleConfigureVerification(): void {
-    void vscode.commands.executeCommand(
-      'workbench.action.openSettings',
-      'packageawy.upgrade.verificationScripts'
-    );
+    this.options.platform.openSettings('upgrade.verificationScripts');
   }
 
   /**
@@ -1935,12 +1941,8 @@ export class UpgradeAssistantCoordinator {
         source.lockfilePath ??
         path.join(controller.root, source.packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json');
 
-      const ignoreScripts = vscode.workspace
-        .getConfiguration('packageawy')
-        .get<boolean>('upgrade.ignoreScripts', true);
-      const configuredVerification = vscode.workspace
-        .getConfiguration('packageawy')
-        .get<unknown[]>('upgrade.verificationScripts', []);
+      const ignoreScripts = this.options.platform.getSetting<boolean>('upgrade.ignoreScripts', true);
+      const configuredVerification = this.options.platform.getSetting<unknown[]>('upgrade.verificationScripts', []);
       const verificationScripts = selectVerificationScripts(source.manifestText, configuredVerification);
 
       const analysisId = randomBytes(16).toString('hex');
@@ -2369,12 +2371,8 @@ export class UpgradeAssistantCoordinator {
     });
     const targetNames = [...new Set(targetAdvisories.map((entry) => entry.flaggedPackage))].sort();
     const endMaterialization = performance?.start('remediation graph materialization') ?? (() => 0);
-    const materialized = await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: `Checking remediation for ${packageName}`,
-        cancellable: true,
-      },
+    const materialized = await this.options.platform.withProgress(
+      `Checking remediation for ${packageName}`,
       async (_progress, token) => {
         const abort = new AbortController();
         const cancellation = token.onCancellationRequested(() => abort.abort());
@@ -2529,7 +2527,7 @@ export class UpgradeAssistantCoordinator {
       const manifestPath = path.join(disk.root, 'package.json');
       const lockfilePath = disk.lockfilePath;
       const files = await createNodeUpgradeTransactionFileAdapter({
-        workspaceRoot: selected.folder.uri.fsPath,
+        workspaceRoot: selected.folder.path,
         allowlistedPaths: [manifestPath, lockfilePath],
       });
       if (stored.stale) {
@@ -2712,11 +2710,10 @@ export class UpgradeAssistantCoordinator {
               phase: 'rolling-back',
             });
             if (securityVerificationFailed || this.options.isDisposed()) return 'rollback';
-            const choice = await vscode.window.showWarningMessage(
+            const choice = await this.options.platform.showModalWarning(
               'The transitive fix installed, but project verification failed.',
-              { modal: true, detail: 'Rollback restores package.json and the active lockfile. Keep changes only if you have reviewed the failed checks.' },
-              'Rollback',
-              'Keep Changes'
+              'Rollback restores package.json and the active lockfile. Keep changes only if you have reviewed the failed checks.',
+              ['Rollback', 'Keep Changes']
             );
             return choice === 'Keep Changes' ? 'keep' : 'rollback';
           },
@@ -2954,6 +2951,7 @@ export class UpgradeAssistantCoordinator {
       );
       const currentProjectEvidence = sourceStillMatches && stored.projectCompatibilityEvidenceFingerprint !== null
         ? await collectProjectCompatibilityEvidence({
+            platform: this.options.platform,
             folder: selected.folder,
             dir: selected.dir,
             manifestText: disk.manifestText,
@@ -2995,7 +2993,7 @@ export class UpgradeAssistantCoordinator {
         : null;
 
       const files = await createNodeUpgradeTransactionFileAdapter({
-        workspaceRoot: selected.folder.uri.fsPath,
+        workspaceRoot: selected.folder.path,
         allowlistedPaths,
       });
 
@@ -3081,16 +3079,11 @@ export class UpgradeAssistantCoordinator {
               verificationFailureDecider: {
                 decide: async () => {
                   if (this.options.isDisposed()) return 'rollback' as const;
-                  const choice = await vscode.window.showWarningMessage(
+                  const choice = await this.options.platform.showModalWarning(
                     'The dependency installed, but post-upgrade verification failed.',
-                    {
-                      modal: true,
-                      detail:
-                        'Rollback restores only package.json and the active lockfile captured by this upgrade transaction; ' +
-                        'it does not restore node_modules or files changed by lifecycle/verification scripts.',
-                    },
-                    'Rollback',
-                    'Keep Changes'
+                    'Rollback restores only package.json and the active lockfile captured by this upgrade transaction; ' +
+                      'it does not restore node_modules or files changed by lifecycle/verification scripts.',
+                    ['Rollback', 'Keep Changes']
                   );
                   return choice === 'Keep Changes' ? ('keep' as const) : ('rollback' as const);
                 },
@@ -3186,7 +3179,7 @@ export class UpgradeAssistantCoordinator {
         presentation.kind === 'verified' ||
         (presentation.kind === 'unverified' && transaction.verification.status === 'not-run')
       ) {
-        void vscode.window.showInformationMessage(presentation.message);
+        this.options.platform.showInformationMessage(presentation.message);
       } else if (presentation.kind === 'error') {
         this.options.sink.postMessage({
           status: 'upgrade-error',
@@ -3194,7 +3187,7 @@ export class UpgradeAssistantCoordinator {
           error: presentation.error,
         });
       } else {
-        void vscode.window.showWarningMessage(presentation.message);
+        this.options.platform.showWarningMessage(presentation.message);
       }
     } catch (cause) {
       if (!this.options.isDisposed()) {
@@ -3364,7 +3357,7 @@ export class UpgradeAssistantCoordinator {
       }
 
       const files = await createNodeUpgradeTransactionFileAdapter({
-        workspaceRoot: selected.folder.uri.fsPath,
+        workspaceRoot: selected.folder.path,
         allowlistedPaths,
       });
 
@@ -3539,16 +3532,11 @@ export class UpgradeAssistantCoordinator {
               return 'rollback' as const;
             }
             if (this.options.isDisposed()) return 'rollback' as const;
-            const choice = await vscode.window.showWarningMessage(
+            const choice = await this.options.platform.showModalWarning(
               'Cleanup was applied, but a configured verification check failed.',
-              {
-                modal: true,
-                detail:
-                  'Rollback restores only package.json and the active lockfile captured by this cleanup transaction; ' +
-                  'it does not restore node_modules or files changed by lifecycle/verification scripts.',
-              },
-              'Rollback',
-              'Keep Changes'
+              'Rollback restores only package.json and the active lockfile captured by this cleanup transaction; ' +
+                'it does not restore node_modules or files changed by lifecycle/verification scripts.',
+              ['Rollback', 'Keep Changes']
             );
             return choice === 'Keep Changes' ? ('keep' as const) : ('rollback' as const);
           },
@@ -3684,7 +3672,7 @@ export class UpgradeAssistantCoordinator {
             ...(smartCleanupPresentation === undefined ? {} : { smartCleanup: smartCleanupPresentation }),
           },
         });
-        void vscode.window.showInformationMessage(presentation.message);
+        this.options.platform.showInformationMessage(presentation.message);
       } else if (presentation.kind === 'error') {
         this.options.sink.postMessage({
           status: 'remove-error',
@@ -3706,7 +3694,7 @@ export class UpgradeAssistantCoordinator {
             },
           });
         }
-        void vscode.window.showWarningMessage(presentation.message);
+        this.options.platform.showWarningMessage(presentation.message);
       }
     } catch (cause) {
       if (!this.options.isDisposed()) {
