@@ -6,7 +6,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Added
 
-- A Packageawy icon in the Activity Bar. Clicking it opens the dashboard, and the sidebar offers Open dashboard and Refresh buttons.
+- A Packageawy icon in the Activity Bar that opens the dashboard with one click.
 
 ### Fixed
 
