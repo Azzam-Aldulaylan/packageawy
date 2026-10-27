@@ -84,7 +84,7 @@ Packageawy reads the project's `.npmrc` and can run your package manager, so it 
 **Packageawy collects no telemetry, analytics, or tracking data.** It does contact npm, GitHub, and your configured registries to check dependencies. Those services see normal request details such as your IP address, plus:
 
 - **Package metadata.** Package names, and exact versions for version lookups, go to your registry (public npm by default). The registry comes from your user `.npmrc` and, when enabled, the project's `.npmrc`, including scoped registries.
-- **Vulnerability checks.** `https://registry.npmjs.org/-/npm/v1/security/advisories/bulk` receives the names and installed versions of every package in the dependency tree. This always goes to public npm, even when you use a private registry. Private package names are not filtered out yet. Source files and dependency paths are not sent.
+- **Vulnerability checks.** `https://registry.npmjs.org/-/npm/v1/security/advisories/bulk` receives the names and installed versions of every package in the dependency tree. This always goes to public npm, even when you use a private registry, and includes private package names. Source files and dependency paths are not sent.
 - **CVE and GHSA identifiers.** GitHub's public advisory API (`https://api.github.com/advisories`) receives batches of affected package names to look up identifiers. No source, versions, or paths are sent. If GitHub is unavailable, the npm finding is still shown.
 - **Fix information.** A local `npm audit --json --package-lock-only` run sends lockfile information to npm's advisory service.
 - **Review checks.** Isolated npm or pnpm resolution runs with scripts disabled, and `npm pack --ignore-scripts` may download a target version to inspect its files. These request package metadata and archives from your registry. Your source code is never uploaded.
@@ -94,17 +94,11 @@ The dashboard itself never fetches remote data. Clicking a CVE opens its NVD pag
 
 Package names and versions are still information about your project, so check your organization's policy before scanning private projects.
 
-## Limitations
+## Requirements
 
-- Yarn and Bun are not supported.
-- pnpm support targets lockfile format v9. pnpm catalogs, aliases, and pnpm-specific audit data are not supported yet.
-- Workspace-linked packages are recognized, but their own manifests are not checked during compatibility analysis.
-- Private registry authentication is left to your package manager. Packageawy never reads or stores auth tokens.
-- The table lists direct dependencies. Transitive vulnerabilities appear under the direct dependency that brings them in.
-- Container images, OS packages, and globally installed tools are not scanned.
-- Desktop VS Code only. The extension runs local npm and Node processes, so it does not work in vscode.dev.
-
-See the [roadmap](docs/roadmap.md) for planned work.
+- VS Code 1.90 or newer, on desktop.
+- An npm or pnpm project. For pnpm, a lockfile from pnpm 9 or newer.
+- Registry sign-in stays with your package manager. Packageawy never reads or stores auth tokens.
 
 ## Contributing
 
