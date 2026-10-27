@@ -19,7 +19,7 @@ For a pre-release, add `--pre-release` to the package command. Use an odd minor 
 ## Listing
 
 - [ ] `version` in `package.json` matches the changelog, and the changelog entry has a date.
-- [ ] README screenshots, settings, privacy notes, and limitations match the release.
+- [ ] README screenshots, settings, privacy notes, and requirements match the release.
 - [ ] The Marketplace preview shows the right name, icon, categories, and links.
 
 ## Publish
