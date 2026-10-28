@@ -124,7 +124,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/core/tsconfig.json && tsc --noEmit -p webview/tsconfig.json",
     "pretest": "tsc -p tsconfig.json && node esbuild.mjs",
-    "test": "node --test",
+    "test": "node --test \"test/**/*.test.mjs\"",
     "pretest:live": "npm run build:core",
     "test:live": "node --test scripts/live-checks/advisories-bulk-live.mjs",
     "pretest:extension-host": "npm run build",
