@@ -8,7 +8,10 @@ plugins {
 }
 
 group = "io.github.azzamaldulaylan"
-version = providers.gradleProperty("pluginVersion").get()
+// The extension and the plugin always ship the same version. package.json is the only place it is set.
+version = providers.fileContents(layout.projectDirectory.file("../package.json")).asText
+    .map { Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(it)?.groupValues?.get(1) ?: error("No version in package.json") }
+    .get()
 
 kotlin {
     jvmToolchain(21)

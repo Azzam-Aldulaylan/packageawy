@@ -27,6 +27,7 @@ For a pre-release, add `--pre-release` to the package command. Use an odd minor 
 - [ ] Tag the release commit `v<version>`.
 - [ ] Create GitHub release notes from the changelog and attach the tested VSIX.
 - [ ] Publish the same VSIX to the Marketplace with `npx @vscode/vsce publish --packagePath packageawy-<version>.vsix`. Add `--pre-release` for a pre-release.
+- [ ] Publish the same VSIX to Open VSX with `npx ovsx publish packageawy-<version>.vsix -p <token>`. Add `--pre-release` for a pre-release. The token comes from open-vsx.org and stays off the repo.
 - [ ] Install from the Marketplace on a clean profile and confirm the version, commands, and one refresh.
 
 ## Manual smoke test

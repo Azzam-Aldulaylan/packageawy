@@ -1,8 +1,8 @@
 {
   "name": "packageawy",
-  "displayName": "Packageawy: npm & pnpm Upgrade Assistant",
+  "displayName": "Packageawy: npm & pnpm Dependency Manager",
   "description": "Audit, review, upgrade, and clean npm or pnpm dependencies safely inside VS Code.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "preview": false,
   "license": "MIT",
