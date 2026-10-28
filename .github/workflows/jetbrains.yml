@@ -1,0 +1,59 @@
+name: JetBrains plugin
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: jetbrains-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The plugin bundles dist/webview.js, dist/webview.css and dist/sidecar.js.
+      - name: Build the webview and sidecar
+        run: |
+          npm ci
+          npm run build
+
+      - name: Choose the sidecar
+        id: sidecar
+        run: |
+          if [ -f dist/sidecar.js ]; then
+            echo "args=" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=-Ppackageawy.stubSidecar=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and test
+        working-directory: jetbrains
+        run: ./gradlew build buildPlugin ${{ steps.sidecar.outputs.args }}
+
+      - name: Verify against WebStorm
+        working-directory: jetbrains
+        run: ./gradlew verifyPlugin ${{ steps.sidecar.outputs.args }}
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetbrains-test-reports
+          path: jetbrains/build/reports

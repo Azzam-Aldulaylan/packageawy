@@ -1,0 +1,5 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="io.github.azzamaldulaylan.packageawy">
+        <nodeInterpreterProvider implementation="io.github.azzamaldulaylan.packageawy.sidecar.JavaScriptNodeInterpreterProvider"/>
+    </extensions>
+</idea-plugin>
