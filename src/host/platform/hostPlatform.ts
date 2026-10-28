@@ -54,6 +54,9 @@
  * - The client forwards each message from the webview as a
  *   `webview/didReceiveMessage` notification and sends `webview/didDispose`
  *   when the view closes. `reveal` is a `webview/reveal` notification.
+ *
+ * Parameter shapes are in rpc/protocol.ts. The sidecar entry point is
+ * src/sidecar/main.ts.
  */
 
 import type { KeyValueStore } from '../../core/cache/keyValueStore.js';

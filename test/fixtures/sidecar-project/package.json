@@ -1,0 +1,11 @@
+{
+  "name": "sidecar-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "left-pad": "^1.3.0"
+  },
+  "devDependencies": {
+    "is-number": "^7.0.0"
+  }
+}
