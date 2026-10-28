@@ -1,12 +1,13 @@
 /** Host-owned, bounded project evidence collection for pre-upgrade checks. */
 
-import * as vscode from 'vscode';
 import { createHash } from 'node:crypto';
 
 import { scanFilesBounded } from '../../core/usage/boundedFileScan.js';
 import { scanSourceForImportSpecifiers } from '../../core/usage/importScan.js';
 import type { ProjectImportReference } from '../../core/projectCompatibility/imports.js';
 import type { NextRuleProjectFile } from '../../core/projectCompatibility/rules/next/index.js';
+import { CancellationTokenSource } from '../platform/cancellation.js';
+import type { HostPlatform, WorkspaceFolder } from '../platform/hostPlatform.js';
 import {
   findConfigFiles,
   findSourceFiles,
@@ -57,7 +58,8 @@ function evidenceFingerprint(input: {
 }
 
 export async function collectProjectCompatibilityEvidence(input: {
-  folder: vscode.WorkspaceFolder;
+  platform: HostPlatform;
+  folder: WorkspaceFolder;
   dir: string;
   manifestText: string;
   packageName: string;
@@ -65,15 +67,15 @@ export async function collectProjectCompatibilityEvidence(input: {
   maxFiles?: number;
 }): Promise<CollectedProjectCompatibilityEvidence> {
   const manifest = parseProjectManifestCompatibilityEvidence(input.manifestText);
-  const cancellation = new vscode.CancellationTokenSource();
+  const cancellation = new CancellationTokenSource();
   const abort = (): void => cancellation.cancel();
   input.signal?.addEventListener('abort', abort, { once: true });
   if (input.signal?.aborted) abort();
   try {
     const maxFiles = input.maxFiles ?? DEFAULT_MAX_FILES;
     const [sourceFiles, configFiles] = await Promise.all([
-      findSourceFiles(input.folder, input.dir, maxFiles, cancellation.token),
-      findConfigFiles(input.folder, input.dir, cancellation.token),
+      findSourceFiles(input.platform, input.folder, input.dir, maxFiles, cancellation.token),
+      findConfigFiles(input.platform, input.folder, input.dir, cancellation.token),
     ]);
     const files = planWorkspaceFiles(input.folder, sourceFiles, configFiles);
     const imports: ProjectImportReference[] = [];
@@ -86,7 +88,7 @@ export async function collectProjectCompatibilityEvidence(input: {
     let configCancelled = false;
     const workspaceScan = await scanFilesBounded({
       items: files,
-      read: ({ uri }) => readTextFileCapped(uri),
+      read: ({ absolutePath }) => readTextFileCapped(input.platform, absolutePath),
       isCancelled: () => cancellation.token.isCancellationRequested,
       consume: (file, content) => {
         if (file.source) {

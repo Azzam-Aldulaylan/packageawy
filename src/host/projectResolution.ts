@@ -1,6 +1,6 @@
 /**
- * Finds the project(s) the dashboard can render, using VS Code's workspace
- * search rather than a recursive filesystem walk.
+ * Finds the project(s) the dashboard can render, using the platform's
+ * workspace search rather than a recursive filesystem walk.
  *
  * Every decision worth testing already lives in src/core/workspace/scan.ts,
  * this file is the adapter that feeds it raw paths and reads the chosen
@@ -20,8 +20,6 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 
-import * as vscode from 'vscode';
-
 import { resolvePeerResolutionPolicy, resolveRegistry } from '../core/registry/npmrc.js';
 import type { PeerResolutionPolicy } from '../core/registry/npmrc.js';
 import { parseManifest } from '../core/manifest/parse.js';
@@ -40,6 +38,7 @@ import {
   packageManagerForLockfile,
   PNPM_LOCK,
 } from '../core/workspace/scan.js';
+import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
 
 export class NoProjectFoundError extends Error {
   constructor(message: string) {
@@ -75,11 +74,11 @@ export interface ResolvedProject {
 
 /**
  * A host-owned project candidate: everything needed to load or label it,
- * plus the real `vscode.WorkspaceFolder` (never serialized to the webview;
+ * plus its workspace folder (never serialized to the webview;
  * `SelectedProjectInfo` in webviewProtocol.ts is the webview-safe subset).
  */
 export interface DiscoveredProject extends DiscoveredProjectCandidate {
-  folder: vscode.WorkspaceFolder;
+  folder: WorkspaceFolder;
 }
 
 const EXCLUDE_GLOB = `**/{${DEFAULT_EXCLUDED_DIRS.join(',')}}/**`;
@@ -95,16 +94,15 @@ async function readIfExists(absolutePath: string): Promise<string | undefined> {
 
 /**
  * Workspace-folder-relative, POSIX-separated: the shape src/core/workspace
- * expects. Unlike `vscode.workspace.asRelativePath` (which resolves against
- * whichever workspace folder contains the URI, an ambiguous choice when
- * folders overlap), this is computed against the specific `folder` being
- * scanned, and returns null if the URI turns out not to actually be inside
- * it: `findFiles` with a `RelativePattern` is scoped to one folder by
+ * expects. Unlike resolving against whichever workspace folder contains the
+ * path (an ambiguous choice when folders overlap), this is computed against
+ * the specific `folder` being scanned, and returns null if the path turns
+ * out not to actually be inside it: `findFiles` is scoped to one folder by
  * contract, but this cheap, explicit check guarantees that a candidate can
  * never end up attributed to a folder it doesn't actually live in.
  */
-function relativeToFolder(folder: vscode.WorkspaceFolder, uri: vscode.Uri): string | null {
-  const rel = path.relative(folder.uri.fsPath, uri.fsPath).split(path.sep).join('/');
+function relativeToFolder(folder: WorkspaceFolder, absolutePath: string): string | null {
+  const rel = path.relative(folder.path, absolutePath).split(path.sep).join('/');
   if (rel === '' || rel.startsWith('../') || path.isAbsolute(rel)) return null;
   return rel;
 }
@@ -115,18 +113,16 @@ function relativeToFolder(folder: vscode.WorkspaceFolder, uri: vscode.Uri): stri
  * up via nearestLockfileDir rather than a lookup at `dir`.
  */
 async function findLockfile(
-  folder: vscode.WorkspaceFolder,
+  platform: HostPlatform,
+  folder: WorkspaceFolder,
   projectDir: string,
   preferredPackageManager: PackageManagerKind
 ): Promise<{ dir: string; name: string } | null> {
-  const uris = await vscode.workspace.findFiles(
-    new vscode.RelativePattern(folder, LOCKFILE_GLOB),
-    EXCLUDE_GLOB
-  );
+  const files = await platform.findFiles({ folder, dir: '', include: LOCKFILE_GLOB, exclude: EXCLUDE_GLOB });
 
   const namesByDir = new Map<string, string[]>();
-  for (const uri of uris) {
-    const rel = relativeToFolder(folder, uri);
+  for (const file of files) {
+    const rel = relativeToFolder(folder, file);
     if (rel === null) continue;
     const dir = dirOf(rel);
     const name = dir === '' ? rel : rel.slice(dir.length + 1);
@@ -140,17 +136,15 @@ async function findLockfile(
   return name === null ? null : { dir, name };
 }
 
-async function resolveRegistryConfiguration(projectRoot: string): Promise<{
+async function resolveRegistryConfiguration(platform: HostPlatform, projectRoot: string): Promise<{
   registry: ResolvedRegistry;
   peerPolicy: PeerResolutionPolicy;
 }> {
   // Project .npmrc is attacker-controlled content in a cloned repo. Trust is
   // checked here as well as at activation because this is the read that
   // actually consumes it. See the SECURITY block in core/registry/npmrc.ts.
-  const configured = vscode.workspace
-    .getConfiguration('packageawy')
-    .get<boolean>('registry.useProjectNpmrc', true);
-  const allowProjectNpmrc = configured && vscode.workspace.isTrusted;
+  const configured = platform.getSetting<boolean>('registry.useProjectNpmrc', true);
+  const allowProjectNpmrc = configured && platform.isWorkspaceTrusted();
 
   const projectNpmrc = allowProjectNpmrc
     ? await readIfExists(path.join(projectRoot, '.npmrc'))
@@ -168,28 +162,31 @@ async function resolveRegistryConfiguration(projectRoot: string): Promise<{
 
 /**
  * Scans every open WorkspaceFolder for package.json candidates: cheap, no
- * file content read. `vscode.workspace.findFiles` is scoped per folder via
- * `RelativePattern`, never a raw recursive walk. Returns [] when no folder
+ * file content read. `findFiles` is scoped per folder, never a raw
+ * recursive walk. Returns [] when no folder
  * is open or none contain a package.json. The caller decides what that
  * means (DashboardPanel reports it as the existing "no project" error).
  */
 export async function discoverProjects(
+  platform: HostPlatform,
   performance: PerformanceRecorder = NOOP_PERFORMANCE_RECORDER
 ): Promise<DiscoveredProject[]> {
   const endDiscovery = performance.start('project discovery');
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  const foldersById = new Map<string, vscode.WorkspaceFolder>();
+  const folders = platform.workspaceFolders();
+  const foldersById = new Map<string, WorkspaceFolder>();
   const sources: ProjectCandidateSource[] = [];
 
   for (const folder of folders) {
-    const folderId = folder.uri.toString();
+    const folderId = folder.id;
     foldersById.set(folderId, folder);
-    const manifestUris = await vscode.workspace.findFiles(
-      new vscode.RelativePattern(folder, '**/package.json'),
-      EXCLUDE_GLOB
-    );
-    const manifestPaths = manifestUris
-      .map((uri) => relativeToFolder(folder, uri))
+    const manifestFiles = await platform.findFiles({
+      folder,
+      dir: '',
+      include: '**/package.json',
+      exclude: EXCLUDE_GLOB,
+    });
+    const manifestPaths = manifestFiles
+      .map((file) => relativeToFolder(folder, file))
       .filter((rel): rel is string => rel !== null);
     sources.push({ folderId, folderName: folder.name, manifestPaths });
   }
@@ -208,10 +205,11 @@ export async function discoverProjects(
 
 /** Reads one specific, already-discovered candidate's manifest/lockfile and resolves its registry. Never reads anything not already produced by `discoverProjects`. */
 export async function loadProject(
+  platform: HostPlatform,
   candidate: DiscoveredProject,
   performance: PerformanceRecorder = NOOP_PERFORMANCE_RECORDER
 ): Promise<ResolvedProject> {
-  const base = candidate.folder.uri.fsPath;
+  const base = candidate.folder.path;
   const root = candidate.dir === '' ? base : path.join(base, candidate.dir);
   const endManifestRead = performance.start('manifest read');
   const manifestText = await readFile(path.join(base, candidate.manifestPath), 'utf8');
@@ -222,7 +220,7 @@ export async function loadProject(
   const preferredPackageManager = manifest.packageManager?.name ?? 'npm';
 
   const endLockfileDiscovery = performance.start('lockfile discovery');
-  const lockfile = await findLockfile(candidate.folder, candidate.dir, preferredPackageManager);
+  const lockfile = await findLockfile(platform, candidate.folder, candidate.dir, preferredPackageManager);
   endLockfileDiscovery({ found: lockfile !== null });
   const lockfilePath = lockfile === null ? null : path.join(base, lockfile.dir, lockfile.name);
   const endLockfileRead = performance.start('lockfile read');
@@ -234,7 +232,7 @@ export async function loadProject(
   const importerRelative = path.relative(lockfileRoot, root).split(path.sep).join('/');
   const importerId = importerRelative === '' ? '.' : importerRelative;
 
-  const configuration = await resolveRegistryConfiguration(root);
+  const configuration = await resolveRegistryConfiguration(platform, root);
   return {
     root,
     manifestText,

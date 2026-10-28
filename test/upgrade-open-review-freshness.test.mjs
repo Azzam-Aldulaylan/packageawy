@@ -1,46 +1,23 @@
 import assert from 'node:assert/strict';
-import { createRequire, registerHooks } from 'node:module';
 import test from 'node:test';
 
-// Exercise the real coordinator and source-evidence collector without an
-// Extension Host, network requests, or writes to a user's project.
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    return specifier === 'vscode' ? { shortCircuit: true, url: 'test:freshness-vscode' } : nextResolve(specifier, context);
-  },
-  load(url, context, nextLoad) {
-    if (url !== 'test:freshness-vscode') return nextLoad(url, context);
-    return { shortCircuit: true, format: 'module', source: `
-      export const files = new Map();
-      export const workspace = {
-        getConfiguration: () => ({ get: (_key, fallback) => fallback }),
-        findFiles: async (pattern) => [...files.keys()]
-          .filter(path => pattern.pattern.includes('**/*') || path.endsWith('next.config.js'))
-          .map(fsPath => ({ fsPath })),
-        fs: {
-          stat: async uri => ({ size: Buffer.byteLength(files.get(uri.fsPath)) }),
-          readFile: async uri => Buffer.from(files.get(uri.fsPath)),
-        },
-      };
-      export class RelativePattern { constructor(base, pattern) { this.pattern = pattern; } }
-      export class CancellationTokenSource {
-        token = { isCancellationRequested: false };
-        cancel() { this.token.isCancellationRequested = true; }
-        dispose() {}
-      }
-      export const window = {}, commands = {}, tasks = {};
-      export const ProgressLocation = { Notification: 15 };
-      export const TaskRevealKind = { Always: 1 }, TaskPanelKind = { Dedicated: 2 };
-    ` };
-  },
-});
+import { UpgradeAssistantCoordinator } from '../out/host/upgradeAssistantCoordinator.js';
+import { collectProjectCompatibilityEvidence } from '../out/host/projectCompatibility/projectEvidenceCollector.js';
 
-const { UpgradeAssistantCoordinator } = await import('../out/host/upgradeAssistantCoordinator.js');
-const { collectProjectCompatibilityEvidence } = await import('../out/host/projectCompatibility/projectEvidenceCollector.js');
-const { files } = createRequire(import.meta.url)('vscode');
+// Exercise the real coordinator and source-evidence collector without an
+// editor, network requests, or writes to a user's project.
+const files = new Map();
+const platform = {
+  getSetting: (_key, fallback) => fallback,
+  findFiles: async (search) => [...files.keys()]
+    .filter(path => search.include.includes('**/*') || path.endsWith('next.config.js')),
+  statFile: async filePath => ({ size: Buffer.byteLength(files.get(filePath)) }),
+  readFile: async filePath => Buffer.from(files.get(filePath)),
+};
+const folder = { id: 'file:///workspace', name: 'workspace', path: '/workspace' };
 
 test('source collector reports specific coverage limits and already-cancelled scans', async () => {
-  const input = { folder: { uri: { fsPath: '/workspace' } }, dir: '', manifestText: '{}', packageName: 'next' };
+  const input = { platform, folder, dir: '', manifestText: '{}', packageName: 'next' };
   files.clear();
   files.set('/workspace/page.ts', 'import Link from "next/link"');
   const capped = await collectProjectCompatibilityEvidence({ ...input, maxFiles: 1 });
@@ -76,14 +53,14 @@ async function fixture() {
   // its current contents, not Git status/mtime/watcher count, define freshness.
   files.set('/workspace/page.ts', 'import Link from "next/link"; // existing edit');
   files.set('/workspace/next.config.js', 'module.exports = { reactStrictMode: true };');
-  const selected = { id: 'project', dir: '', folder: { uri: { fsPath: '/workspace' } } };
+  const selected = { id: 'project', dir: '', folder };
   const snapshot = {
     root: '/workspace', manifestText: '{"dependencies":{"next":"14.2.35"}}',
     lockfileText: '{"lockfileVersion":3}', lockfilePath: '/workspace/package-lock.json',
     registry: 'https://registry.npmjs.org/', packageManager: 'npm', importerId: '.',
     peerPolicy: {}, resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
   };
-  const evidence = await collectProjectCompatibilityEvidence({ ...selected, manifestText: snapshot.manifestText, packageName: 'next' });
+  const evidence = await collectProjectCompatibilityEvidence({ ...selected, platform, manifestText: snapshot.manifestText, packageName: 'next' });
   assert.equal(evidence.imports.length, 1, 'fixture must collect the real source import');
   assert.equal(evidence.ruleFiles.length, 1, 'fixture must collect the real Next config');
   const messages = [];
@@ -91,6 +68,7 @@ async function fixture() {
   let read = async () => structuredClone(snapshot);
   let currentProject = selected;
   const coordinator = new UpgradeAssistantCoordinator({
+    platform,
     sink: { postMessage: message => messages.push(message) }, httpClient: {}, etagStore: {},
     ensureController: async () => ({ root: snapshot.root, validateBulkUpgradeRequest: () => ({ ok: true }) }),
     getSelectedProject: () => currentProject, isDisposed: () => false,

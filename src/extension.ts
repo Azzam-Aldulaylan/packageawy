@@ -2,7 +2,7 @@
  * Composition root. Keep this thin: wiring only, no logic.
  *
  * Anything with behavior worth testing belongs in src/core (pure, no vscode)
- * or src/host (vscode-facing adapters).
+ * or src/host (editor-facing adapters behind HostPlatform).
  */
 
 import * as vscode from 'vscode';
@@ -10,7 +10,9 @@ import * as vscode from 'vscode';
 import { createPerformanceSession } from './core/performance/measurement.js';
 import { DashboardPanel } from './host/dashboardPanel.js';
 import type { DashboardPanelIntegrationTestSnapshot } from './host/dashboardPanel.js';
-import { registerSidebar } from './host/sidebar.js';
+import { showDashboard } from './host/platform/vscode/dashboardWebview.js';
+import { registerSidebar } from './host/platform/vscode/sidebar.js';
+import { VsCodePlatform } from './host/platform/vscode/vsCodePlatform.js';
 
 export interface PackageawyIntegrationTestApi {
   dashboard: {
@@ -35,9 +37,10 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
     return;
   }
 
+  const platform = new VsCodePlatform(context);
   context.subscriptions.push(
     vscode.commands.registerCommand('packageawy.open', () => {
-      DashboardPanel.createOrShow(context);
+      showDashboard(context, platform);
     })
   );
 
@@ -47,7 +50,7 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
     })
   );
 
-  context.subscriptions.push(registerSidebar(() => DashboardPanel.createOrShow(context)));
+  context.subscriptions.push(registerSidebar(() => showDashboard(context, platform)));
   endActivation({ trusted: true });
   performance.finish({ trusted: true });
 

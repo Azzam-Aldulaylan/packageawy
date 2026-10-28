@@ -1,24 +1,18 @@
 /**
- * The webview panel: lifecycle, CSP, and the message boundary.
+ * The dashboard session behind the webview: lifecycle, the message boundary,
+ * and watcher/reload wiring.
  *
  * One panel at a time, following the create-or-reveal pattern from VS Code's
  * own webview sample. Scan decisions live in DashboardController and upgrade
- * lifecycle decisions live in UpgradeAssistantCoordinator. This file owns
- * the parts that need a real `vscode.WebviewPanel` plus watcher/reload wiring.
+ * lifecycle decisions live in UpgradeAssistantCoordinator. The view itself
+ * (HTML, CSP, resource roots) belongs to the platform glue that creates the
+ * WebviewChannel. See platform/vscode/dashboardWebview.ts.
  *
- * SECURITY: the four rules enforced here:
- *   1. A fresh cryptographically-random nonce per HTML load, and no
- *      `unsafe-inline`/`unsafe-eval` anywhere in the policy. `default-src
- *      'none'` means anything not explicitly allowed below is blocked,
- *      including every network destination: the webview cannot phone home.
- *   2. `localResourceRoots` is exactly `dist/`, so nothing else in the
- *      extension directory or the user's workspace is loadable.
- *   3. No inline <script>. The only script is the nonce-tagged bundle.
- *   4. Every inbound message goes through isWebviewToHostMessage before it is
- *      acted on. A webview is a separate security context. A message arriving
- *      on this channel is not proof that we sent it.
+ * SECURITY: every inbound message goes through isWebviewToHostMessage before
+ * it is acted on. A webview is a separate security context. A message
+ * arriving on this channel is not proof that we sent it.
  *
- * Project selection adds a fifth rule of the same shape: the webview can only ever ask to
+ * Project selection adds a second rule of the same shape: the webview can only ever ask to
  * open the project picker (`change-project`, no payload): it never names or
  * chooses a project. Discovery, labelling, and selection are entirely
  * host-owned (projectResolution.ts / projectPicker.ts). Nothing the webview
@@ -27,8 +21,6 @@
 
 import { randomBytes } from 'node:crypto';
 import * as path from 'node:path';
-
-import * as vscode from 'vscode';
 
 import { NodeAuditRunner } from '../core/audit/npmAudit.js';
 import { BranchChangeCoordinator, realBranchTimerScheduler } from './branchChangeCoordinator.js';
@@ -52,7 +44,8 @@ import { reloadControllerFromDisk } from './fileChangeReload.js';
 import { pickProject } from './projectPicker.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
 import { discoverProjects, loadProject } from './projectResolution.js';
-import { watchGitHead } from './gitHeadWatcher.js';
+import { CancellationTokenSource } from './platform/cancellation.js';
+import type { Disposable, HostPlatform, WebviewChannel } from './platform/hostPlatform.js';
 import { reconcileProjectCandidates } from './projectReconciliation.js';
 import { UpgradeAssistantCoordinator } from './upgradeAssistantCoordinator.js';
 import { canRetryMutationEnrichment, classifyMutationEnrichmentStart } from './upgradeAssistantOutcome.js';
@@ -65,8 +58,6 @@ import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from '.
 import type { WebviewToHostMessage } from './webviewProtocol.js';
 import { isWebviewToHostMessage } from './webviewProtocol.js';
 
-const VIEW_TYPE = 'packageawy';
-const TITLE = 'Packageawy';
 /** Spec's fixed background-refresh cadence: independent of the configurable `cacheTtlMinutes`, which only decides whether a given tick actually needs to do anything (see DashboardController.needsBackgroundRefresh). */
 const BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
 /** Coalesces a burst of filesystem events (e.g. an editor's atomic save, which can fire delete+create in quick succession) into a single invalidation + rescan. */
@@ -79,6 +70,12 @@ export interface DashboardPanelIntegrationTestEvent {
   message: HostToWebviewMessage;
 }
 
+export interface DashboardPanelOptions {
+  extensionVersion: string;
+  /** Enables the integration test seam below. Never true for a normal session. */
+  integrationTestMode: boolean;
+}
+
 export interface DashboardPanelIntegrationTestSnapshot {
   open: boolean;
   disposed: boolean;
@@ -86,46 +83,6 @@ export interface DashboardPanelIntegrationTestSnapshot {
   selectedManifestPath: string | null;
   packageManager: 'npm' | 'pnpm' | null;
   messages: readonly DashboardPanelIntegrationTestEvent[];
-}
-
-/**
- * `cacheBust` is appended as a query string on both asset URLs so that
- * re-assigning `panel.webview.html` (the dev-mode auto-reload watcher below)
- * is guaranteed to fetch the just-rebuilt `webview.js`/`webview.css` bytes
- * rather than whatever Chromium's resource cache already has for that exact
- * URL: the nonce changes the inline `<script>` tag itself, but does nothing
- * about the cached response behind an unchanged `src`. Callers pass
- * `Date.now()`. This is purely a cache key. The real timestamp shown in the
- * UI is `buildInfo.builtAt` (`__BUILD_TIME__`, fixed for this extension host
- * process's whole lifetime. See that field's doc).
- */
-function buildHtml(webview: vscode.Webview, extensionUri: vscode.Uri, performanceEnabled: boolean, cacheBust: number): string {
-  const nonce = randomBytes(16).toString('base64');
-  const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview.js'));
-  const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview.css'));
-
-  const csp = [
-    "default-src 'none'",
-    `script-src 'nonce-${nonce}'`,
-    `style-src ${webview.cspSource}`,
-    `img-src ${webview.cspSource} data:`,
-    `font-src ${webview.cspSource}`,
-  ].join('; ');
-
-  return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="${csp}" />
-    <link rel="stylesheet" href="${styleUri.toString()}?v=${cacheBust}" />
-    <title>${TITLE}</title>
-  </head>
-  <body data-performance-debug="${performanceEnabled ? 'true' : 'false'}">
-    <div id="root"></div>
-    <script nonce="${nonce}" src="${scriptUri.toString()}?v=${cacheBust}"></script>
-  </body>
-</html>`;
 }
 
 function toProtocolError(cause: unknown): ProtocolError {
@@ -140,7 +97,8 @@ function toProjectInfo(candidate: DiscoveredProject): SelectedProjectInfo {
 export class DashboardPanel {
   private static current: DashboardPanel | undefined;
 
-  private readonly panel: vscode.WebviewPanel;
+  private readonly platform: HostPlatform;
+  private readonly channel: WebviewChannel;
   private readonly sink: MessageSink;
   private readonly integrationTestMode: boolean;
   private readonly integrationTestPanelId = randomBytes(8).toString('hex');
@@ -190,12 +148,12 @@ export class DashboardPanel {
   private reloadGeneration = 0;
 
   /** file watchers for the currently selected project's manifest/lockfile topology, recreated on every project switch. */
-  private manifestWatcher: vscode.FileSystemWatcher | undefined;
+  private manifestWatcher: Disposable | undefined;
   /** One watcher per ancestor directory (see setupFileWatchers), never a single glob built by interpolating directory names, which real directory content could break out of. */
-  private lockfileWatchers: vscode.FileSystemWatcher[] = [];
-  private configurationWatchers: vscode.FileSystemWatcher[] = [];
+  private lockfileWatchers: Disposable[] = [];
+  private configurationWatchers: Disposable[] = [];
   /** Source/config watcher used only to obsolete an open project-compatibility review. It never invalidates dashboard dependency facts. */
-  private projectCompatibilitySourceWatcher: vscode.FileSystemWatcher | undefined;
+  private projectCompatibilitySourceWatcher: Disposable | undefined;
   /** The absolute lockfile path the current persisted entry was built against: needed to purge every npm-workspace sibling sharing it once a reload has just replaced it. Null means the selected project has no lockfile. */
   private selectedLockfilePath: string | null = null;
   private invalidationTimer: NodeJS.Timeout | undefined;
@@ -205,22 +163,10 @@ export class DashboardPanel {
   /** Monotonic dependency/source/config identity for on-demand Smart Cleanup evidence. */
   private smartCleanupSourceGeneration = 0;
   /** Optional built-in Git HEAD subscription for the repository containing the selected manifest. */
-  private gitHeadWatcher: vscode.Disposable | undefined;
+  private gitHeadWatcher: Disposable | undefined;
   private gitWatchedProjectPath: string | undefined;
   private gitWatcherSetupGeneration = 0;
-  private branchProjectPickerCancellation: vscode.CancellationTokenSource | undefined;
-  /**
-   * Dev-mode-only ("F5" Extension Development Host) auto-reload: watches this
-   * extension's `dist/webview.{js,css}` and re-assigns `panel.webview.html`
-   * shortly after `npm run watch` finishes a rebuild, so the panel picks up
-   * UI changes without a manual "close tab and reopen" or a full window
-   * reload. Never created for a real installed extension: `extensionMode`
-   * is `Development` only under `--extensionDevelopmentPath`. This is a full
-   * webview reload, not state-preserving React Fast Refresh: the in-progress
-   * scan/manage-modal state resets, same as any other panel re-creation.
-   */
-  private readonly devWebviewWatcher: vscode.FileSystemWatcher | undefined;
-  private devReloadTimer: NodeJS.Timeout | undefined;
+  private branchProjectPickerCancellation: CancellationTokenSource | undefined;
   /** Owns coalescing, upgrade-busy deferral, and serialized generation-checked reloads for watcher events. See fileChangeCoordinator.ts. This panel only owns the actual watcher subscriptions and debounce timing. */
   private readonly fileChangeCoordinator = new FileChangeCoordinator({
     isBusy: () => this.upgradeCoordinator.isMutationBusy(),
@@ -242,13 +188,12 @@ export class DashboardPanel {
       deriveProjectCacheKey(candidate.id, registry, packageManager ?? 'npm'),
   };
 
-  private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
-    this.panel = panel;
-    this.integrationTestMode =
-      context.extensionMode === vscode.ExtensionMode.Test ||
-      process.env['PACKAGEAWY_EXTENSION_TEST'] === '1';
+  private constructor(platform: HostPlatform, channel: WebviewChannel, options: DashboardPanelOptions) {
+    this.platform = platform;
+    this.channel = channel;
+    this.integrationTestMode = options.integrationTestMode;
     this.buildInfo = {
-      extensionVersion: String(context.extension.packageJSON['version'] ?? 'unknown'),
+      extensionVersion: options.extensionVersion,
       builtAt: __BUILD_TIME__,
     };
     this.sink = {
@@ -270,12 +215,13 @@ export class DashboardPanel {
           endSerialization({ status: message.status, bytes: Buffer.byteLength(serialized) });
           performance.finish({ status: message.status });
         }
-        void this.panel.webview.postMessage(message);
+        this.channel.postMessage(message);
       },
     };
-    this.etagStore = new PersistentEtagStore(context.globalState);
-    this.projectCacheStore = new PersistentProjectCacheStore(context.workspaceState);
+    this.etagStore = new PersistentEtagStore(platform.globalState);
+    this.projectCacheStore = new PersistentProjectCacheStore(platform.workspaceState);
     this.upgradeCoordinator = new UpgradeAssistantCoordinator({
+      platform,
       sink: this.sink,
       httpClient: this.httpClient,
       etagStore: this.etagStore,
@@ -310,6 +256,7 @@ export class DashboardPanel {
         this.usageCoordinator.smartCleanupRemovalEvidence(requestId, packages),
     });
     this.usageCoordinator = new UsageAnalysisCoordinator({
+      platform,
       sink: this.sink,
       ensureController: () => this.ensureController(),
       getSelectedProject: () => this.selectedProject,
@@ -335,89 +282,54 @@ export class DashboardPanel {
       this.onBackgroundTick();
     });
 
-    this.panel.webview.html = buildHtml(this.panel.webview, context.extensionUri, this.performanceEnabled(), Date.now());
+    this.channel.onDidReceiveMessage((raw: unknown) => {
+      if (!isWebviewToHostMessage(raw)) return;
+      void this.handle(raw);
+    });
 
-    this.devWebviewWatcher =
-      context.extensionMode === vscode.ExtensionMode.Development
-        ? vscode.workspace.createFileSystemWatcher(
-            new vscode.RelativePattern(vscode.Uri.joinPath(context.extensionUri, 'dist'), 'webview.{js,css}')
-          )
-        : undefined;
-    if (this.devWebviewWatcher !== undefined) {
-      const scheduleReload = (): void => {
-        if (this.devReloadTimer !== undefined) clearTimeout(this.devReloadTimer);
-        this.devReloadTimer = setTimeout(() => {
-          this.devReloadTimer = undefined;
-          if (this.disposed) return;
-          this.panel.webview.html = buildHtml(this.panel.webview, context.extensionUri, this.performanceEnabled(), Date.now());
-        }, FILE_EVENT_DEBOUNCE_MS);
-      };
-      this.devWebviewWatcher.onDidChange(scheduleReload);
-      this.devWebviewWatcher.onDidCreate(scheduleReload);
-    }
-
-    this.panel.webview.onDidReceiveMessage(
-      (raw: unknown) => {
-        if (!isWebviewToHostMessage(raw)) return; // Rule 4.
-        void this.handle(raw);
-      },
-      null,
-      context.subscriptions
-    );
-
-    this.panel.onDidDispose(
-      () => {
-        // An in-flight pipeline run must not outlive the panel, nor try to
-        // post into a webview that no longer exists.
-        this.disposed = true;
-        this.controller?.dispose();
-        this.controller = undefined;
-        this.pending = undefined;
-        this.selectedPackageManager = null;
-        // A mutating task is deliberately allowed to reach a stable boundary
-        // even after its panel closes. The transaction's async owner keeps the
-        // session alive until install/verification/rollback completes.
-        this.upgradeCoordinator.disposeWhenIdle();
-        this.usageCoordinator.dispose();
-        this.smartCleanupMetadataCoordinator.dispose();
-        this.smartCleanupDuplicateCoordinator.dispose();
-        this.disposeWatchers();
-        this.gitHeadWatcher?.dispose();
-        this.gitHeadWatcher = undefined;
-        this.branchProjectPickerCancellation?.cancel();
-        this.branchProjectPickerCancellation?.dispose();
-        this.branchProjectPickerCancellation = undefined;
-        this.branchChangeCoordinator.dispose();
-        this.fileChangeCoordinator.dispose();
-        this.backgroundTimer.dispose();
-        this.etagStore.dispose();
-        this.projectCacheStore.dispose();
-        this.devWebviewWatcher?.dispose();
-        if (this.devReloadTimer !== undefined) clearTimeout(this.devReloadTimer);
-        DashboardPanel.current = undefined;
-      },
-      null,
-      context.subscriptions
-    );
+    this.channel.onDidDispose(() => {
+      // An in-flight pipeline run must not outlive the panel, nor try to
+      // post into a webview that no longer exists.
+      this.disposed = true;
+      this.controller?.dispose();
+      this.controller = undefined;
+      this.pending = undefined;
+      this.selectedPackageManager = null;
+      // A mutating task is deliberately allowed to reach a stable boundary
+      // even after its panel closes. The transaction's async owner keeps the
+      // session alive until install/verification/rollback completes.
+      this.upgradeCoordinator.disposeWhenIdle();
+      this.usageCoordinator.dispose();
+      this.smartCleanupMetadataCoordinator.dispose();
+      this.smartCleanupDuplicateCoordinator.dispose();
+      this.disposeWatchers();
+      this.gitHeadWatcher?.dispose();
+      this.gitHeadWatcher = undefined;
+      this.branchProjectPickerCancellation?.cancel();
+      this.branchProjectPickerCancellation?.dispose();
+      this.branchProjectPickerCancellation = undefined;
+      this.branchChangeCoordinator.dispose();
+      this.fileChangeCoordinator.dispose();
+      this.backgroundTimer.dispose();
+      this.etagStore.dispose();
+      this.projectCacheStore.dispose();
+      DashboardPanel.current = undefined;
+    });
 
     // Only while the panel is open: disposed above the moment it closes.
     this.backgroundTimer.start();
   }
 
-  static createOrShow(context: vscode.ExtensionContext): void {
+  /** Reveals the open panel. False when none is open. */
+  static reveal(): boolean {
     const existing = DashboardPanel.current;
-    if (existing !== undefined) {
-      existing.panel.reveal(vscode.ViewColumn.One);
-      return;
-    }
+    if (existing === undefined) return false;
+    existing.channel.reveal();
+    return true;
+  }
 
-    const panel = vscode.window.createWebviewPanel(VIEW_TYPE, TITLE, vscode.ViewColumn.One, {
-      enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')], // Rule 2.
-      retainContextWhenHidden: true,
-    });
-
-    DashboardPanel.current = new DashboardPanel(panel, context);
+  static create(platform: HostPlatform, channel: WebviewChannel, options: DashboardPanelOptions): void {
+    DashboardPanel.current = new DashboardPanel(platform, channel, options);
   }
 
   /** The refresh command only refreshes what is already open. It never opens a panel. */
@@ -720,7 +632,7 @@ export class DashboardPanel {
   private openAdvisory(message: { package: string; advisoryId: string | number; path: string[]; reference?: string }): void {
     const url = this.controller?.resolveAdvisoryUrl(message);
     if (url === null || url === undefined) return;
-    void vscode.env.openExternal(vscode.Uri.parse(url));
+    this.platform.openExternal(url);
   }
 
   /**
@@ -735,7 +647,7 @@ export class DashboardPanel {
     const performance = createPerformanceSession('Packageawy project discovery', this.performanceEnabled());
     let candidates: DiscoveredProject[];
     try {
-      candidates = await discoverProjects(performance);
+      candidates = await discoverProjects(this.platform, performance);
     } catch (cause) {
       performance.finish({ failed: true });
       if (this.disposed) return;
@@ -770,7 +682,7 @@ export class DashboardPanel {
       return;
     }
 
-    const picked = await pickProject(candidates);
+    const picked = await pickProject(this.platform, candidates);
     if (this.disposed) return;
     if (picked === undefined) return; // cancelled: current selection is preserved, nothing to do
     // An upgrade could have started while the picker was open (it isn't
@@ -1144,7 +1056,7 @@ export class DashboardPanel {
       if (this.disposed || candidate === undefined) return undefined; // already posted (or torn down)
 
       this.selectedProject = candidate;
-      const project = await loadProject(candidate, performance);
+      const project = await loadProject(this.platform, candidate, performance);
       if (this.disposed) return undefined;
 
       this.setupFileWatchers(candidate, path.join(project.root, 'package.json'));
@@ -1173,7 +1085,7 @@ export class DashboardPanel {
    * "currently selected project" yet to fall back to on a first-ever open.
    */
   private async selectInitialProject(performance: PerformanceRecorder): Promise<DiscoveredProject | undefined> {
-    const candidates = await discoverProjects(performance);
+    const candidates = await discoverProjects(this.platform, performance);
     if (this.disposed) return undefined;
     this.candidateCount = candidates.length;
 
@@ -1186,7 +1098,7 @@ export class DashboardPanel {
     }
     if (candidates.length === 1) return candidates[0];
 
-    const picked = await pickProject(candidates);
+    const picked = await pickProject(this.platform, candidates);
     if (this.disposed) return undefined;
     if (picked === undefined) {
       this.sink.postMessage({
@@ -1231,14 +1143,12 @@ export class DashboardPanel {
   }
 
   private readonly performanceEnabled = (): boolean =>
-    vscode.workspace
-      .getConfiguration('packageawy')
-      .get<boolean>('debug.performance', false);
+    this.platform.getSetting<boolean>('debug.performance', false);
 
   private async loadProjectMeasured(candidate: DiscoveredProject, operation: string): Promise<ResolvedProject> {
     const performance = createPerformanceSession(operation, this.performanceEnabled());
     try {
-      return await loadProject(candidate, performance);
+      return await loadProject(this.platform, candidate, performance);
     } finally {
       performance.finish();
     }
@@ -1250,9 +1160,7 @@ export class DashboardPanel {
   }
 
   private readonly ttlMinutesProvider = (): number => {
-    const raw = vscode.workspace
-      .getConfiguration('packageawy')
-      .get<number>('cacheTtlMinutes', DEFAULT_TTL_MINUTES);
+    const raw = this.platform.getSetting<number>('cacheTtlMinutes', DEFAULT_TTL_MINUTES);
     return effectiveTtlMinutes(raw);
   };
 
@@ -1292,7 +1200,7 @@ export class DashboardPanel {
     this.gitWatchedProjectPath = manifestPath;
     this.gitWatcherSetupGeneration += 1;
     const setupGeneration = this.gitWatcherSetupGeneration;
-    void watchGitHead(manifestPath, () => this.onGitHeadChanged()).then((watcher) => {
+    void this.platform.watchGitHead(manifestPath, () => this.onGitHeadChanged()).then((watcher) => {
       if (this.disposed || setupGeneration !== this.gitWatcherSetupGeneration) {
         watcher?.dispose();
         return;
@@ -1342,25 +1250,10 @@ export class DashboardPanel {
   private async pickBranchProject(
     candidates: readonly DiscoveredProject[]
   ): Promise<DiscoveredProject | undefined> {
-    const cancellation = new vscode.CancellationTokenSource();
+    const cancellation = new CancellationTokenSource();
     this.branchProjectPickerCancellation = cancellation;
     try {
-      const picked = await vscode.window.showQuickPick(
-        candidates.map((candidate) => ({
-          label: projectCandidateLabel(candidate),
-          description: candidate.manifestPath,
-          detail: candidate.folder.uri.fsPath,
-          candidate,
-        })),
-        {
-          title: 'Packageawy: Select a Project',
-          placeHolder: 'Choose which package.json to view',
-          matchOnDescription: true,
-          matchOnDetail: true,
-        },
-        cancellation.token
-      );
-      return picked?.candidate;
+      return await pickProject(this.platform, candidates, cancellation.token);
     } finally {
       if (this.branchProjectPickerCancellation === cancellation) {
         this.branchProjectPickerCancellation = undefined;
@@ -1376,7 +1269,7 @@ export class DashboardPanel {
     const performance = createPerformanceSession('Packageawy branch reconciliation', this.performanceEnabled());
     let candidates: DiscoveredProject[];
     try {
-      candidates = await discoverProjects(performance);
+      candidates = await discoverProjects(this.platform, performance);
     } catch (cause) {
       performance.finish({ failed: true });
       if (this.upgradeCoordinator.isMutationBusy()) return;
@@ -1437,7 +1330,7 @@ export class DashboardPanel {
    * happens to contain, and a legal one containing `*`, `?`, `[`, `]`, `{`,
    * `}`, or `,` would be reinterpreted as glob syntax instead of matched
    * literally. See lockfileWatchDirs's doc. Each directory here is used
-   * only as `RelativePattern`'s literal URI base, exactly like the manifest
+   * only as the watcher's literal base directory, exactly like the manifest
    * watcher below already does. Only the hardcoded filenames, which this
    * codebase controls, ever appear in the glob pattern itself.
    */
@@ -1446,22 +1339,17 @@ export class DashboardPanel {
     this.projectCompatibilitySourceGeneration += 1;
     this.setupGitHeadWatcher(manifestPath);
 
-    this.manifestWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(vscode.Uri.file(path.dirname(manifestPath)), path.basename(manifestPath))
+    this.manifestWatcher = this.platform.watchFiles(
+      path.dirname(manifestPath),
+      path.basename(manifestPath),
+      () => this.onWatchedFileEvent('manifest')
     );
-    const onManifestEvent = (): void => this.onWatchedFileEvent('manifest');
-    this.manifestWatcher.onDidChange(onManifestEvent);
-    this.manifestWatcher.onDidCreate(onManifestEvent);
-    this.manifestWatcher.onDidDelete(onManifestEvent);
 
     const projectBase = candidate.dir === ''
-      ? candidate.folder.uri
-      : vscode.Uri.joinPath(candidate.folder.uri, candidate.dir);
-    this.projectCompatibilitySourceWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(projectBase, USAGE_FILE_WATCH_GLOB)
-    );
-    const onProjectCompatibilitySourceEvent = (uri: vscode.Uri): void => {
-      const relative = path.relative(projectBase.fsPath, uri.fsPath);
+      ? candidate.folder.path
+      : path.join(candidate.folder.path, candidate.dir);
+    const onProjectCompatibilitySourceEvent = (filePath: string): void => {
+      const relative = path.relative(projectBase, filePath);
       if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return;
       if (relative.split(path.sep).some((segment) => DEFAULT_EXCLUDED_DIRS.includes(segment))) return;
       this.projectCompatibilitySourceGeneration += 1;
@@ -1479,37 +1367,26 @@ export class DashboardPanel {
         }
       }, FILE_EVENT_DEBOUNCE_MS);
     };
-    this.projectCompatibilitySourceWatcher.onDidChange(onProjectCompatibilitySourceEvent);
-    this.projectCompatibilitySourceWatcher.onDidCreate(onProjectCompatibilitySourceEvent);
-    this.projectCompatibilitySourceWatcher.onDidDelete(onProjectCompatibilitySourceEvent);
+    this.projectCompatibilitySourceWatcher = this.platform.watchFiles(
+      projectBase,
+      USAGE_FILE_WATCH_GLOB,
+      onProjectCompatibilitySourceEvent
+    );
 
     const onConfigurationEvent = (): void => this.onWatchedFileEvent('configuration');
-    const npmrcWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(vscode.Uri.file(path.dirname(manifestPath)), '.npmrc')
+    this.configurationWatchers.push(
+      this.platform.watchFiles(path.dirname(manifestPath), '.npmrc', onConfigurationEvent)
     );
-    npmrcWatcher.onDidChange(onConfigurationEvent);
-    npmrcWatcher.onDidCreate(onConfigurationEvent);
-    npmrcWatcher.onDidDelete(onConfigurationEvent);
-    this.configurationWatchers.push(npmrcWatcher);
 
     const onLockfileEvent = (): void => this.onWatchedFileEvent('lockfile');
     for (const dir of lockfileWatchDirs(candidate.dir)) {
-      const dirUri = vscode.Uri.joinPath(candidate.folder.uri, dir);
-      const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(dirUri, '{package-lock.json,npm-shrinkwrap.json,pnpm-lock.yaml}')
+      const dirPath = path.join(candidate.folder.path, dir);
+      this.lockfileWatchers.push(
+        this.platform.watchFiles(dirPath, '{package-lock.json,npm-shrinkwrap.json,pnpm-lock.yaml}', onLockfileEvent)
       );
-      watcher.onDidChange(onLockfileEvent);
-      watcher.onDidCreate(onLockfileEvent);
-      watcher.onDidDelete(onLockfileEvent);
-      this.lockfileWatchers.push(watcher);
-
-      const workspaceConfigWatcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(dirUri, 'pnpm-workspace.yaml')
+      this.configurationWatchers.push(
+        this.platform.watchFiles(dirPath, 'pnpm-workspace.yaml', onConfigurationEvent)
       );
-      workspaceConfigWatcher.onDidChange(onConfigurationEvent);
-      workspaceConfigWatcher.onDidCreate(onConfigurationEvent);
-      workspaceConfigWatcher.onDidDelete(onConfigurationEvent);
-      this.configurationWatchers.push(workspaceConfigWatcher);
     }
   }
 

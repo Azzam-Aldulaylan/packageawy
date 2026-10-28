@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import { deepestContainingRepository, stableGitHeadIdentity } from './gitHeadState.js';
+import { deepestContainingRepository, stableGitHeadIdentity } from '../../gitHeadState.js';
 
 interface GitBranch {
   commit?: string;

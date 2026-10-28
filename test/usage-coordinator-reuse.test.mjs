@@ -1,76 +1,23 @@
 import assert from 'node:assert/strict';
-import Module, { createRequire } from 'node:module';
 import test from 'node:test';
+
+import { UsageAnalysisCoordinator } from '../out/host/usage/usageCoordinator.js';
 
 let findFilesCalls = 0;
 
-class MockCancellationTokenSource {
-  #listeners = new Set();
-  #cancelled = false;
-
-  token = {
-    get isCancellationRequested() {
-      return this.owner.#cancelled;
-    },
-    owner: this,
-    onCancellationRequested: (listener) => {
-      this.#listeners.add(listener);
-      return { dispose: () => this.#listeners.delete(listener) };
-    },
-  };
-
-  cancel() {
-    if (this.#cancelled) return;
-    this.#cancelled = true;
-    for (const listener of this.#listeners) listener();
-  }
-
-  dispose() {
-    this.#listeners.clear();
-  }
-}
-
-const vscode = {
-  CancellationTokenSource: MockCancellationTokenSource,
-  RelativePattern: class RelativePattern {
-    constructor(base, pattern) {
-      this.base = base;
-      this.pattern = pattern;
-    }
+const platform = {
+  findFiles: async () => {
+    findFilesCalls += 1;
+    return [];
   },
-  workspace: {
-    findFiles: async () => {
-      findFilesCalls += 1;
-      return [];
-    },
-    fs: {
-      stat: async () => ({ size: 0 }),
-      readFile: async () => new Uint8Array(),
-    },
-  },
-  window: {
-    withProgress: async (_options, run) => run(
-      { report: () => undefined },
-      { onCancellationRequested: () => ({ dispose: () => undefined }) }
-    ),
-    showTextDocument: async () => ({}),
-  },
-  ProgressLocation: { Notification: 1 },
-  Uri: { joinPath: () => ({}) },
-  Position: class Position {},
-  Selection: class Selection {},
-  Range: class Range {},
-  TextEditorRevealType: { InCenter: 1 },
+  statFile: async () => ({ size: 0 }),
+  readFile: async () => new Uint8Array(),
+  withProgress: async (_title, run) => run(
+    { report: () => undefined },
+    { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) }
+  ),
+  openFile: () => undefined,
 };
-
-const originalLoad = Module._load;
-Module._load = function loadWithVscodeMock(request, parent, isMain) {
-  if (request === 'vscode') return vscode;
-  return originalLoad.call(this, request, parent, isMain);
-};
-const require = createRequire(import.meta.url);
-const { UsageAnalysisCoordinator } = require('../out/host/usage/usageCoordinator.js');
-Module._load = originalLoad;
 
 function fixture() {
   const messages = [];
@@ -79,7 +26,7 @@ function fixture() {
     dir: '',
     relativePath: 'package.json',
     manifestPath: '/workspace/package.json',
-    folder: { uri: { fsPath: '/workspace' }, name: 'workspace', index: 0 },
+    folder: { id: 'file:///workspace', name: 'workspace', path: '/workspace' },
   };
   const controller = {
     root: '/workspace',
@@ -93,6 +40,7 @@ function fixture() {
     lastResultRows: () => [{ name: 'lodash' }, { name: 'react' }],
   };
   const coordinator = new UsageAnalysisCoordinator({
+    platform,
     sink: { postMessage: (message) => messages.push(message) },
     ensureController: async () => controller,
     getSelectedProject: () => selected,
@@ -179,6 +127,7 @@ test('targeted cancellation during controller lookup drops every stale removal-i
   });
   const messages = [];
   const coordinator = new UsageAnalysisCoordinator({
+    platform,
     sink: { postMessage: (message) => messages.push(message) },
     ensureController: async () => controllerReady,
     getSelectedProject: () => base.selected,

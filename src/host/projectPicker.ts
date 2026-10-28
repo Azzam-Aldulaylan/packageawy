@@ -1,30 +1,25 @@
 /**
- * The native VS Code QuickPick for choosing among multiple discovered
+ * The editor's native quick pick for choosing among multiple discovered
  * projects. Deliberately not a webview concern: the webview can only ask the
  * host to open this (see the `change-project` message), never see or choose
  * from the candidate list itself: this file owns the entire selection UI.
  *
- * Each item carries the real `DiscoveredProject` object as data (VS Code's
- * QuickPick API returns the exact item the user picked), so there is no
+ * Each item carries the real `DiscoveredProject` object as data (the
+ * platform returns the exact value the user picked), so there is no
  * ID-based lookup step that a forged value could target: the result is
  * always a reference into the same host-owned list `pickProject` was given.
  */
 
-import * as vscode from 'vscode';
-
 import { projectCandidateLabel } from '../core/workspace/scan.js';
+import type { CancellationToken, HostPlatform, QuickPickItem } from './platform/hostPlatform.js';
 import type { DiscoveredProject } from './projectResolution.js';
 
-interface ProjectQuickPickItem extends vscode.QuickPickItem {
-  candidate: DiscoveredProject;
-}
-
-function toQuickPickItem(candidate: DiscoveredProject): ProjectQuickPickItem {
+function toQuickPickItem(candidate: DiscoveredProject): QuickPickItem<DiscoveredProject> {
   return {
     label: projectCandidateLabel(candidate),
     description: candidate.manifestPath,
-    detail: candidate.folder.uri.fsPath,
-    candidate,
+    detail: candidate.folder.path,
+    value: candidate,
   };
 }
 
@@ -36,13 +31,18 @@ function toQuickPickItem(candidate: DiscoveredProject): ProjectQuickPickItem {
  * first-ever selection).
  */
 export async function pickProject(
-  candidates: readonly DiscoveredProject[]
+  platform: HostPlatform,
+  candidates: readonly DiscoveredProject[],
+  token?: CancellationToken
 ): Promise<DiscoveredProject | undefined> {
-  const picked = await vscode.window.showQuickPick(candidates.map(toQuickPickItem), {
-    title: 'Packageawy: Select a Project',
-    placeHolder: 'Choose which package.json to view',
-    matchOnDescription: true,
-    matchOnDetail: true,
-  });
-  return picked?.candidate;
+  return platform.showQuickPick(
+    candidates.map(toQuickPickItem),
+    {
+      title: 'Packageawy: Select a Project',
+      placeholder: 'Choose which package.json to view',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    },
+    token
+  );
 }
