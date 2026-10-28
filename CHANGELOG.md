@@ -2,11 +2,15 @@
 
 All notable changes to Packageawy are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.1] - 2026-10-28
 
 ### Added
 
 - A Packageawy icon in the Activity Bar that opens the dashboard with one click.
+
+### Changed
+
+- The display name is now "Packageawy: npm & pnpm Dependency Manager".
 
 ### Fixed
 
@@ -34,4 +38,5 @@ First public pre-release.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
 - Re-reads the project right before every change and refuses to roll back over edits made in the meantime.
 
+[0.9.1]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.1
 [0.9.0]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.0
