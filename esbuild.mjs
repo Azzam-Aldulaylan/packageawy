@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const watch = process.argv.includes('--watch');
 const production = process.argv.includes('--production');
@@ -30,6 +30,22 @@ const extensionConfig = {
 };
 
 /**
+ * Engine sidecar for editors other than VS Code: plain Node, no vscode
+ * module. The JetBrains plugin copies dist/sidecar.js, so keep that path.
+ * It is not part of the VSIX (.vscodeignore is an allowlist).
+ */
+const sidecarConfig = {
+  ...extensionConfig,
+  entryPoints: ['src/sidecar/main.ts'],
+  outfile: 'dist/sidecar.js',
+  external: [],
+  define: {
+    ...extensionConfig.define,
+    __SIDECAR_VERSION__: JSON.stringify(JSON.parse(readFileSync('package.json', 'utf8')).version),
+  },
+};
+
+/**
  * Webview: browser target, no Node builtins.
  *
  * The CSS imported by main.tsx is emitted as a sibling dist/webview.css, which
@@ -54,7 +70,7 @@ const webviewConfig = {
   logLevel: 'info',
 };
 
-const configs = [extensionConfig];
+const configs = [extensionConfig, sidecarConfig];
 if (existsSync(WEBVIEW_ENTRY)) {
   configs.push(webviewConfig);
 } else {

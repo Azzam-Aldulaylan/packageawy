@@ -22,6 +22,7 @@ To run the extension against a real project, follow [Testing in VS Code](docs/te
 - `src/host` talks to VS Code: project discovery, Workspace Trust, file access, package-manager processes, transactions, and caching.
 - `webview/src` is the React UI. It only displays data and sends requests. It never decides commands, paths, versions, or scripts. The host validates every message it receives.
 - `src/extension.ts` only wires things together.
+- `src/sidecar` runs the same host logic outside VS Code. It is a Node process that speaks JSON-RPC 2.0 over stdio, built to `dist/sidecar.js`. The protocol is described in `src/host/platform/hostPlatform.ts`.
 
 A few rules the code relies on:
 
