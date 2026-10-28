@@ -209,3 +209,30 @@ test('responses for unknown ids are ignored', async () => {
   assert.deepEqual(await a.sendRequest('echo', { ok: true }), { ok: true });
   assert.equal(peer.written.length, 0);
 });
+
+test('writing after the output ended closes the connection instead of throwing', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const errors = [];
+  output.on('error', (error) => errors.push(error));
+  const connection = new JsonRpcConnection(input, output);
+  connection.listen();
+  output.end();
+  connection.sendNotification('late', {});
+  await assert.rejects(connection.sendRequest('later'), /closed/);
+  assert.equal(connection.isClosed, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(errors, []);
+});
+
+test('the output closing closes the connection and rejects pending requests', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const connection = new JsonRpcConnection(input, output);
+  connection.listen();
+  const pending = connection.sendRequest('never');
+  output.destroy();
+  await assert.rejects(pending, /Connection closed/);
+  assert.equal(connection.isClosed, true);
+  connection.sendNotification('after', {});
+});

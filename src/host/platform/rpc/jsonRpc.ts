@@ -122,6 +122,7 @@ export class JsonRpcConnection {
     this.input.on('close', () => this.close());
     this.input.on('error', () => this.close());
     this.output.on('error', () => this.close());
+    this.output.on('close', () => this.close());
   }
 
   onRequest(method: string, handler: RequestHandler): void {
@@ -187,6 +188,11 @@ export class JsonRpcConnection {
 
   private write(message: unknown): void {
     if (this.closed) return;
+    // The peer may have gone away without closing our input first.
+    if (this.output.writableEnded || this.output.destroyed) {
+      this.close();
+      return;
+    }
     this.output.write(encodeMessage(message));
   }
 

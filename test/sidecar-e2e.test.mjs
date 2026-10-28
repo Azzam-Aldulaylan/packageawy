@@ -72,8 +72,13 @@ function startClient(home) {
   const requests = [];
   let stderr = '';
   let nextId = 1;
+  let closed = false;
 
-  const send = (message) => child.stdin.write(encodeMessage(message));
+  // Once the client closes, late answers to sidecar requests are dropped.
+  const send = (message) => {
+    if (closed || child.stdin.writableEnded || child.stdin.destroyed) return;
+    child.stdin.write(encodeMessage(message));
+  };
   const respond = async (message) => {
     requests.push(message);
     let result = null;
@@ -81,6 +86,14 @@ function startClient(home) {
     if (message.method === 'git/watchHead') result = false;
     send({ jsonrpc: '2.0', id: message.id, result });
   };
+
+  // The child may exit while a write is in flight. That is EPIPE, not a failure.
+  child.stdin.on('error', () => {
+    closed = true;
+  });
+  child.on('exit', () => {
+    closed = true;
+  });
 
   child.stderr.on('data', (chunk) => {
     stderr += chunk.toString();
@@ -116,6 +129,10 @@ function startClient(home) {
     },
     notify(method, params) {
       send({ jsonrpc: '2.0', method, params });
+    },
+    close() {
+      closed = true;
+      child.stdin.end();
     },
     waitFor(predicate, timeoutMs) {
       return new Promise((resolve, reject) => {
@@ -174,6 +191,6 @@ test('dist/sidecar.js serves the dashboard to a JSON-RPC client', async (t) => {
   assert.ok(finds.every((r) => r.params.folder.path === FIXTURE));
 
   client.notify('webview/didDispose', {});
-  client.child.stdin.end();
+  client.close();
   assert.equal(await exited, 0);
 });
