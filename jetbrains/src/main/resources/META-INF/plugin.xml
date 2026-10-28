@@ -1,0 +1,36 @@
+<idea-plugin>
+    <id>io.github.azzamaldulaylan.packageawy</id>
+    <name>Packageawy</name>
+    <vendor url="https://github.com/Azzam-Aldulaylan/packageawy">Azzam Aldulaylan</vendor>
+
+    <description><![CDATA[
+    Review, upgrade and clean up npm and pnpm dependencies from a dashboard in the IDE.
+    <ul>
+      <li>See outdated, vulnerable and likely unused packages in one table.</li>
+      <li>Review each upgrade before it runs, with compatibility and security checks.</li>
+      <li>Remove packages safely, with a preview of what depends on them.</li>
+    </ul>
+    Requires Node.js. Packageawy uses the Node.js interpreter configured in the IDE, or <code>node</code> on PATH.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="packageawy-javascript.xml">JavaScript</depends>
+
+    <extensionPoints>
+        <extensionPoint qualifiedName="io.github.azzamaldulaylan.packageawy.nodeInterpreterProvider"
+                        interface="io.github.azzamaldulaylan.packageawy.sidecar.NodeInterpreterProvider"
+                        dynamic="true"/>
+    </extensionPoints>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Packageawy"
+                    anchor="bottom"
+                    icon="/icons/toolWindow.svg"
+                    factoryClass="io.github.azzamaldulaylan.packageawy.ide.PackageawyToolWindowFactory"/>
+        <applicationConfigurable parentId="tools"
+                                 instance="io.github.azzamaldulaylan.packageawy.settings.PackageawyConfigurable"
+                                 id="io.github.azzamaldulaylan.packageawy.settings"
+                                 displayName="Packageawy"/>
+        <notificationGroup id="Packageawy" displayType="BALLOON"/>
+    </extensions>
+</idea-plugin>
