@@ -2,6 +2,16 @@
 
 All notable changes to Packageawy are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- A Packageawy icon in the Activity Bar that opens the dashboard with one click.
+
+### Fixed
+
+- Project discovery skips `.vscode-test` folders, so projects that test a VS Code extension no longer list the downloaded VS Code's own `package.json` files.
+
 ## [0.9.0] - 2026-10-21
 
 First public pre-release.

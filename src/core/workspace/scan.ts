@@ -32,6 +32,7 @@ export const DEFAULT_EXCLUDED_DIRS: readonly string[] = [
   '.cache',
   'vendor',
   'tmp',
+  '.vscode-test',
 ];
 
 export interface ProjectCandidate {

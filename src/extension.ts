@@ -10,6 +10,7 @@ import * as vscode from 'vscode';
 import { createPerformanceSession } from './core/performance/measurement.js';
 import { DashboardPanel } from './host/dashboardPanel.js';
 import type { DashboardPanelIntegrationTestSnapshot } from './host/dashboardPanel.js';
+import { registerSidebar } from './host/sidebar.js';
 
 export interface PackageawyIntegrationTestApi {
   dashboard: {
@@ -45,6 +46,8 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
       void DashboardPanel.refresh();
     })
   );
+
+  context.subscriptions.push(registerSidebar(() => DashboardPanel.createOrShow(context)));
   endActivation({ trusted: true });
   performance.finish({ trusted: true });
 

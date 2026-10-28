@@ -60,6 +60,29 @@
         "title": "Packageawy: Refresh"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "packageawy",
+          "title": "Packageawy",
+          "icon": "media/activity-bar.svg"
+        }
+      ]
+    },
+    "views": {
+      "packageawy": [
+        {
+          "id": "packageawy.home",
+          "name": "Dependencies"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "packageawy.home",
+        "contents": "Review, upgrade, and clean up this project's npm and pnpm dependencies.\n[Open dashboard](command:packageawy.open)\n[Refresh](command:packageawy.refresh)"
+      }
+    ],
     "configuration": {
       "title": "Packageawy",
       "properties": {
