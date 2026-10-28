@@ -52,23 +52,23 @@ const posted = (status) => (message) => message.method === 'webview/postMessage'
 test('initialize answers with server info and rejects a second initialize', async (t) => {
   const s = session();
   t.after(() => s.close());
-  const first = await s.request('initialize', { workspaceFolders: [], trusted: false });
+  const first = await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: false });
   assert.deepEqual(first.result, { serverInfo: { name: 'packageawy-sidecar', version: '1.2.3' } });
-  const second = await s.request('initialize', { workspaceFolders: [], trusted: false });
+  const second = await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: false });
   assert.equal(second.error.code, ErrorCodes.InvalidRequest);
 });
 
 test('initialize with bad params is an InvalidParams error', async (t) => {
   const s = session();
   t.after(() => s.close());
-  const response = await s.request('initialize', { trusted: 'yes' });
+  const response = await s.request('initialize', { isWorkspaceTrusted: 'yes' });
   assert.equal(response.error.code, ErrorCodes.InvalidParams);
 });
 
 test('an untrusted workspace gets a fatal error instead of a dashboard', async (t) => {
   const s = session();
   t.after(() => s.close());
-  await s.request('initialize', { workspaceFolders: [], trusted: false });
+  await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: false });
   s.notify('webview/didReceiveMessage', { message: { type: 'ready' } });
   const message = await s.waitFor(posted('fatal-error'));
   assert.equal(message.params.message.error.code, 'UNTRUSTED_WORKSPACE');
@@ -78,7 +78,7 @@ test('an untrusted workspace gets a fatal error instead of a dashboard', async (
 test('a webview message after didDispose starts a fresh dashboard session', async (t) => {
   const s = session();
   t.after(() => s.close());
-  await s.request('initialize', { workspaceFolders: [], trusted: true });
+  await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: true });
   s.notify('webview/didReceiveMessage', { message: { type: 'ready' } });
   await s.waitFor(posted('fatal-error'));
   const before = s.received.filter(posted('fatal-error')).length;
@@ -92,11 +92,21 @@ test('a webview message after didDispose starts a fresh dashboard session', asyn
   assert.equal(errors[0], errors[1]);
 });
 
-test('webview messages before initialize are ignored and invalid webview messages are dropped', async (t) => {
+test('a webview message sent before initialize is delivered after it', async (t) => {
   const s = session();
   t.after(() => s.close());
   s.notify('webview/didReceiveMessage', { message: { type: 'ready' } });
-  await s.request('initialize', { workspaceFolders: [], trusted: true });
+  const init = await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: true });
+  // No folders, so the dashboard reports that no project was found.
+  const answer = await s.waitFor(posted('fatal-error'));
+  assert.notEqual(answer.params.message.error.code, 'UNTRUSTED_WORKSPACE');
+  assert.ok(s.received.indexOf(init) < s.received.indexOf(answer));
+});
+
+test('invalid webview messages are dropped', async (t) => {
+  const s = session();
+  t.after(() => s.close());
+  await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: true });
   s.notify('webview/didReceiveMessage', { message: { type: 'not-a-real-message' } });
   s.notify('webview/didReceiveMessage', {});
   const ping = await s.request('unknown/method', {});

@@ -13,7 +13,7 @@ export type StorageSnapshot = Record<string, unknown>;
 
 export interface InitializeParams {
   workspaceFolders: WorkspaceFolder[];
-  trusted: boolean;
+  isWorkspaceTrusted: boolean;
   /** Keys relative to the `packageawy` section, as in HostPlatform.getSetting. */
   settings: Record<string, unknown>;
   workspaceState: StorageSnapshot;
@@ -31,7 +31,7 @@ export interface DidChangeFoldersParams {
 }
 
 export interface DidChangeTrustParams {
-  trusted: boolean;
+  isWorkspaceTrusted: boolean;
 }
 
 /** The full current settings, replacing the previous copy. */
@@ -63,7 +63,7 @@ export interface WebviewMessageParams {
 
 // Sidecar to client.
 
-/** A missing `value` removes the key. */
+/** A missing `value` removes the key. The client also treats null as removal. */
 export interface StorageUpdateParams {
   scope: 'workspace' | 'global';
   key: string;
@@ -125,11 +125,13 @@ export interface ShowModalParams {
 }
 
 export interface ShowQuickPickParams {
-  title: string;
-  placeholder: string;
-  matchOnDescription: boolean;
-  matchOnDetail: boolean;
   items: { label: string; description?: string; detail?: string }[];
+  options: {
+    title: string;
+    placeholder: string;
+    matchOnDescription: boolean;
+    matchOnDetail: boolean;
+  };
 }
 
 export interface ProcessStartParams {

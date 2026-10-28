@@ -53,7 +53,7 @@ export function parseInitialize(params: unknown): InitializeParams {
   const clientVersion = value['clientVersion'];
   return {
     workspaceFolders: folders(value['workspaceFolders']),
-    trusted: boolean(value['trusted'], 'trusted'),
+    isWorkspaceTrusted: boolean(value['isWorkspaceTrusted'], 'isWorkspaceTrusted'),
     settings: value['settings'] === undefined ? {} : record(value['settings'], 'settings'),
     workspaceState: value['workspaceState'] === undefined ? {} : record(value['workspaceState'], 'workspaceState'),
     globalState: value['globalState'] === undefined ? {} : record(value['globalState'], 'globalState'),
@@ -66,7 +66,7 @@ export function parseDidChangeFolders(params: unknown): DidChangeFoldersParams {
 }
 
 export function parseDidChangeTrust(params: unknown): DidChangeTrustParams {
-  return { trusted: boolean(record(params, 'params')['trusted'], 'trusted') };
+  return { isWorkspaceTrusted: boolean(record(params, 'params')['isWorkspaceTrusted'], 'isWorkspaceTrusted') };
 }
 
 export function parseDidChangeSettings(params: unknown): DidChangeSettingsParams {

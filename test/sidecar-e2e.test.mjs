@@ -149,7 +149,7 @@ test('dist/sidecar.js serves the dashboard to a JSON-RPC client', async (t) => {
   const folder = { id: pathToFileURL(FIXTURE).href, name: 'sidecar-project', path: FIXTURE };
   const init = await client.request('initialize', {
     workspaceFolders: [folder],
-    trusted: true,
+    isWorkspaceTrusted: true,
     settings: {},
     workspaceState: {},
     globalState: {},

@@ -103,7 +103,7 @@ export class RpcPlatform implements HostPlatform {
     private readonly log: Log = () => undefined
   ) {
     this.folders = init.workspaceFolders;
-    this.trusted = init.trusted;
+    this.trusted = init.isWorkspaceTrusted;
     this.settings = { ...init.settings };
     this.workspaceState = new RpcStore(connection, 'workspace', init.workspaceState);
     this.globalState = new RpcStore(connection, 'global', init.globalState);
@@ -112,7 +112,7 @@ export class RpcPlatform implements HostPlatform {
       this.folders = parseDidChangeFolders(params).workspaceFolders;
     });
     connection.onNotification(Methods.didChangeTrust, (params) => {
-      this.trusted = parseDidChangeTrust(params).trusted;
+      this.trusted = parseDidChangeTrust(params).isWorkspaceTrusted;
     });
     connection.onNotification(Methods.didChangeSettings, (params) => {
       this.settings = { ...parseDidChangeSettings(params).settings };
@@ -272,15 +272,17 @@ export class RpcPlatform implements HostPlatform {
   ): Promise<T | undefined> {
     if (token?.isCancellationRequested) return undefined;
     const params: ShowQuickPickParams = {
-      title: options.title,
-      placeholder: options.placeholder,
-      matchOnDescription: options.matchOnDescription,
-      matchOnDetail: options.matchOnDetail,
       items: items.map((item) => ({
         label: item.label,
         ...(item.description === undefined ? {} : { description: item.description }),
         ...(item.detail === undefined ? {} : { detail: item.detail }),
       })),
+      options: {
+        title: options.title,
+        placeholder: options.placeholder,
+        matchOnDescription: options.matchOnDescription,
+        matchOnDetail: options.matchOnDetail,
+      },
     };
     let index: unknown;
     try {

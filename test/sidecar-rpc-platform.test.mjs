@@ -42,7 +42,7 @@ function fakeClient(handlers = {}) {
 function init(overrides = {}) {
   return {
     workspaceFolders: [FOLDER],
-    trusted: true,
+    isWorkspaceTrusted: true,
     settings: { 'upgrade.ignoreScripts': false, 'cacheTtlMinutes': 5, 'nulled': null },
     workspaceState: { cached: { a: 1 } },
     globalState: {},
@@ -64,7 +64,7 @@ test('synchronous state answers from the initialize snapshot and follows change 
 
   const other = { id: 'file:///work/lib', name: 'lib', path: '/work/lib' };
   client.emit('workspace/didChangeFolders', { workspaceFolders: [FOLDER, other] });
-  client.emit('workspace/didChangeTrust', { trusted: false });
+  client.emit('workspace/didChangeTrust', { isWorkspaceTrusted: false });
   client.emit('settings/didChange', { settings: { cacheTtlMinutes: 0 } });
   assert.deepEqual(platform.workspaceFolders(), [FOLDER, other]);
   assert.equal(platform.isWorkspaceTrusted(), false);
@@ -75,7 +75,7 @@ test('synchronous state answers from the initialize snapshot and follows change 
 test('invalid change notifications throw and leave state unchanged', () => {
   const client = fakeClient();
   const platform = new RpcPlatform(client, init());
-  assert.throws(() => client.emit('workspace/didChangeTrust', { trusted: 'yes' }), /trusted must be a boolean/);
+  assert.throws(() => client.emit('workspace/didChangeTrust', { isWorkspaceTrusted: 'yes' }), /isWorkspaceTrusted must be a boolean/);
   assert.throws(() => client.emit('workspace/didChangeFolders', { workspaceFolders: [{ id: 1 }] }), /folder id/);
   assert.equal(platform.isWorkspaceTrusted(), true);
   assert.deepEqual(platform.workspaceFolders(), [FOLDER]);
@@ -244,14 +244,11 @@ test('showQuickPick sends labels only and maps the index back to the value', asy
   const options = { title: 'Pick', placeholder: 'Project', matchOnDescription: true, matchOnDetail: false };
   assert.deepEqual(await platform.showQuickPick(items, options), { secret: 'b' });
   assert.deepEqual(client.requests[0].params, {
-    title: 'Pick',
-    placeholder: 'Project',
-    matchOnDescription: true,
-    matchOnDetail: false,
     items: [
       { label: 'app', description: 'root' },
       { label: 'lib', detail: 'packages/lib' },
     ],
+    options: { title: 'Pick', placeholder: 'Project', matchOnDescription: true, matchOnDetail: false },
   });
   assert.equal(await platform.showQuickPick(items, options), undefined);
   assert.equal(await platform.showQuickPick(items, options), undefined);
@@ -348,16 +345,16 @@ test('statFile and readFile use the local file system', async () => {
 });
 
 test('parseInitialize fills optional snapshots and rejects bad shapes', () => {
-  assert.deepEqual(parseInitialize({ workspaceFolders: [], trusted: false }), {
+  assert.deepEqual(parseInitialize({ workspaceFolders: [], isWorkspaceTrusted: false }), {
     workspaceFolders: [],
-    trusted: false,
+    isWorkspaceTrusted: false,
     settings: {},
     workspaceState: {},
     globalState: {},
   });
   assert.throws(() => parseInitialize(null), (error) => error.code === ErrorCodes.InvalidParams);
-  assert.throws(() => parseInitialize({ workspaceFolders: {}, trusted: true }), /workspaceFolders must be an array/);
-  assert.throws(() => parseInitialize({ workspaceFolders: [], trusted: true, settings: [] }), /settings must be an object/);
+  assert.throws(() => parseInitialize({ workspaceFolders: {}, isWorkspaceTrusted: true }), /workspaceFolders must be an array/);
+  assert.throws(() => parseInitialize({ workspaceFolders: [], isWorkspaceTrusted: true, settings: [] }), /settings must be an object/);
 });
 
 test('RpcWebviewChannel posts, reveals, delivers messages and disposes once', async () => {

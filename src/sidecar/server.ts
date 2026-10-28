@@ -38,6 +38,8 @@ export function startSidecar(options: SidecarOptions): JsonRpcConnection {
   let platform: RpcPlatform | undefined;
   let clientVersion = 'unknown';
   let channel: RpcWebviewChannel | undefined;
+  /** Webview messages that arrived before initialize, delivered once it completes. */
+  let early: unknown[] = [];
 
   const openDashboard = (current: RpcPlatform): RpcWebviewChannel => {
     const next = new RpcWebviewChannel(connection);
@@ -48,26 +50,37 @@ export function startSidecar(options: SidecarOptions): JsonRpcConnection {
     return next;
   };
 
-  connection.onRequest(Methods.initialize, (params): InitializeResult => {
-    if (platform !== undefined) throw new ResponseError(ErrorCodes.InvalidRequest, 'Already initialized');
-    const init = parseInitialize(params);
-    platform = new RpcPlatform(connection, init, log);
-    clientVersion = init.clientVersion ?? options.serverVersion;
-    if (platform.isWorkspaceTrusted()) channel = openDashboard(platform);
-    return { serverInfo: { name: SERVER_NAME, version: options.serverVersion } };
-  });
-
-  connection.onNotification(Methods.webviewDidReceiveMessage, (params) => {
-    if (platform === undefined) return;
-    const { message } = parseWebviewMessage(params);
-    if (!platform.isWorkspaceTrusted()) {
+  const deliver = (current: RpcPlatform, message: unknown): void => {
+    if (!current.isWorkspaceTrusted()) {
       // Same rule as VS Code, which never activates in an untrusted workspace.
       connection.sendNotification(Methods.webviewPostMessage, { message: UNTRUSTED_MESSAGE });
       return;
     }
     // A message after the view closed means the client opened a new one.
-    if (channel === undefined || channel.isDisposed) channel = openDashboard(platform);
+    if (channel === undefined || channel.isDisposed) channel = openDashboard(current);
     channel.receive(message);
+  };
+
+  connection.onRequest(Methods.initialize, (params): InitializeResult => {
+    if (platform !== undefined) throw new ResponseError(ErrorCodes.InvalidRequest, 'Already initialized');
+    const init = parseInitialize(params);
+    const current = new RpcPlatform(connection, init, log);
+    platform = current;
+    clientVersion = init.clientVersion ?? options.serverVersion;
+    if (current.isWorkspaceTrusted()) channel = openDashboard(current);
+    const pending = early;
+    early = [];
+    // After the response is written, so the client sees initialize complete first.
+    setImmediate(() => {
+      for (const message of pending) deliver(current, message);
+    });
+    return { serverInfo: { name: SERVER_NAME, version: options.serverVersion } };
+  });
+
+  connection.onNotification(Methods.webviewDidReceiveMessage, (params) => {
+    const { message } = parseWebviewMessage(params);
+    if (platform === undefined) early.push(message);
+    else deliver(platform, message);
   });
 
   connection.onNotification(Methods.webviewDidDispose, () => {
