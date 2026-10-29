@@ -28,16 +28,21 @@ const minimistIssue = {
 
 // pnpm keys packages by version. rc moves to the minimist 1.2.8 that mkdirp
 // already uses, so the only lockfile change is the 1.2.5 entry going away.
+// optimist keeps an unrelated old copy that must not be named as the fix.
 const before = pnpmGraph([
   node('rc', 'rc@1.2.8', { version: '1.2.8', direct: true, edges: [edge('minimist', 'minimist@1.2.5')] }),
   node('mkdirp', 'mkdirp@0.5.6', { version: '0.5.6', direct: true, edges: [edge('minimist', 'minimist@1.2.8')] }),
   node('minimist', 'minimist@1.2.5', { version: '1.2.5' }),
   node('minimist', 'minimist@1.2.8', { version: '1.2.8' }),
+  node('optimist', 'optimist@0.6.1', { version: '0.6.1', direct: true, edges: [edge('minimist', 'minimist@0.0.10')] }),
+  node('minimist', 'minimist@0.0.10', { version: '0.0.10' }),
 ]);
 const after = pnpmGraph([
   node('rc', 'rc@1.2.8', { version: '1.2.8', direct: true, edges: [edge('minimist', 'minimist@1.2.8')] }),
   node('mkdirp', 'mkdirp@0.5.6', { version: '0.5.6', direct: true, edges: [edge('minimist', 'minimist@1.2.8')] }),
   node('minimist', 'minimist@1.2.8', { version: '1.2.8' }),
+  node('optimist', 'optimist@0.6.1', { version: '0.6.1', direct: true, edges: [edge('minimist', 'minimist@0.0.10')] }),
+  node('minimist', 'minimist@0.0.10', { version: '0.0.10' }),
 ]);
 
 test('a pnpm fix that reuses an installed version names that version and reaches the webview', () => {

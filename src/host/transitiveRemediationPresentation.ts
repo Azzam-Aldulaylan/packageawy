@@ -77,24 +77,27 @@ function changesFor(
     group.lockfilePaths.add(change.lockfilePath);
     byPackage.set(change.packageName, group);
   }
-  // A version-keyed lockfile such as pnpm's can fix a package by pointing at
-  // a version that was already installed. Only the old entry shows up as a
-  // change, so the new version comes from the resolved graph.
-  for (const [packageName, group] of byPackage) {
-    if (group.toVersions.size > 0 || !targetedPackages.has(packageName)) continue;
-    for (const node of afterGraph.nodes.values()) {
-      if (node.name === packageName && node.version !== null && !group.fromVersions.has(node.version)) {
-        group.toVersions.add(node.version);
-      }
-    }
-  }
-
   const evidenceByPackage = new Map<string, string[][]>();
   for (const evidence of [...plan.security.resolved, ...plan.security.remaining]) {
     const current = evidenceByPackage.get(evidence.flaggedPackage) ?? [];
     current.push(...evidence.beforeInstances.flatMap((instance) => instance.dependencyPaths));
     current.push(...evidence.afterInstances.flatMap((instance) => instance.dependencyPaths));
     evidenceByPackage.set(evidence.flaggedPackage, current);
+  }
+
+  // A version-keyed lockfile such as pnpm's can fix a package by pointing at
+  // a version that was already installed. Only the old entry shows up as a
+  // change, so the new version is read from the parents on the affected paths.
+  for (const [packageName, group] of byPackage) {
+    if (group.toVersions.size > 0 || !targetedPackages.has(packageName)) continue;
+    const parents = new Set((evidenceByPackage.get(packageName) ?? []).map((path) => path[path.length - 2]));
+    for (const parent of afterGraph.nodes.values()) {
+      if (!parents.has(parent.name)) continue;
+      for (const edge of parent.edges) {
+        const target = edge.name === packageName && edge.targetNodeId !== null ? afterGraph.nodes.get(edge.targetNodeId) : undefined;
+        if (target?.version != null && !group.fromVersions.has(target.version)) group.toVersions.add(target.version);
+      }
+    }
   }
 
   return [...byPackage.entries()]
