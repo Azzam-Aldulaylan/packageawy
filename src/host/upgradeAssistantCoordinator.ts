@@ -2270,6 +2270,7 @@ export class UpgradeAssistantCoordinator {
         manifestPath: 'package.json',
         lockfilePath: path.relative(prepared.project.root, prepared.project.lockfilePath!).split(path.sep).join('/'),
         plan,
+        afterGraph: prepared.after.graph,
         targetedPackages: new Set(eligibility.transitiveAdvisories.map((entry) => entry.flaggedPackage)),
         verification: verificationScripts.length === 0
           ? { configured: false }
@@ -2653,6 +2654,7 @@ export class UpgradeAssistantCoordinator {
                 manifestPath: 'package.json',
                 lockfilePath: path.relative(applied.root, lockfilePath).split(path.sep).join('/'),
                 plan: finalPlan,
+                afterGraph: graph,
                 targetedPackages: new Set(stored.targetAdvisories.map((entry) => entry.flaggedPackage)),
                 verification: stored.presentation.verification,
               });

@@ -9,6 +9,7 @@ import type {
   TransitiveRemediationPlanSummary,
   UpgradeAnalysisVerification,
 } from './webviewProtocol.js';
+import type { DependencyGraph } from '../core/types.js';
 
 const REASON_TEXT: Record<TransitiveRemediationReason, string> = {
   MANIFEST_CHANGED: 'The package manager changed package.json while preparing the candidate.',
@@ -57,7 +58,8 @@ function advisorySummary(evidence: RemediationAdvisoryEvidence): TransitiveRemed
 
 function changesFor(
   plan: TransitiveRemediationPlan,
-  targetedPackages: ReadonlySet<string>
+  targetedPackages: ReadonlySet<string>,
+  afterGraph: DependencyGraph
 ): TransitiveRemediationChange[] {
   const byPackage = new Map<string, {
     fromVersions: Set<string>;
@@ -74,6 +76,17 @@ function changesFor(
     if (change.afterVersion !== null) group.toVersions.add(change.afterVersion);
     group.lockfilePaths.add(change.lockfilePath);
     byPackage.set(change.packageName, group);
+  }
+  // A version-keyed lockfile such as pnpm's can fix a package by pointing at
+  // a version that was already installed. Only the old entry shows up as a
+  // change, so the new version comes from the resolved graph.
+  for (const [packageName, group] of byPackage) {
+    if (group.toVersions.size > 0 || !targetedPackages.has(packageName)) continue;
+    for (const node of afterGraph.nodes.values()) {
+      if (node.name === packageName && node.version !== null && !group.fromVersions.has(node.version)) {
+        group.toVersions.add(node.version);
+      }
+    }
   }
 
   const evidenceByPackage = new Map<string, string[][]>();
@@ -131,6 +144,8 @@ export interface BuildTransitiveRemediationPresentationOptions {
   manifestPath: string;
   lockfilePath: string;
   plan: TransitiveRemediationPlan;
+  /** The dependency graph the plan resolves to. */
+  afterGraph: DependencyGraph;
   targetedPackages: ReadonlySet<string>;
   verification: UpgradeAnalysisVerification;
 }
@@ -156,7 +171,7 @@ export function buildTransitiveRemediationPresentation(
       manifestChanged: !options.plan.manifestUnchanged,
       lockfileChanged: options.plan.packageChanges.length > 0,
     },
-    changes: changesFor(options.plan, options.targetedPackages),
+    changes: changesFor(options.plan, options.targetedPackages, options.afterGraph),
     resolvedAdvisories: options.plan.target.resolved.slice(0, MAX_PRESENTED_ADVISORIES).map(advisorySummary),
     remainingAdvisories: options.plan.target.remaining.slice(0, MAX_PRESENTED_ADVISORIES).map(advisorySummary),
     introducedAdvisories: options.plan.security.introduced.slice(0, MAX_PRESENTED_ADVISORIES).map(advisorySummary),
