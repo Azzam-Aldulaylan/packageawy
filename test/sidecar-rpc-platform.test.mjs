@@ -72,6 +72,20 @@ test('synchronous state answers from the initialize snapshot and follows change 
   assert.equal(platform.getSetting('upgrade.ignoreScripts', true), true);
 });
 
+test('a setting of the wrong type reads as the default', () => {
+  const settings = {
+    'upgrade.ignoreScripts': 0,
+    'upgrade.verificationScripts': 'test',
+    'cacheTtlMinutes': '5',
+    'registry.useProjectNpmrc': 'false',
+  };
+  const platform = new RpcPlatform(fakeClient(), init({ settings }));
+  assert.equal(platform.getSetting('upgrade.ignoreScripts', true), true);
+  assert.deepEqual(platform.getSetting('upgrade.verificationScripts', []), []);
+  assert.equal(platform.getSetting('cacheTtlMinutes', 30), 30);
+  assert.equal(platform.getSetting('registry.useProjectNpmrc', true), true);
+});
+
 test('invalid change notifications throw and leave state unchanged', () => {
   const client = fakeClient();
   const platform = new RpcPlatform(client, init());
