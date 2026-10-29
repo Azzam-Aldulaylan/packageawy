@@ -150,7 +150,10 @@ export class RpcPlatform implements HostPlatform {
 
   getSetting<T>(key: string, defaultValue: T): T {
     const value = this.settings[key];
-    return value === undefined || value === null ? defaultValue : (value as T);
+    if (value === undefined || value === null) return defaultValue;
+    // A value of the wrong type falls back to the default. `0` must never turn ignoreScripts off.
+    if (Array.isArray(defaultValue) !== Array.isArray(value) || typeof value !== typeof defaultValue) return defaultValue;
+    return value as T;
   }
 
   async findFiles(search: FileSearch, token?: CancellationToken): Promise<string[]> {

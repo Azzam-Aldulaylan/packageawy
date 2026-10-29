@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -193,4 +193,46 @@ test('dist/sidecar.js serves the dashboard to a JSON-RPC client', async (t) => {
   client.notify('webview/didDispose', {});
   client.close();
   assert.equal(await exited, 0);
+});
+
+test('likely-unused findings come back after a package.json change event', async (t) => {
+  const home = await mkdtemp(path.join(tmpdir(), 'packageawy-sidecar-'));
+  await writeFile(path.join(home, '.npmrc'), `registry=${OFFLINE_REGISTRY}\n`);
+  const project = path.join(home, 'project');
+  await cp(FIXTURE, project, { recursive: true });
+  const client = startClient(home);
+  const exited = new Promise((resolve) => client.child.once('exit', resolve));
+  // Windows keeps the folder locked while the sidecar, whose cwd it is, still runs.
+  t.after(async () => {
+    client.close();
+    if (client.child.exitCode === null) client.child.kill();
+    await exited;
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  const folder = { id: pathToFileURL(project).href, name: 'project', path: project };
+  await client.request('initialize', {
+    workspaceFolders: [folder],
+    isWorkspaceTrusted: true,
+    settings: {},
+    workspaceState: {},
+    globalState: {},
+  });
+  client.notify('webview/didReceiveMessage', { message: { type: 'ready' } });
+
+  const cleanupResults = () =>
+    client.notifications.filter((n) => n.method === 'webview/postMessage' && n.params.message.status === 'cleanup-result');
+  const hasFindings = (n) =>
+    n.method === 'webview/postMessage' && n.params.message.status === 'cleanup-result' && n.params.message.findings.length > 0;
+  await client.waitFor(hasFindings, 30_000);
+  const before = cleanupResults().length;
+
+  // The change an editor reports after a package manager rewrote the manifest.
+  const manifestPath = path.join(project, 'package.json');
+  await writeFile(manifestPath, (await readFile(manifestPath, 'utf8')).replace('"1.0.0"', '"1.0.1"'));
+  const watch = client.requests.find((r) => r.method === 'files/watch' && r.params.glob === 'package.json');
+  assert.ok(watch, 'package.json is watched');
+  client.notify('files/didChange', { watchId: watch.params.watchId, path: manifestPath });
+
+  await client.waitFor((n) => cleanupResults().indexOf(n) >= before && hasFindings(n), 30_000);
 });
