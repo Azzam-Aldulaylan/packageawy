@@ -15,6 +15,7 @@ import com.intellij.openapi.ui.popup.JBPopupListener
 import com.intellij.openapi.ui.popup.LightweightWindowEvent
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
@@ -87,7 +88,13 @@ class IdeHostServices(
         return result
     }
 
-    override fun startProcess(request: ProcessStart, onExit: (Int?) -> Unit) = processes.start(request, onExit)
+    override fun startProcess(request: ProcessStart, onExit: (Int?) -> Unit) = processes.start(request) { exitCode ->
+        // The package manager rewrote package.json and the lockfile. Let the IDE and the watchers see that now.
+        LocalFileSystem.getInstance().findFileByNioFile(Path.of(request.cwd))?.let { dir ->
+            VfsUtil.markDirtyAndRefresh(false, false, true, dir)
+        }
+        onExit(exitCode)
+    }
 
     override fun openFile(path: String, line: Int?, column: Int?) {
         ApplicationManager.getApplication().executeOnPooledThread {
