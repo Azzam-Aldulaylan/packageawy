@@ -1507,5 +1507,9 @@ export class DashboardPanel {
 
     this.setupFileWatchers(candidate, path.join(outcome.project.root, 'package.json'));
     this.selectedLockfilePath = outcome.project.lockfilePath;
+    // The watcher event cleared the likely-unused findings. Bring them back
+    // for the new source. Some editors report a change only after the
+    // change's own refresh has already run.
+    void this.usageCoordinator.requestBackgroundUsageRefresh();
   }
 }
