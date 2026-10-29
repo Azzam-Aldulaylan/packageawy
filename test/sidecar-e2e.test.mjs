@@ -197,12 +197,18 @@ test('dist/sidecar.js serves the dashboard to a JSON-RPC client', async (t) => {
 
 test('likely-unused findings come back after a package.json change event', async (t) => {
   const home = await mkdtemp(path.join(tmpdir(), 'packageawy-sidecar-'));
-  t.after(() => rm(home, { recursive: true, force: true }));
   await writeFile(path.join(home, '.npmrc'), `registry=${OFFLINE_REGISTRY}\n`);
   const project = path.join(home, 'project');
   await cp(FIXTURE, project, { recursive: true });
   const client = startClient(home);
-  t.after(() => client.child.kill());
+  const exited = new Promise((resolve) => client.child.once('exit', resolve));
+  // Windows keeps the folder locked while the sidecar, whose cwd it is, still runs.
+  t.after(async () => {
+    client.close();
+    if (client.child.exitCode === null) client.child.kill();
+    await exited;
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
 
   const folder = { id: pathToFileURL(project).href, name: 'project', path: project };
   await client.request('initialize', {
@@ -229,5 +235,4 @@ test('likely-unused findings come back after a package.json change event', async
   client.notify('files/didChange', { watchId: watch.params.watchId, path: manifestPath });
 
   await client.waitFor((n) => cleanupResults().indexOf(n) >= before && hasFindings(n), 30_000);
-  client.close();
 });
