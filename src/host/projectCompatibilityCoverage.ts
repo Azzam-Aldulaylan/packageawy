@@ -7,7 +7,7 @@ export interface CompatibilityLimitation {
 
 const REASONS: Record<string, CompatibilityLimitation> = {
   'runtime-node-version-unknown': {
-    reason: 'The Node version used to run or deploy this project is unknown. VS Code’s own Node version is not project evidence.',
+    reason: 'The Node version used to run or deploy this project is unknown. The editor’s own Node version is not project evidence.',
     nextStep: 'Compare node --version in your project terminal and deployment settings with the target package’s Node requirement. Refresh alone cannot establish the runtime.',
   },
   'runtime-node-version-invalid': {

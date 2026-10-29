@@ -184,7 +184,7 @@ export function CompatibilityCheckCard({
           help={(
             <>
               <p>Compares this package’s required Node.js versions with the range declared in your project’s <code>package.json</code>.</p>
-              <p>The Node.js version actually used to run or deploy your app may still need verification. VS Code’s own Node version does not prove it.</p>
+              <p>The Node.js version actually used to run or deploy your app may still need verification. The editor’s own Node version does not prove it.</p>
             </>
           )}
           detail={runtimeReason?.includes('runtime-node-version-unknown')

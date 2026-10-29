@@ -20,7 +20,7 @@ import type { UpdateKind } from './updateClassification.js';
 import { classifyRowUpdate } from './updateClassification.js';
 
 export const UPGRADE_TOOLTIP =
-  'Runs compatibility preflight, then a transactional npm/pnpm upgrade as a visible VS Code task after confirmation.';
+  'Runs compatibility preflight, then a transactional npm/pnpm upgrade in a visible console after confirmation.';
 
 /**
  * The result of a live "Analyze remediation" run (see
