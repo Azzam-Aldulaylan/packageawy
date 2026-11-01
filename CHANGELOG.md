@@ -2,6 +2,12 @@
 
 All notable changes to Packageawy are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- New icon: a package with a code prompt, used for the Marketplace, the Activity Bar and the JetBrains plugin.
+
 ## [0.9.2] - 2026-10-29
 
 ### Fixed
