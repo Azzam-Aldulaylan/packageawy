@@ -1,8 +1,21 @@
-# Packageawy (بكجاوي)
+<p align="center">
+  <img src="media/icon.png" width="96" height="96" alt="Packageawy logo">
+</p>
 
-Review, upgrade, and clean up npm and pnpm dependencies without leaving VS Code. Packageawy checks every change before it happens and can roll it back if something goes wrong.
+<h1 align="center">Packageawy (بكجاوي)</h1>
 
-![The Packageawy dashboard showing updates, vulnerabilities, and maintenance signals for a project](media/screenshots/store/dashboard.png)
+<p align="center">
+  Review, upgrade, and clean up npm and pnpm dependencies without leaving VS Code.<br>
+  Packageawy checks every change before it happens and can roll it back if something goes wrong.
+</p>
+
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=Azzam.packageawy">VS Code Marketplace</a> ·
+  <a href="https://open-vsx.org/extension/Azzam/packageawy">Open VSX</a> ·
+  <a href="https://github.com/Azzam-Aldulaylan/packageawy/releases">Releases</a>
+</p>
+
+![A short tour of Packageawy: the dashboard, a package's details and vulnerabilities, and an upgrade review](media/screenshots/store/demo.gif)
 
 ## Features
 
@@ -33,6 +46,8 @@ Run **Packageawy: Refresh** to rescan at any time.
 | Vulnerabilities | The worst severity found anywhere under this dependency: Critical, High, Moderate, Low, or Info. `Safe` means no known advisory. |
 
 These follow the same meaning as `npm outdated`.
+
+![The Packageawy dashboard showing updates, vulnerabilities, and maintenance signals for a project](media/screenshots/store/dashboard.png)
 
 ![Vulnerability details for next-auth with advisory IDs, affected ranges, and fixed versions](media/screenshots/store/vulnerabilities.png)
 

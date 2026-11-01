@@ -69,7 +69,7 @@ import { StatusBanner } from './components/StatusBanner.js';
 import { UpgradeAnalysisModal } from './components/UpgradeAnalysisModal.js';
 import type { UpgradeTargetLoadState } from './components/UpgradeTargetSelector.js';
 import type { UsageRequestState } from './components/UsageReferencesPanel.js';
-import { IconBroom, IconListChecks, IconPackage, IconRefresh } from './icons.js';
+import { IconBrand, IconBroom, IconListChecks, IconRefresh } from './icons.js';
 import type { RemovalImpactState } from './removalImpactState.js';
 import { remediationPlanFromState } from './transitiveRemediationState.js';
 import type { TransitiveFixUiState } from './transitiveRemediationState.js';
@@ -2203,7 +2203,7 @@ export function App(): ReactElement {
     <main className="dashboard">
       <header className="dashboard__header">
         <div className="dashboard__identity">
-          <span className="dashboard__mark" aria-hidden="true"><IconPackage /></span>
+          <span className="dashboard__mark" aria-hidden="true"><IconBrand /></span>
           <div className="dashboard__header-titles">
             <h1 className="dashboard__title">Packageawy</h1>
             {data !== undefined ? (

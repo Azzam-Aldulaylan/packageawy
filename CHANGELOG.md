@@ -2,6 +2,12 @@
 
 All notable changes to Packageawy are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The dashboard header shows the Packageawy logo.
+
 ## [0.9.3] - 2026-11-01
 
 ### Changed
