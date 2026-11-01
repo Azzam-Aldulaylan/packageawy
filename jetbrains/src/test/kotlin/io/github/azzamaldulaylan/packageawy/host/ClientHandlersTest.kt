@@ -200,17 +200,19 @@ class ClientHandlersTest {
 
     @Test
     fun `notifications reach the host`() {
+        // A real absolute path, since "/a/b.json" has no drive letter and is not absolute on Windows.
+        val file = dir.resolve("b.json").toString()
         sidecar.sendNotification("progress/start", mapOf("progressId" to "p", "title" to "Scanning"))
         sidecar.sendNotification("progress/report", mapOf("progressId" to "p", "message" to "half", "increment" to 50))
         sidecar.sendNotification("progress/end", mapOf("progressId" to "p"))
-        sidecar.sendNotification("window/openFile", mapOf("path" to "/a/b.json", "position" to mapOf("line" to 3, "column" to 4)))
+        sidecar.sendNotification("window/openFile", mapOf("path" to file, "position" to mapOf("line" to 3, "column" to 4)))
         sidecar.sendNotification("window/openSettings", mapOf("key" to "upgrade.ignoreScripts"))
         sidecar.sendNotification("webview/postMessage", mapOf("message" to mapOf("status" to "loading")))
         sidecar.sendNotification("webview/reveal", emptyMap<String, Any>())
         assertEquals("progress-start:p:Scanning", nextEvent())
         assertEquals("progress-report:p:half:50.0", nextEvent())
         assertEquals("progress-end:p", nextEvent())
-        assertEquals("openFile:/a/b.json:3:4", nextEvent())
+        assertEquals("openFile:$file:3:4", nextEvent())
         assertEquals("openSettings:upgrade.ignoreScripts", nextEvent())
         assertEquals("""webview:{"status":"loading"}""", nextEvent())
         assertEquals("reveal", nextEvent())
