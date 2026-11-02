@@ -422,17 +422,18 @@ export class SmartCleanupDuplicateCoordinator {
           source,
         };
       }
-      const unavailableReason = directChanged
-        ? 'The isolated dedupe changed a direct dependency resolution, so automatic execution was disabled.'
+      // The check finished either way. These only explain why no action is offered.
+      const dedupeNote = directChanged
+        ? 'A dedupe preview changed how a direct dependency resolves.'
         : unexplainedChange === undefined
           ? undefined
-          : `The isolated dedupe changed ${unexplainedChange} without a fully verified convergence result.`;
+          : `A dedupe preview also changed ${unexplainedChange}, and that change could not be fully verified.`;
       this.options.sink.postMessage({
         status: 'smart-cleanup-duplicates-result',
         requestId,
         assessments,
         ...(action === undefined ? {} : { action }),
-        ...(unavailableReason === undefined ? {} : { unavailableReason }),
+        ...(dedupeNote === undefined ? {} : { dedupeNote }),
       });
     } catch (cause) {
       if (!abort.signal.aborted && this.active === active && !this.options.isDisposed()) {

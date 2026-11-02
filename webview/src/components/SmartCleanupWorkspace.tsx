@@ -613,6 +613,12 @@ function ReviewView({
                 Dedupe is project-wide. Smart Cleanup offers one action only when an isolated package-manager preview
                 explains every changed version set and leaves direct dependency resolutions unchanged.
               </p>
+              {plan.dedupeAction === null && plan.dedupeNote !== undefined ? (
+                <p className="smart-cleanup-category__guidance">
+                  No automatic deduplication is offered for this project. {plan.dedupeNote} You can still run your
+                  package manager&apos;s dedupe command and review the lockfile changes yourself.
+                </p>
+              ) : null}
               {plan.dedupeAction === null ? null : (
                 <label className="smart-cleanup-dedupe-action">
                   <input

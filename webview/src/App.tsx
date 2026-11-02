@@ -327,6 +327,7 @@ export function App(): ReactElement {
     assessments: SmartCleanupDuplicateAssessmentPresentation[];
     action: SmartCleanupDedupeActionPresentation | null;
     unavailableReason?: string;
+    dedupeNote?: string;
     message?: string;
   }>({ phase: 'idle', assessments: [], action: null });
   const smartCleanupOpenRef = useRef(false);
@@ -1016,6 +1017,7 @@ export function App(): ReactElement {
           assessments: incoming.assessments,
           action: incoming.action ?? null,
           ...(incoming.unavailableReason === undefined ? {} : { unavailableReason: incoming.unavailableReason }),
+          ...(incoming.dedupeNote === undefined ? {} : { dedupeNote: incoming.dedupeNote }),
         });
         return;
       }
@@ -1989,6 +1991,7 @@ export function App(): ReactElement {
       },
       duplicateAssessments: smartCleanupDuplicates.assessments,
       dedupeAction: smartCleanupDuplicates.action,
+      ...(smartCleanupDuplicates.dedupeNote === undefined ? {} : { dedupeNote: smartCleanupDuplicates.dedupeNote }),
     });
     const findings = plan.recommendations.length + plan.deprecated.length + plan.duplicates.length + plan.security.length;
     if (findings === 0) {

@@ -94,6 +94,8 @@ export interface SmartCleanupPlan {
   deprecated: readonly SmartCleanupDeprecatedFinding[];
   duplicates: readonly SmartCleanupDuplicateFinding[];
   dedupeAction: SmartCleanupDedupeAction | null;
+  /** Why no dedupe action is offered even though the duplicate check finished. */
+  dedupeNote?: string;
   security: readonly SmartCleanupSecurityFinding[];
 }
 

@@ -1,14 +1,16 @@
 /**
  * Recognized JS/TS tooling config files, and the plain word-boundary text
  * check used against their content: a package named as an ESLint/Babel/
- * PostCSS/Tailwind/webpack/Vite/Next.js plugin, or referenced from
- * `tsconfig.json`'s `extends`, is real usage the import scanner can never
- * see (none of these are JS import statements).
+ * PostCSS/Tailwind/webpack/Vite/Next.js/Prettier plugin, referenced from
+ * `tsconfig.json`'s `extends`, or run from a Husky git hook, is real usage
+ * the import scanner can never see (none of these are JS import statements).
  *
  * The glob list is host-owned (src/host/usage/configFiles.ts uses it to
  * enumerate candidate files). This module only owns the content check,
  * which is pure and independently testable.
  */
+
+import { packageNameTokens } from './packageNameMatch.js';
 
 export const CONFIG_FILE_GLOBS: readonly string[] = [
   '.eslintrc',
@@ -29,16 +31,24 @@ export const CONFIG_FILE_GLOBS: readonly string[] = [
   'rollup.config.*',
   'tsconfig.json',
   'tsconfig.*.json',
+  '.prettierrc',
+  '.prettierrc.*',
+  'prettier.config.*',
+  '.stylelintrc',
+  '.stylelintrc.*',
+  'stylelint.config.*',
+  '.commitlintrc',
+  '.commitlintrc.*',
+  'commitlint.config.*',
+  '.lintstagedrc',
+  '.lintstagedrc.*',
+  'lint-staged.config.*',
+  // Husky git hooks are shell scripts, like package.json scripts.
+  '.husky/*',
 ];
 
 function escapeForRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function candidateTokens(packageName: string): string[] {
-  if (!packageName.startsWith('@')) return [packageName];
-  const slash = packageName.indexOf('/');
-  return slash === -1 ? [packageName] : [packageName, packageName.slice(slash + 1)];
 }
 
 const QUOTED_SEGMENT = '[^"\'\\x60\\s/]+';
@@ -75,7 +85,7 @@ function eslintShorthandPatterns(packageName: string): string[] {
  * object key.
  */
 export function configReferencesPackage(content: string, packageName: string, fileName?: string): boolean {
-  const tokens = candidateTokens(packageName);
+  const tokens = packageNameTokens(packageName);
   const pattern = new RegExp(`(?:^|[^\\w@./-])(${tokens.map(escapeForRegex).join('|')})(?:[^\\w./-]|$)`);
   if (pattern.test(content)) return true;
 

@@ -36,6 +36,7 @@ export interface BuildSmartCleanupPlanOptions {
   capability: SmartCleanupExecutionCapability;
   duplicateAssessments: readonly SmartCleanupDuplicateAssessmentPresentation[];
   dedupeAction: SmartCleanupDedupeActionPresentation | null;
+  dedupeNote?: string;
 }
 
 /**
@@ -250,6 +251,7 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
           expectedRemovedVersions: options.dedupeAction.expectedRemovedVersions,
           confidence: 'safe',
         },
+    ...(options.dedupeNote === undefined ? {} : { dedupeNote: options.dedupeNote }),
     security,
   };
 }

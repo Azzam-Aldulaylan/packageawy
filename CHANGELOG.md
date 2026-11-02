@@ -7,6 +7,13 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 ### Changed
 
 - The dashboard header shows the Packageawy logo.
+- Smart Cleanup no longer calls a finished plan "partially ready" when it only holds back automatic deduplication. The reason now appears in the Duplicate versions section.
+
+### Fixed
+
+- "Likely unused" now counts packages named in Prettier, Stylelint, commitlint, and lint-staged config files, and commands run from Husky git hooks.
+- A `@scope/cli` package now counts as used when its command runs under the scope name, as `@commitlint/cli` runs as `commitlint`.
+- `sharp` is no longer reported as unused in Next.js projects, since Next.js loads it for image optimization.
 
 ## [0.9.3] - 2026-11-01
 

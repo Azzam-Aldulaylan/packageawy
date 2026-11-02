@@ -770,7 +770,10 @@ export type HostToWebviewMessage =
       requestId: string;
       assessments: SmartCleanupDuplicateAssessmentPresentation[];
       action?: SmartCleanupDedupeActionPresentation;
+      /** The duplicate check could not finish, so its results are partial. */
       unavailableReason?: string;
+      /** The duplicate check finished, but no dedupe action is offered, for this reason. */
+      dedupeNote?: string;
     }
   | { status: 'smart-cleanup-duplicates-error'; requestId: string; error: ProtocolError };
 
@@ -2445,13 +2448,15 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
     const assessments = value['assessments'];
     const action = value['action'];
     const unavailableReason = value['unavailableReason'];
+    const dedupeNote = value['dedupeNote'];
     return (
-      hasOnlyKeys(value, ['status', 'requestId', 'assessments', 'action', 'unavailableReason']) &&
+      hasOnlyKeys(value, ['status', 'requestId', 'assessments', 'action', 'unavailableReason', 'dedupeNote']) &&
       isNonEmptyString(value['requestId']) &&
       Array.isArray(assessments) && assessments.length <= 500 &&
       assessments.every(isSmartCleanupDuplicateAssessment) &&
       (action === undefined || isSmartCleanupDedupeAction(action)) &&
-      (unavailableReason === undefined || (isNonEmptyString(unavailableReason) && unavailableReason.length <= 1000))
+      (unavailableReason === undefined || (isNonEmptyString(unavailableReason) && unavailableReason.length <= 1000)) &&
+      (dedupeNote === undefined || (isNonEmptyString(dedupeNote) && dedupeNote.length <= 1000))
     );
   }
   if (status === 'smart-cleanup-duplicates-error') {
