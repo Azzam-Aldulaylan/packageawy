@@ -39,7 +39,6 @@ import type { UpgradeReviewArea, UpgradeReviewSignal, UpgradeReviewTone as Revie
 import { ProjectCompatibilitySection } from './ProjectCompatibilitySection.js';
 import { StatusBanner } from './StatusBanner.js';
 import { UpgradeTargetSelector } from './UpgradeTargetSelector.js';
-import { UpgradeRecommendationCard } from './UpgradeRecommendationCard.js';
 import type { UpgradeTargetLoadState } from './UpgradeTargetSelector.js';
 import type { UsageRequestState } from './UsageReferencesPanel.js';
 
@@ -62,41 +61,51 @@ function joinedReviewAreas(areas: readonly string[]): string {
   return `${areas.slice(0, -1).join(', ')}, and ${areas.at(-1)}`;
 }
 
-function upgradeReviewAreas(analysis: UpgradeAnalysisPresentation, coordinated: boolean): string[] {
-  const areas: string[] = [];
+/**
+ * The one summary sentence set for the review. Findings to look at come
+ * first. Checks that could not fully run are a coverage limit, not a
+ * finding, so they get their own sentence instead of a "review" item.
+ */
+function upgradeReviewSummary(analysis: UpgradeAnalysisPresentation, coordinated: boolean): string {
+  const findings: string[] = [];
+  const sentences: string[] = [];
+  let partialCoverage = analysis.compatibility.status === 'unknown' || analysis.compatibility.completeness !== 'complete';
   if (analysis.compatibility.status === 'conflict') {
-    areas.push(coordinated ? 'the coordinated dependency changes' : 'the unresolved dependency conflict');
+    if (coordinated) findings.push('the coordinated dependency changes');
+    else sentences.push('Choose another target or resolve the dependency conflict first.');
   } else if (analysis.compatibility.status === 'warning') {
     const count = analysis.compatibility.findings.filter((finding) => finding.status !== 'compatible').length;
-    areas.push(count > 0 ? `${count} dependency compatibility ${count === 1 ? 'warning' : 'warnings'}` : 'the dependency compatibility warnings');
-  }
-  if (analysis.compatibility.status === 'unknown' || analysis.compatibility.completeness !== 'complete') {
-    areas.push('the incomplete dependency checks');
+    findings.push(count > 0 ? `${count} dependency compatibility ${count === 1 ? 'warning' : 'warnings'}` : 'the dependency compatibility warnings');
   }
 
   const projectSummary = summarizeProjectCompatibility(analysis.projectCompatibility);
   if (projectSummary.total > 0) {
-    areas.push(`${projectSummary.total} project compatibility ${projectSummary.total === 1 ? 'finding' : 'findings'}`);
+    findings.push(`${projectSummary.total} project compatibility ${projectSummary.total === 1 ? 'finding' : 'findings'}`);
   }
   const applicableIncompleteAnalyzers = projectSummary.incompleteAnalyzers.filter((entry) => !(
     entry.reason === 'deprecated-api-rules-unavailable' && analysis.projectCompatibility.identity.packageName !== 'next'
   ));
-  if (analysis.projectCompatibility.analyzers.length === 0) {
-    areas.push('the missing project compatibility checks');
-  } else if (applicableIncompleteAnalyzers.length > 0) {
-    areas.push(`${applicableIncompleteAnalyzers.length} incomplete project ${applicableIncompleteAnalyzers.length === 1 ? 'check' : 'checks'}`);
-  }
+  if (analysis.projectCompatibility.analyzers.length === 0 || applicableIncompleteAnalyzers.length > 0) partialCoverage = true;
 
+  let resolvedCount = 0;
   if (analysis.security !== null) {
     const security = summarizeUpgradeSecurity(analysis.security);
+    resolvedCount = analysis.security.resolvedAdvisories.length;
     if (security.confirmedRemainingCount > 0) {
-      areas.push(`${security.confirmedRemainingCount} ${security.confirmedRemainingCount === 1 ? 'vulnerability that remains' : 'vulnerabilities that remain'}`);
+      findings.push(`${security.confirmedRemainingCount} ${security.confirmedRemainingCount === 1 ? 'vulnerability that remains' : 'vulnerabilities that remain'}`);
     }
     if (security.unknownCount > 0) {
-      areas.push(`${security.unknownCount} undetermined security ${security.unknownCount === 1 ? 'outcome' : 'outcomes'}`);
+      findings.push(`${security.unknownCount} undetermined security ${security.unknownCount === 1 ? 'outcome' : 'outcomes'}`);
     }
   }
-  return areas;
+
+  if (findings.length > 0) sentences.push(`Review ${joinedReviewAreas(findings)} before upgrading.`);
+  if (coordinated) sentences.push('The coordinated plan changes dependencies only, not your source or configuration.');
+  if (resolvedCount > 0) sentences.push(`Fixes ${resolvedCount} known ${resolvedCount === 1 ? 'vulnerability' : 'vulnerabilities'}.`);
+  sentences.push(partialCoverage
+    ? 'Some checks could not fully run, so run your build and tests after upgrading.'
+    : sentences.length > 0 || findings.length > 0 ? 'Run your build and tests after upgrading.' : 'No issues were found. Run your build and tests after upgrading.');
+  return sentences.join(' ');
 }
 
 function baseName(path: string): string {
@@ -151,7 +160,6 @@ function UpgradeDecisionBrief({
 }): ReactElement {
   const decision = deriveUpgradeReviewDecision(analysis, coordinated);
   const updateKind = classifyUpdate(analysis.currentVersion, analysis.targetVersion);
-  const reviewAreas = upgradeReviewAreas(analysis, coordinated);
   const signalsNeedingReview = signals.filter((signal) => signal.needsReview);
   const firstReviewSignal = signalsNeedingReview[0];
 
@@ -166,11 +174,7 @@ function UpgradeDecisionBrief({
           <code>{analysis.targetVersion}</code>
           <span className="status-badge status-badge--neutral">{updateKind !== null ? UPDATE_KIND_LABEL[updateKind] : 'Unknown'} update</span>
         </div>
-        <p className="upgrade-decision__reason">
-          {decision.caution
-            ? `Review ${joinedReviewAreas(reviewAreas)} before upgrading.`
-            : 'No issues were found in completed checks. Run verification after upgrading.'}
-        </p>
+        <p className="upgrade-decision__reason">{upgradeReviewSummary(analysis, coordinated)}</p>
         {decision.caution && firstReviewSignal !== undefined ? (
           <button type="button" className="button button--secondary upgrade-decision__review" onClick={() => onOpenArea(firstReviewSignal.area)}>
             Start with {firstReviewSignal.label}
@@ -593,12 +597,6 @@ export function UpgradeReviewPanel({
           onOpenUsageReference={onOpenUsageReference}
           onConfigureVerification={onConfigureVerification}
         />
-        <div className="upgrade-tab__recommendation">
-          <UpgradeRecommendationCard
-            analysis={analysis}
-            coordinated={coordinated}
-          />
-        </div>
       </div>
 
       <div className="review-panel__footer">

@@ -11,7 +11,6 @@ import { upgradeConfirmationAction } from '../out/host/actionButtonSemantics.js'
 const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: { contents: `
-    export { UpgradeRecommendationCard } from './webview/src/components/UpgradeRecommendationCard.tsx';
     export { UpgradeReviewPanel } from './webview/src/components/UpgradeReviewPanel.tsx';
     export { UpgradeAnalysisBody } from './webview/src/components/UpgradeAnalysisModal.tsx';
   `, resolveDir: process.cwd(), loader: 'tsx' },
@@ -21,7 +20,7 @@ const bundle = await build({
     plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
-const { UpgradeRecommendationCard, UpgradeReviewPanel, UpgradeAnalysisBody } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text + '\n//# sourceURL=upgrade-review-decision.fixture.js').toString('base64')}`);
+const { UpgradeReviewPanel, UpgradeAnalysisBody } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text + '\n//# sourceURL=upgrade-review-decision.fixture.js').toString('base64')}`);
 
 const now = Date.parse('2026-08-31T10:00:00Z');
 function project(overrides = {}) {
@@ -46,8 +45,8 @@ function analysis(overrides = {}) {
   };
 }
 const noop = () => {};
-function recommendation(value, overrides = {}) {
-  return renderToStaticMarkup(createElement(UpgradeRecommendationCard, { analysis: value, coordinated: false, executionBlocked: false, busy: false, onConfirm: noop, onUseSmartPlan: noop, ...overrides }));
+function summary(html) {
+  return html.match(/<p class="upgrade-decision__reason">([^<]*)<\/p>/)?.[1] ?? '';
 }
 function manageReview(value, overrides = {}) {
   return renderToStaticMarkup(createElement(UpgradeReviewPanel, {
@@ -66,7 +65,6 @@ test('unknown dependency checks never become a compatible or safe update', () =>
   assert.match(decision.recommendation, /could not be fully verified/);
   assert.match(decision.recommendation, /Security impact was not assessed/);
   assert.doesNotMatch(decision.recommendation, /safe update|compatible update/);
-  assert.doesNotMatch(recommendation(value), /<button/);
 });
 
 test('confirmed project findings override clean dependency resolution in headline and action', () => {
@@ -79,8 +77,6 @@ test('confirmed project findings override clean dependency resolution in headlin
   assert.match(decision.recommendation, /required project changes/);
   assert.equal(upgradeConfirmationAction(value).variant, 'caution');
   assert.deepEqual(value, original);
-  assert.doesNotMatch(recommendation(value), /<button/);
-  assert.doesNotMatch(recommendation(value), /safe update|compatible update/);
 });
 
 test('likely and review findings are caution, not confirmed incompatibilities', () => {
@@ -120,13 +116,11 @@ test('unsupported deprecated-rule scope is a coverage limit, not an operational 
 test('dependency conflicts stay blocked and a coordinated plan never promises to fix project code', () => {
   const value = analysis({ compatibility: { status: 'conflict', completeness: 'complete', findings: [] }, projectCompatibility: project({ findings: [finding()] }) });
   assert.equal(upgradeConfirmationAction(value), null);
-  assert.doesNotMatch(recommendation(value), /<button/);
   assert.equal(deriveUpgradeReviewDecision(value).headline.className, 'conflict');
   value.smartPlan = { changes: [], reasonFindingIds: [] };
   assert.equal(upgradeConfirmationAction(value).onClick, 'use-smart-plan');
   assert.equal(upgradeConfirmationAction(value).variant, 'caution');
-  const html = recommendation(value, { coordinated: true });
-  assert.doesNotMatch(html, /<button|<li>Use coordinated upgrade<\/li>/);
+  const html = deriveUpgradeReviewDecision(value, true).recommendation;
   assert.match(html, /does not make source or configuration changes/);
   assert.match(html, /required project changes/);
   assert.doesNotMatch(html, /coordinated upgrade resolves it/);
@@ -136,9 +130,7 @@ test('a coordinated plan with incomplete dependency checks remains caution even 
   const value = analysis({ compatibility: { status: 'conflict', completeness: 'partial', findings: [] }, smartPlan: { changes: [], reasonFindingIds: [] } });
   assert.equal(deriveUpgradeReviewDecision(value).projectState, 'checked');
   assert.deepEqual(upgradeConfirmationAction(value), { label: 'Use coordinated upgrade', onClick: 'use-smart-plan', variant: 'caution' });
-  const html = recommendation(value, { coordinated: true });
-  assert.doesNotMatch(html, /<button/);
-  assert.match(html, /Some dependency checks could not be completed/);
+  assert.match(deriveUpgradeReviewDecision(value, true).recommendation, /Some dependency checks could not be completed/);
   value.compatibility.completeness = 'complete';
   assert.equal(upgradeConfirmationAction(value).variant, 'primary');
 });
@@ -154,7 +146,7 @@ test('confirmed and review findings retain incomplete coverage guidance independ
       assert.equal(decision.projectState, confidence === 'confirmed' ? 'confirmed' : 'review');
       assert.match(decision.headline.label, confidence === 'confirmed' ? /Confirmed project/ : /Project findings/);
       assert.match(decision.recommendation, /Some project checks could not be completed/);
-      assert.match(recommendation(value), /verify your build and runtime/);
+      assert.match(decision.recommendation, /verify your build and runtime/);
       assert.equal(upgradeConfirmationAction(value).variant, 'caution');
     }
   }
@@ -175,16 +167,10 @@ test('known fixed, remaining and unknown security evidence are reported independ
   assert.match(deriveUpgradeReviewDecision(analysis({ security: { ...security, resolvedAdvisories: [], remaining: [] } })).recommendation, /could not be verified/);
 });
 
-test('recommendation guidance retains its explanation but never duplicates the footer action', () => {
-  for (const overrides of [{ busy: true }, { executionBlocked: true }]) {
-    const value = analysis({ projectCompatibility: project({ findings: [finding()] }) });
-    const html = recommendation(value, overrides);
-    assert.match(html, /required project changes/);
-    assert.doesNotMatch(html, /<button/);
-    const action = upgradeConfirmationAction(value);
-    assert.ok(action);
-    assert.doesNotMatch(html, new RegExp(`<li>${action.label}<\\/li>`));
-  }
+test('the review has one summary, no separate recommendation card, and one action area', () => {
+  const html = manageReview(analysis({ projectCompatibility: project({ findings: [finding()] }) }));
+  assert.equal((html.match(/<p class="upgrade-decision__reason">/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /Recommended action|upgrade-recommended-heading/);
 });
 
 test('missing required project analyzers are shown as incomplete rather than green', () => {
@@ -229,37 +215,23 @@ test('all Upgrade Review evidence disclosures start closed even when attention i
   assert.match(html, /aria-label="Dependency compatibility: Warning\. View details"/);
 });
 
-test('recommendation lead states the next action for conflict and clean outcomes', () => {
-  const conflict = recommendation(analysis({
-    compatibility: { status: 'conflict', completeness: 'complete', findings: [] },
-  }));
-  assert.match(conflict, /<p class="upgrade-recommendation__lead">Choose another target or resolve the dependency conflict\.<\/p>/);
+test('checks that could not fully run are a coverage note, not a finding to review', () => {
+  const partial = summary(manageReview(analysis({
+    projectCompatibility: project({ analyzers: [...project().analyzers, { analyzerId: 'tooling-peer-alignment', status: 'partial', findings: [], unavailableReason: 'tooling-metadata-incomplete' }] }),
+    security: { status: 'fixed', resolvedAdvisories: [{ advisory: { severity: 'high' } }, { advisory: { severity: 'low' } }], remaining: [] },
+  })));
+  assert.equal(partial, 'Fixes 2 known vulnerabilities. Some checks could not fully run, so run your build and tests after upgrading.');
 
-  const clean = recommendation(analysis({ verification: { configured: true, scriptNames: ['test'] } }));
-  assert.match(clean, /<p class="upgrade-recommendation__lead">Upgrade to 15\.5\.24, then run verification\.<\/p>/);
+  const conflict = summary(manageReview(analysis({ compatibility: { status: 'conflict', completeness: 'complete', findings: [] } })));
+  assert.match(conflict, /^Choose another target or resolve the dependency conflict first\./);
+
+  const clean = summary(manageReview(analysis({ verification: { configured: true, scriptNames: ['test'] } })));
+  assert.equal(clean, 'No issues were found. Run your build and tests after upgrading.');
 });
 
-test('unconfigured verification is recommended before applying the upgrade', () => {
-  const unconfigured = recommendation(analysis());
-  const configure = unconfigured.indexOf('<li>Configure build/test verification</li>');
-  const apply = unconfigured.indexOf('<li>Apply the reviewed version change</li>');
-  assert.ok(configure >= 0 && apply > configure);
-
-  const configured = recommendation(analysis({ verification: { configured: true, scriptNames: ['test'] } }));
-  const configuredApply = configured.indexOf('<li>Apply the reviewed version change</li>');
-  const verify = configured.indexOf('<li>Run the configured verification after the upgrade</li>');
-  assert.ok(configuredApply >= 0 && verify > configuredApply);
-});
-
-test('verification guidance distinguishes configured checks from missing checks', () => {
-  const unconfigured = recommendation(analysis());
-  assert.match(unconfigured, /Configure build\/test verification/);
-  assert.doesNotMatch(unconfigured, /Run the configured verification/);
-
+test('verification status distinguishes configured checks from missing checks', () => {
+  assert.doesNotMatch(manageReview(analysis()), /aria-label="Verification: Install \+ 2 scripts queued/);
   const configuredValue = analysis({ verification: { configured: true, scriptNames: ['test', 'build'] } });
-  const configured = recommendation(configuredValue);
-  assert.match(configured, /Run the configured verification after the upgrade/);
-  assert.doesNotMatch(configured, /Configure build\/test verification/);
   assert.match(manageReview(configuredValue), /aria-label="Verification: Install \+ 2 scripts queued\. View details"/);
 });
 
@@ -269,9 +241,9 @@ test('Manage and standalone review render the same warning; selected target is n
   const manage = manageReview(value);
   for (const html of [standalone, manage]) {
     assert.match(html, /Confirmed project compatibility issues/);
-    assert.match(html, /required project changes/);
     assert.doesNotMatch(html, /This is a safe update|This is a compatible update/);
   }
+  assert.match(standalone, /required project changes/);
   assert.match(manage, /Review 1 project compatibility finding before upgrading/);
   assert.equal((manage.match(/<section class="upgrade-decision\b/g) ?? []).length, 1);
   assert.match(manage, /<div class="upgrade-decision__versions">[\s\S]*?<code>14\.2\.35<\/code>[\s\S]*?<code>15\.5\.24<\/code>/);
@@ -280,11 +252,8 @@ test('Manage and standalone review render the same warning; selected target is n
     assert.match(manage, new RegExp(`aria-label="${label}: [^"]+\\. View details"`));
   }
   assert.doesNotMatch(manage, /<dt>Latest version<\/dt>/);
-  assert.equal((manage.match(/>Upgrade anyway/g) ?? []).length, 1, 'the footer is the sole upgrade action area');
-  const recommendationSection = manage.match(/<section[^>]+aria-labelledby="upgrade-recommended-heading"[^>]*>(.*?)<\/section>/s)?.[1];
-  assert.ok(recommendationSection);
-  assert.doesNotMatch(recommendationSection, /<button/);
+  assert.equal((manage.match(/>Upgrade to 15\.5\.24/g) ?? []).length, 1, 'the footer is the sole upgrade action area');
   const footer = manage.match(/<div class="review-panel__footer">(.*?)<\/div>/s)?.[1];
   assert.ok(footer);
-  assert.match(footer, />Upgrade anyway<\/button>/);
+  assert.match(footer, /class="button button--caution"[^>]*>Upgrade to 15\.5\.24<\/button>/);
 });

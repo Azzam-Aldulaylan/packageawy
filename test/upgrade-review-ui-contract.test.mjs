@@ -44,7 +44,7 @@ test('simple and coordinated plans use distinct truthful presentation', () => {
   assert.match(cards, /plannerAddedUpgradeChanges\(requestedChanges, smartPlan\.changes\)/);
   assert.match(cards, /finding\.explanation/);
   assert.match(cards, /Coordinated plan not confirmed/);
-  assert.match(review, /<UpgradeRecommendationCard/);
+  assert.doesNotMatch(review, /UpgradeRecommendationCard/);
   assert.match(read('src/host/upgradeReviewDecision.ts'), /A coordinated resolution could not be confirmed by this analysis/);
   assert.doesNotMatch(review, /No safe path is currently available/);
 });
@@ -56,9 +56,9 @@ test('hard analysis expiry is visible and disables the footer action', () => {
 });
 
 test('completed reviews use one decision brief with explicit review counts and four status rows', () => {
-  assert.match(review, /function upgradeReviewAreas/);
+  assert.match(review, /function upgradeReviewSummary/);
   assert.match(review, /project compatibility \$\{projectSummary\.total === 1 \? 'finding' : 'findings'\}/);
-  assert.match(review, /incomplete dependency checks/);
+  assert.match(review, /Some checks could not fully run/);
   assert.match(review, /vulnerabilities that remain/);
   assert.match(review, /undetermined security/);
   assert.match(review, /function UpgradeDecisionBrief/);
@@ -123,11 +123,6 @@ test('decision rows use restrained separation and keep labels and values aligned
     styles,
     /@media \(max-width: 32rem\)[\s\S]*?\.upgrade-decision__signal-value\s*\{[^}]*text-align:\s*left;/s
   );
-});
-
-test('recommended action remains primary review content rather than complementary aside content', () => {
-  assert.match(review, /<div className="upgrade-tab__recommendation">/);
-  assert.doesNotMatch(review, /<aside className="upgrade-tab__recommendation"/);
 });
 
 test('the redesign leaves the Manage header, tabs, and target selector in place', () => {

@@ -31,10 +31,10 @@ test('compatible upgrades use the standard primary action and selected target', 
   });
 });
 
-test('warning and unknown upgrades use the same cautious action vocabulary', () => {
+test('warning and unknown upgrades keep a plain label and use the caution variant', () => {
   for (const status of ['warning', 'unknown']) {
     assert.deepEqual(upgradeConfirmationAction(analysis(status)), {
-      label: 'Upgrade anyway',
+      label: 'Upgrade to 2.0.0',
       onClick: 'confirm',
       variant: 'caution',
     });
@@ -51,7 +51,7 @@ test('project findings, partial checks and legacy missing evidence require a cau
     { findings: [], analyzers: [{ analyzerId: 'import-compatibility', status: 'partial', findings: [] }] },
   ]) {
     assert.deepEqual(upgradeConfirmationAction(analysis('compatible', { projectCompatibility })), {
-      label: 'Upgrade anyway', onClick: 'confirm', variant: 'caution',
+      label: 'Upgrade to 2.0.0', onClick: 'confirm', variant: 'caution',
     });
   }
 });
@@ -60,7 +60,7 @@ test('multi-package caution and primary labels stay explicit', () => {
   const changes = [{ packageName: 'one' }, { packageName: 'two' }];
   assert.equal(upgradeConfirmationAction(analysis('compatible', { changes })).label, 'Upgrade 2 dependencies');
   assert.deepEqual(upgradeConfirmationAction(analysis('warning', { changes })), {
-    label: 'Upgrade 2 anyway',
+    label: 'Upgrade 2 dependencies',
     onClick: 'confirm',
     variant: 'caution',
   });

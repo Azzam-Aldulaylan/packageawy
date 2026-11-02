@@ -28,16 +28,10 @@ export function upgradeConfirmationAction(
       : null;
   }
 
+  // The caution variant carries the warning, so the label stays a plain verb.
   const { caution } = decision;
   return {
-    label:
-      analysis.changes.length > 1
-        ? caution
-          ? `Upgrade ${analysis.changes.length} anyway`
-          : `Upgrade ${analysis.changes.length} dependencies`
-        : caution
-          ? 'Upgrade anyway'
-          : `Upgrade to ${analysis.targetVersion}`,
+    label: analysis.changes.length > 1 ? `Upgrade ${analysis.changes.length} dependencies` : `Upgrade to ${analysis.targetVersion}`,
     onClick: 'confirm',
     variant: caution ? 'caution' : 'primary',
   };
