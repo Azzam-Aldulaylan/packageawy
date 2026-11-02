@@ -171,7 +171,7 @@ function unwrapInvocation(invocation: ShellInvocation): ShellInvocation | null {
       rest = current.args.slice(separator + 1);
     } else if (executable === 'npx' || executable === 'bunx' || executable === 'pnpx') {
       rest = withoutLeadingFlags(current.args);
-    } else if ((executable === 'pnpm' || executable === 'yarn') && current.args[0] === 'dlx') {
+    } else if (PACKAGE_MANAGERS.has(executable) && (current.args[0] === 'exec' || current.args[0] === 'dlx')) {
       rest = withoutLeadingFlags(current.args.slice(1));
     } else {
       return current;

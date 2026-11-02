@@ -227,3 +227,10 @@ test('bundled short flags that include w count as watch mode', () => {
   assert.deepEqual(suggest({ build: 'tsc -bw' }), []);
   assert.deepEqual(suggest({ build: 'rollup -c' }), ['build']);
 });
+
+test('package-manager exec is unwrapped behind other wrappers too', () => {
+  assert.deepEqual(suggest({ test: 'cross-env NODE_ENV=test npm exec -- ng test' }), []);
+  assert.deepEqual(suggest({ test: 'cross-env CI=1 pnpm exec vitest' }), []);
+  assert.deepEqual(suggest({ test: 'cross-env CI=1 yarn dlx vitest' }), []);
+  assert.deepEqual(suggest({ test: 'cross-env NODE_ENV=test npm exec -- jest' }), ['test']);
+});
