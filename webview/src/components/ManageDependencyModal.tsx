@@ -467,8 +467,6 @@ export function ManageDependencyModal({
         row={row}
         hygieneFindings={hygieneFindings}
         usage={usage}
-        updateResolutionAvailable={quarantineDerivedData ? false : updateResolutionAvailable}
-        advisoriesAvailable={quarantineDerivedData ? false : advisoriesAvailable}
         onReanalyzeUsage={onReanalyzeUsage}
         onOpenUsageReference={onOpenUsageReference}
         onChangeTab={onChangeTab}

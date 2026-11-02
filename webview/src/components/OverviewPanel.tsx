@@ -29,6 +29,7 @@ import { CurrentVersionCell } from './VersionCell.js';
 import { patchedVersionText } from './VulnerabilityCard.js';
 import type { OpenAdvisoryHandler } from './VulnerabilityCard.js';
 import type { UsageRequestState } from './UsageReferencesPanel.js';
+import { usageSummaryCounts } from '../../../src/host/dependencyDetailsCopy.js';
 
 const UPDATE_KIND_LABEL: Record<'major' | 'minor' | 'patch', string> = {
   major: 'Major',
@@ -421,7 +422,7 @@ function VulnerabilitySummary({
 function usageAnalysisLabel(usage: UsageRequestState | undefined): string {
   if (usage === undefined || usage.phase === 'analyzing') return 'Checking usage…';
   if (usage.phase === 'error') return 'Usage check failed';
-  const count = usage.result.references.length;
+  const count = usageSummaryCounts(usage.result.references).referencedInFiles;
   return count === 0 ? 'No references found' : `Used in ${count} file${count === 1 ? '' : 's'}`;
 }
 

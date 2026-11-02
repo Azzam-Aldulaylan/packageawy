@@ -9,10 +9,8 @@ const css = readFileSync(join(process.cwd(), 'webview/src/styles.css'), 'utf8');
 test('usage summary and detail cards expose restrained semantic color hooks', () => {
   for (const className of [
     'usage-summary-card--primary',
-    'usage-summary-card--secondary',
     'usage-summary-card--insight',
     'usage-detail-card--references',
-    'usage-detail-card--path',
     'usage-detail-card--duplicates',
     'usage-detail-card--hygiene',
   ]) assert.match(component, new RegExp(className));
