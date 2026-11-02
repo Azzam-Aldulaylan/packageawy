@@ -444,6 +444,8 @@ function VerificationStepsCard({
         Verification steps
       </h3>
       <p className="usage-card__subtitle">We'll run these checks after removal.</p>
+      {/* Above the steps list, so ticking a box never moves the boxes below it. */}
+      <VerificationSuggestions analysisId={analysisId} verification={verification} actionLabel="this removal" />
       <ul className="verification-steps">
         <li className="verification-steps__item">
           <span>Install dependencies</span>
@@ -460,7 +462,6 @@ function VerificationStepsCard({
           </li>
         )}
       </ul>
-      <VerificationSuggestions analysisId={analysisId} verification={verification} actionLabel="this removal" />
       {!verification.configured ? (
         <button type="button" className="button button--secondary verification__configure" onClick={onConfigureVerification}>
           <IconGear />

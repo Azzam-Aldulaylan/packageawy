@@ -122,6 +122,9 @@ function SafetyFacts({ plan, selectable }: { plan: TransitiveRemediationPlanSumm
       </section>
       <section>
         <h5><IconListChecks /> Verification</h5>
+        {selectable ? (
+          <VerificationSuggestions analysisId={plan.analysisId} verification={plan.verification} actionLabel="this fix" />
+        ) : null}
         <p>
           {plan.verification.configured
             ? `Security rescan plus ${plan.verification.scriptNames.join(', ')}`
@@ -129,9 +132,6 @@ function SafetyFacts({ plan, selectable }: { plan: TransitiveRemediationPlanSumm
               ? `Security rescan plus ${selected.join(', ')}`
               : 'Security rescan only. No project verification scripts configured.'}
         </p>
-        {selectable ? (
-          <VerificationSuggestions analysisId={plan.analysisId} verification={plan.verification} actionLabel="this fix" />
-        ) : null}
         <p>
           Installed packages will be reconciled to the reviewed lockfile. Lifecycle scripts are{' '}
           {plan.lifecycleScriptsEnabled ? 'enabled' : 'disabled'}.

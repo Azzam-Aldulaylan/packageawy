@@ -551,6 +551,8 @@ export function VerificationStepsCard({
         Verification steps
       </h3>
       <p className="usage-card__subtitle">We'll run these checks after upgrading.</p>
+      {/* Above the steps list, so ticking a box never moves the boxes below it. */}
+      <VerificationSuggestions analysisId={analysisId} verification={verification} actionLabel="this upgrade" />
       <ul className="verification-steps">
         <li className="verification-steps__item">
           <span>Install dependencies</span>
@@ -567,7 +569,6 @@ export function VerificationStepsCard({
           </li>
         )}
       </ul>
-      <VerificationSuggestions analysisId={analysisId} verification={verification} actionLabel="this upgrade" />
       {!verification.configured ? (
         <button type="button" className="button button--secondary verification__configure" onClick={onConfigureVerification}>
           <IconGear />

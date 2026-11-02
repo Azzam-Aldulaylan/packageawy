@@ -101,3 +101,16 @@ test('every confirm path sends the opt-in, and every review surface offers it', 
     assert.match(source, /<VerificationSuggestions\b/, file);
   }
 });
+
+test('detected scripts sit above the steps list so ticking one never moves the boxes', () => {
+  for (const selection of [{ scripts: [], remember: false }, { scripts: ['typecheck', 'build', 'test'], remember: false }]) {
+    const markup = render(VerificationStepsCard, { analysisId: 'a1', verification: unconfigured }, selection);
+    assert.ok(markup.indexOf('Detected scripts') < markup.indexOf('class="verification-steps"'));
+  }
+  for (const file of ['RemovalReviewPanel.tsx', 'TransitiveFixReview.tsx']) {
+    const source = readFileSync(new URL(`../webview/src/components/${file}`, import.meta.url), 'utf8');
+    const suggestions = source.indexOf('<VerificationSuggestions');
+    const steps = file === 'RemovalReviewPanel.tsx' ? source.indexOf('className="verification-steps"') : source.indexOf('Security rescan');
+    assert.ok(suggestions > 0 && suggestions < steps, file);
+  }
+});
