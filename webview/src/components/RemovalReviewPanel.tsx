@@ -117,11 +117,6 @@ function statusCopy(packageName: string, assessment: RemovalAssessment | undefin
   };
 }
 
-function actionLabel(packageName: string, assessment: RemovalAssessment | undefined): string {
-  if (assessment?.status === 'review') return 'Remove anyway';
-  return `Remove ${packageName}`;
-}
-
 function RemovalSummaryCard({
   row,
   analysis,
@@ -156,64 +151,24 @@ function RemovalSummaryCard({
   );
 }
 
-function AtAGlanceCard({
-  row,
-  analysis,
-  assessment,
-  usage,
-  advisoriesAvailable,
-}: {
-  row: PackageRow;
-  analysis: RemoveAnalysisPresentation;
-  assessment: RemovalAssessment | undefined;
-  usage: UsageRequestState | undefined;
-  advisoriesAvailable: boolean;
-}): ReactElement {
-  const change = analysis.changes.find((candidate) => candidate.packageName === row.name) ?? analysis.changes[0];
-  const requiredBy = change?.stillRequiredBy.length ?? 0;
-  const sourceCount = sourceReferenceCount(usage);
-  const sourceEvidence = evidenceOfKind(assessment, 'source-reference')[0];
-  const usedInCode =
-    sourceCount !== null
-      ? `${sourceCount} file${sourceCount === 1 ? '' : 's'}`
-      : sourceEvidence?.summary ?? (assessment !== undefined && assessment.status !== 'unknown' ? '0 files' : 'Unknown');
-
-  return (
-    <section className="analysis-card removal-card removal-card--glance" aria-labelledby="removal-glance-heading">
-      <h3 className="manage-section-heading" id="removal-glance-heading">
-        At a glance
-      </h3>
-      <dl className="manage-glance">
-        <GlanceRow label="Installed version">{row.current ?? row.range}</GlanceRow>
-        <GlanceRow label="Required by">{`${requiredBy} package${requiredBy === 1 ? '' : 's'}`}</GlanceRow>
-        <GlanceRow label="Used in code">{usedInCode}</GlanceRow>
-        <GlanceRow label="Vulnerabilities">{advisoriesAvailable ? String(row.advisories.length) : 'Unavailable'}</GlanceRow>
-        <GlanceRow label="Package type">{CLASSIFICATION_LABEL[change?.classification ?? classificationOf(row)]}</GlanceRow>
-      </dl>
-    </section>
-  );
-}
-
 function RecommendedActionCard({
   row,
   assessment,
-  busy,
-  onConfirm,
   onViewReferences,
 }: {
   row: PackageRow;
   assessment: RemovalAssessment | undefined;
-  busy: boolean;
-  onConfirm: () => void;
   onViewReferences: () => void;
 }): ReactElement {
-  const allowed = assessment?.status === 'low-risk' || assessment?.status === 'review';
+  const hasReferences = assessment?.evidence.some((entry) => entry.kind === 'source-reference' || entry.kind === 'script-reference' || entry.kind === 'config-reference') === true;
   const blockedStatus = assessment?.status === 'blocked' ? statusCopy(row.name, assessment) : null;
   const message =
     assessment?.status === 'low-risk'
       ? 'No known project reference or required peer dependency was found.'
       : assessment?.status === 'review'
-        ? 'Review the detected references before choosing to remove this dependency.'
+        ? hasReferences
+          ? 'Review the detected references before choosing to remove this dependency.'
+          : 'Review the finding above before choosing to remove this dependency.'
         : assessment?.status === 'blocked'
           ? `${blockedStatus?.detail ?? 'A required peer dependency blocks this removal.'} Keep this dependency or change the requiring package in a coordinated operation.`
           : 'Re-run impact analysis before allowing a destructive removal.';
@@ -224,16 +179,10 @@ function RecommendedActionCard({
         Recommended action
       </h3>
       <p className="vuln-recommended__message">{message}</p>
-      {assessment?.status === 'review' ? (
+      {assessment?.status === 'review' && hasReferences ? (
         <DirectionalButton direction="forward" className="usage-show-all removal-recommended__references" onClick={onViewReferences}>
           View references
         </DirectionalButton>
-      ) : null}
-      {allowed ? (
-        <button type="button" className="button button--danger removal-recommended__cta" onClick={onConfirm} disabled={busy}>
-          {actionLabel(row.name, assessment)}
-          <IconTrash aria-hidden="true" />
-        </button>
       ) : null}
     </section>
   );
@@ -547,11 +496,9 @@ export function RemovalReviewPanel({
             className="conflict"
             detail={error.message}
           />
-          <p className="analysis-card__hint">
-            {peerBlocked
-              ? 'Keep this package, or remove the package that requires it in the same coordinated operation.'
-              : 'The project was not changed. Review the reason above, then run the analysis again.'}
-          </p>
+          {peerBlocked ? null : (
+            <p className="analysis-card__hint">The project was not changed. Review the reason above, then run the analysis again.</p>
+          )}
           <div className="removal-review__blocked-actions">
             <button type="button" className="button button--secondary" onClick={onViewReferences}>
               View usage and references
@@ -639,12 +586,9 @@ export function RemovalReviewPanel({
       <div className="removal-tab">
         <div className="removal-tab__summary">
           <RemovalSummaryCard row={row} analysis={analysis} assessment={assessment} advisoriesAvailable={advisoriesAvailable} />
-          <AtAGlanceCard row={row} analysis={analysis} assessment={assessment} usage={usage} advisoriesAvailable={advisoriesAvailable} />
           <RecommendedActionCard
             row={row}
             assessment={assessment}
-            busy={busy}
-            onConfirm={onConfirm}
             onViewReferences={onViewReferences}
           />
         </div>
@@ -682,7 +626,7 @@ export function RemovalReviewPanel({
           title={blocked ? blockedStatus?.detail : !removalAllowed ? 'Removal impact must be known before proceeding.' : undefined}
         >
           <IconTrash aria-hidden="true" />
-          {actionLabel(row.name, assessment)}
+          Remove {row.name}
         </button>
       </div>
     </div>

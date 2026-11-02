@@ -13,7 +13,6 @@ import {
   usageSummaryCounts,
 } from '../../../src/host/dependencyDetailsCopy.js';
 import { severityDisplay } from '../../../src/host/severityDisplay.js';
-import { classifyRowUpdate } from '../../../src/host/updateClassification.js';
 import {
   IconAlertTriangle,
   IconBroom,
@@ -21,7 +20,6 @@ import {
   IconChevronRight,
   IconFile,
   IconRefresh,
-  IconRoute,
   IconTarget,
 } from '../icons.js';
 import type { ManageTabId } from './ManageDependencyModal.js';
@@ -32,11 +30,6 @@ export type UsageRequestState =
   | { phase: 'error'; message: string };
 
 const REFERENCE_PREVIEW_LIMIT = 5;
-const UPDATE_KIND_LABEL: Record<'major' | 'minor' | 'patch', string> = {
-  major: 'Major',
-  minor: 'Minor',
-  patch: 'Patch',
-};
 
 /** A compact "label / value" row: same shape used across every tab in this workspace (see OverviewPanel.tsx's GlanceRow). */
 function GlanceRow({ label, children }: { label: string; children: ReactElement | string }): ReactElement {
@@ -197,40 +190,6 @@ function WhereUsedCard({
 }
 
 /**
- * "Why is this installed?": every row in this table is a direct
- * dependency (see dependencyDetailsCopy.ts on why "declared in
- * dependencies" repeated per-row is low-information), so this is always
- * exactly the one-hop declaration edge, never a fabricated deeper chain.
- * The deeper, genuinely multi-hop paths this project's graph can produce
- * belong to Duplicate versions below, where a different resolved version
- * really was introduced transitively.
- */
-function WhyInstalledCard({ row }: { row: PackageRow }): ReactElement {
-  return (
-    <section className="analysis-card usage-detail-card usage-detail-card--path" aria-labelledby="usage-why-installed-heading">
-      <h3 className="analysis-card__title" id="usage-why-installed-heading">
-        <IconRoute className="analysis-card__title-icon" />
-        Why is this installed?
-      </h3>
-      <p className="usage-card__subtitle">Dependency path that introduces {row.name}.</p>
-      <div className="usage-path">
-        <span className="usage-path__node">
-          your-project
-          <span className="usage-path__node-tag">root</span>
-        </span>
-        <span className="usage-path__arrow" aria-hidden="true">
-          →
-        </span>
-        <span className="usage-path__node usage-path__node--target">
-          {row.name}
-          <span className="usage-path__node-tag">{row.current ?? row.range}</span>
-        </span>
-      </div>
-    </section>
-  );
-}
-
-/**
  * "Duplicate versions", only ever the same duplicate-version findings the
  * Hygiene table/badge already derive from (see dependencyDetailsCopy.ts).
  * Hidden entirely when this package has no duplicate of its own and
@@ -385,7 +344,7 @@ function HygieneCard({
           ok={worst === null}
           icon={worst === null ? <IconCheck /> : <IconAlertTriangle />}
           label="Security issues"
-          value={worst === null ? 'None' : `${row.advisories.length} ${severityDisplay(worst).label}`}
+          value={worst === null ? 'None' : `${row.advisories.length} (worst: ${severityDisplay(worst).label})`}
           onActivate={() => onChangeTab('vulnerabilities')}
         />
       </div>
@@ -406,8 +365,6 @@ export function UsageReferencesPanel({
   row,
   hygieneFindings,
   usage,
-  updateResolutionAvailable,
-  advisoriesAvailable,
   onReanalyzeUsage,
   onOpenUsageReference,
   onChangeTab,
@@ -416,8 +373,6 @@ export function UsageReferencesPanel({
   row: PackageRow;
   hygieneFindings: readonly DependencyFinding[];
   usage: UsageRequestState | undefined;
-  updateResolutionAvailable: boolean;
-  advisoriesAvailable: boolean;
   onReanalyzeUsage: (packageName: string) => void;
   onOpenUsageReference: (usageId: string, referenceIndex: number) => void;
   onChangeTab: (tab: ManageTabId) => void;
@@ -429,8 +384,6 @@ export function UsageReferencesPanel({
   const unusedFinding = hygieneFindings.find((finding) => finding.kind === 'likely-unused' && finding.packageName === row.name);
 
   const counts = usage !== undefined && usage.phase === 'done' ? usageSummaryCounts(usage.result.references) : null;
-  const needsAttention = row.worstSeverity === 'critical' || row.worstSeverity === 'high';
-  const updateKind = classifyRowUpdate(row);
 
   return (
     <div className="usage-tab">
@@ -446,35 +399,6 @@ export function UsageReferencesPanel({
             <GlanceRow label="Dynamic imports">{counts === null ? '—' : `${counts.dynamicImports}`}</GlanceRow>
             <GlanceRow label="Package.json scripts">{counts === null ? '—' : `${counts.scripts}`}</GlanceRow>
             <GlanceRow label="Config references">{counts === null ? '—' : `${counts.configReferences}`}</GlanceRow>
-          </dl>
-        </section>
-
-        <section className="manage-summary-block usage-summary-card usage-summary-card--secondary" aria-labelledby="usage-at-a-glance-heading">
-          <h3 className="manage-section-heading" id="usage-at-a-glance-heading">
-            At a glance
-          </h3>
-          <dl className="manage-glance">
-            <GlanceRow label="Installed version">{row.current ?? row.range}</GlanceRow>
-            <GlanceRow label="Latest version">{updateResolutionAvailable ? row.latest ?? '—' : 'Unavailable'}</GlanceRow>
-            <GlanceRow label="Update available">
-              {!updateResolutionAvailable ? 'Unavailable' : row.upgradeTo === null ? 'None' : updateKind !== null ? UPDATE_KIND_LABEL[updateKind] : 'Yes'}
-            </GlanceRow>
-            <GlanceRow label="Vulnerabilities">
-              {!advisoriesAvailable ? (
-                'Unavailable'
-              ) : row.advisories.length === 0 ? (
-                'None'
-              ) : (
-                <span className={`status-badge status-badge--${needsAttention ? 'warning' : 'neutral'}`}>
-                  {row.advisories.length} {severityDisplay(row.worstSeverity).label}
-                </span>
-              )}
-            </GlanceRow>
-            <GlanceRow label="Status">
-              <span className={`status-badge status-badge--${needsAttention || !advisoriesAvailable ? 'warning' : 'neutral'}`}>
-                {!advisoriesAvailable ? 'Data incomplete' : needsAttention ? 'Needs attention' : 'Looks fine'}
-              </span>
-            </GlanceRow>
           </dl>
         </section>
 
@@ -494,7 +418,6 @@ export function UsageReferencesPanel({
           onReanalyze={() => onReanalyzeUsage(row.name)}
           onOpenReference={onOpenUsageReference}
         />
-        <WhyInstalledCard row={row} />
         <DuplicateVersionsCard row={row} ownDuplicate={ownDuplicate} introduced={introduced} />
         <HygieneCard row={row} deprecated={deprecated} unusedFinding={unusedFinding} ownDuplicate={ownDuplicate} onChangeTab={onChangeTab} />
       </div>

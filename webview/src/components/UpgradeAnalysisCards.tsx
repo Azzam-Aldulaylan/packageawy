@@ -79,12 +79,10 @@ export function CompatibilityCheckCard({
   compatibility,
   projectCompatibility,
   context,
-  onViewProjectDetails,
 }: {
   compatibility: UpgradeAnalysisPresentation['compatibility'];
   projectCompatibility?: ProjectCompatibilityAnalysis | undefined;
   context: { package: string; currentVersion: string };
-  onViewProjectDetails?: (() => void) | undefined;
 }): ReactElement {
   const summary = overallStatusDetail({ compatibility });
   const summaryTone = compatibilityOutcomeDisplay(compatibility.status).className;
@@ -104,17 +102,7 @@ export function CompatibilityCheckCard({
         : 'No conflicts';
 
   const projectSummary = projectCompatibility === undefined ? null : summarizeProjectCompatibility(projectCompatibility);
-  const hasProjectAnalyzers = projectCompatibility !== undefined && projectCompatibility.analyzers.length > 0;
-  const hasImportAnalysis = projectCompatibility?.analyzers.some((entry) => entry.analyzerId === 'import-compatibility') === true;
   const runtimeFindings = projectCompatibility?.findings.filter((finding) => finding.category === 'runtime') ?? [];
-  // Deprecation rules are source checks, not a separate product capability.
-  // Count their findings once here. Unsupported rule coverage is explained in
-  // the evidence details. Actual failures/cancellation still mark this partial.
-  const sourceFindings = projectCompatibility?.findings.filter((finding) => finding.category !== 'runtime') ?? [];
-  const sourceIncomplete = projectSummary?.incompleteAnalyzers.filter((entry) =>
-    entry.analyzerId !== 'runtime-compatibility' &&
-    !(entry.analyzerId === 'deprecated-api-compatibility' && entry.reason === 'deprecated-api-rules-unavailable')
-  ) ?? [];
   const runtimeReason = projectCompatibility?.analyzers.find((entry) => entry.analyzerId === 'runtime-compatibility')?.unavailableReason;
   const runtimeTone: CompatCheckTone =
     projectSummary === null || projectSummary.runtimeStatus === 'missing' || projectSummary.runtimeStatus === 'unavailable' || projectSummary.runtimeStatus === 'cancelled'
@@ -134,23 +122,6 @@ export function CompatibilityCheckCard({
           : projectSummary.runtimeStatus === 'partial'
             ? runtimeReason === 'runtime-node-version-unknown' ? 'Declared range checked' : 'Partially checked'
             : 'No conflicts found';
-  const projectTone: CompatCheckTone =
-    projectSummary === null || !hasProjectAnalyzers || !hasImportAnalysis || sourceIncomplete.length > 0
-      ? sourceFindings.length > 0 ? 'warn' : 'unknown'
-      : sourceFindings.length > 0
-        ? 'warn'
-        : 'ok';
-  const projectValue =
-    projectSummary === null || !hasProjectAnalyzers
-      ? 'Not checked'
-      : sourceFindings.length > 0
-        ? `${sourceFindings.length} finding${sourceFindings.length === 1 ? '' : 's'}`
-        : !hasImportAnalysis
-          ? 'Checking import paths'
-          : sourceIncomplete.length > 0
-            ? 'Checks incomplete'
-            : 'No issues found';
-
   return (
     <section className="analysis-card" aria-labelledby="upgrade-compat-heading">
       <div className="usage-card__head">
@@ -158,9 +129,6 @@ export function CompatibilityCheckCard({
           <IconRoute className="analysis-card__title-icon" />
           Compatibility check
         </h3>
-        {projectCompatibility === undefined || onViewProjectDetails === undefined ? null : (
-          <DirectionalButton direction="forward" className="usage-show-all" onClick={onViewProjectDetails}>View check details</DirectionalButton>
-        )}
       </div>
       {summary !== undefined ? (
         <p className={`usage-status upgrade-compatibility__summary${summaryTone === 'compatible' ? ' usage-status--ok' : summaryTone === 'conflict' ? ' usage-status--error' : ''}`}>
@@ -191,14 +159,6 @@ export function CompatibilityCheckCard({
           detail={runtimeReason?.includes('runtime-node-version-unknown')
             ? 'Declared range checked. Development, CI, and deployment runtimes still need verification.'
             : undefined} />
-        <CompatCheckItem tone={projectTone} label="Source & config" value={projectValue}
-          help={(
-            <>
-              <p>Checks how your project uses this package: import paths, package scripts, framework settings, related tooling, and known APIs being phased out.</p>
-              <p>Looks for changes needed for the selected upgrade. These are limited static checks, not a build or test run. See check details for findings and coverage limits.</p>
-            </>
-          )}
-          detail={sourceFindings.length === 0 ? undefined : !hasImportAnalysis ? 'Import check pending' : sourceIncomplete.length > 0 ? 'Some checks incomplete' : undefined} />
       </div>
       <div className="upgrade-compatibility__findings" aria-label="Dependency compatibility findings">
         <h4 className="upgrade-compatibility__findings-heading">Dependency findings</h4>

@@ -41,6 +41,7 @@ import { StatusBanner } from './StatusBanner.js';
 import { UpgradeTargetSelector } from './UpgradeTargetSelector.js';
 import type { UpgradeTargetLoadState } from './UpgradeTargetSelector.js';
 import type { UsageRequestState } from './UsageReferencesPanel.js';
+import { usageSummaryCounts } from '../../../src/host/dependencyDetailsCopy.js';
 
 const UPDATE_KIND_LABEL: Record<'major' | 'minor' | 'patch', string> = {
   major: 'Major',
@@ -51,7 +52,7 @@ const UPDATE_KIND_LABEL: Record<'major' | 'minor' | 'patch', string> = {
 function usageAnalysisLabel(usage: UsageRequestState | undefined): string {
   if (usage === undefined || usage.phase === 'analyzing') return 'Checking usage…';
   if (usage.phase === 'error') return 'Usage check failed';
-  const count = usage.result.references.length;
+  const count = usageSummaryCounts(usage.result.references).referencedInFiles;
   return count === 0 ? 'No references found' : `Used in ${count} file${count === 1 ? '' : 's'}`;
 }
 
@@ -228,15 +229,6 @@ const UpgradeReviewDetails = memo(function UpgradeReviewDetails({
     if (match === undefined) throw new Error(`Missing upgrade review signal for ${area}`);
     return match;
   };
-  const openProjectDetails = (): void => {
-    const section = sectionRefs.project.current;
-    if (section === null) return;
-    section.open = true;
-    requestAnimationFrame(() => {
-      section.scrollIntoView({ block: 'start' });
-      section.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
-    });
-  };
   const dependency = signal('dependency');
   const project = signal('project');
   const security = signal('security');
@@ -264,7 +256,6 @@ const UpgradeReviewDetails = memo(function UpgradeReviewDetails({
           compatibility={analysis.compatibility}
           projectCompatibility={analysis.projectCompatibility}
           context={{ package: row.name, currentVersion: analysis.currentVersion }}
-          onViewProjectDetails={openProjectDetails}
         />
       </UpgradeReviewDisclosure>
       <UpgradeReviewDisclosure
@@ -601,7 +592,7 @@ export function UpgradeReviewPanel({
 
       <div className="review-panel__footer">
         <button type="button" className="button button--secondary" onClick={onCancel} disabled={busy}>
-          {analysis.compatibility.status === 'conflict' && !coordinated ? 'Close review' : 'Cancel analysis'}
+          Close review
         </button>
         {action !== null ? (
           <button

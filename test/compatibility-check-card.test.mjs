@@ -27,19 +27,19 @@ function renderSummary(projectCompatibility, value = compatibility) {
     compatibility: value,
     projectCompatibility,
     context: { package: identity.packageName, currentVersion: identity.currentVersion },
-    onViewProjectDetails: () => {},
   }));
 }
 function renderDetails(value) { return renderToStaticMarkup(createElement(ProjectCompatibilitySection, { analysis: value })); }
 
 test('every compatibility tile reuses accessible help and puts the status icon on the result row', () => {
   const html = renderSummary(undefined);
-  for (const label of ['peer dependencies', 'node requirements', 'source &amp; config']) {
+  for (const label of ['peer dependencies', 'node requirements']) {
     assert.ok(html.includes(`aria-label="About ${label}"`));
   }
-  assert.equal((html.match(/class="info-tooltip__trigger"/g) ?? []).length, 3);
-  assert.equal((html.match(/class="hygiene-strip__result"><span class="hygiene-strip__icon" aria-hidden="true">/g) ?? []).length, 3);
-  assert.equal((html.match(/<\/svg><\/span><span class="hygiene-strip__value">/g) ?? []).length, 3);
+  assert.doesNotMatch(html, /source &amp; config/i);
+  assert.equal((html.match(/class="info-tooltip__trigger"/g) ?? []).length, 2);
+  assert.equal((html.match(/class="hygiene-strip__result"><span class="hygiene-strip__icon" aria-hidden="true">/g) ?? []).length, 2);
+  assert.equal((html.match(/<\/svg><\/span><span class="hygiene-strip__value">/g) ?? []).length, 2);
   assert.doesNotMatch(html, /Deprecated APIs|About deprecated apis/);
 });
 
@@ -54,7 +54,7 @@ test('tile alignment stays scoped and tooltip measurement avoids right-edge shri
   assert.match(tooltip, /onKeyDownCapture=\{\(event\) => \{[\s\S]*?event\.stopPropagation\(\)/);
 });
 
-test('summary separates declared Node range from active runtime and links to one evidence section', () => {
+test('summary separates declared Node range from active runtime and leaves source checks to the project section', () => {
   const value = analysis([
     { analyzerId: 'runtime-compatibility', status: 'partial', findings: [], unavailableReason: 'runtime-node-version-unknown' },
     { analyzerId: 'import-compatibility', status: 'complete', findings: [] },
@@ -63,10 +63,8 @@ test('summary separates declared Node range from active runtime and links to one
   const summary = renderSummary(value);
   assert.match(summary, /Declared range checked/);
   assert.match(summary, /Development, CI, and deployment runtimes still need verification/);
-  assert.match(summary, /Source &amp; config/);
-  assert.match(summary, /View check details/);
+  assert.doesNotMatch(summary, /Source &amp; config|View check details/);
   assert.doesNotMatch(summary, />Project compatibility</);
-  assert.match(summary, /No issues found/);
   assert.doesNotMatch(summary, /Deprecated APIs|No matches in known rules/);
   const details = renderDetails(value);
   assert.match(details, /id="project-compat-heading" tabindex="-1"/);
@@ -134,12 +132,11 @@ test('a package without a matching framework rule does not show Next.js-specific
   assert.doesNotMatch(details, /Next\.js|Next 16|next\/legacy\/image|Coverage limits/);
 });
 
-test('a deprecated import counts once in source/config and retains its detailed evidence', () => {
+test('a deprecated import is reported in the project section, not the dependency summary', () => {
   const deprecated = analyzeDeprecatedApis({ identity, references: [{ specifier: 'next/legacy/image', kind: 'import', filePath: 'src/page.tsx', line: 2, column: 1, snippet: 'import Image from "next/legacy/image"', usageId: 'trusted', referenceIndex: 0 }], sourceComplete: true });
   const value = analysis([{ analyzerId: 'project-source-scan', status: 'complete', findings: [] }, deprecated]);
   const summary = renderSummary(value);
-  assert.equal((summary.match(/1 finding/g) ?? []).length, 1);
-  assert.doesNotMatch(summary, /1 use to review|Deprecated APIs/);
+  assert.doesNotMatch(summary, /1 finding|1 use to review|Deprecated APIs/);
   const details = renderDetails(value);
   assert.match(details, /Deprecated does not mean removed/);
   assert.match(details, /src\/page.tsx/);
@@ -152,8 +149,8 @@ test('incomplete or failed deprecation checks still count as incomplete source c
       { analyzerId: 'import-compatibility', status: 'complete', findings: [] },
       { analyzerId: 'deprecated-api-compatibility', status, findings: [], unavailableReason: 'project-source-scan-truncated' },
     ]);
-    assert.match(renderSummary(value), /Checks incomplete/);
-    assert.doesNotMatch(renderSummary(value), /No issues found/);
+    assert.match(renderDetails(value), /Some checks could not be completed/);
+    assert.doesNotMatch(renderDetails(value), /found no project compatibility issues/);
   }
 });
 
@@ -173,9 +170,3 @@ test('cancelled, unknown, and combined limitations are safe and visible', () => 
   assert.match(pending, /Not checked/);
 });
 
-test('medium findings never imply the deep import check has finished', () => {
-  const medium = analysis([{ analyzerId: 'project-source-scan', status: 'complete', findings: [] }]);
-  const html = renderSummary(medium);
-  assert.match(html, /Checking import paths/);
-  assert.doesNotMatch(html, /No issues found/);
-});

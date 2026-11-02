@@ -1707,7 +1707,6 @@ button {
     background: var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
   }
   .stale-status__icon,
-  .manage-glance__status-icon--spin,
   .manage-action-card__status-icon--spin,
   .manage-removal-stat__spinner,
   .vuln-recommended__spin,
@@ -2515,10 +2514,6 @@ button {
   );
 }
 
-.overview-summary-card--health {
-  --overview-summary-accent: var(--vscode-charts-purple, #a78bfa);
-}
-
 .overview-summary-card .manage-section-heading {
   color: color-mix(in srgb, var(--overview-summary-accent) 68%, var(--vscode-foreground));
 }
@@ -2556,20 +2551,6 @@ button {
   margin: 0;
   overflow-wrap: anywhere;
   text-align: right;
-}
-
-.manage-glance__status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-.manage-glance__status-icon {
-  flex-shrink: 0;
-}
-
-.manage-glance__status-icon--spin {
-  animation: dashboard-refresh-spin 1.2s linear infinite;
 }
 
 /*
@@ -3746,7 +3727,6 @@ button {
   background: color-mix(in srgb, var(--usage-summary-accent) 4%, transparent);
 }
 
-.usage-summary-card--secondary,
 .usage-summary-card--insight {
   --usage-summary-accent: var(--vscode-charts-purple, #a78bfa);
 }
@@ -3945,34 +3925,6 @@ button {
 
 .usage-show-all__icon {
   transform: rotate(90deg);
-}
-
-.usage-path {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.usage-path__node {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
-  border-radius: 6px;
-  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  font-weight: 600;
-  font-size: 0.85em;
-}
-
-.usage-path__node--target {
-  border-color: var(--accent-total);
-}
-
-.usage-path__node-tag {
-  color: var(--vscode-descriptionForeground);
-  font-weight: 400;
-  font-size: 0.85em;
 }
 
 .usage-path__arrow {
@@ -4534,7 +4486,7 @@ button {
 }
 
 .upgrade-tab .hygiene-strip {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.4rem;
 }
 
@@ -4724,10 +4676,6 @@ button {
   --removal-card-accent: var(--vscode-charts-purple, #a78bfa);
 }
 
-.removal-card--glance {
-  --removal-card-accent: var(--vscode-charts-purple, #a78bfa);
-}
-
 .removal-card--checks {
   --removal-card-accent: var(--vscode-charts-blue, #3794ff);
 }
@@ -4778,12 +4726,6 @@ button {
 
 .removal-recommended__references {
   margin-top: 0;
-}
-
-.removal-recommended__cta {
-  align-self: stretch;
-  justify-content: center;
-  margin-top: 0.1rem;
 }
 
 .removal-check {
@@ -6773,15 +6715,6 @@ button {
   flex-wrap: wrap;
 }
 
-.usage-path {
-  flex-wrap: wrap;
-}
-
-.usage-path__node {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
 .usage-dup-table {
   table-layout: fixed;
 }
@@ -6981,16 +6914,6 @@ button {
 
   .usage-ref__button {
     align-items: flex-start;
-  }
-
-  .usage-path {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .usage-path > .usage-path__arrow {
-    align-self: center;
-    transform: rotate(90deg);
   }
 
   .vuln-card__title {
