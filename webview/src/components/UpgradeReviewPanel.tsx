@@ -229,15 +229,6 @@ const UpgradeReviewDetails = memo(function UpgradeReviewDetails({
     if (match === undefined) throw new Error(`Missing upgrade review signal for ${area}`);
     return match;
   };
-  const openProjectDetails = (): void => {
-    const section = sectionRefs.project.current;
-    if (section === null) return;
-    section.open = true;
-    requestAnimationFrame(() => {
-      section.scrollIntoView({ block: 'start' });
-      section.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
-    });
-  };
   const dependency = signal('dependency');
   const project = signal('project');
   const security = signal('security');
@@ -265,7 +256,6 @@ const UpgradeReviewDetails = memo(function UpgradeReviewDetails({
           compatibility={analysis.compatibility}
           projectCompatibility={analysis.projectCompatibility}
           context={{ package: row.name, currentVersion: analysis.currentVersion }}
-          onViewProjectDetails={openProjectDetails}
         />
       </UpgradeReviewDisclosure>
       <UpgradeReviewDisclosure
@@ -602,7 +592,7 @@ export function UpgradeReviewPanel({
 
       <div className="review-panel__footer">
         <button type="button" className="button button--secondary" onClick={onCancel} disabled={busy}>
-          {analysis.compatibility.status === 'conflict' && !coordinated ? 'Close review' : 'Cancel analysis'}
+          Close review
         </button>
         {action !== null ? (
           <button

@@ -95,11 +95,10 @@ test('progressive and completed reviews share one disclosure and evidence-card c
   assert.doesNotMatch(review, /function UpgradeReviewDisclosure/);
 });
 
-test('dependency compatibility exposes detailed findings and project-check navigation', () => {
+test('dependency compatibility exposes detailed findings', () => {
   assert.match(cards, /<CompatibilityFindings compatibility=\{compatibility\} context=\{context\}/);
   assert.match(cards, /Dependency findings/);
-  assert.match(review, /onViewProjectDetails=\{openProjectDetails\}/);
-  assert.match(review, /sectionRefs\.project\.current/);
+  assert.doesNotMatch(cards, /onViewProjectDetails|View check details/);
 });
 
 test('decision status rows open, scroll to, and focus their matching disclosure', () => {
@@ -138,10 +137,9 @@ test('compatibility summary is separated from checks and unsupported checks stay
   assert.match(styles, /\.upgrade-tab \.upgrade-compatibility__summary \{\s*margin-bottom: 0\.8rem;/);
   assert.match(cards, /label="Node requirements" value=\{runtimeValue\}/);
   assert.match(cards, /runtimeStatus === 'partial'/);
-  assert.match(cards, /label="Source & config" value=\{projectValue\}/);
+  assert.doesNotMatch(cards, /label="Source & config"/);
   assert.doesNotMatch(cards, /label="Deprecated APIs"|No matches in known rules|No rules for this target/);
-  assert.match(cards, /known APIs being phased out/);
-  assert.match(styles, /\.upgrade-tab \.hygiene-strip \{\s*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/);
+  assert.match(styles, /\.upgrade-tab \.hygiene-strip \{\s*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
   assert.doesNotMatch(cards, /label="Breaking changes"|No major version change/);
 });
 
