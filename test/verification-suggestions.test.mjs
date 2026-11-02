@@ -167,3 +167,9 @@ test('names outside the safe script-name rule are never suggested', () => {
   assert.equal(isSafeScriptName('a b'), false);
   assert.equal(isSafeScriptName(''), false);
 });
+
+test('pre and post scripts that npm runs alongside are judged too', () => {
+  assert.deepEqual(suggest({ test: 'node --test', pretest: 'tsc -p .', posttest: 'eslint .' }), ['test']);
+  assert.deepEqual(suggest({ test: 'node --test', posttest: 'http-server dist' }), []);
+  assert.deepEqual(suggest({ build: 'tsc', prebuild: 'tsc --watch' }), []);
+});

@@ -104,6 +104,10 @@ function looksLikeOneShotCheck(table: Record<string, unknown>, name: string, vis
       const referenced = referencedScript(table, invocation);
       if (referenced !== undefined && !looksLikeOneShotCheck(table, referenced, visiting)) return false;
     }
+    // npm also runs the matching pre and post scripts, so they must pass too.
+    for (const hook of [`pre${name}`, `post${name}`]) {
+      if (Object.hasOwn(table, hook) && !looksLikeOneShotCheck(table, hook, visiting)) return false;
+    }
     return true;
   } finally {
     visiting.delete(name);
