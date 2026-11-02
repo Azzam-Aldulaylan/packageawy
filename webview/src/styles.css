@@ -4379,34 +4379,10 @@ button {
   color: var(--vscode-descriptionForeground);
 }
 
-/* The evidence column stays dominant. The recommendation is a short reading aid, not a second action surface. */
 .upgrade-tab {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 1.1rem;
-}
-
-@media (min-width: 64rem) {
-  .upgrade-tab {
-    grid-template-columns: minmax(0, 1fr) minmax(15rem, 18rem);
-    align-items: flex-start;
-    gap: 0.85rem;
-  }
-
-  .upgrade-tab__recommendation {
-    min-width: 0;
-  }
-
-  .upgrade-tab__details {
-    min-width: 0;
-  }
-}
-
-@media (min-width: 64rem) and (min-height: 44rem) {
-  .upgrade-tab__recommendation {
-    position: sticky;
-    top: 0;
-  }
 }
 
 .upgrade-tab__details {
@@ -4516,87 +4492,14 @@ button {
   margin-top: 0;
 }
 
-.upgrade-recommendation__steps {
-  display: grid;
-  gap: 0.55rem;
-  margin: 0.3rem 0 0;
-  padding: 0.8rem 0 0;
-  border-top: 1px solid color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 28%, var(--vscode-panel-border, transparent));
-  counter-reset: recommendation-step;
-  list-style: none;
-}
 
-.upgrade-recommendation__lead {
-  margin: 0;
-  color: var(--vscode-foreground);
-  font-size: 0.9em;
-  font-weight: 600;
-  line-height: 1.45;
-}
 
-.upgrade-tab__recommendation .vuln-recommended__message {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.8em;
-}
 
-.upgrade-recommendation__steps li {
-  display: grid;
-  grid-template-columns: 1.35rem minmax(0, 1fr);
-  align-items: start;
-  gap: 0.45rem;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.8em;
-  line-height: 1.35;
-  counter-increment: recommendation-step;
-}
 
-.upgrade-recommendation__steps li::before {
-  display: inline-grid;
-  place-items: center;
-  width: 1.25rem;
-  height: 1.25rem;
-  border: 1px solid color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 50%, var(--vscode-panel-border, transparent));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 12%, transparent);
-  color: color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 68%, var(--vscode-foreground));
-  content: counter(recommendation-step);
-  font-size: 0.72rem;
-  font-weight: 600;
-}
 
-.upgrade-tab .upgrade-tab__recommendation .vuln-recommended {
-  gap: 0.75rem;
-  padding: 1rem;
-  border-color: color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 38%, var(--vscode-panel-border, transparent));
-  background: linear-gradient(
-    150deg,
-    color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 8%, var(--vscode-editorWidget-background, var(--vscode-editor-background))) 0%,
-    var(--vscode-editorWidget-background, var(--vscode-editor-background)) 72%
-  );
-}
 
-.upgrade-recommendation__heading {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-}
 
-.upgrade-recommendation__heading-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 1.7rem;
-  height: 1.7rem;
-  flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 48%, transparent);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 14%, transparent);
-  color: color-mix(in srgb, var(--vscode-charts-purple, #a78bfa) 72%, var(--vscode-foreground));
-}
 
-.upgrade-tab .upgrade-recommendation__heading .manage-section-heading {
-  color: var(--vscode-foreground);
-  font-size: 0.74rem;
-}
 
 .upgrade-tab__bottom-grid {
   display: grid;
@@ -6911,7 +6814,6 @@ button {
   .vuln-tab__details,
   .usage-tab__summary,
   .usage-tab__details,
-  .upgrade-tab__recommendation,
   .upgrade-tab__details,
   .removal-tab__summary,
   .removal-tab__details {
