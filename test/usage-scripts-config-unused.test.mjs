@@ -38,6 +38,12 @@ test('a package not mentioned in any script produces no matches', () => {
   assert.deepEqual(findPackageInScripts(manifest, 'jest'), []);
 });
 
+test('a @scope/cli package is matched by its scope as the command name', () => {
+  const manifest = JSON.stringify({ scripts: { commit: 'commitlint --edit' } });
+  assert.equal(findPackageInScripts(manifest, '@commitlint/cli').length, 1);
+  assert.deepEqual(findPackageInScripts(manifest, '@commitlint/config-conventional'), []);
+});
+
 test('invalid manifest JSON degrades to no scripts rather than throwing', () => {
   assert.deepEqual(findPackageInScripts('not json', 'eslint'), []);
 });
@@ -52,6 +58,19 @@ test('usage config discovery includes extensionless ESLint and Babel inputs', ()
 test('usage config discovery includes React Native host configuration', () => {
   assert.equal(CONFIG_FILE_GLOBS.includes('metro.config.*'), true);
   assert.equal(CONFIG_FILE_GLOBS.includes('react-native.config.*'), true);
+});
+
+test('usage config discovery includes Prettier, commitlint, lint-staged, and Husky hook inputs', () => {
+  for (const glob of ['.prettierrc', 'prettier.config.*', '.commitlintrc.*', 'commitlint.config.*', '.lintstagedrc', '.husky/*']) {
+    assert.equal(CONFIG_FILE_GLOBS.includes(glob), true, glob);
+  }
+});
+
+test('a Husky hook that runs a package command counts as usage', () => {
+  const hook = '#!/usr/bin/env sh\n. "$(dirname -- "$0")/_/husky.sh"\n\nnpx commitlint --edit $1\nnpx pretty-quick --staged\n';
+  assert.equal(configReferencesPackage(hook, '@commitlint/cli', 'commit-msg'), true);
+  assert.equal(configReferencesPackage(hook, 'pretty-quick', 'pre-commit'), true);
+  assert.equal(configReferencesPackage(hook, 'prettier', 'pre-commit'), false);
 });
 
 test('a package referenced in a config file body is found', () => {
@@ -214,6 +233,12 @@ test('@types/<name> produces no finding when <name> is a direct dependency', () 
   const directDependencies = new Set(['react', '@babel/core', '@types/react', '@types/babel__core']);
   assert.equal(buildUnusedFinding('@types/react', usage({ packageName: '@types/react' }), { directDependencies }), null);
   assert.equal(buildUnusedFinding('@types/babel__core', usage({ packageName: '@types/babel__core' }), { directDependencies }), null);
+});
+
+test('sharp produces no finding when Next.js is a direct dependency, since Next.js loads it for images', () => {
+  const sharpUsage = usage({ packageName: 'sharp' });
+  assert.equal(buildUnusedFinding('sharp', sharpUsage, { directDependencies: new Set(['next', 'sharp']) }), null);
+  assert.equal(buildUnusedFinding('sharp', sharpUsage, { directDependencies: new Set(['sharp']) }).confidence, 'high');
 });
 
 test('@types/<name> without its package or an import is never a high-confidence finding', () => {

@@ -8,6 +8,8 @@
  * all look like.
  */
 
+import { packageNameTokens } from './packageNameMatch.js';
+
 function readScripts(manifestText: string): Record<string, string> {
   let json: unknown;
   try {
@@ -31,13 +33,6 @@ function escapeForRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Tokens worth checking against a script string: the full package name, and (for a scoped package) the part after `/`. */
-function candidateTokens(packageName: string): string[] {
-  if (!packageName.startsWith('@')) return [packageName];
-  const slash = packageName.indexOf('/');
-  return slash === -1 ? [packageName] : [packageName, packageName.slice(slash + 1)];
-}
-
 export interface ScriptMatch {
   scriptName: string;
   scriptCommand: string;
@@ -46,7 +41,7 @@ export interface ScriptMatch {
 /** Every package.json script whose command line mentions `packageName` as a whole word. */
 export function findPackageInScripts(manifestText: string, packageName: string): ScriptMatch[] {
   const scripts = readScripts(manifestText);
-  const tokens = candidateTokens(packageName);
+  const tokens = packageNameTokens(packageName);
   const pattern = new RegExp(`(?:^|[^\\w@./-])(${tokens.map(escapeForRegex).join('|')})(?:[^\\w./-]|$)`);
 
   const matches: ScriptMatch[] = [];

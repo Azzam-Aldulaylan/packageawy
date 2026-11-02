@@ -13,6 +13,15 @@ import type { DependencyFinding } from '../hygiene/types.js';
 import type { PeerRequirementEvidence } from '../upgrade/peerRequirement.js';
 import type { DependencyUsageResult } from './types.js';
 
+/**
+ * Packages a framework loads on its own when they are installed, keyed by
+ * the package and listing the frameworks that do it. Next.js uses `sharp`
+ * for production image optimization without any import in the project.
+ */
+const FRAMEWORK_LOADED_PACKAGES: ReadonlyMap<string, readonly string[]> = new Map([
+  ['sharp', ['next']],
+]);
+
 /** Project facts beyond the workspace scan that can show a package is in use. */
 export interface UnusedFindingContext {
   /** Other installed packages that declare this package as a peer dependency. */
@@ -24,7 +33,8 @@ export interface UnusedFindingContext {
 /**
  * Returns null when the package is in use, so there is nothing to report:
  * it has at least one reference, another installed package requires it as
- * a peer, or it is `@types/<name>` and `<name>` is a direct dependency.
+ * a peer, it is `@types/<name>` and `<name>` is a direct dependency, or a
+ * framework in the direct dependencies loads it on its own.
  * Otherwise a `likely-unused` finding, graded:
  *
  *   - `low` confidence whenever the scan itself was incomplete (`truncated`):
@@ -51,6 +61,9 @@ export function buildUnusedFinding(
 
   const typesTarget = typesPackageTarget(packageName);
   if (typesTarget !== null && context.directDependencies?.has(typesTarget) === true) return null;
+  if (FRAMEWORK_LOADED_PACKAGES.get(packageName)?.some((framework) => context.directDependencies?.has(framework) === true)) {
+    return null;
+  }
 
   const optionalPeerOwners = peerRequirements.map((requirement) => requirement.requiredBy);
   const conventionPackage = isFrameworkConventionPackage(packageName);

@@ -43,3 +43,17 @@ export function typesPackageTarget(packageName: string): string | null {
   const rest = name.slice(separator + 2);
   return scope === '' || rest === '' ? null : `@${scope}/${rest}`;
 }
+
+/**
+ * Words that name `packageName` in a shell command or config file: the full
+ * name, and for a scoped package the part after `/`. A `@scope/cli` package
+ * also counts the bare scope, since that is its usual command name
+ * (`@commitlint/cli` runs as `commitlint`).
+ */
+export function packageNameTokens(packageName: string): string[] {
+  if (!packageName.startsWith('@')) return [packageName];
+  const slash = packageName.indexOf('/');
+  if (slash === -1) return [packageName];
+  const rest = packageName.slice(slash + 1);
+  return rest === 'cli' ? [packageName, rest, packageName.slice(1, slash)] : [packageName, rest];
+}
