@@ -198,3 +198,18 @@ test('a hook only has to finish, it does not have to check anything', () => {
   assert.deepEqual(suggest({ build: 'tsc', postbuild: 'exit 1' }), []);
   assert.deepEqual(suggest({ build: 'echo only' }), []);
 });
+
+test('scripts that hand their command to a shell are not suggested', () => {
+  assert.deepEqual(suggest({ test: "sh -c 'vitest'" }), []);
+  assert.deepEqual(suggest({ build: 'bash scripts/build.sh' }), []);
+  assert.deepEqual(suggest({ test: 'cross-env CI=1 bash -c "jest"' }), []);
+  assert.deepEqual(suggest({ build: 'node scripts/build.mjs' }), ['build']);
+});
+
+test('package-manager flags that may take a value hide the delegated script', () => {
+  assert.deepEqual(suggest({ test: 'npm --loglevel error run unit', unit: 'vitest' }), []);
+  assert.deepEqual(suggest({ test: 'npm --loglevel error run unit', unit: 'vitest run' }), []);
+  assert.deepEqual(suggest({ test: 'npm run --silent unit', unit: 'vitest' }), []);
+  assert.deepEqual(suggest({ test: 'npm run --silent unit', unit: 'vitest run' }), ['test']);
+  assert.deepEqual(suggest({ test: 'npm -s run unit', unit: 'jest' }), ['test']);
+});

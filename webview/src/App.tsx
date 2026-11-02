@@ -154,11 +154,18 @@ export function App(): ReactElement {
   const verificationOptInStore = useMemo<VerificationOptInStore>(() => ({
     selectionFor: (analysisId) => verificationOptIns.get(analysisId) ?? EMPTY_VERIFICATION_OPT_IN,
     update: (analysisId, selection) => {
-      setVerificationOptIns((previous) => new Map(previous).set(analysisId, selection));
+      setVerificationOptIns((previous) =>
+        previous.get(analysisId)?.locked === true ? previous : new Map(previous).set(analysisId, selection)
+      );
     },
   }), [verificationOptIns]);
-  const optInFor = useCallback((analysisId: string): VerificationOptInSelection =>
-    verificationOptInsRef.current.get(analysisId) ?? EMPTY_VERIFICATION_OPT_IN, []);
+  // Called as a confirm message is sent. The host reads the choice only
+  // once, so the checkboxes lock to match what will actually run.
+  const optInFor = useCallback((analysisId: string): VerificationOptInSelection => {
+    const selection = verificationOptInsRef.current.get(analysisId) ?? EMPTY_VERIFICATION_OPT_IN;
+    setVerificationOptIns((previous) => new Map(previous).set(analysisId, { ...selection, locked: true }));
+    return selection;
+  }, []);
   const [scanProgress, setScanProgress] = useState<{
     stage: ScanProgressStage;
     completed?: number;

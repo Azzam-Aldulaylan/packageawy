@@ -116,6 +116,7 @@ function looksLikeOneShotCheck(
     for (const invocation of invocations) {
       if (invocationLooksLongRunning(invocation) || runsOtherWorkspaces(invocation)) return false;
       const referenced = referencedScript(table, invocation);
+      if (referenced === null) return false;
       if (referenced !== undefined && !looksLikeOneShotCheck(table, referenced, visiting)) return false;
     }
     // npm also runs the matching pre and post scripts, so they must pass too.
@@ -131,6 +132,11 @@ function looksLikeOneShotCheck(
 /** Executables that only set the environment and then run the rest of their arguments. */
 const ENV_WRAPPERS = new Set(['cross-env', 'env']);
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/** Shells and command runners whose real command is inside a string or argument list we do not parse. */
+const OPAQUE_EXECUTABLES = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'cmd', 'cmd.exe', 'powershell', 'pwsh',
+  'eval', 'exec', 'xargs', 'time', 'nice', 'nohup', 'timeout',
+]);
 const MAX_UNWRAP_DEPTH = 4;
 
 function withoutLeadingFlags(args: readonly string[]): readonly string[] {
@@ -156,7 +162,7 @@ function unwrapInvocation(invocation: ShellInvocation): ShellInvocation | null {
         index += 1;
       }
       rest = current.args.slice(index);
-    } else if (executable === 'cross-env-shell') {
+    } else if (executable === 'cross-env-shell' || OPAQUE_EXECUTABLES.has(executable)) {
       return null;
     } else if (executable === 'dotenv') {
       // dotenv-cli options can take values, so only `--` marks the command reliably.
@@ -228,14 +234,35 @@ function runsOtherWorkspaces(invocation: ShellInvocation): boolean {
   return PACKAGE_MANAGERS.has(baseName(invocation.executable)) && invocation.args.some((arg) => WORKSPACE_FLAG.test(arg));
 }
 
-/** The local script a package-manager invocation runs, when one can be named. */
-function referencedScript(table: Record<string, unknown>, invocation: ShellInvocation): string | undefined {
+/** Package-manager flags known to take no value, so they can be skipped safely. */
+const VALUELESS_PACKAGE_MANAGER_FLAGS = new Set(['-s', '--silent', '-q', '--quiet', '--if-present', '--no-color']);
+
+/** Index of the first argument after the valueless flags at `start`, or -1 when a flag may take a value. */
+function skipValuelessFlags(args: readonly string[], start: number): number {
+  let index = start;
+  while ((args[index] ?? '').startsWith('-')) {
+    if (!VALUELESS_PACKAGE_MANAGER_FLAGS.has(args[index] ?? '')) return -1;
+    index += 1;
+  }
+  return index;
+}
+
+/**
+ * The local script a package-manager invocation runs. Undefined when it runs
+ * no script. Null when a flag that may take a value hides which script runs.
+ */
+function referencedScript(table: Record<string, unknown>, invocation: ShellInvocation): string | undefined | null {
   const executable = baseName(invocation.executable);
   if (!PACKAGE_MANAGERS.has(executable)) return undefined;
-  const positional = invocation.args.filter((arg) => !arg.startsWith('-'));
-  const first = positional[0];
+  const { args } = invocation;
+  const commandIndex = skipValuelessFlags(args, 0);
+  if (commandIndex < 0) return null;
+  const first = args[commandIndex];
   if (first === undefined) return undefined;
-  if (NPM_RUN_COMMANDS.has(first)) return positional[1];
+  if (NPM_RUN_COMMANDS.has(first)) {
+    const nameIndex = skipValuelessFlags(args, commandIndex + 1);
+    return nameIndex < 0 ? null : args[nameIndex] ?? null;
+  }
   if (executable === 'npm') return NPM_TEST_ALIASES.has(first) ? 'test' : undefined;
   // pnpm, yarn and bun run a script when its name is the first argument.
   return scriptText(table, first) === undefined ? undefined : first;

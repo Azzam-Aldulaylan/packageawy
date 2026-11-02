@@ -11,6 +11,8 @@ import type { ConfirmVerificationOptIn, UpgradeAnalysisVerification } from '../.
 export interface VerificationOptInSelection {
   scripts: readonly string[];
   remember: boolean;
+  /** Set once the choice has been sent with a confirm message. */
+  locked?: boolean;
 }
 
 export const EMPTY_VERIFICATION_OPT_IN: VerificationOptInSelection = { scripts: [], remember: false };
@@ -100,7 +102,7 @@ export function VerificationSuggestions({
     store.update(analysisId, { scripts, remember: selection.remember });
   };
   return (
-    <fieldset className="verification-suggestions">
+    <fieldset className="verification-suggestions" disabled={selection.locked === true}>
       <legend className="verification-suggestions__legend">Detected scripts. Run after {actionLabel}:</legend>
       {verification.suggestedScriptNames.map((name) => (
         <label className="verification-suggestions__option" key={name}>

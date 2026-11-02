@@ -114,3 +114,10 @@ test('detected scripts sit above the steps list so ticking one never moves the b
     assert.ok(suggestions > 0 && suggestions < steps, file);
   }
 });
+
+test('choices lock once they have been sent with a confirm message', () => {
+  const markup = render(VerificationStepsCard, { analysisId: 'a1', verification: unconfigured }, { scripts: ['build'], remember: true, locked: true });
+  assert.match(markup, /<fieldset class="verification-suggestions" disabled="">/);
+  const open = render(VerificationStepsCard, { analysisId: 'a1', verification: unconfigured }, { scripts: ['build'], remember: false });
+  assert.doesNotMatch(open, /<fieldset[^>]*disabled/);
+});
