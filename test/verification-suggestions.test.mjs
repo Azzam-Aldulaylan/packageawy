@@ -173,3 +173,28 @@ test('pre and post scripts that npm runs alongside are judged too', () => {
   assert.deepEqual(suggest({ test: 'node --test', posttest: 'http-server dist' }), []);
   assert.deepEqual(suggest({ build: 'tsc', prebuild: 'tsc --watch' }), []);
 });
+
+test('commands behind environment wrappers are judged by what they run', () => {
+  assert.deepEqual(suggest({ test: 'cross-env NODE_ENV=test ng test' }), []);
+  assert.deepEqual(suggest({ test: 'cross-env CI=true NODE_ENV=test jest --watch' }), []);
+  assert.deepEqual(suggest({ test: 'env -i NODE_ENV=test vitest' }), []);
+  assert.deepEqual(suggest({ test: 'dotenv -e .env.test -- vitest' }), []);
+  assert.deepEqual(suggest({ test: 'pnpm dlx vitest' }), []);
+  assert.deepEqual(suggest({ test: 'cross-env NODE_ENV=test jest' }), ['test']);
+  assert.deepEqual(suggest({ test: 'dotenv -e .env.test -- vitest run' }), ['test']);
+  assert.deepEqual(suggest({ test: 'cross-env NODE_ENV=test npx --yes vitest run' }), ['test']);
+});
+
+test('wrappers whose command cannot be found are not suggested', () => {
+  assert.deepEqual(suggest({ test: 'dotenv -e .env.test vitest run' }), []);
+  assert.deepEqual(suggest({ test: 'cross-env NODE_ENV=test' }), []);
+  assert.deepEqual(suggest({ build: 'cross-env-shell "tsc && echo done"' }), []);
+  assert.deepEqual(suggest({ test: 'env -u CI jest' }), []);
+});
+
+test('a hook only has to finish, it does not have to check anything', () => {
+  assert.deepEqual(suggest({ build: 'tsc', postbuild: 'echo Build complete' }), ['build']);
+  assert.deepEqual(suggest({ test: 'node --test', pretest: 'echo starting' }), ['test']);
+  assert.deepEqual(suggest({ build: 'tsc', postbuild: 'exit 1' }), []);
+  assert.deepEqual(suggest({ build: 'echo only' }), []);
+});

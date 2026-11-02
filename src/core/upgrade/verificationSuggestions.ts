@@ -87,15 +87,29 @@ function scriptText(table: Record<string, unknown>, name: string): string | unde
   return typeof value === 'string' ? value : undefined;
 }
 
-function looksLikeOneShotCheck(table: Record<string, unknown>, name: string, visiting: Set<string>): boolean {
+/**
+ * `requireCheck` is false for npm's pre and post hooks. A hook only has to
+ * finish on its own, so `postbuild: "echo done"` does not hide `build`.
+ */
+function looksLikeOneShotCheck(
+  table: Record<string, unknown>,
+  name: string,
+  visiting: Set<string>,
+  requireCheck = true
+): boolean {
   if (visiting.has(name) || visiting.size >= MAX_SCRIPT_DEPTH) return false;
   const script = scriptText(table, name);
   if (script === undefined || script.trim().length === 0) return false;
   if (isPlaceholderScript(script) || runsInBackground(script)) return false;
 
-  const invocations = lexInvocations(script);
-  if (invocations.length === 0) return false;
-  if (invocations.every((invocation) => NO_OP_EXECUTABLES.has(baseName(invocation.executable)))) return false;
+  const unwrapped = lexInvocations(script).map(unwrapInvocation);
+  if (unwrapped.length === 0) return false;
+  // A wrapper whose command cannot be found might start anything.
+  if (unwrapped.some((invocation) => invocation === null)) return false;
+  const invocations = unwrapped as ShellInvocation[];
+  if (requireCheck && invocations.every((invocation) => NO_OP_EXECUTABLES.has(baseName(invocation.executable)))) {
+    return false;
+  }
 
   visiting.add(name);
   try {
@@ -106,12 +120,61 @@ function looksLikeOneShotCheck(table: Record<string, unknown>, name: string, vis
     }
     // npm also runs the matching pre and post scripts, so they must pass too.
     for (const hook of [`pre${name}`, `post${name}`]) {
-      if (Object.hasOwn(table, hook) && !looksLikeOneShotCheck(table, hook, visiting)) return false;
+      if (Object.hasOwn(table, hook) && !looksLikeOneShotCheck(table, hook, visiting, false)) return false;
     }
     return true;
   } finally {
     visiting.delete(name);
   }
+}
+
+/** Executables that only set the environment and then run the rest of their arguments. */
+const ENV_WRAPPERS = new Set(['cross-env', 'env']);
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const MAX_UNWRAP_DEPTH = 4;
+
+function withoutLeadingFlags(args: readonly string[]): readonly string[] {
+  const first = args.findIndex((arg) => !arg.startsWith('-'));
+  return first < 0 ? [] : args.slice(first);
+}
+
+/**
+ * The command a wrapper such as `cross-env NODE_ENV=test ng test` really
+ * runs, so the watch and server rules see `ng test`. Returns null when the
+ * wrapped command cannot be found, which callers treat as unsafe.
+ */
+function unwrapInvocation(invocation: ShellInvocation): ShellInvocation | null {
+  let current = invocation;
+  for (let depth = 0; depth < MAX_UNWRAP_DEPTH; depth += 1) {
+    const executable = baseName(current.executable);
+    let rest: readonly string[];
+    if (ENV_WRAPPERS.has(executable)) {
+      let index = 0;
+      while (index < current.args.length && (ENV_ASSIGNMENT.test(current.args[index] ?? '') || (current.args[index] ?? '').startsWith('-'))) {
+        // These env flags take a value, which would be mistaken for the command.
+        if (/^(-[uCS]|--(unset|chdir|split-string))/.test(current.args[index] ?? '')) return null;
+        index += 1;
+      }
+      rest = current.args.slice(index);
+    } else if (executable === 'cross-env-shell') {
+      return null;
+    } else if (executable === 'dotenv') {
+      // dotenv-cli options can take values, so only `--` marks the command reliably.
+      const separator = current.args.indexOf('--');
+      if (separator < 0) return null;
+      rest = current.args.slice(separator + 1);
+    } else if (executable === 'npx' || executable === 'bunx' || executable === 'pnpx') {
+      rest = withoutLeadingFlags(current.args);
+    } else if ((executable === 'pnpm' || executable === 'yarn') && current.args[0] === 'dlx') {
+      rest = withoutLeadingFlags(current.args.slice(1));
+    } else {
+      return current;
+    }
+    const [next, ...args] = rest;
+    if (next === undefined) return null;
+    current = { executable: next, args };
+  }
+  return null;
 }
 
 /** npm's generated `echo "Error: no test specified" && exit 1` and variants of it. */
