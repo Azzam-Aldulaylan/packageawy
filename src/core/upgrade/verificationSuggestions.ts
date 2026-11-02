@@ -43,7 +43,10 @@ const ALWAYS_LONG_RUNNING = new Set([
 ]);
 
 /** Subcommands that start a dev server or a watcher in common CLIs. */
-const LONG_RUNNING_SUBCOMMANDS = new Set(['dev', 'develop', 'serve', 'start', 'watch', 'preview']);
+const LONG_RUNNING_SUBCOMMANDS = new Set(['dev', 'develop', 'serve', 'start', 'watch', 'preview', 'open']);
+
+/** Flags that open an interactive runner or wait for a debugger instead of exiting. */
+const INTERACTIVE_FLAG = /^--(ui|open|debug|inspect-brk|interactive)(=.*)?$/;
 
 /** Executables whose test command watches by default unless told otherwise. */
 const WATCHING_TEST_RUNNERS = new Set(['ng', 'react-scripts', 'craco', 'react-app-rewired']);
@@ -226,7 +229,7 @@ function invocationLooksLongRunning(invocation: ShellInvocation): boolean {
   const executable = baseName(invocation.executable);
   const { args } = invocation;
   if (ALWAYS_LONG_RUNNING.has(executable)) return true;
-  if (args.some(isWatchFlag)) return true;
+  if (args.some(isWatchFlag) || args.some((arg) => INTERACTIVE_FLAG.test(arg))) return true;
   const positional = args.filter((arg) => !arg.startsWith('-'));
   if (positional.some((arg) => LONG_RUNNING_SUBCOMMANDS.has(arg))) return true;
 

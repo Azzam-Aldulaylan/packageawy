@@ -234,3 +234,13 @@ test('package-manager exec is unwrapped behind other wrappers too', () => {
   assert.deepEqual(suggest({ test: 'cross-env CI=1 yarn dlx vitest' }), []);
   assert.deepEqual(suggest({ test: 'cross-env NODE_ENV=test npm exec -- jest' }), ['test']);
 });
+
+test('interactive runner modes are not suggested', () => {
+  assert.deepEqual(suggest({ test: 'playwright test --ui' }), []);
+  assert.deepEqual(suggest({ test: 'playwright test --debug' }), []);
+  assert.deepEqual(suggest({ test: 'cypress open' }), []);
+  assert.deepEqual(suggest({ test: 'vitest run --ui' }), []);
+  assert.deepEqual(suggest({ test: 'node --inspect-brk --test' }), []);
+  assert.deepEqual(suggest({ test: 'playwright test' }), ['test']);
+  assert.deepEqual(suggest({ test: 'cypress run' }), ['test']);
+});
