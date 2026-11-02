@@ -451,7 +451,6 @@ export function ManageDependencyModal({
         allRows={allRows}
         remediation={remediation}
         actionsDisabled={upgradeDisabled}
-        updateResolutionAvailable={quarantineDerivedData ? false : updateResolutionAvailable}
         advisoriesAvailable={quarantineDerivedData ? false : advisoriesAvailable}
         onOpenAdvisory={onOpenAdvisory}
         onStartUpgradeReview={(target) => startUpgradeReview(row.name, target)}

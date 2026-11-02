@@ -2,7 +2,6 @@ import { useState } from 'react';
 import type { ReactElement } from 'react';
 
 import type { PackageRow, Severity } from '../../../src/core/types.js';
-import { classifyRowUpdate } from '../../../src/host/updateClassification.js';
 import type { ActionState, TransitiveRemediationUiState as LegacyTransitiveRemediationUiState } from '../../../src/host/upgradeAction.js';
 import { hasEligibleTransitiveFix, resolveActionState } from '../../../src/host/upgradeAction.js';
 import {
@@ -28,11 +27,6 @@ const SEVERITY_LABEL: Record<Severity, string> = {
   low: 'Low',
   info: 'Info',
 };
-const UPDATE_KIND_LABEL: Record<'major' | 'minor' | 'patch', string> = {
-  major: 'Major',
-  minor: 'Minor',
-  patch: 'Patch',
-};
 
 type SeverityFilter = 'all' | Severity;
 
@@ -46,16 +40,6 @@ function legacyRemediationState(state: TransitiveFixUiState | undefined): Legacy
     phase: 'done',
     status: outcome === 'full' || outcome === 'partial' ? 'resolved' : outcome === 'unavailable' ? 'unknown' : 'remains',
   };
-}
-
-/** A compact "label / value" row: same shape as OverviewPanel's GlanceRow, kept local since it's a 4-line pure helper duplicated per-panel throughout this workspace rather than shared. */
-function GlanceRow({ label, children }: { label: string; children: ReactElement | string }): ReactElement {
-  return (
-    <div className="manage-glance__row">
-      <dt>{label}</dt>
-      <dd>{children}</dd>
-    </div>
-  );
 }
 
 /** Worst-first severity totals present on this row, never a zero count. */
@@ -84,6 +68,9 @@ function VulnerabilityDetailCard({
   onOpenAdvisory: OpenAdvisoryHandler;
 }): ReactElement {
   const identifiers = vulnerabilityIdentifiers(context.advisory);
+  // When the advisory is on the direct dependency itself, the path and the
+  // direct dependency would only repeat the flagged package.
+  const transitive = context.primaryPath.length > 1 || context.directRoots.some((root) => root.packageName !== context.flaggedPackage);
   return (
     <li className={`vuln-card vuln-card--${context.advisory.severity}`}>
       <div className="vuln-card__head">
@@ -124,32 +111,36 @@ function VulnerabilityDetailCard({
             {patchedVersionText(context.patchedVersion)}
           </dd>
         </div>
-        <div className="vuln-card__meta-col">
-          <dt>{context.primaryPath.length > 1 ? 'Primary dependency path' : 'Package'}</dt>
-          <dd className="vuln-card__path">
-            {context.primaryPath.map((segment, index) => (
-              <span className="vuln-card__path-segment" key={`${segment}-${index}`}>
-                {index > 0 ? (
-                  <span className="vuln-card__path-arrow" aria-hidden="true">
-                    →
-                  </span>
-                ) : null}
-                {segment}
-              </span>
-            ))}
-          </dd>
-        </div>
-        <div className="vuln-card__meta-col">
-          <dt>Direct {context.directRoots.length === 1 ? 'dependency' : 'dependencies'}</dt>
-          <dd className="vuln-card__roots">
-            {context.directRoots.map((root) => (
-              <code key={root.packageName}>
-                {root.packageName}{root.version === null ? '' : `@${root.version}`}
-                {root.pathCount > 1 ? ` · ${root.pathCount} paths` : ''}
-              </code>
-            ))}
-          </dd>
-        </div>
+        {transitive ? (
+          <div className="vuln-card__meta-col">
+            <dt>Primary dependency path</dt>
+            <dd className="vuln-card__path">
+              {context.primaryPath.map((segment, index) => (
+                <span className="vuln-card__path-segment" key={`${segment}-${index}`}>
+                  {index > 0 ? (
+                    <span className="vuln-card__path-arrow" aria-hidden="true">
+                      →
+                    </span>
+                  ) : null}
+                  {segment}
+                </span>
+              ))}
+            </dd>
+          </div>
+        ) : null}
+        {transitive ? (
+          <div className="vuln-card__meta-col">
+            <dt>Direct {context.directRoots.length === 1 ? 'dependency' : 'dependencies'}</dt>
+            <dd className="vuln-card__roots">
+              {context.directRoots.map((root) => (
+                <code key={root.packageName}>
+                  {root.packageName}{root.version === null ? '' : `@${root.version}`}
+                  {root.pathCount > 1 ? ` · ${root.pathCount} paths` : ''}
+                </code>
+              ))}
+            </dd>
+          </div>
+        ) : null}
       </dl>
       {context.paths.length > 1 ? (
         <details className="vuln-card__paths">
@@ -272,7 +263,6 @@ export function VulnerabilitiesPanel({
   allRows,
   remediation,
   actionsDisabled,
-  updateResolutionAvailable,
   advisoriesAvailable,
   onOpenAdvisory,
   onStartUpgradeReview,
@@ -286,7 +276,6 @@ export function VulnerabilitiesPanel({
   allRows: readonly PackageRow[];
   remediation: TransitiveFixUiState | undefined;
   actionsDisabled: boolean;
-  updateResolutionAvailable: boolean;
   advisoriesAvailable: boolean;
   onOpenAdvisory: OpenAdvisoryHandler;
   onStartUpgradeReview: (target: string) => void;
@@ -321,9 +310,7 @@ export function VulnerabilitiesPanel({
   const total = contexts.length;
   const worstPresent = counts[0]?.[0] ?? 'info';
   const filtered = filter === 'all' ? contexts : contexts.filter((context) => context.advisory.severity === filter);
-  const updateKind = classifyRowUpdate(row);
   const actionState = resolveActionState(row, legacyRemediationState(remediation));
-  const needsAttention = worstPresent === 'critical' || worstPresent === 'high';
   const remediationExpanded =
     remediation?.phase === 'applying' ||
     remediation?.phase === 'stale' ||
@@ -354,24 +341,6 @@ export function VulnerabilitiesPanel({
               </li>
             ))}
           </ul>
-        </section>
-
-        <section className="manage-summary-block" aria-labelledby="vuln-at-a-glance-heading">
-          <h3 className="manage-section-heading" id="vuln-at-a-glance-heading">
-            At a glance
-          </h3>
-          <dl className="manage-glance">
-            <GlanceRow label="Installed version">{row.current ?? row.range}</GlanceRow>
-            <GlanceRow label="Latest version">{updateResolutionAvailable ? row.latest ?? '—' : 'Unavailable'}</GlanceRow>
-            <GlanceRow label="Update available">
-              {!updateResolutionAvailable ? 'Unavailable' : row.upgradeTo === null ? 'None' : updateKind !== null ? UPDATE_KIND_LABEL[updateKind] : 'Yes'}
-            </GlanceRow>
-            <GlanceRow label="Status">
-              <span className={`status-badge status-badge--${needsAttention ? 'warning' : 'neutral'}`}>
-                {needsAttention ? 'Needs attention' : 'Review recommended'}
-              </span>
-            </GlanceRow>
-          </dl>
         </section>
 
         <RecommendedActionCard
