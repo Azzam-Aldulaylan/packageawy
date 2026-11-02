@@ -46,7 +46,7 @@ test('Manage dependency routes removal failures into the open Removal Review', (
   assert.match(manage, /error=\{removal\.error\}/);
   assert.match(review, /error: \{ code: string; message: string \} \| null/);
   assert.match(review, /Removal blocked by a peer dependency/);
-  assert.match(review, /Keep this package, or remove the package that requires it/);
+  assert.doesNotMatch(review, /Keep this package, or remove the package that requires it/);
 });
 
 test('the untouched removal state explains the analysis and confirmation boundary', () => {
@@ -160,7 +160,7 @@ test('Removal Review and Manage tabs use semantic accents without changing tab b
   for (const id of ['overview', 'vulnerabilities', 'usage', 'upgrade', 'removal']) {
     assert.match(styles, new RegExp(`\\.manage-tabs__tab--${id}\\s*\\{`));
   }
-  for (const modifier of ['glance', 'checks', 'package', 'impact', 'files', 'verification']) {
+  for (const modifier of ['checks', 'package', 'impact', 'files', 'verification']) {
     assert.match(review, new RegExp(`removal-card--${modifier}`));
   }
   assert.match(styles, /\.removal-summary-card--compatible/);

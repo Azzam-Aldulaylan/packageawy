@@ -4676,10 +4676,6 @@ button {
   --removal-card-accent: var(--vscode-charts-purple, #a78bfa);
 }
 
-.removal-card--glance {
-  --removal-card-accent: var(--vscode-charts-purple, #a78bfa);
-}
-
 .removal-card--checks {
   --removal-card-accent: var(--vscode-charts-blue, #3794ff);
 }
@@ -4730,12 +4726,6 @@ button {
 
 .removal-recommended__references {
   margin-top: 0;
-}
-
-.removal-recommended__cta {
-  align-self: stretch;
-  justify-content: center;
-  margin-top: 0.1rem;
 }
 
 .removal-check {
