@@ -307,7 +307,11 @@ const UpgradeReviewDetails = memo(function UpgradeReviewDetails({
         value={verification.value}
         tone={verification.tone}
       >
-        <VerificationStepsCard verification={analysis.verification} onConfigureVerification={onConfigureVerification} />
+        <VerificationStepsCard
+          analysisId={analysis.analysisId}
+          verification={analysis.verification}
+          onConfigureVerification={onConfigureVerification}
+        />
       </UpgradeReviewDisclosure>
     </div>
   );

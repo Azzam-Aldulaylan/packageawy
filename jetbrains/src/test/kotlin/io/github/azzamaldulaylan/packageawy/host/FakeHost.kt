@@ -2,6 +2,8 @@ package io.github.azzamaldulaylan.packageawy.host
 
 import com.google.gson.JsonElement
 import io.github.azzamaldulaylan.packageawy.rpc.CancelSignal
+import io.github.azzamaldulaylan.packageawy.rpc.ErrorCodes
+import io.github.azzamaldulaylan.packageawy.rpc.ResponseError
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
@@ -17,6 +19,7 @@ class FakeHost : HostServices {
     var holdQuickPick = false
     var failProcessStart = false
     var hasRepository = true
+    var trusted = true
     val openWatches = CopyOnWriteArrayList<String>()
 
     override fun showMessage(severity: Severity, message: String) {
@@ -58,6 +61,11 @@ class FakeHost : HostServices {
 
     override fun openSettings(key: String) {
         events.add("openSettings:$key")
+    }
+
+    override fun rememberVerificationScripts(names: List<String>) {
+        if (!trusted) throw ResponseError(ErrorCodes.INVALID_REQUEST, "untrusted")
+        events.add("remember:${names.joinToString("|")}")
     }
 
     override fun startProgress(id: String, title: String, onCancel: () -> Unit) {

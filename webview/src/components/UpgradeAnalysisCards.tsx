@@ -23,6 +23,7 @@ import type { ManageTabId } from './ManageDependencyModal.js';
 import { overallStatusDetail } from './UpgradeAnalysisModal.js';
 import { SeverityBadge } from './SeverityBadge.js';
 import { InfoTooltip } from './Tooltip.js';
+import { QueuedScriptSteps, useVerificationOptIn, VerificationSuggestions } from './VerificationSuggestions.js';
 import { patchedVersionText, VulnerabilityIdentifierLinks } from './VulnerabilityCard.js';
 
 /**
@@ -533,12 +534,16 @@ export function SecurityOutcomeCard({
  * the transaction has started.
  */
 export function VerificationStepsCard({
+  analysisId,
   verification,
   onConfigureVerification,
 }: {
+  /** Undefined while the review is still loading. Detected scripts become selectable once it has an id. */
+  analysisId?: string | undefined;
   verification: UpgradeAnalysisVerification;
   onConfigureVerification: () => void;
 }): ReactElement {
+  const { selected } = useVerificationOptIn(analysisId, verification);
   return (
     <section className="analysis-card" aria-labelledby="upgrade-verification-heading">
       <h3 className="analysis-card__title" id="upgrade-verification-heading">
@@ -551,22 +556,18 @@ export function VerificationStepsCard({
           <span>Install dependencies</span>
           <span className="status-badge status-badge--neutral">Queued</span>
         </li>
-        {verification.configured
-          ? verification.scriptNames.map((name) => (
-              <li className="verification-steps__item" key={name}>
-                <span>
-                  Run <code>{name}</code>
-                </span>
-                <span className="status-badge status-badge--neutral">Queued</span>
-              </li>
-            ))
-          : (
-            <li className="verification-steps__item">
-              <span>Build / test verification</span>
-              <span className="status-badge status-badge--warning">Not configured</span>
-            </li>
-          )}
+        {verification.configured ? (
+          <QueuedScriptSteps names={verification.scriptNames} />
+        ) : selected.length > 0 ? (
+          <QueuedScriptSteps names={selected} />
+        ) : (
+          <li className="verification-steps__item">
+            <span>Build / test verification</span>
+            <span className="status-badge status-badge--warning">Not configured</span>
+          </li>
+        )}
       </ul>
+      <VerificationSuggestions analysisId={analysisId} verification={verification} actionLabel="this upgrade" />
       {!verification.configured ? (
         <button type="button" className="button button--secondary verification__configure" onClick={onConfigureVerification}>
           <IconGear />

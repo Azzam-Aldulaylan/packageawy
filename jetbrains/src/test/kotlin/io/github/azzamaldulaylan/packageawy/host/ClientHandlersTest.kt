@@ -75,6 +75,35 @@ class ClientHandlersTest {
     }
 
     @Test
+    fun `settings update stores only validated verification scripts`() {
+        assertNull(call("settings/update", mapOf("key" to "upgrade.verificationScripts", "value" to listOf("build", "test"))))
+        assertEquals("remember:build|test", nextEvent())
+
+        val invalid = listOf(
+            mapOf("key" to "upgrade.ignoreScripts", "value" to false),
+            mapOf("key" to "upgrade.verificationScripts", "value" to "build"),
+            mapOf("key" to "upgrade.verificationScripts", "value" to listOf("--help")),
+            mapOf("key" to "upgrade.verificationScripts", "value" to listOf("a b")),
+            mapOf("key" to "upgrade.verificationScripts", "value" to listOf("build", "build")),
+            mapOf("key" to "upgrade.verificationScripts", "value" to (1..9).map { "s$it" }),
+            mapOf("key" to "upgrade.verificationScripts", "value" to listOf(1)),
+            mapOf("value" to listOf("build")),
+        )
+        for (params in invalid) assertEquals(ErrorCodes.INVALID_PARAMS, errorOf("settings/update", params), params.toString())
+        assertTrue(host.events.isEmpty())
+    }
+
+    @Test
+    fun `settings update is refused for an untrusted project`() {
+        host.trusted = false
+        assertEquals(
+            ErrorCodes.INVALID_REQUEST,
+            errorOf("settings/update", mapOf("key" to "upgrade.verificationScripts", "value" to listOf("build"))),
+        )
+        assertTrue(host.events.isEmpty())
+    }
+
+    @Test
     fun `files find returns absolute paths`() {
         Files.writeString(dir.resolve("package.json"), "{}")
         val folder = mapOf("id" to dir.toUri().toString(), "name" to "x", "path" to dir.toString())

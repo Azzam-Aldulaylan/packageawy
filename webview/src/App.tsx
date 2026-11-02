@@ -67,6 +67,12 @@ import { SummaryCards } from './components/SummaryCards.js';
 import { SmartCleanupWorkspace } from './components/SmartCleanupWorkspace.js';
 import { StatusBanner } from './components/StatusBanner.js';
 import { UpgradeAnalysisModal } from './components/UpgradeAnalysisModal.js';
+import {
+  confirmVerificationFields,
+  EMPTY_VERIFICATION_OPT_IN,
+  VerificationOptInContext,
+} from './components/VerificationSuggestions.js';
+import type { VerificationOptInSelection, VerificationOptInStore } from './components/VerificationSuggestions.js';
 import type { UpgradeTargetLoadState } from './components/UpgradeTargetSelector.js';
 import type { UsageRequestState } from './components/UsageReferencesPanel.js';
 import { IconBrand, IconBroom, IconListChecks, IconRefresh } from './icons.js';
@@ -138,6 +144,21 @@ interface UpgradeErrorState {
 
 export function App(): ReactElement {
   const [message, setMessage] = useState<HostToWebviewMessage | undefined>(undefined);
+  // Per-analysis choices among host-suggested verification scripts. Keyed by
+  // host-issued analysis id, so a new review always starts unchecked.
+  const [verificationOptIns, setVerificationOptIns] = useState<ReadonlyMap<string, VerificationOptInSelection>>(
+    () => new Map()
+  );
+  const verificationOptInsRef = useRef(verificationOptIns);
+  verificationOptInsRef.current = verificationOptIns;
+  const verificationOptInStore = useMemo<VerificationOptInStore>(() => ({
+    selectionFor: (analysisId) => verificationOptIns.get(analysisId) ?? EMPTY_VERIFICATION_OPT_IN,
+    update: (analysisId, selection) => {
+      setVerificationOptIns((previous) => new Map(previous).set(analysisId, selection));
+    },
+  }), [verificationOptIns]);
+  const optInFor = useCallback((analysisId: string): VerificationOptInSelection =>
+    verificationOptInsRef.current.get(analysisId) ?? EMPTY_VERIFICATION_OPT_IN, []);
   const [scanProgress, setScanProgress] = useState<{
     stage: ScanProgressStage;
     completed?: number;
@@ -1369,14 +1390,22 @@ export function App(): ReactElement {
   const requestConfirmUpgrade = useCallback(() => {
     if (analysis === null) return;
     setConfirmBusy(true);
-    vscode.postMessage({ type: 'confirm-upgrade', analysisId: analysis.analysisId });
-  }, [analysis]);
+    vscode.postMessage({
+      type: 'confirm-upgrade',
+      analysisId: analysis.analysisId,
+      ...confirmVerificationFields(analysis.verification, optInFor(analysis.analysisId)),
+    });
+  }, [analysis, optInFor]);
 
   const requestUseSmartPlan = useCallback(() => {
     if (analysis === null) return;
     setConfirmBusy(true);
-    vscode.postMessage({ type: 'use-smart-plan', analysisId: analysis.analysisId });
-  }, [analysis]);
+    vscode.postMessage({
+      type: 'use-smart-plan',
+      analysisId: analysis.analysisId,
+      ...confirmVerificationFields(analysis.verification, optInFor(analysis.analysisId)),
+    });
+  }, [analysis, optInFor]);
 
   // Closes the modal immediately, client-side, rather than waiting on a host
   // round trip: cancelling mutates nothing, so there's nothing to wait for.
@@ -1464,8 +1493,12 @@ export function App(): ReactElement {
   const requestConfirmRemove = useCallback(() => {
     if (removeAnalysis === null) return;
     setRemoveBusy(true);
-    vscode.postMessage({ type: 'confirm-remove', analysisId: removeAnalysis.analysisId });
-  }, [removeAnalysis]);
+    vscode.postMessage({
+      type: 'confirm-remove',
+      analysisId: removeAnalysis.analysisId,
+      ...confirmVerificationFields(removeAnalysis.verification, optInFor(removeAnalysis.analysisId)),
+    });
+  }, [removeAnalysis, optInFor]);
 
   // Same immediate-client-side-close discipline as requestCancelUpgrade.
   // When this review was opened from Manage (removeOrigin ===
@@ -1571,7 +1604,13 @@ export function App(): ReactElement {
     });
   }, []);
 
+  const remediationByPackageRef = useRef(remediationByPackage);
+  remediationByPackageRef.current = remediationByPackage;
+
   const requestApplyRemediation = useCallback((analysisId: string) => {
+    const reviewedPlan = [...remediationByPackageRef.current.values()]
+      .map(remediationPlanFromState)
+      .find((plan) => plan?.analysisId === analysisId);
     setRemediationByPackage((previous) => {
       const entry = [...previous.entries()].find(([, state]) => remediationPlanFromState(state)?.analysisId === analysisId);
       if (entry === undefined) return previous;
@@ -1582,8 +1621,14 @@ export function App(): ReactElement {
       next.set(packageName, { phase: 'applying', plan, progress: 'preparing', cancelRequested: false });
       return next;
     });
-    vscode.postMessage({ type: 'confirm-remediation', analysisId });
-  }, []);
+    vscode.postMessage({
+      type: 'confirm-remediation',
+      analysisId,
+      ...(reviewedPlan === undefined || reviewedPlan === null
+        ? {}
+        : confirmVerificationFields(reviewedPlan.verification, optInFor(analysisId))),
+    });
+  }, [optInFor]);
 
   const requestCancelRemediation = useCallback((analysisId: string) => {
     setRemediationByPackage((previous) => {
@@ -2150,8 +2195,12 @@ export function App(): ReactElement {
       total: snapshot.actionIds.length,
       currentLabel: 'Applying the reviewed cleanup actions…',
     });
-    vscode.postMessage({ type: 'confirm-remove', analysisId });
-  }, [removeAnalysis]);
+    vscode.postMessage({
+      type: 'confirm-remove',
+      analysisId,
+      ...confirmVerificationFields(removeAnalysis.verification, optInFor(analysisId)),
+    });
+  }, [removeAnalysis, optInFor]);
 
   const keepDependencyFromSmartCleanupConfirmation = useCallback((actionId: string) => {
     const snapshot = smartCleanupExecutionRef.current;
@@ -2203,6 +2252,7 @@ export function App(): ReactElement {
     cleanupState.phase === 'analyzing';
 
   return (
+    <VerificationOptInContext.Provider value={verificationOptInStore}>
     <main className="dashboard">
       <header className="dashboard__header">
         <div className="dashboard__identity">
@@ -2501,6 +2551,7 @@ export function App(): ReactElement {
         />
       ) : null}
     </main>
+    </VerificationOptInContext.Provider>
   );
 }
 

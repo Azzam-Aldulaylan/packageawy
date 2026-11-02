@@ -26,8 +26,11 @@ import com.intellij.ui.jcef.JBCefApp
 import com.intellij.util.EnvironmentUtil
 import com.intellij.util.concurrency.AppExecutorUtil
 import io.github.azzamaldulaylan.packageawy.host.ClientHandlers
+import io.github.azzamaldulaylan.packageawy.settings.PackageawyProjectSettings
 import io.github.azzamaldulaylan.packageawy.settings.PackageawySettings
+import io.github.azzamaldulaylan.packageawy.settings.ProjectSettingsListener
 import io.github.azzamaldulaylan.packageawy.settings.SettingsListener
+import io.github.azzamaldulaylan.packageawy.settings.SettingsState
 import io.github.azzamaldulaylan.packageawy.sidecar.Initialize
 import io.github.azzamaldulaylan.packageawy.sidecar.NodeLocator
 import io.github.azzamaldulaylan.packageawy.sidecar.SidecarProcess
@@ -159,7 +162,7 @@ class PackageawyProject(private val project: Project) : Disposable {
         val params = Initialize.params(
             folders,
             TrustedProjects.isProjectTrusted(project),
-            PackageawySettings.getInstance().state.snapshot(),
+            settingsSnapshot(PackageawySettings.getInstance().state),
             workspaceState.snapshot(),
             GlobalState.getInstance().file.snapshot(),
         )
@@ -183,7 +186,7 @@ class PackageawyProject(private val project: Project) : Disposable {
         val connection = current.sidecar.connection
         val app = ApplicationManager.getApplication().messageBus.connect(current.scope)
         app.subscribe(SettingsListener.TOPIC, SettingsListener { state ->
-            connection.sendNotification("settings/didChange", mapOf("settings" to state.snapshot()))
+            connection.sendNotification("settings/didChange", mapOf("settings" to settingsSnapshot(state)))
         })
         app.subscribe(TrustedProjectsListener.TOPIC, object : TrustedProjectsListener {
             override fun onProjectTrusted(project: Project) = trustChanged(project, true)
@@ -194,6 +197,9 @@ class PackageawyProject(private val project: Project) : Disposable {
                     connection.sendNotification("workspace/didChangeTrust", mapOf("isWorkspaceTrusted" to trusted))
                 }
             }
+        })
+        project.messageBus.connect(current.scope).subscribe(ProjectSettingsListener.TOPIC, ProjectSettingsListener {
+            connection.sendNotification("settings/didChange", mapOf("settings" to settingsSnapshot(PackageawySettings.getInstance().state)))
         })
         project.messageBus.connect(current.scope).subscribe(ModuleRootListener.TOPIC, object : ModuleRootListener {
             override fun rootsChanged(event: ModuleRootEvent) {
@@ -245,6 +251,10 @@ class PackageawyProject(private val project: Project) : Disposable {
             .addAction(NotificationAction.createSimpleExpiring("Restart") { restart() })
             .notify(project)
     }
+
+    /** The IDE-wide settings with this project's overrides applied. */
+    private fun settingsSnapshot(app: SettingsState): Map<String, Any> =
+        app.snapshot(PackageawyProjectSettings.getInstance(project).state.verificationScriptsOverride())
 
     private fun workspaceFolders(): List<WorkspaceFolder> {
         val roots = ReadAction.computeBlocking<List<Path>, RuntimeException> {

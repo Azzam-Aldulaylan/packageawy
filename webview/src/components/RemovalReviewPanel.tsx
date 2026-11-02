@@ -26,6 +26,7 @@ import type { RemovalImpactState } from '../removalImpactState.js';
 import { OutcomeStatus } from './OutcomeStatus.js';
 import { DirectionalButton } from './DirectionalButton.js';
 import type { UsageRequestState } from './UsageReferencesPanel.js';
+import { QueuedScriptSteps, useVerificationOptIn, VerificationSuggestions } from './VerificationSuggestions.js';
 
 type CheckTone = 'ok' | 'warning' | 'blocked' | 'unknown';
 
@@ -427,12 +428,15 @@ function FilesModifiedCard({ files }: { files: RemoveAnalysisFiles }): ReactElem
 }
 
 function VerificationStepsCard({
+  analysisId,
   verification,
   onConfigureVerification,
 }: {
+  analysisId: string;
   verification: UpgradeAnalysisVerification;
   onConfigureVerification: () => void;
 }): ReactElement {
+  const { selected } = useVerificationOptIn(analysisId, verification);
   return (
     <section className="analysis-card removal-card removal-card--verification" aria-labelledby="removal-verification-heading">
       <h3 className="analysis-card__title" id="removal-verification-heading">
@@ -446,14 +450,9 @@ function VerificationStepsCard({
           <span className="status-badge status-badge--neutral">Queued</span>
         </li>
         {verification.configured ? (
-          verification.scriptNames.map((name) => (
-            <li className="verification-steps__item" key={name}>
-              <span>
-                Run <code>{name}</code>
-              </span>
-              <span className="status-badge status-badge--neutral">Queued</span>
-            </li>
-          ))
+          <QueuedScriptSteps names={verification.scriptNames} />
+        ) : selected.length > 0 ? (
+          <QueuedScriptSteps names={selected} />
         ) : (
           <li className="verification-steps__item">
             <span>Build / test verification</span>
@@ -461,6 +460,7 @@ function VerificationStepsCard({
           </li>
         )}
       </ul>
+      <VerificationSuggestions analysisId={analysisId} verification={verification} actionLabel="this removal" />
       {!verification.configured ? (
         <button type="button" className="button button--secondary verification__configure" onClick={onConfigureVerification}>
           <IconGear />
@@ -653,7 +653,11 @@ export function RemovalReviewPanel({
           <ImpactAfterRemovalCard analysis={analysis} assessment={assessment} usage={usage} />
           <div className="removal-tab__bottom-grid">
             <FilesModifiedCard files={analysis.files} />
-            <VerificationStepsCard verification={analysis.verification} onConfigureVerification={onConfigureVerification} />
+            <VerificationStepsCard
+              analysisId={analysis.analysisId}
+              verification={analysis.verification}
+              onConfigureVerification={onConfigureVerification}
+            />
           </div>
         </div>
       </div>

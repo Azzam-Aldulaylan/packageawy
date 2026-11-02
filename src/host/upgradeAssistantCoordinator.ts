@@ -112,7 +112,9 @@ import {
 import { UpgradeExecutionSession } from './upgradeRunner.js';
 import { OperationReservation, SourceGenerationGuard } from './operationReservation.js';
 import { runUpgradeTransaction } from './upgradeTransaction.js';
-import { selectVerificationScripts } from './verificationPolicy.js';
+import { selectVerificationScripts, suggestVerificationScriptNames } from './verificationPolicy.js';
+import { applyVerificationOptIn } from './verificationOptIn.js';
+import type { VerificationOptInRequest } from './verificationOptIn.js';
 import type { VerificationScript } from './verificationPolicy.js';
 import { smartCleanupProjectCapability } from './smartCleanupProjectCapability.js';
 import type {
@@ -187,11 +189,11 @@ export interface RemediationBatchMessage {
   packages: string[];
 }
 
-export interface RemediationAnalysisMessage {
+export interface RemediationAnalysisMessage extends VerificationOptInRequest {
   analysisId: string;
 }
 
-export interface AnalysisMessage {
+export interface AnalysisMessage extends VerificationOptInRequest {
   analysisId: string;
 }
 
@@ -290,6 +292,11 @@ function defaultGetUpgradeConfiguration(platform: HostPlatform): { ignoreScripts
     ignoreScripts: platform.getSetting<boolean>('upgrade.ignoreScripts', true),
     verificationScripts: platform.getSetting<unknown[]>('upgrade.verificationScripts', []),
   };
+}
+
+/** Suggestions are offered only when the setting selected nothing for this manifest. */
+function verificationSuggestionsFor(manifestText: string, configured: readonly VerificationScript[]): string[] {
+  return configured.length > 0 ? [] : suggestVerificationScriptNames(manifestText);
 }
 
 function toProtocolError(cause: unknown): ProtocolError {
@@ -411,6 +418,8 @@ interface StoredAnalysis {
   smartPlanProposal: UpgradeProposal | null;
   ignoreScripts: boolean;
   verificationScripts: VerificationScript[];
+  /** Offered as one-run opt-ins only when `verificationScripts` is empty. */
+  suggestedScriptNames: string[];
   /** Source/config evidence consumed by project compatibility, re-read before execution. */
   projectCompatibilityEvidenceFingerprint: string | null;
   expiresAt: number;
@@ -427,6 +436,8 @@ interface StoredRemoval {
   snapshot: ResolvedProject;
   ignoreScripts: boolean;
   verificationScripts: VerificationScript[];
+  /** Offered as one-run opt-ins only when `verificationScripts` is empty. */
+  suggestedScriptNames: string[];
   /** Present only for Smart Cleanup. Generic removal reviews remain unchanged. */
   smartCleanupEvidence?: SmartCleanupRemovalEvidence;
   smartCleanupDedupeEvidence?: SmartCleanupDedupeEvidence;
@@ -468,6 +479,8 @@ interface StoredRemediationPlan {
   packageManagerVersion: string | null;
   ignoreScripts: boolean;
   verificationScripts: VerificationScript[];
+  /** Offered as one-run opt-ins only when `verificationScripts` is empty. */
+  suggestedScriptNames: string[];
   plan: TransitiveRemediationPlan;
   presentation: TransitiveRemediationPlanSummary;
   expiresAt: number;
@@ -1120,6 +1133,7 @@ export class UpgradeAssistantCoordinator {
       // network or resolver work, so it can post immediately. ---
       const upgradeConfiguration = this.getUpgradeConfiguration();
       const verificationScripts = selectVerificationScripts(source.manifestText, upgradeConfiguration.verificationScripts);
+      const suggestedScriptNames = verificationSuggestionsFor(source.manifestText, verificationScripts);
 
       const manifestPath = path.join(controller.root, 'package.json');
       const expectedLockfilePath =
@@ -1151,7 +1165,10 @@ export class UpgradeAssistantCoordinator {
           classification: eligibility.classification,
           majorUpdate: isMajorUpgrade(eligibility.currentVersion, eligibility.target),
           changes: overviewChanges,
-          verification: buildUpgradeAnalysisVerification(verificationScripts.map((script) => script.scriptName)),
+          verification: buildUpgradeAnalysisVerification(
+            verificationScripts.map((script) => script.scriptName),
+            suggestedScriptNames
+          ),
           files: buildUpgradeAnalysisFiles(manifestPath, expectedLockfilePath),
         },
       });
@@ -1529,6 +1546,7 @@ export class UpgradeAssistantCoordinator {
         smartPlanProposal,
         ignoreScripts: upgradeConfiguration.ignoreScripts,
         verificationScripts,
+        suggestedScriptNames,
         projectCompatibilityEvidenceFingerprint:
           projectEvidence.evidenceFingerprint === 'unavailable' ? null : projectEvidence.evidenceFingerprint,
         expiresAt,
@@ -1561,6 +1579,7 @@ export class UpgradeAssistantCoordinator {
           security,
           smartPlan,
           verificationScriptNames: verificationScripts.map((script) => script.scriptName),
+          suggestedScriptNames,
           manifestPath,
           lockfilePath: expectedLockfilePath,
         }),
@@ -1603,11 +1622,11 @@ export class UpgradeAssistantCoordinator {
   }
 
   async handleConfirmUpgrade(message: AnalysisMessage): Promise<void> {
-    await this.executeStoredAnalysis(message.analysisId, false);
+    await this.executeStoredAnalysis(message.analysisId, false, message);
   }
 
   async handleUseSmartPlan(message: AnalysisMessage): Promise<void> {
-    await this.executeStoredAnalysis(message.analysisId, true);
+    await this.executeStoredAnalysis(message.analysisId, true, message);
   }
 
   handleCancelUpgrade(message: CancelUpgradeMessage): void {
@@ -1944,6 +1963,7 @@ export class UpgradeAssistantCoordinator {
       const ignoreScripts = this.options.platform.getSetting<boolean>('upgrade.ignoreScripts', true);
       const configuredVerification = this.options.platform.getSetting<unknown[]>('upgrade.verificationScripts', []);
       const verificationScripts = selectVerificationScripts(source.manifestText, configuredVerification);
+      const suggestedScriptNames = verificationSuggestionsFor(source.manifestText, verificationScripts);
 
       const analysisId = randomBytes(16).toString('hex');
       const smartCleanupSnapshot = smartCleanup === undefined ? null : controller.lastResultSnapshot?.() ?? null;
@@ -1981,6 +2001,7 @@ export class UpgradeAssistantCoordinator {
         snapshot: preflightProject,
         ignoreScripts,
         verificationScripts,
+        suggestedScriptNames,
         ...(smartCleanup?.evidence === undefined ? {} : { smartCleanupEvidence: smartCleanup.evidence }),
         ...(smartCleanup?.dedupeEvidence === undefined ? {} : { smartCleanupDedupeEvidence: smartCleanup.dedupeEvidence }),
         ...(dedupeSelection === undefined ? {} : { smartCleanupDedupeSelection: dedupeSelection }),
@@ -2027,6 +2048,7 @@ export class UpgradeAssistantCoordinator {
           packageName: reservationKey,
           changes,
           verificationScriptNames: verificationScripts.map((script) => script.scriptName),
+          suggestedScriptNames,
           manifestPath,
           lockfilePath: expectedLockfilePath,
           ...(smartCleanup?.dedupeEvidence === undefined || dedupeSelection === undefined
@@ -2056,7 +2078,7 @@ export class UpgradeAssistantCoordinator {
   }
 
   async handleConfirmRemove(message: AnalysisMessage): Promise<void> {
-    await this.executeStoredRemoval(message.analysisId);
+    await this.executeStoredRemoval(message.analysisId, message);
   }
 
   handleCancelRemove(message: CancelRemoveMessage): void {
@@ -2204,7 +2226,7 @@ export class UpgradeAssistantCoordinator {
   }
 
   async handleConfirmRemediation(message: RemediationAnalysisMessage): Promise<void> {
-    await this.executeStoredRemediation(message.analysisId);
+    await this.executeStoredRemediation(message.analysisId, message);
   }
 
   private async analyzeRemediation(
@@ -2258,6 +2280,7 @@ export class UpgradeAssistantCoordinator {
         prepared.project.manifestText,
         configuration.verificationScripts
       );
+      const suggestedScriptNames = verificationSuggestionsFor(prepared.project.manifestText, verificationScripts);
       const presentation = buildTransitiveRemediationPresentation({
         analysisId,
         generatedAt: new Date(generatedAt).toISOString(),
@@ -2272,9 +2295,10 @@ export class UpgradeAssistantCoordinator {
         plan,
         afterGraph: prepared.after.graph,
         targetedPackages: new Set(eligibility.transitiveAdvisories.map((entry) => entry.flaggedPackage)),
-        verification: verificationScripts.length === 0
-          ? { configured: false }
-          : { configured: true, scriptNames: verificationScripts.map((entry) => entry.scriptName) },
+        verification: buildUpgradeAnalysisVerification(
+          verificationScripts.map((entry) => entry.scriptName),
+          suggestedScriptNames
+        ),
       });
       const previousId = this.remediationPlanByPackage.get(row.name);
       if (previousId !== undefined) this.remediationPlans.delete(previousId);
@@ -2288,6 +2312,7 @@ export class UpgradeAssistantCoordinator {
         packageManagerVersion: prepared.packageManagerVersion,
         ignoreScripts: configuration.ignoreScripts,
         verificationScripts,
+        suggestedScriptNames,
         plan,
         presentation,
         expiresAt,
@@ -2427,7 +2452,7 @@ export class UpgradeAssistantCoordinator {
     };
   }
 
-  private async executeStoredRemediation(analysisId: string): Promise<void> {
+  private async executeStoredRemediation(analysisId: string, optIn: VerificationOptInRequest = {}): Promise<void> {
     const stored = this.remediationPlans.get(analysisId);
     if (stored === undefined) return;
     if (stored.stale || Date.now() >= stored.expiresAt) {
@@ -2510,6 +2535,14 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
+
+      // The plan is deleted when this run ends, so the accepted opt-in only
+      // affects this one run.
+      await applyVerificationOptIn(this.options.platform, stored, {
+        currentSetting: this.getUpgradeConfiguration().verificationScripts,
+        manifestText: disk.manifestText,
+        request: optIn,
+      });
 
       const prepared = this.session.prepareLockfileReconciliation({
         cwd: disk.root,
@@ -2881,7 +2914,11 @@ export class UpgradeAssistantCoordinator {
    * upgradeAnalysisLookup.ts), re-read the project from disk, recheck
    * eligibility, then execute.
    */
-  private async executeStoredAnalysis(analysisId: string, wantsSmartPlan: boolean): Promise<void> {
+  private async executeStoredAnalysis(
+    analysisId: string,
+    wantsSmartPlan: boolean,
+    optIn: VerificationOptInRequest = {}
+  ): Promise<void> {
     const stored = this.analysis;
     const now = Date.now();
     const lookup = resolveAnalysisForExecution({
@@ -2975,6 +3012,13 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
+      // `stored` was detached from this.analysis above, so the accepted
+      // opt-in only affects this one run.
+      await applyVerificationOptIn(this.options.platform, stored, {
+        currentSetting: this.getUpgradeConfiguration().verificationScripts,
+        manifestText: disk.manifestText,
+        request: optIn,
+      });
 
       const source = controller.upgradeSource;
       const manifestPath = path.join(controller.root, 'package.json');
@@ -3214,7 +3258,7 @@ export class UpgradeAssistantCoordinator {
    * package/version input at all and simply reconciles whatever the host
    * already staged.
    */
-  private async executeStoredRemoval(analysisId: string): Promise<void> {
+  private async executeStoredRemoval(analysisId: string, optIn: VerificationOptInRequest = {}): Promise<void> {
     const stored = this.removal;
     const now = Date.now();
     if (stored === undefined || stored.id !== analysisId || now >= stored.expiresAt) {
@@ -3300,6 +3344,13 @@ export class UpgradeAssistantCoordinator {
           return;
         }
       }
+      // `stored` was detached from this.removal above, so the accepted
+      // opt-in only affects this one run.
+      await applyVerificationOptIn(this.options.platform, stored, {
+        currentSetting: this.options.platform.getSetting<unknown[]>('upgrade.verificationScripts', []),
+        manifestText: disk.manifestText,
+        request: optIn,
+      });
 
       const source = controller.upgradeSource;
       const manifestPath = path.join(controller.root, 'package.json');

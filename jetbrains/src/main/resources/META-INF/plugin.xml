@@ -31,6 +31,11 @@
                                  instance="io.github.azzamaldulaylan.packageawy.settings.PackageawyConfigurable"
                                  id="io.github.azzamaldulaylan.packageawy.settings"
                                  displayName="Packageawy"/>
+        <projectConfigurable parentId="io.github.azzamaldulaylan.packageawy.settings"
+                             instance="io.github.azzamaldulaylan.packageawy.settings.PackageawyProjectConfigurable"
+                             id="io.github.azzamaldulaylan.packageawy.settings.project"
+                             displayName="Project"
+                             nonDefaultProject="true"/>
         <notificationGroup id="Packageawy" displayType="BALLOON"/>
     </extensions>
 </idea-plugin>

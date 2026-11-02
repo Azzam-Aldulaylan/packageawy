@@ -8,6 +8,7 @@ import io.github.azzamaldulaylan.packageawy.rpc.ErrorCodes
 import io.github.azzamaldulaylan.packageawy.rpc.JsonRpcConnection
 import io.github.azzamaldulaylan.packageawy.rpc.Params
 import io.github.azzamaldulaylan.packageawy.rpc.ResponseError
+import io.github.azzamaldulaylan.packageawy.settings.VerificationScriptNames
 import io.github.azzamaldulaylan.packageawy.storage.StateFile
 import java.net.URI
 import java.nio.file.Files
@@ -40,6 +41,22 @@ class ClientHandlers(
                 else -> Params.invalid("Unknown storage scope $scope")
             }
             store.update(p.string("key"), p.raw("value"))
+            null
+        }
+
+        request("settings/update") { p ->
+            val key = p.string("key")
+            // The sidecar only ever writes the verification scripts it validated against its own suggestions.
+            if (key != VERIFICATION_SCRIPTS_KEY) Params.invalid("Setting $key cannot be changed by the engine")
+            val names = p.stringList("value")
+            if (!VerificationScriptNames.isValid(names)) Params.invalid("Invalid verification script names")
+            try {
+                host.rememberVerificationScripts(names)
+            } catch (e: ResponseError) {
+                throw e
+            } catch (e: Exception) {
+                throw ResponseError(ErrorCodes.INTERNAL_ERROR, e.message ?: "Could not save the setting")
+            }
             null
         }
 
@@ -213,6 +230,7 @@ class ClientHandlers(
 
     companion object {
         private val EXTERNAL_SCHEMES = setOf("http", "https", "mailto")
+        const val VERIFICATION_SCRIPTS_KEY = "upgrade.verificationScripts"
 
         fun isAllowedExternalUrl(url: String): Boolean {
             val scheme = runCatching { URI(url).scheme }.getOrNull()?.lowercase() ?: return false

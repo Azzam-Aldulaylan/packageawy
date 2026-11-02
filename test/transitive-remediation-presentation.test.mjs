@@ -76,7 +76,7 @@ test('a pnpm fix that reuses an installed version names that version and reaches
     plan,
     afterGraph: after,
     targetedPackages: new Set(['minimist']),
-    verification: { configured: false },
+    verification: { configured: false, suggestedScriptNames: [] },
   });
 
   const minimist = presentation.changes.find((change) => change.packageName === 'minimist');

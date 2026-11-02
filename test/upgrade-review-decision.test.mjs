@@ -41,7 +41,7 @@ function analysis(overrides = {}) {
     changes: [{ packageName: 'next', currentVersion: '14.2.35', targetVersion: '15.5.24', classification: 'prod', majorUpdate: true }],
     compatibility: { status: 'compatible', completeness: 'complete', findings: [] },
     projectCompatibility: project(), security: { status: 'not-applicable', resolvedAdvisories: [], remaining: [] }, smartPlan: null,
-    verification: { configured: false }, files: { manifestPath: '/fixture/package.json', lockfilePath: '/fixture/package-lock.json', rollbackAvailable: true },
+    verification: { configured: false, suggestedScriptNames: [] }, files: { manifestPath: '/fixture/package.json', lockfilePath: '/fixture/package-lock.json', rollbackAvailable: true },
     ...overrides,
   };
 }
@@ -220,7 +220,7 @@ test('all Upgrade Review evidence disclosures start closed even when attention i
     compatibility: { status: 'warning', completeness: 'partial', findings: [] },
     projectCompatibility: project({ findings: [finding()] }),
     security: null,
-    verification: { configured: false },
+    verification: { configured: false, suggestedScriptNames: [] },
   }));
   const disclosures = [...html.matchAll(/<details class="upgrade-review-disclosure[^"]*"([^>]*)>/g)];
   assert.equal(disclosures.length, 5);
