@@ -36,23 +36,13 @@ const UPDATE_KIND_LABEL: Record<'major' | 'minor' | 'patch', string> = {
   patch: 'Patch',
 };
 
-/** A compact "label / value" row for the left-column At a glance / Package overview lists. */
+/** A compact "label / value" row for the Package overview list. */
 function GlanceRow({ label, children }: { label: string; children: ReactElement | string }): ReactElement {
   return (
     <div className="manage-glance__row">
       <dt>{label}</dt>
       <dd>{children}</dd>
     </div>
-  );
-}
-
-/** A quiet "checking usage…" status: the one glanceable spinner both At a glance and the Remove card's Usage analysis stat box render, never a bare "Not analyzed" while a background scan is already known to be running. */
-function UsageCheckingStatus(): ReactElement {
-  return (
-    <span className="manage-glance__status">
-      <IconRefresh className="manage-glance__status-icon manage-glance__status-icon--spin" />
-      Checking usage…
-    </span>
   );
 }
 
@@ -480,9 +470,7 @@ export function OverviewPanel({
   onOpenAdvisory: OpenAdvisoryHandler;
   onChangeTab: (tab: ManageTabId) => void;
 }): ReactElement {
-  const updateKind = classifyRowUpdate(row);
   const showTransitiveCard = hasEligibleTransitiveFix(row) || remediation !== undefined;
-  const usageChecking = usage === undefined || usage.phase === 'analyzing';
 
   return (
     <div className="overview-panel">
@@ -492,29 +480,12 @@ export function OverviewPanel({
             Package overview
           </h3>
           <dl className="manage-glance">
-            <GlanceRow label="Name">{row.name}</GlanceRow>
             <GlanceRow label="Version">
               <CurrentVersionCell row={row} />
             </GlanceRow>
+            <GlanceRow label="Latest version">{updateResolutionAvailable ? row.latest ?? '—' : 'Unavailable'}</GlanceRow>
             <GlanceRow label="Type">{CLASSIFICATION_LABEL[classificationOf(row)]}</GlanceRow>
             <GlanceRow label="License">{row.license ?? '—'}</GlanceRow>
-          </dl>
-        </section>
-
-        <section className="manage-summary-block overview-summary-card overview-summary-card--health" aria-labelledby="manage-at-a-glance-heading">
-          <h3 className="manage-section-heading" id="manage-at-a-glance-heading">
-            At a glance
-          </h3>
-          <dl className="manage-glance">
-            <GlanceRow label="Installed version">{row.current ?? row.range}</GlanceRow>
-            <GlanceRow label="Latest version">{updateResolutionAvailable ? row.latest ?? '—' : 'Unavailable'}</GlanceRow>
-            <GlanceRow label="Update available">
-              {!updateResolutionAvailable ? 'Unavailable' : row.upgradeTo === null ? 'None' : updateKind !== null ? UPDATE_KIND_LABEL[updateKind] : 'Yes'}
-            </GlanceRow>
-            <GlanceRow label="Vulnerabilities">
-              {!advisoriesAvailable ? 'Unavailable' : row.advisories.length === 0 ? 'None' : <SeverityBadge severity={row.worstSeverity} />}
-            </GlanceRow>
-            <GlanceRow label="Usage analysis">{usageChecking ? <UsageCheckingStatus /> : usageAnalysisLabel(usage)}</GlanceRow>
           </dl>
         </section>
 

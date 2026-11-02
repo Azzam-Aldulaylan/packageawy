@@ -1707,7 +1707,6 @@ button {
     background: var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
   }
   .stale-status__icon,
-  .manage-glance__status-icon--spin,
   .manage-action-card__status-icon--spin,
   .manage-removal-stat__spinner,
   .vuln-recommended__spin,
@@ -2515,10 +2514,6 @@ button {
   );
 }
 
-.overview-summary-card--health {
-  --overview-summary-accent: var(--vscode-charts-purple, #a78bfa);
-}
-
 .overview-summary-card .manage-section-heading {
   color: color-mix(in srgb, var(--overview-summary-accent) 68%, var(--vscode-foreground));
 }
@@ -2556,20 +2551,6 @@ button {
   margin: 0;
   overflow-wrap: anywhere;
   text-align: right;
-}
-
-.manage-glance__status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-.manage-glance__status-icon {
-  flex-shrink: 0;
-}
-
-.manage-glance__status-icon--spin {
-  animation: dashboard-refresh-spin 1.2s linear infinite;
 }
 
 /*

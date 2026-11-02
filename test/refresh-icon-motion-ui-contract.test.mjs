@@ -12,7 +12,6 @@ test('refresh icons spin with their counter-clockwise arrowheads', () => {
 
   for (const className of [
     'stale-status__icon',
-    'manage-glance__status-icon--spin',
     'manage-action-card__status-icon--spin',
     'manage-removal-stat__spinner',
     'vuln-recommended__spin',
