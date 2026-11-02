@@ -26,6 +26,7 @@ import type {
   ProcessStartParams,
   ShowMessageParams,
   ShowModalParams,
+  SettingsUpdateParams,
   ShowQuickPickParams,
   StorageSnapshot,
   StorageUpdateParams,
@@ -154,6 +155,15 @@ export class RpcPlatform implements HostPlatform {
     // A value of the wrong type falls back to the default. `0` must never turn ignoreScripts off.
     if (Array.isArray(defaultValue) !== Array.isArray(value) || typeof value !== typeof defaultValue) return defaultValue;
     return value as T;
+  }
+
+  async updateWorkspaceSetting(key: string, value: unknown): Promise<void> {
+    const params: SettingsUpdateParams = { key, value };
+    const result = await this.connection.sendRequest<unknown>(Methods.settingsUpdate, params);
+    if (result !== null && result !== undefined) throw new Error('settings/update returned an invalid result');
+    // The client follows up with settings/didChange. Keep the local copy
+    // current now so a read right after this resolves sees the new value.
+    this.settings = { ...this.settings, [key]: value };
   }
 
   async findFiles(search: FileSearch, token?: CancellationToken): Promise<string[]> {

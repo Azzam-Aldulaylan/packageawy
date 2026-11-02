@@ -157,11 +157,18 @@ export interface OpenSettingsParams {
   key: string;
 }
 
+/** Stores a project-level setting value. The client answers null. */
+export interface SettingsUpdateParams {
+  key: string;
+  value: unknown;
+}
+
 export const Methods = {
   initialize: 'initialize',
   didChangeFolders: 'workspace/didChangeFolders',
   didChangeTrust: 'workspace/didChangeTrust',
   didChangeSettings: 'settings/didChange',
+  settingsUpdate: 'settings/update',
   storageUpdate: 'storage/update',
   filesFind: 'files/find',
   filesWatch: 'files/watch',

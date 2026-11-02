@@ -20,7 +20,7 @@ const OVERVIEW = {
   classification: 'prod',
   majorUpdate: true,
   changes: [{ packageName: 'react-toastify', currentVersion: '10.0.6', targetVersion: '11.1.0', classification: 'prod', majorUpdate: true }],
-  verification: { configured: false },
+  verification: { configured: false, suggestedScriptNames: [] },
   files: { manifestPath: '/app/package.json', lockfilePath: '/app/package-lock.json', rollbackAvailable: true },
 };
 

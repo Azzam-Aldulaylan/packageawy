@@ -9177,3 +9177,43 @@ button {
     border-color: var(--vscode-progressBar-background);
   }
 }
+
+/* ------------------------------------------- verification script opt-in */
+
+.verification-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.7rem 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.verification-suggestions__legend {
+  margin-bottom: 0.2rem;
+  padding: 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.verification-suggestions__option {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.verification-suggestions__option .review-list__checkbox {
+  margin: 0;
+}
+
+.verification-suggestions__option code {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.verification-suggestions__remember {
+  margin-top: 0.15rem;
+  color: var(--vscode-descriptionForeground);
+}

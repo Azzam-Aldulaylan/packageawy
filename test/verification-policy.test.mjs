@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildVerificationScriptArgs, selectVerificationScripts } from '../out/host/verificationPolicy.js';
+import {
+  buildVerificationScriptArgs,
+  selectVerificationScripts,
+  suggestVerificationScriptNames,
+} from '../out/host/verificationPolicy.js';
+
+test('suggestions come from the host-read manifest and fail closed on malformed input', () => {
+  const manifest = JSON.stringify({ scripts: { build: 'tsc', test: 'echo "Error: no test specified" && exit 1', dev: 'vite' } });
+  assert.deepEqual(suggestVerificationScriptNames(manifest), ['build']);
+  assert.deepEqual(suggestVerificationScriptNames('{'), []);
+  assert.deepEqual(suggestVerificationScriptNames(JSON.stringify({ scripts: ['build'] })), []);
+});
 
 test('only explicitly configured scripts that exist in the host-read manifest are selected', () => {
   const manifest = JSON.stringify({ scripts: { test: 'node --test', build: 'tsc', inherited: 12 } });

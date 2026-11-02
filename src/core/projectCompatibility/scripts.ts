@@ -13,7 +13,7 @@ export interface TargetCommandEvidence {
   migrationHint?: string;
 }
 
-interface ShellInvocation {
+export interface ShellInvocation {
   executable: string;
   args: string[];
 }
@@ -23,7 +23,7 @@ interface ShellInvocation {
  * boundaries and quoted tokens. Substitutions and nested shell programs are
  * intentionally not interpreted.
  */
-function lexInvocations(script: string): ShellInvocation[] {
+export function lexInvocations(script: string): ShellInvocation[] {
   const segments: string[][] = [[]];
   let token = '';
   let quote: "'" | '"' | null = null;

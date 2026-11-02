@@ -60,7 +60,7 @@ These follow the same meaning as `npm outdated`.
 3. You review the planned changes, the findings, and the security impact.
 4. After you confirm, it re-reads your project to make sure nothing changed, then saves a copy of `package.json` and the lockfile.
 5. The install runs as a visible VS Code task.
-6. If you listed verification scripts (for example `test` or `build`), they run next. Without them, the upgrade is reported as unverified.
+6. If you listed verification scripts (for example `test` or `build`), they run next. If you haven't, the review lists the project's `typecheck`, `build`, `test`, and `lint` scripts so you can check the ones to run, and "Remember for this project" saves your choice. Without any, the upgrade is reported as unverified.
 7. If the install fails, or you choose to roll back after a failed verification, the saved files are restored. Rollback never overwrites edits you made in the meantime.
 
 Only one change runs at a time.

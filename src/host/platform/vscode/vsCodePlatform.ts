@@ -63,6 +63,12 @@ export class VsCodePlatform implements HostPlatform {
     return vscode.workspace.getConfiguration(SETTINGS_SECTION).get<T>(key, defaultValue);
   }
 
+  async updateWorkspaceSetting(key: string, value: unknown): Promise<void> {
+    // getSetting reads without a resource scope, so the workspace target is
+    // the value it sees, in single-folder and multi-root windows alike.
+    await vscode.workspace.getConfiguration(SETTINGS_SECTION).update(key, value, vscode.ConfigurationTarget.Workspace);
+  }
+
   async findFiles(search: FileSearch, token?: CancellationToken): Promise<string[]> {
     const folderUri = vscode.Uri.parse(search.folder.id);
     const base = search.dir === '' ? folderUri : vscode.Uri.joinPath(folderUri, search.dir);

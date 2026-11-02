@@ -283,9 +283,29 @@ export interface UpgradeAnalysisSmartPlan {
   reasonFindingIds: string[];
 }
 
+/**
+ * `suggestedScriptNames` are host-detected package scripts offered as
+ * unchecked, one-run opt-ins when nothing is configured. A confirm message
+ * may echo a subset back. The host accepts only names it suggested.
+ */
 export type UpgradeAnalysisVerification =
   | { configured: true; scriptNames: string[] }
-  | { configured: false };
+  | { configured: false; suggestedScriptNames: string[] };
+
+/** Most suggestions an analysis carries, and most names a confirm message may echo back. */
+export const MAX_VERIFICATION_SUGGESTIONS = 4;
+export const MAX_CONFIRM_VERIFICATION_SCRIPTS = 8;
+const MAX_SCRIPT_NAME_LENGTH = 128;
+
+/**
+ * Optional fields on every confirm message whose run can include
+ * verification. Only a filter over the analysis's own suggestions. See
+ * src/host/verificationOptIn.ts.
+ */
+export interface ConfirmVerificationOptIn {
+  verificationScripts?: string[];
+  rememberVerificationScripts?: boolean;
+}
 
 export interface UpgradeAnalysisFiles {
   manifestPath: string;
@@ -826,7 +846,7 @@ export type WebviewToHostMessage =
       dedupeActionId?: string;
     }
   | { type: 'open-advisory'; package: string; advisoryId: string | number; path: string[]; reference?: string }
-  | { type: 'confirm-upgrade'; analysisId: string }
+  | ({ type: 'confirm-upgrade'; analysisId: string } & ConfirmVerificationOptIn)
   /**
    * `analysisId: null` cancels a still-loading analysis (no id has been
    * issued yet): the host drops its result instead of storing/posting it
@@ -835,11 +855,11 @@ export type WebviewToHostMessage =
    * analysis the same way confirm-upgrade/use-smart-plan target one.
    */
   | { type: 'cancel-upgrade'; analysisId: string | null }
-  | { type: 'use-smart-plan'; analysisId: string }
+  | ({ type: 'use-smart-plan'; analysisId: string } & ConfirmVerificationOptIn)
   /** Retries only the most recent matching failed/cancelled targeted enrichment. The id is host-issued by `upgrade-result`. */
   | { type: 'retry-upgrade-enrichment'; refreshId: string }
   /** Same analysisId-lookup discipline as confirm-upgrade/cancel-upgrade, targeting a stored removal analysis instead. */
-  | { type: 'confirm-remove'; analysisId: string }
+  | ({ type: 'confirm-remove'; analysisId: string } & ConfirmVerificationOptIn)
   | { type: 'cancel-remove'; analysisId: string | null; requestId?: string }
   | { type: 'configure-verification' }
   /**
@@ -852,7 +872,7 @@ export type WebviewToHostMessage =
    */
   | { type: 'analyze-remediation'; package: string }
   /** These three requests carry only a host-issued plan id. Versions, paths, files, and advisories are never execution inputs. */
-  | { type: 'confirm-remediation'; analysisId: string }
+  | ({ type: 'confirm-remediation'; analysisId: string } & ConfirmVerificationOptIn)
   | { type: 'cancel-remediation'; analysisId: string }
   | { type: 'retry-remediation'; analysisId: string }
   | { type: 'analyze-remediations'; packages: string[] }
@@ -959,6 +979,29 @@ function isCanonicalRemovalPackageSet(value: unknown, allowEmpty = false): value
   return true;
 }
 
+function isScriptNameList(value: unknown, max: number): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= max &&
+    value.every((name) => isNonEmptyString(name) && name.length <= MAX_SCRIPT_NAME_LENGTH) &&
+    new Set(value).size === value.length
+  );
+}
+
+const CONFIRM_KEYS = ['type', 'analysisId', 'verificationScripts', 'rememberVerificationScripts'] as const;
+
+/** A confirm envelope: a host-issued analysis id plus the optional verification opt-in. */
+function isConfirmMessage(value: Record<string, unknown>): boolean {
+  const scripts = value['verificationScripts'];
+  const remember = value['rememberVerificationScripts'];
+  return (
+    hasOnlyKeys(value, CONFIRM_KEYS) &&
+    isNonEmptyString(value['analysisId']) &&
+    (scripts === undefined || isScriptNameList(scripts, MAX_CONFIRM_VERIFICATION_SCRIPTS)) &&
+    (remember === undefined || typeof remember === 'boolean')
+  );
+}
+
 export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   if (!isRecord(value)) return false;
 
@@ -1027,7 +1070,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     return true;
   }
   if (type === 'confirm-remove') {
-    return hasOnlyKeys(value, ['type', 'analysisId']) && isNonEmptyString(value['analysisId']);
+    return isConfirmMessage(value);
   }
   if (type === 'cancel-remove') {
     const analysisId = value['analysisId'];
@@ -1053,7 +1096,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     );
   }
   if (type === 'confirm-upgrade' || type === 'use-smart-plan') {
-    return hasOnlyKeys(value, ['type', 'analysisId']) && isNonEmptyString(value['analysisId']);
+    return isConfirmMessage(value);
   }
   if (type === 'retry-upgrade-enrichment') {
     return hasOnlyKeys(value, ['type', 'refreshId']) && isNonEmptyString(value['refreshId']);
@@ -1065,7 +1108,10 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (type === 'configure-verification') {
     return hasOnlyKeys(value, ['type']);
   }
-  if (type === 'confirm-remediation' || type === 'cancel-remediation' || type === 'retry-remediation') {
+  if (type === 'confirm-remediation') {
+    return isConfirmMessage(value);
+  }
+  if (type === 'cancel-remediation' || type === 'retry-remediation') {
     return hasOnlyKeys(value, ['type', 'analysisId']) && isNonEmptyString(value['analysisId']);
   }
   if (type === 'analyze-remediations') {
@@ -1628,7 +1674,12 @@ function isUpgradeAnalysisPartialSection(value: unknown): value is UpgradeAnalys
 
 function isVerification(value: unknown): value is UpgradeAnalysisVerification {
   if (!isRecord(value)) return false;
-  if (value['configured'] === false) return hasOnlyKeys(value, ['configured']);
+  if (value['configured'] === false) {
+    return (
+      hasOnlyKeys(value, ['configured', 'suggestedScriptNames']) &&
+      isScriptNameList(value['suggestedScriptNames'], MAX_VERIFICATION_SUGGESTIONS)
+    );
+  }
   return (
     value['configured'] === true &&
     hasOnlyKeys(value, ['configured', 'scriptNames']) &&

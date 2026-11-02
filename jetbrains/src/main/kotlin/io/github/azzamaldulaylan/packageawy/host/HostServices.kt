@@ -41,6 +41,9 @@ interface HostServices {
     fun openExternal(url: String)
     fun openSettings(key: String)
 
+    /** Stores [names] as the project's verification scripts. Throws when the project is not trusted. */
+    fun rememberVerificationScripts(names: List<String>)
+
     fun startProgress(id: String, title: String, onCancel: () -> Unit)
     fun reportProgress(id: String, message: String?, increment: Double?)
     fun endProgress(id: String)

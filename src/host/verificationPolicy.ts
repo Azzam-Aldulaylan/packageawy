@@ -1,25 +1,37 @@
 /** Host-owned selection of package scripts explicitly enabled for verification. */
 
+import { SAFE_SCRIPT_NAME, suggestVerificationScripts } from '../core/upgrade/verificationSuggestions.js';
+
 export interface VerificationScript {
   id: string;
   scriptName: string;
 }
 
-const SAFE_SCRIPT_NAME = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
+function manifestScripts(manifestText: string): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(manifestText);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+  const scripts = (parsed as Record<string, unknown>)['scripts'];
+  if (typeof scripts !== 'object' || scripts === null || Array.isArray(scripts)) return undefined;
+  return scripts as Record<string, unknown>;
+}
+
+/** Script names offered as unchecked opt-in choices when nothing is configured. */
+export function suggestVerificationScriptNames(manifestText: string): string[] {
+  const scripts = manifestScripts(manifestText);
+  return scripts === undefined ? [] : suggestVerificationScripts(scripts);
+}
 
 export function selectVerificationScripts(
   manifestText: string,
   configured: readonly unknown[]
 ): VerificationScript[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(manifestText);
-  } catch {
-    return [];
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return [];
-  const scripts = (parsed as Record<string, unknown>)['scripts'];
-  if (typeof scripts !== 'object' || scripts === null || Array.isArray(scripts)) return [];
+  const scripts = manifestScripts(manifestText);
+  if (scripts === undefined) return [];
 
   const selected: VerificationScript[] = [];
   const seen = new Set<string>();

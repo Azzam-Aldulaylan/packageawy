@@ -2,6 +2,13 @@
 
 All notable changes to Packageawy are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- When no verification scripts are set, reviews for upgrades, removals, and transitive fixes list the project's `typecheck`, `build`, `test`, and `lint` scripts as checkboxes. Checked scripts run after that change, with the same Rollback choice if one fails. Scripts that watch files or start a server are not listed.
+- "Remember for this project" saves the checked scripts as the project's verification scripts. In JetBrains IDEs they appear under Settings, Tools, Packageawy, Project.
+
 ## [0.9.4] - 2026-11-02
 
 ### Changed

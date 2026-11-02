@@ -15,11 +15,14 @@ data class SettingsState(
     var cacheTtlMinutes: Int = 30,
     var debugPerformance: Boolean = false,
 ) {
-    /** Keys relative to the `packageawy` section, as the sidecar reads them. */
-    fun snapshot(): Map<String, Any> = linkedMapOf(
+    /**
+     * Keys relative to the `packageawy` section, as the sidecar reads them.
+     * A project's verification-script override, when set, replaces the IDE-wide list.
+     */
+    fun snapshot(projectVerificationScripts: List<String>? = null): Map<String, Any> = linkedMapOf(
         "registry.useProjectNpmrc" to useProjectNpmrc,
         "upgrade.ignoreScripts" to ignoreScripts,
-        "upgrade.verificationScripts" to verificationScripts.map { it.trim() }.filter { it.isNotEmpty() },
+        "upgrade.verificationScripts" to (projectVerificationScripts ?: verificationScripts).map { it.trim() }.filter { it.isNotEmpty() },
         "cacheTtlMinutes" to cacheTtlMinutes.coerceAtLeast(0),
         "debug.performance" to debugPerformance,
     )

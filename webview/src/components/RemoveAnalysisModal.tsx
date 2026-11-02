@@ -91,9 +91,11 @@ export function RemoveAnalysisBody({
       <div className="modal__grid">
         <FilesSection files={analysis.files} />
         <VerificationSection
+          analysisId={analysis.analysisId}
           verification={analysis.verification}
           onConfigureVerification={onConfigureVerification}
           configuredLabel="Post-removal checks configured"
+          actionLabel="this removal"
         />
       </div>
     </>

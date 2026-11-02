@@ -38,10 +38,12 @@ test('the review presents exact changes, security outcomes, and unchanged direct
 });
 
 test('execution authority is limited to the opaque analysis id', () => {
-  for (const type of ['confirm-remediation', 'cancel-remediation', 'retry-remediation']) {
+  for (const type of ['cancel-remediation', 'retry-remediation']) {
     assert.match(protocol, new RegExp(`\\| \\{ type: '${type}'; analysisId: string \\}`));
   }
-  assert.match(app, /postMessage\(\{ type: 'confirm-remediation', analysisId \}\)/);
+  // Confirm adds only the optional verification opt-in, a filter over host suggestions.
+  assert.match(protocol, /\| \(\{ type: 'confirm-remediation'; analysisId: string \} & ConfirmVerificationOptIn\)/);
+  assert.match(app, /type: 'confirm-remediation',\s+analysisId,\s+\.\.\.\(reviewedPlan/);
   assert.match(app, /postMessage\(\{ type: 'cancel-remediation', analysisId \}\)/);
   assert.match(app, /postMessage\(\{ type: 'retry-remediation', analysisId \}\)/);
   assert.doesNotMatch(app, /type: 'confirm-remediation',[^}]+(?:target|path|version|package)/);

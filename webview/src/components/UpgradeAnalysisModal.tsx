@@ -126,7 +126,11 @@ function UpgradeAnalysisBodyContent({
           onOpenAdvisory={onOpenAdvisory}
           emphasize={securityNeedsAttention}
         />
-        <VerificationSection verification={analysis.verification} onConfigureVerification={onConfigureVerification} />
+        <VerificationSection
+          analysisId={analysis.analysisId}
+          verification={analysis.verification}
+          onConfigureVerification={onConfigureVerification}
+        />
       </div>
     </>
   );

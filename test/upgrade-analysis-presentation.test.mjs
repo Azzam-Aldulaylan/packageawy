@@ -63,7 +63,7 @@ test('a non-major change reports majorUpdate: false', () => {
 
 test('no verification script names produces the not-configured shape', () => {
   const result = buildUpgradeAnalysisPresentation(baseOptions({ verificationScriptNames: [] }));
-  assert.deepEqual(result.verification, { configured: false });
+  assert.deepEqual(result.verification, { configured: false, suggestedScriptNames: [] });
 });
 
 test('verification script names produce the configured shape with names preserved', () => {
@@ -167,7 +167,7 @@ test('buildUpgradeAnalysisChanges produces the exact same shape buildUpgradeAnal
 });
 
 test('buildUpgradeAnalysisVerification matches buildUpgradeAnalysisPresentation.verification for both the configured and not-configured cases', () => {
-  assert.deepEqual(buildUpgradeAnalysisVerification([]), { configured: false });
+  assert.deepEqual(buildUpgradeAnalysisVerification([]), { configured: false, suggestedScriptNames: [] });
   assert.deepEqual(buildUpgradeAnalysisVerification(['test', 'build']), { configured: true, scriptNames: ['test', 'build'] });
 });
 

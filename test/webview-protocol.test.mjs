@@ -144,7 +144,7 @@ const MINIMAL_ANALYSIS = {
   projectCompatibility: MINIMAL_PROJECT_COMPATIBILITY,
   security: null,
   smartPlan: null,
-  verification: { configured: false },
+  verification: { configured: false, suggestedScriptNames: [] },
   files: { manifestPath: '/app/package.json', lockfilePath: '/app/package-lock.json', rollbackAvailable: true },
 };
 
@@ -418,6 +418,47 @@ test('cancel-upgrade rejects a missing analysisId key, an empty string, and extr
 test('configure-verification carries no payload: extra keys are rejected', () => {
   assert.equal(isWebviewToHostMessage({ type: 'configure-verification' }), true);
   assert.equal(isWebviewToHostMessage({ type: 'configure-verification', scriptName: 'test' }), false);
+});
+
+test('every confirm message accepts an optional, bounded verification opt-in', () => {
+  for (const type of ['confirm-upgrade', 'use-smart-plan', 'confirm-remove', 'confirm-remediation']) {
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: ['build', 'test'] }), true, type);
+    assert.equal(
+      isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: ['build'], rememberVerificationScripts: true }),
+      true,
+      type
+    );
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: [] }), true, type);
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', rememberVerificationScripts: false }), true, type);
+    // Shape errors are rejected outright. Names themselves are checked by the host against its own suggestions.
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: 'build' }), false, type);
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: [''] }), false, type);
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: [1] }), false, type);
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: ['build', 'build'] }), false, type);
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: ['x'.repeat(129)] }), false, type);
+    assert.equal(
+      isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: Array.from({ length: 9 }, (_, i) => `s${i}`) }),
+      false,
+      type
+    );
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', rememberVerificationScripts: 'yes' }), false, type);
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationCommand: 'rm -rf /' }), false, type);
+    assert.equal(isWebviewToHostMessage({ type, verificationScripts: ['build'] }), false, type);
+  }
+  for (const type of ['cancel-remediation', 'retry-remediation']) {
+    assert.equal(isWebviewToHostMessage({ type, analysisId: 'abc', verificationScripts: ['build'] }), false, type);
+  }
+});
+
+test('the unconfigured verification shape carries bounded suggestions', () => {
+  const withVerification = (verification) =>
+    isHostToWebviewMessage({ status: 'upgrade-analysis', requestId: 'req-1', analysis: { ...MINIMAL_ANALYSIS, verification } });
+  assert.equal(withVerification({ configured: false, suggestedScriptNames: ['typecheck', 'build', 'test', 'lint'] }), true);
+  assert.equal(withVerification({ configured: false }), false);
+  assert.equal(withVerification({ configured: false, suggestedScriptNames: ['a', 'b', 'c', 'd', 'e'] }), false);
+  assert.equal(withVerification({ configured: false, suggestedScriptNames: [''] }), false);
+  assert.equal(withVerification({ configured: false, suggestedScriptNames: ['build', 'build'] }), false);
+  assert.equal(withVerification({ configured: true, scriptNames: ['build'], suggestedScriptNames: [] }), false);
 });
 
 // ------------------------------------------------- host -> webview
@@ -1808,7 +1849,7 @@ const MINIMAL_REMOVE_ANALYSIS = {
   expiresAt: '2026-08-01T11:00:00.000Z',
   package: 'left-pad',
   changes: [{ packageName: 'left-pad', classification: 'prod', stillRequiredBy: [] }],
-  verification: { configured: false },
+  verification: { configured: false, suggestedScriptNames: [] },
   files: { manifestPath: '/app/package.json', lockfilePath: '/app/package-lock.json', rollbackAvailable: true },
 };
 

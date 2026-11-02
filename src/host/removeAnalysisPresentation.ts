@@ -6,6 +6,7 @@
  */
 
 import type { DependencyClassification } from '../core/upgrade/plan.js';
+import { buildUpgradeAnalysisVerification } from './upgradeAnalysisPresentation.js';
 import type { RemoveAnalysisPresentation } from './webviewProtocol.js';
 
 export interface BuildRemoveAnalysisPresentationOptions {
@@ -20,6 +21,7 @@ export interface BuildRemoveAnalysisPresentationOptions {
     stillRequiredBy: readonly string[];
   }[];
   verificationScriptNames: readonly string[];
+  suggestedScriptNames?: readonly string[];
   manifestPath: string;
   lockfilePath: string;
   dedupe?: { actionId: string; affectedPackages: readonly string[]; expectedRemovedVersions: number };
@@ -38,10 +40,7 @@ export function buildRemoveAnalysisPresentation(
       classification: change.classification,
       stillRequiredBy: [...change.stillRequiredBy],
     })),
-    verification:
-      options.verificationScriptNames.length > 0
-        ? { configured: true, scriptNames: [...options.verificationScriptNames] }
-        : { configured: false },
+    verification: buildUpgradeAnalysisVerification(options.verificationScriptNames, options.suggestedScriptNames),
     files: {
       manifestPath: options.manifestPath,
       lockfilePath: options.lockfilePath,

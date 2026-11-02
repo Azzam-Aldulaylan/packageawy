@@ -38,6 +38,7 @@ import { DirectionalButton } from './DirectionalButton.js';
 import type { ManageTabId } from './ManageDependencyModal.js';
 import { SeverityBadge } from './SeverityBadge.js';
 import { StatusBanner } from './StatusBanner.js';
+import { VerificationSuggestions } from './VerificationSuggestions.js';
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
@@ -839,6 +840,11 @@ function ConfirmationView({
                 {checkedPreflight.verification.configured
                   ? checkedPreflight.verification.scriptNames.join(', ')
                   : 'No post-removal checks configured'}
+                <VerificationSuggestions
+                  analysisId={checkedPreflight.analysisId}
+                  verification={checkedPreflight.verification}
+                  actionLabel="this cleanup"
+                />
               </dd>
             </div>
           </dl>

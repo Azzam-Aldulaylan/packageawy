@@ -24,6 +24,7 @@ import { SeverityBadge } from './SeverityBadge.js';
 import { StatusBanner } from './StatusBanner.js';
 import { VulnerabilityIdentifierLinks } from './VulnerabilityCard.js';
 import type { OpenAdvisoryHandler } from './VulnerabilityCard.js';
+import { useVerificationOptIn, VerificationSuggestions } from './VerificationSuggestions.js';
 
 const PROGRESS_LABEL: Record<TransitiveRemediationProgressPhase, string> = {
   preparing: 'Preparing the reviewed lockfile change…',
@@ -101,7 +102,8 @@ function AdvisoryList({
   );
 }
 
-function SafetyFacts({ plan }: { plan: TransitiveRemediationPlanSummary }): ReactElement {
+function SafetyFacts({ plan, selectable }: { plan: TransitiveRemediationPlanSummary; selectable: boolean }): ReactElement {
+  const { selected } = useVerificationOptIn(plan.analysisId, plan.verification);
   return (
     <div className="transitive-review__facts">
       <section>
@@ -120,10 +122,15 @@ function SafetyFacts({ plan }: { plan: TransitiveRemediationPlanSummary }): Reac
       </section>
       <section>
         <h5><IconListChecks /> Verification</h5>
+        {selectable ? (
+          <VerificationSuggestions analysisId={plan.analysisId} verification={plan.verification} actionLabel="this fix" />
+        ) : null}
         <p>
           {plan.verification.configured
             ? `Security rescan plus ${plan.verification.scriptNames.join(', ')}`
-            : 'Security rescan only. No project verification scripts configured.'}
+            : selected.length > 0
+              ? `Security rescan plus ${selected.join(', ')}`
+              : 'Security rescan only. No project verification scripts configured.'}
         </p>
         <p>
           Installed packages will be reconciled to the reviewed lockfile. Lifecycle scripts are{' '}
@@ -137,9 +144,12 @@ function SafetyFacts({ plan }: { plan: TransitiveRemediationPlanSummary }): Reac
 function DetailedPlan({
   plan,
   onOpenAdvisory,
+  selectable = false,
 }: {
   plan: TransitiveRemediationPlanSummary;
   onOpenAdvisory: OpenAdvisoryHandler;
+  /** True only on the reviewed plan, before Apply. */
+  selectable?: boolean;
 }): ReactElement {
   return (
     <div className="transitive-review__details">
@@ -157,7 +167,7 @@ function DetailedPlan({
           <AdvisoryList title="Introduced" advisories={plan.introducedAdvisories} tone="introduced" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
         </div>
       </section>
-      <SafetyFacts plan={plan} />
+      <SafetyFacts plan={plan} selectable={selectable} />
     </div>
   );
 }
@@ -366,7 +376,7 @@ export function TransitiveFixReview({
       </StatusBanner>
       {state.reviewed ? (
         <>
-          <DetailedPlan plan={plan} onOpenAdvisory={onOpenAdvisory} />
+          <DetailedPlan plan={plan} onOpenAdvisory={onOpenAdvisory} selectable />
           <div className="transitive-review__actions">
             <button type="button" className="button button--secondary" disabled={disabled} onClick={() => onRetry(plan.analysisId)}>
               <IconRefresh /> Re-check plan

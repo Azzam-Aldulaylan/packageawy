@@ -63,11 +63,18 @@ export function buildUpgradeAnalysisChanges(options: BuildUpgradeAnalysisChanges
   }));
 }
 
-/** Shared by the Stage-0 `overview` partial and buildUpgradeAnalysisPresentation below. */
-export function buildUpgradeAnalysisVerification(verificationScriptNames: readonly string[]): UpgradeAnalysisVerification {
+/**
+ * Shared by the Stage-0 `overview` partial, buildUpgradeAnalysisPresentation
+ * below, and the removal and transitive-fix presentations. Suggestions are
+ * only offered when nothing is configured.
+ */
+export function buildUpgradeAnalysisVerification(
+  verificationScriptNames: readonly string[],
+  suggestedScriptNames: readonly string[] = []
+): UpgradeAnalysisVerification {
   return verificationScriptNames.length > 0
     ? { configured: true, scriptNames: [...verificationScriptNames] }
-    : { configured: false };
+    : { configured: false, suggestedScriptNames: [...suggestedScriptNames] };
 }
 
 /** Shared by the Stage-0 `overview` partial and buildUpgradeAnalysisPresentation below. */
@@ -94,6 +101,7 @@ export interface BuildUpgradeAnalysisPresentationOptions extends BuildUpgradeAna
   security: SecurityOutcome | null;
   smartPlan: UpgradeAnalysisSmartPlan | null;
   verificationScriptNames: readonly string[];
+  suggestedScriptNames?: readonly string[];
   manifestPath: string;
   lockfilePath: string;
 }
@@ -116,7 +124,7 @@ export function buildUpgradeAnalysisPresentation(
     projectCompatibility: options.projectCompatibility,
     security: options.security,
     smartPlan: options.smartPlan,
-    verification: buildUpgradeAnalysisVerification(options.verificationScriptNames),
+    verification: buildUpgradeAnalysisVerification(options.verificationScriptNames, options.suggestedScriptNames),
     files: buildUpgradeAnalysisFiles(options.manifestPath, options.lockfilePath),
   };
 }

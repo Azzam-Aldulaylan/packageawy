@@ -100,7 +100,7 @@ test('a peer blocker names the requiring package and requested range', () => {
       package: 'react-native',
       changes: [{ packageName: 'react-native', classification: 'prod', stillRequiredBy: [] }],
       files: { manifestPath: '/fixture/package.json', lockfilePath: '/fixture/package-lock.json', rollbackAvailable: true },
-      verification: { configured: false },
+      verification: { configured: false, suggestedScriptNames: [] },
     },
     busy: false,
     error: null,
@@ -144,7 +144,7 @@ test('an old removal review stays visible with refresh guidance and an expired r
     analysisId: 'review', package: 'react-native', analyzedAt: '2026-08-01T09:00:00.000Z', expiresAt: '2026-08-01T11:00:00.000Z',
     changes: [{ packageName: 'react-native', classification: 'prod', stillRequiredBy: [] }],
     files: { manifestPath: '/fixture/package.json', lockfilePath: '/fixture/package-lock.json', rollbackAvailable: true },
-    verification: { configured: false },
+    verification: { configured: false, suggestedScriptNames: [] },
   };
   const oldHtml = renderToStaticMarkup(createElement(RemovalReviewPanel, { ...baseProps, analysis, now: Date.parse('2026-08-01T10:05:00.000Z') }));
   assert.match(oldHtml, /Removal review is more than one hour old/);

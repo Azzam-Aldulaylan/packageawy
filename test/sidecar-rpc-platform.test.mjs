@@ -114,6 +114,34 @@ test('storage reads the snapshot and writes through with storage/update', async 
   );
 });
 
+test('updateWorkspaceSetting sends settings/update and reads back the new value at once', async () => {
+  const client = fakeClient();
+  const platform = new RpcPlatform(client, init());
+  await platform.updateWorkspaceSetting('upgrade.verificationScripts', ['build', 'test']);
+  assert.deepEqual(client.requests.map((r) => [r.method, r.params]), [
+    ['settings/update', { key: 'upgrade.verificationScripts', value: ['build', 'test'] }],
+  ]);
+  assert.deepEqual(platform.getSetting('upgrade.verificationScripts', []), ['build', 'test']);
+  // The client's settings/didChange that follows replaces the copy as usual.
+  client.emit('settings/didChange', { settings: { 'upgrade.verificationScripts': ['build'] } });
+  assert.deepEqual(platform.getSetting('upgrade.verificationScripts', []), ['build']);
+});
+
+test('updateWorkspaceSetting rejects a refused or malformed answer and keeps the old value', async () => {
+  const refused = fakeClient({
+    'settings/update': () => {
+      throw new ResponseError(ErrorCodes.InvalidParams, 'not allowed');
+    },
+  });
+  const platform = new RpcPlatform(refused, init());
+  await assert.rejects(platform.updateWorkspaceSetting('upgrade.verificationScripts', ['build']), /not allowed/);
+  assert.deepEqual(platform.getSetting('upgrade.verificationScripts', []), []);
+
+  const malformed = new RpcPlatform(fakeClient({ 'settings/update': () => 'ok' }), init());
+  await assert.rejects(malformed.updateWorkspaceSetting('upgrade.verificationScripts', ['build']), /invalid result/);
+  assert.deepEqual(malformed.getSetting('upgrade.verificationScripts', []), []);
+});
+
 test('findFiles sends files/find, caps results and passes the token', async () => {
   const client = fakeClient({ 'files/find': () => ['/work/app/a.ts', '/work/app/b.ts', '/work/app/c.ts'] });
   const platform = new RpcPlatform(client, init());

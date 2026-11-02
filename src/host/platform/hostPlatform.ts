@@ -48,6 +48,11 @@
  *   was observed.
  * - `openFile`, `openExternal` and `openSettings` are `window/openFile`,
  *   `window/openExternal` and `window/openSettings` notifications.
+ * - `updateWorkspaceSetting` is a `settings/update` request with the key and
+ *   value. The client stores the value for the current project only and
+ *   answers null. The client then sends `settings/didChange` as for any
+ *   other change. The only key the host writes is
+ *   `upgrade.verificationScripts`.
  *
  * The webview channel is separate from the platform:
  * - `postMessage` is a `webview/postMessage` notification to the client.
@@ -131,6 +136,8 @@ export interface HostPlatform {
   workspaceFolders(): readonly WorkspaceFolder[];
   isWorkspaceTrusted(): boolean;
   getSetting<T>(key: string, defaultValue: T): T;
+  /** Stores `value` as the current workspace's (project's) value of `key`. Rejects when the editor refuses it. */
+  updateWorkspaceSetting(key: string, value: unknown): Promise<void>;
   readonly workspaceState: KeyValueStore;
   readonly globalState: KeyValueStore;
 

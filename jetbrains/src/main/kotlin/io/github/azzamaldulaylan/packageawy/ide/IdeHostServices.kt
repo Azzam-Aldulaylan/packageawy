@@ -2,6 +2,7 @@ package io.github.azzamaldulaylan.packageawy.ide
 
 import com.google.gson.JsonElement
 import com.intellij.ide.BrowserUtil
+import com.intellij.ide.trustedProjects.TrustedProjects
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -25,7 +26,10 @@ import io.github.azzamaldulaylan.packageawy.host.QuickPickEntry
 import io.github.azzamaldulaylan.packageawy.host.QuickPickSettings
 import io.github.azzamaldulaylan.packageawy.host.Severity
 import io.github.azzamaldulaylan.packageawy.rpc.CancelSignal
+import io.github.azzamaldulaylan.packageawy.rpc.ErrorCodes
+import io.github.azzamaldulaylan.packageawy.rpc.ResponseError
 import io.github.azzamaldulaylan.packageawy.settings.PackageawyConfigurable
+import io.github.azzamaldulaylan.packageawy.settings.PackageawyProjectSettings
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import javax.swing.JList
@@ -117,6 +121,14 @@ class IdeHostServices(
         ApplicationManager.getApplication().invokeLater {
             if (!project.isDisposed) ShowSettingsUtil.getInstance().showSettingsDialog(project, PackageawyConfigurable::class.java)
         }
+    }
+
+    override fun rememberVerificationScripts(names: List<String>) {
+        if (project.isDisposed || !TrustedProjects.isProjectTrusted(project)) {
+            throw ResponseError(ErrorCodes.INVALID_REQUEST, "Settings can only be saved for a trusted project")
+        }
+        // Persisted in the workspace file. The listener in PackageawyProject sends settings/didChange.
+        PackageawyProjectSettings.getInstance(project).rememberVerificationScripts(names)
     }
 
     override fun startProgress(id: String, title: String, onCancel: () -> Unit) = progress.start(id, title, onCancel)
