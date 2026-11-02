@@ -100,7 +100,7 @@ function looksLikeOneShotCheck(
   if (visiting.has(name) || visiting.size >= MAX_SCRIPT_DEPTH) return false;
   const script = scriptText(table, name);
   if (script === undefined || script.trim().length === 0) return false;
-  if (isPlaceholderScript(script) || runsInBackground(script)) return false;
+  if (isPlaceholderScript(script) || runsInBackground(script) || hidesRunnerCommand(script)) return false;
 
   const unwrapped = lexInvocations(script).map(unwrapInvocation);
   if (unwrapped.length === 0) return false;
@@ -191,6 +191,15 @@ function isPlaceholderScript(script: string): boolean {
   );
 }
 
+/**
+ * The shared lexer drops npx and exec options, so `npx --package @angular/cli
+ * ng test` would look like it runs `@angular/cli`. Options that take a package
+ * or a command string hide what really runs.
+ */
+function hidesRunnerCommand(script: string): boolean {
+  return /(^|[\s;&|])(npx|pnpx|bunx|exec|dlx)\s+(?:[^;&|]*\s)?(-p|--package|-c|--call)(?=[\s=]|$)/.test(script);
+}
+
 /** A single `&` sends a command to the background. `&&`, `>&` and `&>` do not. */
 function runsInBackground(script: string): boolean {
   return /(?<![&>|])&(?![&>])/.test(script);
@@ -202,7 +211,8 @@ function baseName(executable: string): string {
 }
 
 function isWatchFlag(arg: string): boolean {
-  if (arg === '-w') return true;
+  // Bundled short flags such as rollup's `-cw` include watch mode.
+  if (/^-[A-Za-z]*w[A-Za-z]*$/.test(arg)) return true;
   const match = /^--(watch|watchall|watch-all)(?:=(.*))?$/i.exec(arg);
   if (match === null) return false;
   return match[2] === undefined || match[2].toLowerCase() !== 'false';

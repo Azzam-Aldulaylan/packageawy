@@ -213,3 +213,17 @@ test('package-manager flags that may take a value hide the delegated script', ()
   assert.deepEqual(suggest({ test: 'npm run --silent unit', unit: 'vitest run' }), ['test']);
   assert.deepEqual(suggest({ test: 'npm -s run unit', unit: 'jest' }), ['test']);
 });
+
+test('runner options that name a package or a command string hide what runs', () => {
+  assert.deepEqual(suggest({ test: 'npx --package @angular/cli ng test' }), []);
+  assert.deepEqual(suggest({ test: 'npx -p @angular/cli ng test --watch=false' }), []);
+  assert.deepEqual(suggest({ test: 'npm exec --package=jest -- jest' }), []);
+  assert.deepEqual(suggest({ test: 'npx -c "vitest"' }), []);
+  assert.deepEqual(suggest({ test: 'npx --yes jest' }), ['test']);
+});
+
+test('bundled short flags that include w count as watch mode', () => {
+  assert.deepEqual(suggest({ build: 'rollup -cw' }), []);
+  assert.deepEqual(suggest({ build: 'tsc -bw' }), []);
+  assert.deepEqual(suggest({ build: 'rollup -c' }), ['build']);
+});
