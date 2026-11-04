@@ -29,7 +29,6 @@ import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { buildDependencyGraph } from '../core/lockfile/build.js';
-import { cleanupGraphSignature } from '../core/cleanup/graphSignature.js';
 import { computeSourceFingerprint } from '../core/cache/sourceFingerprint.js';
 import { runSequentialBatch } from '../core/async/sequentialBatch.js';
 import { directNodes } from '../core/lockfile/parse.js';
@@ -117,11 +116,6 @@ import { applyVerificationOptIn } from './verificationOptIn.js';
 import type { VerificationOptInRequest } from './verificationOptIn.js';
 import type { VerificationScript } from './verificationPolicy.js';
 import { smartCleanupProjectCapability } from './smartCleanupProjectCapability.js';
-import type {
-  SmartCleanupDedupeEvidence,
-  SmartCleanupDedupeSelection,
-} from './smartCleanupDuplicateCoordinator.js';
-import { SMART_CLEANUP_DEDUPE_TIMEOUT_MS } from './smartCleanupDuplicateCoordinator.js';
 import { buildSmartCleanupCompletionReport } from './smartCleanupCompletionReport.js';
 import type {
   SmartCleanupBeforeSnapshot,
@@ -168,13 +162,11 @@ export interface BulkRemoveMessage {
 }
 
 export interface SmartCleanupRemoveMessage {
-  /** Smart Cleanup analysis correlation. Resolves optional dedupe authority. */
+  /** Smart Cleanup analysis correlation. */
   requestId: string;
   packages: string[];
-  /** Exact removal-impact evidence correlation, required when packages is non-empty. */
-  removalRequestId?: string;
-  /** Opaque, host-issued project-wide dedupe action. */
-  dedupeActionId?: string;
+  /** Exact removal-impact evidence correlation. */
+  removalRequestId: string;
 }
 
 interface SmartCleanupRemovalEvidence {
@@ -217,7 +209,6 @@ export interface UpgradeAssistantCoordinatorOptions {
     deprecatedPackages: readonly string[];
     installedVersions: Readonly<Record<string, string>>;
   } | undefined;
-  getSmartCleanupDedupeEvidence?(requestId: string, actionId: string): SmartCleanupDedupeEvidence | null;
   isDisposed(): boolean;
   reloadFinalState(): Promise<void>;
   /** Reloads and captures the exact post-transaction evidence used only by Smart Cleanup completion reporting. */
@@ -440,8 +431,6 @@ interface StoredRemoval {
   suggestedScriptNames: string[];
   /** Present only for Smart Cleanup. Generic removal reviews remain unchanged. */
   smartCleanupEvidence?: SmartCleanupRemovalEvidence;
-  smartCleanupDedupeEvidence?: SmartCleanupDedupeEvidence;
-  smartCleanupDedupeSelection?: SmartCleanupDedupeSelection;
   /** Client correlation only. Never mutation authority. */
   smartCleanupRequestId?: string;
   /** Host-owned baseline for the correlated completion report. */
@@ -451,7 +440,6 @@ interface StoredRemoval {
 
 interface SmartCleanupRemovalContext {
   evidence?: SmartCleanupRemovalEvidence;
-  dedupeEvidence?: SmartCleanupDedupeEvidence;
   requestId: string;
   removalRequestId?: string;
 }
@@ -459,7 +447,6 @@ interface SmartCleanupRemovalContext {
 interface PendingRemovalAnalysis {
   packageName: string;
   smartCleanupRequestId?: string;
-  dedupeAbort?: AbortController;
   cancelled: boolean;
   reservationHeld: boolean;
   releaseStarted: boolean;
@@ -495,21 +482,6 @@ interface PreparedRemediationWork {
   packageManagerVersion: string | null;
 }
 
-function duplicateExcessVersionCount(snapshot: SmartCleanupBeforeSnapshot['snapshot']): number | null {
-  if (snapshot.hygieneFindings === undefined) return null;
-  return snapshot.hygieneFindings.reduce((count, finding) => {
-    if (finding.kind !== 'duplicate-version' || finding.evidence.kind !== 'duplicate-version') return count;
-    return count + Math.max(0, finding.evidence.versions.length - 1);
-  }, 0);
-}
-
-function smartCleanupDedupeSelectionsMatch(
-  left: SmartCleanupDedupeSelection,
-  right: SmartCleanupDedupeSelection
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 function verifiedDeprecatedPackagesAfter(
   before: SmartCleanupBeforeSnapshot,
   after: SmartCleanupFinalRefreshEvidence
@@ -542,19 +514,6 @@ function toSmartCleanupCompletionPresentation(
   };
   addMetric('dependencies', 'Direct dependencies', result.report.metrics.directDependencies, 'Measured from the correlated dependency inventory');
   addMetric('deprecated-dependencies', 'Deprecated direct dependencies', result.report.metrics.deprecatedDirectDependencies, 'Exact installed-version metadata');
-  addMetric('duplicate-groups', 'Duplicate-version groups', result.report.metrics.duplicateVersionGroups, 'Measured from the correlated dependency graph');
-
-  const beforeExcess = duplicateExcessVersionCount(before.snapshot);
-  const afterExcess = duplicateExcessVersionCount(after.snapshot);
-  if (beforeExcess !== null && afterExcess !== null) {
-    metrics.push({
-      id: 'excess-versions',
-      label: 'Excess resolved versions',
-      before: beforeExcess,
-      after: afterExcess,
-      detail: 'Versions beyond one resolved version per package',
-    });
-  }
   if (result.security !== null) {
     metrics.push({
       id: 'vulnerable-dependencies',
@@ -614,8 +573,6 @@ export class UpgradeAssistantCoordinator {
   private readonly remediationPlans = new Map<string, StoredRemediationPlan>();
   private readonly remediationPlanByPackage = new Map<string, string>();
   private activeUpgradeAnalysisAbort: AbortController | undefined;
-  /** Bounded final dedupe recheck that runs after the review is confirmed. */
-  private activeSmartCleanupFinalCheckAbort: AbortController | undefined;
   /** One exact deep inventory is enough to make immediate re-analysis/cache reuse cheap without retaining many large file lists. */
   private readonly targetPackageSurfaceCache = new TargetPackageSurfaceCache();
 
@@ -653,8 +610,6 @@ export class UpgradeAssistantCoordinator {
   disposeWhenIdle(): void {
     this.activeRemediationAbort?.abort();
     this.activeUpgradeAnalysisAbort?.abort();
-    this.pendingRemovalAnalysis?.dedupeAbort?.abort();
-    this.activeSmartCleanupFinalCheckAbort?.abort();
     if (this.reservation.isMutationBusy) return;
     this.analysis = undefined;
     this.removal = undefined;
@@ -698,7 +653,6 @@ export class UpgradeAssistantCoordinator {
     const pendingRemoval = this.pendingRemovalAnalysis;
     if (pendingRemoval !== undefined) {
       pendingRemoval.cancelled = true;
-      pendingRemoval.dedupeAbort?.abort();
       if (pendingRemoval.reservationHeld) pendingRemoval.releaseStarted = true;
       this.pendingRemovalAnalysis = undefined;
     }
@@ -722,8 +676,6 @@ export class UpgradeAssistantCoordinator {
     this.sourceGeneration.advance();
     if (this.reservation.isMutationBusy) return;
 
-    this.pendingRemovalAnalysis?.dedupeAbort?.abort();
-    this.activeSmartCleanupFinalCheckAbort?.abort();
 
     if (this.pendingAnalyzePackage !== null) {
       const packageName = this.pendingAnalyzePackage;
@@ -1715,17 +1667,8 @@ export class UpgradeAssistantCoordinator {
    */
   async handleAnalyzeSmartCleanupRemove(message: SmartCleanupRemoveMessage): Promise<void> {
     const requestedPackage = message.packages[0] ?? 'Smart Cleanup';
-    const removalEvidence = message.packages.length === 0 || message.removalRequestId === undefined
-      ? undefined
-      : this.options.smartCleanupRemovalEvidence?.(message.removalRequestId, message.packages) ?? null;
-    const dedupeEvidence = message.dedupeActionId === undefined
-      ? undefined
-      : this.options.getSmartCleanupDedupeEvidence?.(message.requestId, message.dedupeActionId) ?? null;
-    if (
-      (message.packages.length > 0 && (removalEvidence == null || !removalEvidence.isCurrent())) ||
-      (message.dedupeActionId !== undefined && (dedupeEvidence == null || !dedupeEvidence.isCurrent())) ||
-      (removalEvidence === undefined && dedupeEvidence === undefined)
-    ) {
+    const removalEvidence = this.options.smartCleanupRemovalEvidence?.(message.removalRequestId, message.packages) ?? null;
+    if (message.packages.length === 0 || removalEvidence == null || !removalEvidence.isCurrent()) {
       this.options.sink.postMessage({
         status: 'remove-error',
         package: requestedPackage,
@@ -1740,9 +1683,8 @@ export class UpgradeAssistantCoordinator {
       { changes: message.packages.map((packageName) => ({ package: packageName })) },
       {
         requestId: message.requestId,
-        ...(message.removalRequestId === undefined ? {} : { removalRequestId: message.removalRequestId }),
-        ...(removalEvidence == null ? {} : { evidence: removalEvidence }),
-        ...(dedupeEvidence == null ? {} : { dedupeEvidence }),
+        removalRequestId: message.removalRequestId,
+        evidence: removalEvidence,
       }
     );
   }
@@ -1763,7 +1705,7 @@ export class UpgradeAssistantCoordinator {
       return;
     }
 
-    const requestedPackage = message.changes[0]?.package ?? (smartCleanup?.dedupeEvidence === undefined ? 'unknown' : 'Smart Cleanup');
+    const requestedPackage = message.changes[0]?.package ?? 'unknown';
     if (this.pendingRemovalAnalysis !== undefined) {
       this.options.sink.postMessage({
         status: 'remove-error',
@@ -1798,10 +1740,7 @@ export class UpgradeAssistantCoordinator {
         if (this.pendingRemovalAnalysis === pending) this.pendingRemovalAnalysis = undefined;
         return;
       }
-      if (
-        (smartCleanup.evidence !== undefined && !smartCleanup.evidence.isCurrent()) ||
-        (smartCleanup.dedupeEvidence !== undefined && !smartCleanup.dedupeEvidence.isCurrent())
-      ) {
+      if (smartCleanup.evidence !== undefined && !smartCleanup.evidence.isCurrent()) {
         this.options.sink.postMessage({
           status: 'remove-error',
           package: requestedPackage,
@@ -1829,11 +1768,8 @@ export class UpgradeAssistantCoordinator {
       }
       eligibilities = batch.removals;
     } else {
-      if (smartCleanup?.dedupeEvidence === undefined) {
-        if (this.pendingRemovalAnalysis === pending) this.pendingRemovalAnalysis = undefined;
-        return;
-      }
-      eligibilities = [];
+      if (this.pendingRemovalAnalysis === pending) this.pendingRemovalAnalysis = undefined;
+      return;
     }
     const eligibility = eligibilities[0] ?? null;
     const reservationKey = eligibility?.packageName ?? requestedPackage;
@@ -1916,45 +1852,6 @@ export class UpgradeAssistantCoordinator {
         classification: item.classification,
         stillRequiredBy: stillRequiredBy(graph, manifest.dependencies, item.packageName, removingNames, whyInstalledIndex),
       }));
-      const stagedManifest = eligibilities.length === 0
-        ? preflightProject.manifestText
-        : buildStagedManifestForRemoval(
-            preflightProject.manifestText,
-            eligibilities.map((item) => ({ packageName: item.packageName, classification: item.classification }))
-          );
-      let dedupeSelection: SmartCleanupDedupeSelection | undefined;
-      if (smartCleanup?.dedupeEvidence !== undefined) {
-        const dedupeAbort = new AbortController();
-        pending.dedupeAbort = dedupeAbort;
-        let dedupeTimedOut = false;
-        const dedupeTimeout = setTimeout(() => {
-          dedupeTimedOut = true;
-          dedupeAbort.abort();
-        }, SMART_CLEANUP_DEDUPE_TIMEOUT_MS);
-        let verifiedDedupe: Awaited<ReturnType<SmartCleanupDedupeEvidence['verifySelection']>>;
-        try {
-          verifiedDedupe = await smartCleanup.dedupeEvidence.verifySelection(stagedManifest, dedupeAbort.signal);
-        } finally {
-          clearTimeout(dedupeTimeout);
-          if (pending.dedupeAbort === dedupeAbort) delete pending.dedupeAbort;
-        }
-        if (pending.cancelled || this.pendingRemovalAnalysis !== pending || this.options.isDisposed()) return;
-        if (!verifiedDedupe.ok) {
-          this.options.sink.postMessage({
-            status: 'remove-error',
-            package: reservationKey,
-            error: {
-              code: 'STALE_ANALYSIS',
-              message: dedupeTimedOut
-                ? 'The final dedupe safety check timed out. Analyze Smart Cleanup again.'
-                : `${verifiedDedupe.reason} Analyze Smart Cleanup again.`,
-            },
-          });
-          return;
-        }
-        dedupeSelection = verifiedDedupe;
-      }
-
       const manifestPath = path.join(controller.root, 'package.json');
       const expectedLockfilePath =
         source.lockfilePath ??
@@ -2003,17 +1900,14 @@ export class UpgradeAssistantCoordinator {
         verificationScripts,
         suggestedScriptNames,
         ...(smartCleanup?.evidence === undefined ? {} : { smartCleanupEvidence: smartCleanup.evidence }),
-        ...(smartCleanup?.dedupeEvidence === undefined ? {} : { smartCleanupDedupeEvidence: smartCleanup.dedupeEvidence }),
-        ...(dedupeSelection === undefined ? {} : { smartCleanupDedupeSelection: dedupeSelection }),
         ...(smartCleanup === undefined ? {} : { smartCleanupRequestId: smartCleanup.requestId }),
         ...(smartCleanupBefore === undefined ? {} : { smartCleanupBefore }),
         expiresAt,
       };
       if (pending.cancelled || this.pendingRemovalAnalysis !== pending || this.options.isDisposed()) return;
       if (
-        smartCleanup !== undefined &&
-        ((smartCleanup.evidence !== undefined && !smartCleanup.evidence.isCurrent()) ||
-          (smartCleanup.dedupeEvidence !== undefined && !smartCleanup.dedupeEvidence.isCurrent()))
+        smartCleanup?.evidence !== undefined &&
+        !smartCleanup.evidence.isCurrent()
       ) {
         this.options.sink.postMessage({
           status: 'remove-error',
@@ -2051,15 +1945,6 @@ export class UpgradeAssistantCoordinator {
           suggestedScriptNames,
           manifestPath,
           lockfilePath: expectedLockfilePath,
-          ...(smartCleanup?.dedupeEvidence === undefined || dedupeSelection === undefined
-            ? {}
-            : {
-                dedupe: {
-                  actionId: smartCleanup.dedupeEvidence.actionId,
-                  affectedPackages: [...dedupeSelection.affectedPackages],
-                  expectedRemovedVersions: dedupeSelection.expectedRemovedVersions,
-                },
-              }),
         }),
       });
       return;
@@ -2090,7 +1975,6 @@ export class UpgradeAssistantCoordinator {
         (message.requestId === undefined || pending.smartCleanupRequestId === message.requestId)
       ) {
         pending.cancelled = true;
-        pending.dedupeAbort?.abort();
         // Free the request slot synchronously. The abandoned operation compares
         // identity after every await, so it cannot clear or publish over a
         // replacement that starts immediately after this cancellation.
@@ -3322,7 +3206,7 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
-      if (stored.smartCleanupEvidence !== undefined || stored.smartCleanupDedupeEvidence !== undefined) {
+      if (stored.smartCleanupEvidence !== undefined) {
         const capability = smartCleanupProjectCapability(controller.upgradeSource);
         if (!capability.executionSupported) {
           this.options.sink.postMessage({
@@ -3332,7 +3216,7 @@ export class UpgradeAssistantCoordinator {
           });
           return;
         }
-        if (stored.smartCleanupEvidence !== undefined && !stored.smartCleanupEvidence.isCurrent()) {
+        if (!stored.smartCleanupEvidence.isCurrent()) {
           this.options.sink.postMessage({
             status: 'remove-error',
             package: stored.reservationKey,
@@ -3365,50 +3249,6 @@ export class UpgradeAssistantCoordinator {
             disk.manifestText,
             stored.eligibilities.map((item) => ({ packageName: item.packageName, classification: item.classification }))
           );
-      if (stored.smartCleanupDedupeEvidence !== undefined) {
-        if (!stored.smartCleanupDedupeEvidence.isCurrent()) {
-          this.options.sink.postMessage({
-            status: 'remove-error',
-            package: stored.reservationKey,
-            error: { code: 'STALE_ANALYSIS', message: 'Duplicate evidence changed while the Smart Cleanup review was open. Analyze again.' },
-          });
-          return;
-        }
-        const dedupeAbort = new AbortController();
-        this.activeSmartCleanupFinalCheckAbort = dedupeAbort;
-        let dedupeTimedOut = false;
-        const dedupeTimeout = setTimeout(() => {
-          dedupeTimedOut = true;
-          dedupeAbort.abort();
-        }, SMART_CLEANUP_DEDUPE_TIMEOUT_MS);
-        let verifiedDedupe: Awaited<ReturnType<SmartCleanupDedupeEvidence['verifySelection']>>;
-        try {
-          verifiedDedupe = await stored.smartCleanupDedupeEvidence.verifySelection(stagedManifest, dedupeAbort.signal);
-        } finally {
-          clearTimeout(dedupeTimeout);
-          if (this.activeSmartCleanupFinalCheckAbort === dedupeAbort) {
-            this.activeSmartCleanupFinalCheckAbort = undefined;
-          }
-        }
-        if (
-          !verifiedDedupe.ok ||
-          stored.smartCleanupDedupeSelection === undefined ||
-          !smartCleanupDedupeSelectionsMatch(stored.smartCleanupDedupeSelection, verifiedDedupe)
-        ) {
-          this.options.sink.postMessage({
-            status: 'remove-error',
-            package: stored.reservationKey,
-            error: {
-              code: 'STALE_ANALYSIS',
-              message: dedupeTimedOut
-                ? 'The final dedupe safety check timed out. Analyze Smart Cleanup again.'
-                : `${verifiedDedupe.ok ? 'The final duplicate plan changed.' : verifiedDedupe.reason} Analyze Smart Cleanup again.`,
-            },
-          });
-          return;
-        }
-      }
-
       const files = await createNodeUpgradeTransactionFileAdapter({
         workspaceRoot: selected.folder.path,
         allowlistedPaths,
@@ -3418,8 +3258,6 @@ export class UpgradeAssistantCoordinator {
         cwd: controller.root,
         ignoreScripts: stored.ignoreScripts,
         packageManager: source.packageManager,
-        reconcileManifest: stored.eligibilities.length > 0,
-        dedupe: stored.smartCleanupDedupeEvidence !== undefined,
       });
       if (!prepared.ok) {
         this.options.sink.postMessage({
@@ -3449,17 +3287,6 @@ export class UpgradeAssistantCoordinator {
             code: 'STALE_ANALYSIS',
             message: 'Project usage evidence changed before Smart Cleanup could begin. Analyze again.',
           },
-        });
-        return;
-      }
-      if (
-        stored.smartCleanupDedupeEvidence !== undefined &&
-        !stored.smartCleanupDedupeEvidence.isCurrent()
-      ) {
-        this.options.sink.postMessage({
-          status: 'remove-error',
-          package: stored.reservationKey,
-          error: { code: 'STALE_ANALYSIS', message: 'Duplicate evidence changed before Smart Cleanup could begin. Analyze again.' },
         });
         return;
       }
@@ -3502,52 +3329,9 @@ export class UpgradeAssistantCoordinator {
                 });
                 const direct = new Map(directNodes(appliedGraph).map((node) => [node.name, node.version]));
                 const removalStillPresent = stored.eligibilities.find((item) => direct.has(item.packageName));
-                let structuralFailure = removalStillPresent === undefined
+                const structuralFailure = removalStillPresent === undefined
                   ? null
                   : `${removalStillPresent.packageName} is still a direct dependency.`;
-                const selection = stored.smartCleanupDedupeSelection;
-                if (structuralFailure === null && selection !== undefined) {
-                  const actualDirect = Object.fromEntries([...direct].sort(([left], [right]) => left.localeCompare(right)));
-                  if (JSON.stringify(actualDirect) !== JSON.stringify(selection.expectedDirectVersions)) {
-                    structuralFailure = 'A direct dependency resolved differently from the reviewed cleanup preview.';
-                  }
-                  if (structuralFailure === null) {
-                    for (const [packageName, targetVersion] of Object.entries(selection.expectedTargets)) {
-                      const versions = [...new Set(
-                        [...appliedGraph.nodes.values()]
-                          .filter((node) => node.name === packageName && node.version !== null)
-                          .map((node) => node.version as string)
-                      )].sort((left, right) => left.localeCompare(right));
-                      if (versions.length !== 1 || versions[0] !== targetVersion) {
-                        structuralFailure = `${packageName} did not converge to the reviewed ${targetVersion} target.`;
-                        break;
-                      }
-                    }
-                  }
-                  if (structuralFailure === null) {
-                    const actualInventory = new Map<string, Set<string>>();
-                    for (const node of appliedGraph.nodes.values()) {
-                      if (node.version === null) continue;
-                      const versions = actualInventory.get(node.name) ?? new Set<string>();
-                      versions.add(node.version);
-                      actualInventory.set(node.name, versions);
-                    }
-                    const normalizedInventory = Object.fromEntries(
-                      [...actualInventory]
-                        .sort(([left], [right]) => left.localeCompare(right))
-                        .map(([name, versions]) => [name, [...versions].sort((left, right) => left.localeCompare(right))])
-                    );
-                    if (JSON.stringify(normalizedInventory) !== JSON.stringify(selection.expectedInventory)) {
-                      structuralFailure = 'The resolved dependency inventory differs from the reviewed cleanup preview.';
-                    }
-                  }
-                  if (
-                    structuralFailure === null &&
-                    cleanupGraphSignature(appliedGraph) !== selection.expectedGraphSignature
-                  ) {
-                    structuralFailure = 'The resolved dependency relationships differ from the reviewed cleanup preview.';
-                  }
-                }
                 checks.push(structuralFailure === null
                   ? { id: 'smart-cleanup-structure', status: 'passed' }
                   : { id: 'smart-cleanup-structure', status: 'failed', message: structuralFailure });
@@ -3613,8 +3397,7 @@ export class UpgradeAssistantCoordinator {
       const presentation = describeRemoveTransactionOutcome(
         stored.eligibilities.map((item) => item.packageName),
         source.packageManager,
-        transaction,
-        { dedupe: stored.smartCleanupDedupeEvidence !== undefined }
+        transaction
       );
       const removedPackages = stored.eligibilities.map((item) => item.packageName);
       const verification =
@@ -3638,12 +3421,7 @@ export class UpgradeAssistantCoordinator {
                 introducedAdvisories: [],
                 completedActionIds: [],
                 skippedActionIds: [],
-                failedActionIds: stored.smartCleanupDedupeEvidence === undefined
-                  ? removedPackages.map((packageName) => `remove-direct:${packageName}`)
-                  : [
-                      ...removedPackages.map((packageName) => `remove-direct:${packageName}`),
-                      stored.smartCleanupDedupeEvidence.actionId,
-                    ],
+                failedActionIds: removedPackages.map((packageName) => `remove-direct:${packageName}`),
                 reason: 'Fresh correlated dashboard evidence was unavailable after cleanup.',
               }
             : (() => {
@@ -3684,30 +3462,6 @@ export class UpgradeAssistantCoordinator {
                             : { message: 'The dependency still appears in the refreshed project inventory.' }),
                       };
                     }),
-                    ...(stored.smartCleanupDedupeEvidence === undefined
-                      ? []
-                      : (() => {
-                          const remainingDuplicates = new Set(
-                            (afterEvidence.snapshot.hygieneFindings ?? [])
-                              .filter((finding) => finding.kind === 'duplicate-version')
-                              .map((finding) => finding.packageName)
-                          );
-                          const expectedPackages = stored.smartCleanupDedupeSelection?.affectedPackages ?? [];
-                          const converged = transaction.verification.status === 'passed' &&
-                            (afterEvidence.snapshot.hygieneFindings === undefined || expectedPackages.every(
-                              (packageName) => !remainingDuplicates.has(packageName)
-                            ));
-                          return [{
-                            actionId: stored.smartCleanupDedupeEvidence.actionId,
-                            packageName: 'Project deduplication',
-                            status: presentation.kind === 'rolled-back' ? 'skipped' as const : converged ? actionStatus : 'failed' as const,
-                            ...(presentation.kind === 'rolled-back'
-                              ? { message: 'Project dependency files were restored.' }
-                              : converged
-                                ? {}
-                                : { message: 'At least one reviewed duplicate group remains after refresh.' }),
-                          }];
-                        })()),
                   ],
                 });
                 return toSmartCleanupCompletionPresentation(completion, stored.smartCleanupBefore, afterEvidence);

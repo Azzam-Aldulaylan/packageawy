@@ -70,7 +70,7 @@ test('non-empty groups are AND\'d together', () => {
   assert.equal(rowMatchesCriteria(row({ name: 'unused-direct', dev: true }), [UNUSED_FINDING], selected), true);
 });
 
-test('health criteria cover likely-unused, duplicate-version, and deprecated', () => {
+test('health criteria cover likely-unused and deprecated', () => {
   const unused = criteria({ health: new Set(['likely-unused']) });
   assert.equal(rowMatchesCriteria(row({ name: 'unused-direct' }), [UNUSED_FINDING], unused), true);
   assert.equal(rowMatchesCriteria(row({ name: 'clean' }), [UNUSED_FINDING], unused), false);
@@ -167,12 +167,12 @@ test('criteriaSummaryLines omits every empty group and returns nothing for an em
 
 test('criteriaSummaryLines joins chips within one group with "or", one line per non-empty group, in Health/Security/Updates/Type order', () => {
   const selected = criteria({
-    health: new Set(['duplicate-version', 'likely-unused']),
+    health: new Set(['deprecated', 'likely-unused']),
     severity: new Set(['high', 'critical']),
     type: new Set(['prod']),
   });
   assert.deepEqual(criteriaSummaryLines(selected), [
-    { group: 'Health', text: 'Likely unused or Duplicated' },
+    { group: 'Health', text: 'Likely unused or Deprecated' },
     { group: 'Security', text: 'Critical or High' },
     { group: 'Type', text: 'Prod' },
   ]);

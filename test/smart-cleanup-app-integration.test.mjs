@@ -36,7 +36,7 @@ test('Smart Cleanup requires a correlated host preflight and explicit confirmati
   assert.match(app, /type: 'smart-cleanup-remove'/);
   assert.match(app, /requestId: smartCleanupState\.requestId/);
   assert.match(app, /removalRequestId/);
-  assert.match(app, /dedupeActionId/);
+  assert.doesNotMatch(app, /dedupeActionId/);
   assert.match(app, /packages\[0\] \?\? 'Smart Cleanup'/);
   assert.match(app, /const confirmSmartCleanup/);
   assert.match(app, /type: 'confirm-remove',\s+analysisId/);

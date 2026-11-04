@@ -23,7 +23,7 @@
 - **Vulnerabilities with their full path.** Expand a row to see which transitive package is affected, how it got there, and which version fixes it.
 - **Upgrade Review.** Before an upgrade, Packageawy checks peer dependencies, Node engine ranges, package exports, and your own imports. When peers conflict, it looks for a set of upgrades that works together.
 - **Transitive fixes.** When a vulnerable package sits deep in the tree, Packageawy can often move just that package to a patched version without touching its parent.
-- **Removal Review and Smart Cleanup.** Find packages that look unused, deprecated versions, and duplicate installs, with the evidence for each one. Nothing is removed until you confirm.
+- **Removal Review and Smart Cleanup.** Find packages that look unused and deprecated versions, with the evidence for each one. Nothing is removed until you confirm.
 - **Safe by default.** Install scripts are off, changes run as a visible VS Code task, and `package.json` and the lockfile are restored if the install or your verification scripts fail.
 - **Monorepos.** Pick any `package.json` in the workspace. npm workspaces and pnpm importers are supported.
 
@@ -71,7 +71,7 @@ Only one change runs at a time.
 
 - **Removal Review** checks your source files, package scripts, config files, other packages that need this one, and the security effect of removing it.
 - **Manage dependencies** lets you filter and review several packages at once. A "likely unused" result is a reason to look, not permission to remove.
-- **Smart Cleanup** combines unused-package evidence, deprecated versions, duplicate installs, and security impact into one plan. Every recommended action is checked again right before it runs.
+- **Smart Cleanup** combines unused-package evidence, deprecated versions, and security impact into one plan. Every recommended action is checked again right before it runs.
 
 ## Settings
 

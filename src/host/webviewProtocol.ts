@@ -532,19 +532,11 @@ export interface RemoveAnalysisPresentation {
   /** Same policy/shape as an upgrade's verification: post-removal scripts run the same way a coordinated upgrade's do. */
   verification: UpgradeAnalysisVerification;
   files: RemoveAnalysisFiles;
-  /** Present only for a host-verified Smart Cleanup project-wide dedupe. */
-  dedupe?: {
-    actionId: string;
-    affectedPackages: string[];
-    expectedRemovedVersions: number;
-  };
 }
 
 export type SmartCleanupCompletionMetricId =
   | 'dependencies'
   | 'deprecated-dependencies'
-  | 'duplicate-groups'
-  | 'excess-versions'
   | 'vulnerable-dependencies'
   | 'advisory-findings';
 
@@ -596,21 +588,6 @@ export type SmartCleanupExecutionCapability =
   | { executionSupported: true }
   | { executionSupported: false; reason: string };
 
-export interface SmartCleanupDuplicateAssessmentPresentation {
-  packageName: string;
-  outcome: 'safe-convergence' | 'keep-both' | 'unknown';
-  currentVersions: string[];
-  targetVersion?: string;
-  reason: string;
-}
-
-/** One host-owned project-wide dedupe opportunity. The command is never package-scoped. */
-export interface SmartCleanupDedupeActionPresentation {
-  actionId: string;
-  affectedPackages: string[];
-  expectedRemovedVersions: number;
-}
-
 // Re-exported for every existing import site (dashboardController.ts,
 // dashboardPanel.ts, upgradeRunner.ts, etc.) that imports `ProtocolError`
 // from here rather than its new home in src/core/validation.ts: the wire
@@ -644,7 +621,7 @@ export interface DashboardData {
   advisoriesError?: ProtocolError;
   /** `npm audit` enrichment was skipped or failed. Upgrade targets are self-computed. */
   auditUnavailable?: boolean;
-  /** Deprecated + duplicate-version findings, computed fresh with every scan. See src/core/hygiene/index.ts. Likely-unused findings are never included here. See 'cleanup-result' below. */
+  /** Deprecated findings, computed fresh with every scan. See src/core/hygiene/index.ts. Likely-unused findings are never included here. See 'cleanup-result' below. */
   hygieneFindings: DependencyFinding[];
   /** package.json's `version` for the running extension: shown in the footer so a dev can tell which build is loaded. */
   extensionVersion: string;
@@ -766,7 +743,7 @@ export type HostToWebviewMessage =
   | { status: 'removal-impact-error'; requestId: string; packages: string[]; error: ProtocolError }
   /**
    * Likely-unused findings from a completed "Analyze cleanup" run: the
-   * webview merges these with the deprecated/duplicate-version findings it
+   * webview merges these with the deprecated findings it
    * already has (`DashboardData.hygieneFindings`) and re-derives the
    * summary itself via the same `summarizeHygieneFindings` the host uses,
    * rather than trusting two independently-computed counts to agree.
@@ -784,18 +761,7 @@ export type HostToWebviewMessage =
       capability: SmartCleanupExecutionCapability;
     }
   | { status: 'smart-cleanup-metadata-error'; requestId: string; error: ProtocolError }
-  | { status: 'smart-cleanup-duplicates-analyzing'; requestId: string }
-  | {
-      status: 'smart-cleanup-duplicates-result';
-      requestId: string;
-      assessments: SmartCleanupDuplicateAssessmentPresentation[];
-      action?: SmartCleanupDedupeActionPresentation;
-      /** The duplicate check could not finish, so its results are partial. */
-      unavailableReason?: string;
-      /** The duplicate check finished, but no dedupe action is offered, for this reason. */
-      dedupeNote?: string;
-    }
-  | { status: 'smart-cleanup-duplicates-error'; requestId: string; error: ProtocolError };
+;
 
 /**
  * `package` and `target` are the smallest request that lets the host verify
@@ -837,13 +803,12 @@ export type WebviewToHostMessage =
   | { type: 'bulk-upgrade'; changes: Array<{ package: string; target: string }>; requestId: string }
   /** Coordinated removal of one or more declared direct dependencies. See src/core/upgrade/validate.ts's validateBulkRemoveRequest. */
   | { type: 'bulk-remove'; changes: Array<{ package: string }> }
-  /** Smart Cleanup final plan: host re-resolves the opaque dedupe action and optional removal evidence. */
+  /** Smart Cleanup final plan: host re-resolves the removal evidence. */
   | {
       type: 'smart-cleanup-remove';
       requestId: string;
       packages: string[];
-      removalRequestId?: string;
-      dedupeActionId?: string;
+      removalRequestId: string;
     }
   | { type: 'open-advisory'; package: string; advisoryId: string | number; path: string[]; reference?: string }
   | ({ type: 'confirm-upgrade'; analysisId: string } & ConfirmVerificationOptIn)
@@ -886,8 +851,6 @@ export type WebviewToHostMessage =
   /** Lazy, exact-version deprecation metadata for the dedicated Smart Cleanup workspace. */
   | { type: 'analyze-smart-cleanup-metadata'; requestId: string }
   | { type: 'cancel-smart-cleanup-metadata'; requestId: string }
-  | { type: 'analyze-smart-cleanup-duplicates'; requestId: string }
-  | { type: 'cancel-smart-cleanup-duplicates'; requestId: string }
   /**
    * A read-only removal-impact preview for one or more packages: the single
    * "Analyze removal" card in the Manage dependency modal, and the bulk
@@ -1137,9 +1100,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   }
   if (
     type === 'analyze-smart-cleanup-metadata' ||
-    type === 'cancel-smart-cleanup-metadata' ||
-    type === 'analyze-smart-cleanup-duplicates' ||
-    type === 'cancel-smart-cleanup-duplicates'
+    type === 'cancel-smart-cleanup-metadata'
   ) {
     return hasOnlyKeys(value, ['type', 'requestId']) && isNonEmptyString(value['requestId']);
   }
@@ -1153,15 +1114,11 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   }
   if (type === 'smart-cleanup-remove') {
     const packages = value['packages'];
-    const removalRequestId = value['removalRequestId'];
-    const dedupeActionId = value['dedupeActionId'];
     return (
-      hasOnlyKeys(value, ['type', 'requestId', 'packages', 'removalRequestId', 'dedupeActionId']) &&
+      hasOnlyKeys(value, ['type', 'requestId', 'packages', 'removalRequestId']) &&
       isNonEmptyString(value['requestId']) &&
-      isCanonicalRemovalPackageSet(packages, true) &&
-      (removalRequestId === undefined || isNonEmptyString(removalRequestId)) &&
-      (dedupeActionId === undefined || isNonEmptyString(dedupeActionId)) &&
-      ((packages.length > 0 && isNonEmptyString(removalRequestId)) || isNonEmptyString(dedupeActionId))
+      isCanonicalRemovalPackageSet(packages) &&
+      isNonEmptyString(value['removalRequestId'])
     );
   }
   if (type === 'cancel-removal-impact') {
@@ -1690,7 +1647,7 @@ function isVerification(value: unknown): value is UpgradeAnalysisVerification {
 
 function isRemoveAnalysisPresentation(value: unknown): value is RemoveAnalysisPresentation {
   if (!isRecord(value)) return false;
-  if (!hasOnlyKeys(value, ['analysisId', 'analyzedAt', 'expiresAt', 'package', 'changes', 'verification', 'files', 'dedupe'])) return false;
+  if (!hasOnlyKeys(value, ['analysisId', 'analyzedAt', 'expiresAt', 'package', 'changes', 'verification', 'files'])) return false;
   if (!isVerification(value['verification'])) return false;
 
   if (!isCanonicalIsoDate(value['analyzedAt']) || !isCanonicalIsoDate(value['expiresAt'])) return false;
@@ -1715,9 +1672,7 @@ function isRemoveAnalysisPresentation(value: unknown): value is RemoveAnalysisPr
     changeNames.add(change['packageName']);
   }
 
-  const dedupe = value['dedupe'];
-  if (changes.length === 0 && dedupe === undefined) return false;
-  if (dedupe !== undefined && !isSmartCleanupDedupeAction(dedupe)) return false;
+  if (changes.length === 0) return false;
 
   const files = value['files'];
   if (
@@ -1780,16 +1735,6 @@ const MAX_REMEDIATION_CHANGES = 200;
 const MAX_REMEDIATION_ADVISORIES = 400;
 const MAX_REMEDIATION_PATHS = 32;
 const MAX_REMEDIATION_PATH_SEGMENTS = 64;
-
-function isBoundedNonEmptyStringArray(value: unknown, maximum: number): value is string[] {
-  return (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.length <= maximum &&
-    value.every(isNonEmptyString) &&
-    new Set(value).size === value.length
-  );
-}
 
 function isBoundedStringArray(value: unknown, maximum: number): value is string[] {
   return Array.isArray(value) && value.length <= maximum && value.every(isNonEmptyString) && new Set(value).size === value.length;
@@ -2049,42 +1994,6 @@ function isRemovalImpactAssessment(value: unknown): value is RemovalImpactAssess
   );
 }
 
-function isSmartCleanupDuplicateAssessment(
-  value: unknown
-): value is SmartCleanupDuplicateAssessmentPresentation {
-  if (!isRecord(value)) return false;
-  const outcome = value['outcome'];
-  const versions = value['currentVersions'];
-  const allowedKeys = outcome === 'safe-convergence'
-    ? ['packageName', 'outcome', 'currentVersions', 'targetVersion', 'reason']
-    : ['packageName', 'outcome', 'currentVersions', 'reason'];
-  return (
-    hasOnlyKeys(value, allowedKeys) &&
-    isNonEmptyString(value['packageName']) &&
-    (outcome === 'safe-convergence' || outcome === 'keep-both' || outcome === 'unknown') &&
-    Array.isArray(versions) && versions.length >= 2 && versions.length <= 50 &&
-    versions.every((version) => isNonEmptyString(version) && version.length <= 100) &&
-    new Set(versions).size === versions.length &&
-    (outcome !== 'safe-convergence' || (isNonEmptyString(value['targetVersion']) && value['targetVersion'].length <= 100)) &&
-    isNonEmptyString(value['reason']) && value['reason'].length <= 1000
-  );
-}
-
-function isSmartCleanupDedupeAction(value: unknown): value is SmartCleanupDedupeActionPresentation {
-  if (!isRecord(value)) return false;
-  const packages = value['affectedPackages'];
-  return (
-    hasOnlyKeys(value, ['actionId', 'affectedPackages', 'expectedRemovedVersions']) &&
-    isNonEmptyString(value['actionId']) && value['actionId'].length <= 200 &&
-    Array.isArray(packages) && packages.length > 0 && packages.length <= 500 &&
-    packages.every((name) => isNonEmptyString(name) && name.length <= 214) &&
-    new Set(packages).size === packages.length &&
-    typeof value['expectedRemovedVersions'] === 'number' &&
-    Number.isInteger(value['expectedRemovedVersions']) &&
-    value['expectedRemovedVersions'] > 0 && value['expectedRemovedVersions'] <= 10_000
-  );
-}
-
 function isUsageAnalysisResult(value: unknown): value is UsageAnalysisResult {
   return (
     isRecord(value) &&
@@ -2126,8 +2035,6 @@ function isUpgradeTargetOptions(value: unknown): value is UpgradeTargetOptions {
 const SMART_CLEANUP_COMPLETION_METRIC_IDS: ReadonlySet<string> = new Set([
   'dependencies',
   'deprecated-dependencies',
-  'duplicate-groups',
-  'excess-versions',
   'vulnerable-dependencies',
   'advisory-findings',
 ]);
@@ -2486,31 +2393,6 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
     );
   }
   if (status === 'smart-cleanup-metadata-error') {
-    return (
-      hasOnlyKeys(value, ['status', 'requestId', 'error']) &&
-      isNonEmptyString(value['requestId']) &&
-      isProtocolError(value['error'])
-    );
-  }
-  if (status === 'smart-cleanup-duplicates-analyzing') {
-    return hasOnlyKeys(value, ['status', 'requestId']) && isNonEmptyString(value['requestId']);
-  }
-  if (status === 'smart-cleanup-duplicates-result') {
-    const assessments = value['assessments'];
-    const action = value['action'];
-    const unavailableReason = value['unavailableReason'];
-    const dedupeNote = value['dedupeNote'];
-    return (
-      hasOnlyKeys(value, ['status', 'requestId', 'assessments', 'action', 'unavailableReason', 'dedupeNote']) &&
-      isNonEmptyString(value['requestId']) &&
-      Array.isArray(assessments) && assessments.length <= 500 &&
-      assessments.every(isSmartCleanupDuplicateAssessment) &&
-      (action === undefined || isSmartCleanupDedupeAction(action)) &&
-      (unavailableReason === undefined || (isNonEmptyString(unavailableReason) && unavailableReason.length <= 1000)) &&
-      (dedupeNote === undefined || (isNonEmptyString(dedupeNote) && dedupeNote.length <= 1000))
-    );
-  }
-  if (status === 'smart-cleanup-duplicates-error') {
     return (
       hasOnlyKeys(value, ['status', 'requestId', 'error']) &&
       isNonEmptyString(value['requestId']) &&

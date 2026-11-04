@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import type { Dispatch, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
 
 import type { RemoveAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
@@ -17,7 +17,6 @@ import {
 } from '../icons.js';
 import {
   canCloseSmartCleanup,
-  selectedSmartCleanupDedupeAction,
   selectedSmartCleanupRecommendations,
   SMART_CLEANUP_MAX_ACTIONS,
 } from '../smartCleanupState.js';
@@ -25,7 +24,6 @@ import type {
   SmartCleanupAction,
   SmartCleanupConfidence,
   SmartCleanupDeprecatedFinding,
-  SmartCleanupDuplicateFinding,
   SmartCleanupRemovalRecommendation,
   SmartCleanupResult,
   SmartCleanupResultAdvisory,
@@ -239,98 +237,6 @@ function DeprecatedItem({
   );
 }
 
-function DuplicateItem({
-  finding,
-  onOpenDependencyReview,
-}: {
-  finding: SmartCleanupDuplicateFinding;
-  onOpenDependencyReview: (packageName: string, tab: ManageTabId) => void;
-}): ReactElement {
-  const outcomeTone = finding.outcome === 'safe-convergence'
-    ? 'success'
-    : finding.outcome === 'keep-both'
-      ? 'neutral'
-      : 'warning';
-  const outcomeLabel = finding.outcome === 'safe-convergence'
-    ? `Can consolidate${finding.targetVersion === undefined ? '' : ` to ${finding.targetVersion}`}`
-    : finding.outcome === 'keep-both'
-      ? 'Keep current versions'
-      : 'Not verified';
-  return (
-    <li className="smart-cleanup-information-item smart-cleanup-information-item--duplicate" data-outcome={finding.outcome}>
-      <div className="smart-cleanup-duplicate__heading">
-        <div className="smart-cleanup-duplicate__identity">
-          <code>{finding.packageName}</code>
-          <span className="smart-cleanup-information-item__badge" data-tone={outcomeTone}>
-            {outcomeLabel}
-          </span>
-        </div>
-        <dl className="smart-cleanup-duplicate__stats">
-          <div>
-            <dt>Installed</dt>
-            <dd>{finding.versions.length} {finding.versions.length === 1 ? 'version' : 'versions'}</dd>
-          </div>
-          <div>
-            <dt>Excess</dt>
-            <dd>{finding.excessVersionCount} {finding.excessVersionCount === 1 ? 'version' : 'versions'}</dd>
-          </div>
-        </dl>
-      </div>
-      <p className="smart-cleanup-duplicate__reason">{finding.reason}</p>
-      <ol className="smart-cleanup-duplicate__versions">
-        {finding.versions.map((version) => {
-          const primaryPath = version.paths[0];
-          const remainingPaths = version.paths.slice(1);
-          return (
-            <li key={version.version}>
-              <div className="smart-cleanup-duplicate__version-heading">
-                <code>{version.version}</code>
-                {version.direct ? <span className="status-badge status-badge--neutral">Direct</span> : null}
-                <span className="smart-cleanup-duplicate__path-count">
-                  {version.truncated ? 'At least ' : ''}{version.totalPaths} dependency {version.totalPaths === 1 ? 'path' : 'paths'}
-                </span>
-              </div>
-              <p>
-                {primaryPath === undefined
-                  ? version.direct ? 'Declared directly by this project.' : 'No complete introducing path was available.'
-                  : primaryPath.join(' → ')}
-              </p>
-              {remainingPaths.length > 0 || version.truncated ? (
-                <details className="smart-cleanup-duplicate__paths">
-                  <summary>
-                    {remainingPaths.length > 0 ? `${remainingPaths.length} more known path${remainingPaths.length === 1 ? '' : 's'}` : 'Path scan details'}
-                  </summary>
-                  {remainingPaths.length > 0 ? (
-                    <ul>{remainingPaths.map((path) => <li key={path.join('\u0000')}><code>{path.join(' → ')}</code></li>)}</ul>
-                  ) : null}
-                  {version.truncated ? <small>Additional paths exist beyond the analysis limit.</small> : null}
-                </details>
-              ) : null}
-            </li>
-          );
-        })}
-      </ol>
-      {finding.directRoots.length === 0 ? null : (
-        <details className="smart-cleanup-duplicate__roots">
-          <summary>Review {finding.directRoots.length} introducing direct {finding.directRoots.length === 1 ? 'dependency' : 'dependencies'}</summary>
-          <div>
-            {finding.directRoots.map((root) => (
-              <DirectionalButton
-                key={root.packageName}
-                direction="forward"
-                className="button button--small button--secondary"
-                onClick={() => onOpenDependencyReview(root.packageName, root.upgradeAvailable ? 'upgrade' : 'overview')}
-              >
-                {root.upgradeAvailable ? `Review ${root.packageName} upgrade` : `Review ${root.packageName}`}
-              </DirectionalButton>
-            ))}
-          </div>
-        </details>
-      )}
-    </li>
-  );
-}
-
 function SecurityItem({
   finding,
   selectedRoots,
@@ -409,7 +315,7 @@ function ReviewView({
   if (plan === null) return <EmptyCategory>No cleanup evidence is available.</EmptyCategory>;
 
   const safeRemovalCount = plan.recommendations.filter((recommendation) => recommendation.confidence === 'safe').length;
-  const recommendedActionCount = safeRemovalCount + (plan.dedupeAction === null ? 0 : 1);
+  const recommendedActionCount = safeRemovalCount;
   const review = plan.recommendations.filter((recommendation) => recommendation.confidence === 'review').length;
   const blocked = plan.recommendations.filter(
     (recommendation) => recommendation.confidence === 'blocked' || recommendation.confidence === 'unknown'
@@ -419,12 +325,9 @@ function ReviewView({
     .filter((recommendation) => recommendation.confidence === 'safe')
     .slice(0, SMART_CLEANUP_MAX_ACTIONS)
     .every((recommendation) => state.selectedActionIds.has(recommendation.id));
-  const safeSelected = safeRemovalsSelected && (
-    plan.dedupeAction === null || state.selectedActionIds.has(plan.dedupeAction.id)
-  );
+  const safeSelected = safeRemovalsSelected;
   const directRemovalCount = safeRemovalCount + review;
-  const selectableActionCount = directRemovalCount + (plan.dedupeAction === null ? 0 : 1);
-  const duplicateExcessCount = plan.duplicates.reduce((count, finding) => count + finding.excessVersionCount, 0);
+  const selectableActionCount = directRemovalCount;
   const selectedSecurity = plan.security.flatMap((finding) => {
     const selectedActionIds = new Set(
       finding.directRootActionIds.filter((actionId) => state.selectedActionIds.has(actionId))
@@ -484,13 +387,6 @@ function ReviewView({
               label: 'Deprecated packages',
               value: `${plan.deprecated.length} ${plan.deprecated.length === 1 ? 'finding' : 'findings'}`,
               tone: plan.deprecated.length > 0 ? 'warning' : 'neutral',
-            },
-            {
-              category: 'duplicates' as const,
-              icon: <IconBroom />,
-              label: 'Duplicate versions',
-              value: plan.duplicates.length === 0 ? 'No findings' : `${plan.duplicates.length} groups · ${duplicateExcessCount} excess`,
-              tone: plan.duplicates.length > 0 ? 'update' : 'neutral',
             },
             {
               category: 'security' as const,
@@ -598,64 +494,6 @@ function ReviewView({
         </SmartCleanupCategorySection>
 
         <SmartCleanupCategorySection
-          category="duplicates"
-          title="Duplicate versions"
-          summary={`${duplicateExcessCount} additional resolved versions`}
-          detail="Resolved graph consolidation"
-          count={plan.duplicates.length}
-          expanded={state.expandedCategories.has('duplicates')}
-          onToggle={() => dispatch({ type: 'toggle-category', category: 'duplicates' })}
-        >
-          {plan.duplicates.length === 0 ? (
-            <EmptyCategory>No duplicate-version findings were reported.</EmptyCategory>
-          ) : (
-            <>
-              <p className="smart-cleanup-category__guidance">
-                Dedupe is project-wide. Smart Cleanup offers one action only when an isolated package-manager preview
-                explains every changed version set and leaves direct dependency resolutions unchanged.
-              </p>
-              {plan.dedupeAction === null && plan.dedupeNote !== undefined ? (
-                <p className="smart-cleanup-category__guidance">
-                  No automatic deduplication is offered for this project. {plan.dedupeNote} You can still run your
-                  package manager&apos;s dedupe command and review the lockfile changes yourself.
-                </p>
-              ) : null}
-              {plan.dedupeAction === null ? null : (
-                <label className="smart-cleanup-dedupe-action">
-                  <input
-                    type="checkbox"
-                    checked={state.selectedActionIds.has(plan.dedupeAction.id)}
-                    disabled={!state.selectedActionIds.has(plan.dedupeAction.id) && selectedCount >= SMART_CLEANUP_MAX_ACTIONS}
-                    onChange={() => dispatch({ type: 'toggle-safe-action', actionId: plan.dedupeAction?.id ?? '' })}
-                  />
-                  <span>
-                    <strong>Apply safe project deduplication</strong>
-                    <small>
-                      Expected to remove {plan.dedupeAction.expectedRemovedVersions} additional resolved {plan.dedupeAction.expectedRemovedVersions === 1 ? 'version' : 'versions'} across {plan.dedupeAction.affectedPackages.length} {plan.dedupeAction.affectedPackages.length === 1 ? 'package' : 'packages'}.
-                    </small>
-                  </span>
-                </label>
-              )}
-              <SmartCleanupFindingList
-                items={plan.duplicates}
-                getKey={(finding) => finding.id}
-                getSearchText={(finding) => [
-                  finding.packageName,
-                  ...finding.versions.flatMap((version) => [
-                    version.version,
-                    ...version.paths.map((path) => path.join(' ')),
-                  ]),
-                  ...finding.directRoots.map((root) => root.packageName),
-                ].join(' ')}
-                renderItem={(finding) => <DuplicateItem finding={finding} onOpenDependencyReview={onOpenDependencyReview} />}
-                searchLabel="Search duplicate-version findings"
-                emptyMessage="No duplicate-version finding matches this search."
-              />
-            </>
-          )}
-        </SmartCleanupCategorySection>
-
-        <SmartCleanupCategorySection
           category="security"
           title="Security impact of selection"
           summary={selectedCount === 0 ? 'Select removals to preview' : 'Current graph estimate, verified afterward'}
@@ -694,9 +532,7 @@ function preflightMatchesSelection(
 ): preflight is RemoveAnalysisPresentation {
   if (preflight === null) return false;
   const selectedNames = selectedSmartCleanupRecommendations(state).map((recommendation) => recommendation.packageName);
-  const dedupeAction = selectedSmartCleanupDedupeAction(state);
-  return samePackageSet(selectedNames, preflight.changes.map((change) => change.packageName)) &&
-    preflight.dedupe?.actionId === dedupeAction?.id;
+  return samePackageSet(selectedNames, preflight.changes.map((change) => change.packageName));
 }
 
 function ConfirmationView({
@@ -713,12 +549,10 @@ function ConfirmationView({
   preflightBusy: boolean;
 }): ReactElement {
   const selected = selectedSmartCleanupRecommendations(state);
-  const dedupeAction = selectedSmartCleanupDedupeAction(state);
   const preflightMatches = preflightMatchesSelection(state, removalPreflight);
   const checkedPreflight = preflightMatches ? removalPreflight : null;
   const warningCount = checkedPreflight?.changes.filter((change) => change.stillRequiredBy.length > 0).length ?? 0;
-  const actionCount = selected.length + (dedupeAction === null ? 0 : 1);
-  const dedupePreview = checkedPreflight?.dedupe ?? dedupeAction;
+  const actionCount = selected.length;
   const checkState = checkedPreflight === null ? 'checking' : warningCount > 0 ? 'warning' : 'ready';
 
   return (
@@ -805,22 +639,6 @@ function ConfirmationView({
               </li>
             );
           })}
-          {dedupePreview === null || dedupePreview === undefined ? null : (
-            <li className="smart-cleanup-confirmation__dedupe" data-status={checkedPreflight === null ? 'checking' : 'ready'}>
-              <div className="smart-cleanup-confirmation__package-copy">
-                <div className="smart-cleanup-confirmation__package-heading">
-                  <strong>Deduplicate the project</strong>
-                  <span>Project-wide</span>
-                </div>
-                <p>
-                  {checkedPreflight === null ? 'The final check is reviewing' : 'The final check verified'} {dedupePreview.affectedPackages.length} duplicate {dedupePreview.affectedPackages.length === 1 ? 'group' : 'groups'} and {dedupePreview.expectedRemovedVersions} excess {dedupePreview.expectedRemovedVersions === 1 ? 'version' : 'versions'}.
-                </p>
-              </div>
-              <span className="smart-cleanup-confirmation__status" data-status={checkedPreflight === null ? 'checking' : 'ready'}>
-                {checkedPreflight === null ? 'Checking' : 'Ready'}
-              </span>
-            </li>
-          )}
         </ul>
       </section>
 
@@ -855,7 +673,7 @@ function ConfirmationView({
         <p>
           {checkedPreflight?.files.rollbackAvailable === false
             ? 'No automatic restore point is available. Review source control before continuing.'
-            : 'Dependency removals and project deduplication run inside one restore boundary. If cleanup fails, restoration of the project manifest and active lockfile is attempted automatically.'}
+            : 'Dependency removals run inside one restore boundary. If cleanup fails, restoration of the project manifest and active lockfile is attempted automatically.'}
         </p>
       </div>
     </div>
@@ -878,8 +696,7 @@ function ExecutionView({ state }: { state: SmartCleanupState }): ReactElement {
 
 function resultPackageName(actionId: string): string {
   const prefix = 'remove-direct:';
-  if (actionId.startsWith(prefix)) return actionId.slice(prefix.length);
-  return actionId.startsWith('dedupe:') ? 'Project deduplication' : actionId;
+  return actionId.startsWith(prefix) ? actionId.slice(prefix.length) : actionId;
 }
 
 function ResultMetric({ metric }: { metric: SmartCleanupResult['metrics'][number] }): ReactElement {
@@ -954,7 +771,6 @@ function ResultAdvisoryItem({ advisory, outcome }: { advisory: SmartCleanupResul
 function ResultView({ result, phase }: { result: SmartCleanupResult; phase: SmartCleanupState['phase'] }): ReactElement {
   const verified = phase === 'complete' && result.verification === 'passed';
   const completedRemovals = result.completedActionIds.filter((actionId) => actionId.startsWith('remove-direct:'));
-  const completedDedupe = result.completedActionIds.some((actionId) => actionId.startsWith('dedupe:'));
   const completedCount = result.completedActionIds.length;
   const headline = verified
     ? 'Verified cleanup results'
@@ -997,18 +813,6 @@ function ResultView({ result, phase }: { result: SmartCleanupResult; phase: Smar
             tone="completed"
             detail={`${completedRemovals.length} direct ${completedRemovals.length === 1 ? 'dependency was' : 'dependencies were'} removed.`}
           />
-          {completedDedupe ? (
-            <section className="smart-cleanup-result-row" data-tone="deduplicated">
-              <div className="smart-cleanup-result-row__heading">
-                <IconBroom />
-                <div>
-                  <h4>Project deduplication</h4>
-                  <p>Compatible duplicate versions were consolidated across the dependency tree.</p>
-                </div>
-              </div>
-              <span>Completed</span>
-            </section>
-          ) : null}
           <ResultPackages
             title="Skipped actions"
             actionIds={result.skippedActionIds}

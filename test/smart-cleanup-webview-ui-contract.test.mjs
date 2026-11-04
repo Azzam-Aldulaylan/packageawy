@@ -9,7 +9,6 @@ const category = readFileSync(join(process.cwd(), 'webview/src/components/SmartC
 const findingList = readFileSync(join(process.cwd(), 'webview/src/components/SmartCleanupFindingList.tsx'), 'utf8');
 const styles = readFileSync(join(process.cwd(), 'webview/src/styles.css'), 'utf8');
 const adapter = readFileSync(join(process.cwd(), 'webview/src/smartCleanupPlanAdapter.ts'), 'utf8');
-const duplicateItem = workspace.slice(workspace.indexOf('function DuplicateItem'), workspace.indexOf('function SecurityItem'));
 
 test('Smart Cleanup owns a dedicated, correlated modal workspace with focus restoration', () => {
   assert.match(workspace, /className="modal smart-cleanup-workspace"/);
@@ -60,7 +59,6 @@ test('progress lists only checks that perform asynchronous analysis', () => {
   for (const label of [
     'Checking project usage',
     'Checking removal safety',
-    'Simulating safe duplicate consolidation',
     'Checking installed-version deprecations',
   ]) {
     assert.match(app, new RegExp(label));
@@ -70,7 +68,6 @@ test('progress lists only checks that perform asynchronous analysis', () => {
 test('the summary uses explicit units and large evidence lists share bounded searchable disclosure', () => {
   assert.doesNotMatch(workspace, /\{findingsCount\} findings/);
   assert.match(workspace, /`\$\{directRemovalCount\} candidates`/);
-  assert.match(workspace, /`\$\{plan\.duplicates\.length\} groups · \$\{duplicateExcessCount\} excess`/);
   assert.match(workspace, /advisory \$\{plan\.security\.length === 1 \? 'finding' : 'findings'\}/);
   assert.match(workspace, /<SmartCleanupFindingList/);
   assert.match(findingList, /type="search"/);
@@ -89,10 +86,7 @@ test('the review follows the Manage Dependency decision and disclosure vocabular
   assert.match(category, /className="smart-cleanup-category__identity"/);
   assert.match(styles, /\.smart-cleanup-category\[data-category='unused'\]/);
   assert.match(styles, /\.smart-cleanup-confidence\[data-confidence='safe'\]/);
-  assert.match(workspace, /className="smart-cleanup-duplicate__stats"/);
-  assert.match(workspace, /data-outcome=\{finding\.outcome\}/);
   assert.match(styles, /\.smart-cleanup-information-item--deprecated/);
-  assert.match(styles, /\.smart-cleanup-information-item--duplicate/);
   assert.match(styles, /\.smart-cleanup-information-item--security/);
 });
 
@@ -109,18 +103,13 @@ test('only direct removals render selectable controls and uncertain recommendati
   assert.match(workspace, /Static analysis cannot guarantee runtime safety/);
   assert.match(workspace, /Select recommendations/);
   assert.match(workspace, /Deprecation alone never authorizes removal/);
-  assert.match(adapter, /duplicateAssessments/);
   assert.match(workspace, /Review removal/);
   assert.match(workspace, /Review upgrade to/);
   assert.match(workspace, /Review related dependencies/);
   assert.match(workspace, /Maintainer suggests/);
-  assert.match(workspace, /excessVersionCount/);
-  assert.match(workspace, /primaryPath\.join\(' → '\)/);
-  assert.match(workspace, /Dedupe is project-wide/);
-  assert.match(workspace, /Apply safe project deduplication/);
-  assert.match(workspace, /additional resolved versions/);
-  assert.doesNotMatch(duplicateItem, /finding\.summary/);
   assert.doesNotMatch(workspace, /Consolidate selected|Remove deprecated/);
+  assert.doesNotMatch(workspace, /Duplicate versions|DuplicateItem|Dedupe|deduplication/);
+  assert.doesNotMatch(adapter, /duplicateAssessments|excessVersionCount/);
 });
 
 test('review controls and their evidence disclosure keep a readable vertical rhythm', () => {
@@ -175,11 +164,10 @@ test('the single final list incorporates fresh warnings, verification, files, an
   assert.match(workspace, /onClick=\{onBackToReview\}/);
 });
 
-test('confirmation status, warnings, deduplication, and safety details use semantic color accents', () => {
+test('confirmation status, warnings, and safety details use semantic color accents', () => {
   assert.match(styles, /\.smart-cleanup-final-check\s*\{[\s\S]*?var\(--accent-total\)/);
   assert.match(styles, /\.smart-cleanup-final-check\[data-status='ready'\][\s\S]*?var\(--vscode-charts-green/);
   assert.match(styles, /\.smart-cleanup-confirmation__packages > li\[data-status='warning'\][\s\S]*?var\(--vscode-editorWarning-foreground/);
-  assert.match(styles, /\.smart-cleanup-confirmation__packages > li\.smart-cleanup-confirmation__dedupe\s*\{[\s\S]*?var\(--accent-updates\)/);
   assert.match(styles, /\.smart-cleanup-preflight__facts > div:first-child dt\s*\{[\s\S]*?var\(--accent-total\)/);
   assert.match(styles, /\.smart-cleanup-preflight__facts > div:last-child dt\s*\{[\s\S]*?var\(--vscode-charts-green/);
 });
@@ -190,7 +178,7 @@ test('security and completion copy make no result claim before post-cleanup veri
   assert.match(workspace, /Selected direct/);
   assert.match(workspace, /Also introduced through/);
   assert.match(workspace, /The refreshed dashboard confirms the result after cleanup/);
-  assert.match(workspace, /Dependency removals and project deduplication run inside one restore boundary/);
+  assert.match(workspace, /Dependency removals run inside one restore boundary/);
   assert.match(workspace, /<SeverityBadge severity=\{finding\.severity\}/);
   assert.match(adapter, /directRootActionIds/);
   assert.match(adapter, /directRoots: \[\.\.\.directRoots\]\.sort/);
@@ -200,7 +188,6 @@ test('security and completion copy make no result claim before post-cleanup veri
   assert.match(adapter, /suggestedReplacement/);
   assert.match(adapter, /resolveDeprecatedRemediation/);
   assert.match(adapter, /relatedUpgrades/);
-  assert.match(adapter, /excessVersionCount/);
   assert.match(adapter, /directRoots/);
   assert.doesNotMatch(workspace, /expectedResolved/);
   assert.match(workspace, /const verified = phase === 'complete' && result\.verification === 'passed'/);
@@ -214,14 +201,11 @@ test('security and completion copy make no result claim before post-cleanup veri
 
 test('cleanup results use one outcome-led report with real changes and security evidence', () => {
   assert.match(workspace, /const completedRemovals = result\.completedActionIds\.filter/);
-  assert.match(workspace, /const completedDedupe = result\.completedActionIds\.some/);
   assert.match(workspace, /What changed/);
-  assert.match(workspace, /Project deduplication/);
   assert.match(workspace, /Configured project checks passed after cleanup/);
   assert.match(workspace, /className="smart-cleanup-result-security"/);
   assert.match(workspace, /Security impact/);
   assert.doesNotMatch(workspace, /smart-cleanup-result-details/);
-  assert.match(styles, /\.smart-cleanup-metric\[data-metric='duplicate-groups'\][\s\S]*?var\(--accent-updates\)/);
   assert.match(styles, /\.smart-cleanup-result-row\[data-tone='verified'\][\s\S]*?var\(--vscode-charts-green/);
   assert.match(styles, /\.smart-cleanup-result-security\s*\{[\s\S]*?var\(--accent-vulnerabilities\)/);
 });

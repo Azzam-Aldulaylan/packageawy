@@ -4,7 +4,6 @@ import { canonicalCleanupActionBatch, defaultCleanupActionIds } from './selectio
 const KIND_RANK: Record<CleanupFinding['kind'], number> = {
   unused: 0,
   deprecated: 1,
-  'duplicate-version': 2,
 };
 
 const CONFIDENCE_RANK: Record<CleanupFinding['confidence'], number> = {
@@ -27,8 +26,6 @@ export interface CleanupSummary {
   opportunities: number;
   unused: number;
   deprecated: number;
-  duplicateVersionGroups: number;
-  duplicateExcessVersions: number;
   executableActions: number;
   actionOverflow: number;
   defaultSelectedActions: number;
@@ -41,12 +38,6 @@ function isCleanupOpportunity(finding: CleanupFinding): boolean {
   return finding.kind !== 'unused' || finding.recommendation !== 'keep-direct';
 }
 
-function duplicateExcessVersions(finding: CleanupFinding): number {
-  if (finding.kind !== 'duplicate-version') return 0;
-  const evidence = finding.evidence.find((entry) => entry.kind === 'duplicate-versions');
-  return evidence?.kind === 'duplicate-versions' ? evidence.excessVersionCount : 0;
-}
-
 export function summarizeCleanup(
   findings: readonly CleanupFinding[],
   actions: readonly CleanupAction[]
@@ -57,8 +48,6 @@ export function summarizeCleanup(
     opportunities: opportunities.length,
     unused: opportunities.filter((finding) => finding.kind === 'unused').length,
     deprecated: findings.filter((finding) => finding.kind === 'deprecated').length,
-    duplicateVersionGroups: findings.filter((finding) => finding.kind === 'duplicate-version').length,
-    duplicateExcessVersions: findings.reduce((sum, finding) => sum + duplicateExcessVersions(finding), 0),
     executableActions: batch.actions.length,
     actionOverflow: batch.overflowCount,
     defaultSelectedActions: defaultCleanupActionIds(actions).length,
@@ -72,14 +61,10 @@ function plural(count: number, singular: string, pluralForm = `${singular}s`): s
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 
-/** Compact, claim-safe summary: duplicate findings are never called consolidatable in v1. */
+/** Compact, claim-safe summary. */
 export function cleanupSummaryHeadline(summary: CleanupSummary): string {
-  const parts = [
+  return [
     plural(summary.opportunities, 'cleanup opportunity', 'cleanup opportunities'),
     plural(summary.defaultSelectedActions, 'recommended removal'),
-  ];
-  if (summary.duplicateVersionGroups > 0) {
-    parts.push(plural(summary.duplicateVersionGroups, 'duplicate-version group'));
-  }
-  return parts.join(' · ');
+  ].join(' · ');
 }

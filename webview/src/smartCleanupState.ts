@@ -3,12 +3,12 @@ import type { Severity } from '../../src/core/types.js';
 export const SMART_CLEANUP_MAX_ACTIONS = 150;
 export const SMART_CLEANUP_REVIEW_CACHE_MS = 60 * 60_000;
 
-export type SmartCleanupCategory = 'unused' | 'deprecated' | 'duplicates' | 'security';
+export type SmartCleanupCategory = 'unused' | 'deprecated' | 'security';
 export type SmartCleanupConfidence = 'safe' | 'review' | 'blocked' | 'unknown';
 export type SmartCleanupAnalysisStepStatus = 'waiting' | 'running' | 'complete' | 'unavailable';
 
 export interface SmartCleanupAnalysisStep {
-  id: 'usage' | 'removal-safety' | 'deprecation' | 'duplicates';
+  id: 'usage' | 'removal-safety' | 'deprecation';
   label: string;
   status: SmartCleanupAnalysisStepStatus;
   detail?: string;
@@ -43,34 +43,6 @@ export interface SmartCleanupDeprecatedFinding {
     | { kind: 'guidance'; reason: string };
 }
 
-export interface SmartCleanupDuplicateVersion {
-  version: string;
-  direct: boolean;
-  paths: readonly (readonly string[])[];
-  totalPaths: number;
-  truncated: boolean;
-}
-
-export interface SmartCleanupDuplicateFinding {
-  id: string;
-  packageName: string;
-  versions: readonly SmartCleanupDuplicateVersion[];
-  excessVersionCount: number;
-  directRoots: readonly { packageName: string; upgradeAvailable: boolean }[];
-  summary: string;
-  outcome: 'safe-convergence' | 'keep-both' | 'unknown';
-  targetVersion?: string;
-  reason: string;
-}
-
-export interface SmartCleanupDedupeAction {
-  id: string;
-  kind: 'dedupe-project';
-  affectedPackages: readonly string[];
-  expectedRemovedVersions: number;
-  confidence: 'safe';
-}
-
 export interface SmartCleanupSecurityFinding {
   id: string;
   advisoryId: string | null;
@@ -92,10 +64,6 @@ export interface SmartCleanupPlan {
   generatedAt: string;
   recommendations: readonly SmartCleanupRemovalRecommendation[];
   deprecated: readonly SmartCleanupDeprecatedFinding[];
-  duplicates: readonly SmartCleanupDuplicateFinding[];
-  dedupeAction: SmartCleanupDedupeAction | null;
-  /** Why no dedupe action is offered even though the duplicate check finished. */
-  dedupeNote?: string;
   security: readonly SmartCleanupSecurityFinding[];
 }
 
@@ -109,8 +77,6 @@ export interface SmartCleanupMetric {
   id:
     | 'dependencies'
     | 'deprecated-dependencies'
-    | 'duplicate-groups'
-    | 'excess-versions'
     | 'vulnerable-dependencies'
     | 'advisory-findings';
   label: string;
@@ -242,14 +208,12 @@ export function createSmartCleanupState(projectName: string): SmartCleanupState 
 }
 
 function defaultSafeSelection(plan: SmartCleanupPlan): ReadonlySet<string> {
-  const removalIds = plan.recommendations
+  return new Set(
+    plan.recommendations
       .filter((recommendation) => recommendation.confidence === 'safe')
       .slice(0, SMART_CLEANUP_MAX_ACTIONS)
-      .map((recommendation) => recommendation.id);
-  return new Set([
-    ...removalIds,
-    ...(plan.dedupeAction == null || removalIds.length >= SMART_CLEANUP_MAX_ACTIONS ? [] : [plan.dedupeAction.id]),
-  ]);
+      .map((recommendation) => recommendation.id)
+  );
 }
 
 function requestMatches(state: SmartCleanupState, requestId: string): boolean {
@@ -261,7 +225,7 @@ function recommendationFor(state: SmartCleanupState, actionId: string): SmartCle
 }
 
 function isSafeAction(state: SmartCleanupState, actionId: string): boolean {
-  return recommendationFor(state, actionId)?.confidence === 'safe' || state.plan?.dedupeAction?.id === actionId;
+  return recommendationFor(state, actionId)?.confidence === 'safe';
 }
 
 function toggleId(ids: ReadonlySet<string>, id: string): ReadonlySet<string> {
@@ -419,11 +383,6 @@ export function selectedSmartCleanupRecommendations(
 ): readonly SmartCleanupRemovalRecommendation[] {
   if (state.plan === null) return [];
   return state.plan.recommendations.filter((recommendation) => state.selectedActionIds.has(recommendation.id));
-}
-
-export function selectedSmartCleanupDedupeAction(state: SmartCleanupState): SmartCleanupDedupeAction | null {
-  const action = state.plan?.dedupeAction ?? null;
-  return action !== null && state.selectedActionIds.has(action.id) ? action : null;
 }
 
 export function canCloseSmartCleanup(state: SmartCleanupState): boolean {

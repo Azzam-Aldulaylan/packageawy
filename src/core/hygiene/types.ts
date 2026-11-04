@@ -1,6 +1,6 @@
 /**
  * Dependency-hygiene finding model: shared, structured output for
- * deprecated-package, duplicate-version, and likely-unused detection.
+ * deprecated-package and likely-unused detection.
  *
  * Deliberately not preformatted UI prose: `summary` is a short, neutral
  * sentence a caller may show as-is, but every fact a richer presentation
@@ -14,7 +14,7 @@
 
 import type { DependencyClassification } from '../upgrade/plan.js';
 
-export type DependencyFindingKind = 'deprecated' | 'duplicate-version' | 'likely-unused';
+export type DependencyFindingKind = 'deprecated' | 'likely-unused';
 
 export type FindingConfidence = 'high' | 'medium' | 'low';
 
@@ -46,12 +46,6 @@ export interface InstallPathVersionEntry {
   truncated: boolean;
 }
 
-export interface DuplicateVersionEvidence {
-  kind: 'duplicate-version';
-  /** Every distinct resolved version found for this package name, each with its introducing paths. Always length > 1: that is the finding's trigger condition. */
-  versions: InstallPathVersionEntry[];
-}
-
 export interface LikelyUnusedEvidence {
   kind: 'likely-unused';
   /** Human-readable explanation of what was/wasn't found. See unused.ts. */
@@ -61,12 +55,12 @@ export interface LikelyUnusedEvidence {
   truncated: boolean;
 }
 
-export type DependencyFindingEvidence = DeprecatedEvidence | DuplicateVersionEvidence | LikelyUnusedEvidence;
+export type DependencyFindingEvidence = DeprecatedEvidence | LikelyUnusedEvidence;
 
 export interface DependencyFinding {
   packageName: string;
   kind: DependencyFindingKind;
-  /** Omitted for findings derived directly from registry/graph facts (deprecated, duplicate-version), only a heuristic, static-analysis-driven finding (likely-unused) carries a confidence grade. */
+  /** Omitted for findings derived directly from registry/graph facts (deprecated), only a heuristic, static-analysis-driven finding (likely-unused) carries a confidence grade. */
   confidence?: FindingConfidence;
   severity: FindingSeverity;
   /** A short, neutral sentence, never prose built for one specific UI layout. */

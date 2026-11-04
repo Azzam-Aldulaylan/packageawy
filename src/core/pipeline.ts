@@ -87,7 +87,7 @@ export interface BuildPackageRowsResult {
   /** True when no runner was given, or audit failed / returned unparseable output. */
   auditUnavailable?: boolean;
   /**
-   * Deprecated + duplicate-version findings: graph-only, deterministic, and
+   * Deprecated findings: deterministic, and
    * therefore cheap enough to compute on every scan (see
    * src/core/hygiene/index.ts). Likely-unused findings are never included
    * here. They require an on-demand workspace scan (see src/core/usage/).
@@ -407,7 +407,7 @@ export async function buildPackageRows(
     return row;
   });
 
-  const hygieneFindings = computeGraphHygieneFindings(rows, graph, manifest.dependencies);
+  const hygieneFindings = computeGraphHygieneFindings(rows);
   endRows({ rows: rows.length, 'hygiene findings': hygieneFindings.length });
 
   const availability: ScanDataAvailability = {

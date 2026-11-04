@@ -5,16 +5,11 @@ import { canonicalAdvisoryFindingKey } from '../../src/core/advisories/metrics.j
 import type { RemovalImpactState } from './removalImpactState.js';
 import type {
   SmartCleanupDeprecatedFinding,
-  SmartCleanupDuplicateFinding,
   SmartCleanupPlan,
   SmartCleanupRemovalRecommendation,
   SmartCleanupSecurityFinding,
 } from './smartCleanupState.js';
-import type {
-  SmartCleanupDedupeActionPresentation,
-  SmartCleanupDuplicateAssessmentPresentation,
-  SmartCleanupExecutionCapability,
-} from '../../src/host/webviewProtocol.js';
+import type { SmartCleanupExecutionCapability } from '../../src/host/webviewProtocol.js';
 import { resolveDeprecatedRemediation } from '../../src/core/cleanup/deprecatedRemediation.js';
 
 function dependencyType(row: PackageRow): SmartCleanupRemovalRecommendation['dependencyType'] {
@@ -34,9 +29,6 @@ export interface BuildSmartCleanupPlanOptions {
   exactDeprecatedFindings: readonly DependencyFinding[];
   removalImpact: RemovalImpactState;
   capability: SmartCleanupExecutionCapability;
-  duplicateAssessments: readonly SmartCleanupDuplicateAssessmentPresentation[];
-  dedupeAction: SmartCleanupDedupeActionPresentation | null;
-  dedupeNote?: string;
 }
 
 /**
@@ -49,9 +41,6 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
   const assessmentByName: ReadonlyMap<string, { assessment: RemovalAssessment; usageId: string }> = options.removalImpact.phase === 'done'
     ? options.removalImpact.assessments
     : new Map<string, { assessment: RemovalAssessment; usageId: string }>();
-  const duplicateAssessmentByName = new Map(
-    options.duplicateAssessments.map((assessment) => [assessment.packageName, assessment])
-  );
   const unusedNames = new Set(
     options.hygieneFindings
       .filter((finding) => finding.kind === 'likely-unused')
@@ -150,53 +139,6 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
       }];
     });
 
-  const duplicates: SmartCleanupDuplicateFinding[] = options.hygieneFindings
-    .filter((finding) => finding.kind === 'duplicate-version' && finding.evidence.kind === 'duplicate-version')
-    .sort((left, right) => left.packageName.localeCompare(right.packageName))
-    .map((finding) => {
-      const versions = finding.evidence.kind === 'duplicate-version'
-        ? finding.evidence.versions.map((entry) => ({
-            version: entry.version,
-            direct: entry.direct !== null,
-            paths: entry.paths,
-            totalPaths: entry.totalPaths,
-            truncated: entry.truncated,
-          }))
-        : [];
-      const directRoots = new Set<string>();
-      for (const version of versions) {
-        for (const path of version.paths) {
-          const root = path[0];
-          if (root !== undefined && rowsByName.has(root)) directRoots.add(root);
-        }
-        if (version.direct && rowsByName.has(finding.packageName)) directRoots.add(finding.packageName);
-      }
-      const assessment = duplicateAssessmentByName.get(finding.packageName);
-      return {
-        id: `duplicate:${finding.packageName}`,
-        packageName: finding.packageName,
-        versions,
-        excessVersionCount: Math.max(0, versions.length - 1),
-        directRoots: [...directRoots]
-          .sort((left, right) => left.localeCompare(right))
-          .map((packageName) => ({
-            packageName,
-            upgradeAvailable: (rowsByName.get(packageName)?.upgradeTo ?? null) !== null,
-          })),
-        summary: assessment?.outcome === 'safe-convergence'
-          ? `The package-manager preview converged on ${assessment.targetVersion ?? 'one version'}.`
-          : assessment?.outcome === 'keep-both'
-            ? 'The package-manager preview confirmed that the current versions must remain separate.'
-            : 'Multiple resolved versions are installed, but safe consolidation could not be verified.',
-        outcome: assessment?.outcome ?? 'unknown',
-        ...(assessment?.targetVersion === undefined ? {} : { targetVersion: assessment.targetVersion }),
-        reason: assessment?.reason ?? 'The project-wide dedupe preview was unavailable.',
-      };
-    })
-    .sort((left, right) =>
-      right.excessVersionCount - left.excessVersionCount || left.packageName.localeCompare(right.packageName)
-    );
-
   const securityByIdentity = new Map<string, Omit<SmartCleanupSecurityFinding, 'directRootActionIds' | 'directRoots' | 'directRootCount'> & {
     directRoots: Set<string>;
   }>();
@@ -241,17 +183,6 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
     generatedAt: new Date().toISOString(),
     recommendations,
     deprecated,
-    duplicates,
-    dedupeAction: options.dedupeAction === null
-      ? null
-      : {
-          id: options.dedupeAction.actionId,
-          kind: 'dedupe-project',
-          affectedPackages: options.dedupeAction.affectedPackages,
-          expectedRemovedVersions: options.dedupeAction.expectedRemovedVersions,
-          confidence: 'safe',
-        },
-    ...(options.dedupeNote === undefined ? {} : { dedupeNote: options.dedupeNote }),
     security,
   };
 }

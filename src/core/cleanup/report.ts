@@ -16,7 +16,6 @@ export interface BuildCleanupReportOptions {
   metrics: {
     directDependencies: CleanupMetricInput;
     deprecatedDirectDependencies: CleanupMetricInput;
-    duplicateVersionGroups: CleanupMetricInput;
     vulnerabilities: CleanupMetricInput;
   };
   actions: readonly CleanupActionOutcome[];
@@ -47,10 +46,6 @@ function outcomeHeadlineParts(
     const count = metrics.directDependencies.improvedBy;
     parts.push(`${count} direct ${count === 1 ? 'dependency' : 'dependencies'} removed`);
   }
-  if (metrics.duplicateVersionGroups.status === 'verified' && metrics.duplicateVersionGroups.improvedBy > 0) {
-    const count = metrics.duplicateVersionGroups.improvedBy;
-    parts.push(`${count} duplicate-version ${count === 1 ? 'group' : 'groups'} reduced`);
-  }
   if (metrics.vulnerabilities.status === 'verified' && metrics.vulnerabilities.improvedBy > 0) {
     const count = metrics.vulnerabilities.improvedBy;
     parts.push(`${count} ${count === 1 ? 'vulnerability' : 'vulnerabilities'} resolved`);
@@ -80,7 +75,6 @@ export function buildCleanupReport(options: BuildCleanupReportOptions): CleanupR
   const metrics: CleanupReportMetrics = {
     directDependencies: metric(options.metrics.directDependencies),
     deprecatedDirectDependencies: metric(options.metrics.deprecatedDirectDependencies),
-    duplicateVersionGroups: metric(options.metrics.duplicateVersionGroups),
     vulnerabilities: metric(options.metrics.vulnerabilities),
   };
   const actions = [...options.actions];

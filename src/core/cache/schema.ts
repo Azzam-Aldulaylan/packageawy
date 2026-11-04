@@ -57,7 +57,7 @@ import { isSourceFingerprint } from './sourceFingerprint.js';
  * snapshots so they cannot keep replaying CVE-less rows after that pagination
  * behavior is corrected.
  */
-export const CACHE_SCHEMA_VERSION = 7;
+export const CACHE_SCHEMA_VERSION = 8;
 
 /**
  * The registry response cache did not change when project rows gained a
@@ -88,7 +88,7 @@ export interface ScanSnapshot {
   availability: ScanDataAvailability;
   advisoriesError?: ProtocolError;
   auditUnavailable?: boolean;
-  /** Deprecated + duplicate-version findings. See src/core/hygiene/index.ts. Optional so a pre-existing persisted entry (written before this field existed) still passes validation as "no findings computed yet" rather than being rejected outright. */
+  /** Deprecated findings. See src/core/hygiene/index.ts. Optional so a pre-existing persisted entry (written before this field existed) still passes validation as "no findings computed yet" rather than being rejected outright. */
   hygieneFindings?: DependencyFinding[];
 }
 

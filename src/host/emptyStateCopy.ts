@@ -33,7 +33,6 @@ export function filterEmptyStateTitle(
   if (hygieneFilter === 'likely-unused') {
     return usageAnalyzed ? 'No likely-unused dependencies' : 'Analyze cleanup to find likely-unused dependencies';
   }
-  if (hygieneFilter === 'duplicate-version') return 'No dependencies introduce duplicate versions';
   if (filter === 'all' && dependencyType !== 'all') {
     return `No ${TYPE_LABEL[dependencyType]} dependencies`;
   }

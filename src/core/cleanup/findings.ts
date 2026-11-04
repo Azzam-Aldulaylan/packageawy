@@ -1,8 +1,4 @@
-import type {
-  CleanupEvidence,
-  DeprecatedCleanupFinding,
-  DuplicateVersionCleanupFinding,
-} from './types.js';
+import type { CleanupEvidence, DeprecatedCleanupFinding } from './types.js';
 
 export interface BuildDeprecatedCleanupFindingOptions {
   findingId: string;
@@ -75,38 +71,6 @@ export function buildDeprecatedCleanupFinding(
     recommendation: 'informational',
     summary: `${options.packageName} is deprecated, but no automatic cleanup action is justified`,
     evidence,
-    relatedActionIds: [],
-  };
-}
-
-export interface BuildDuplicateCleanupFindingOptions {
-  findingId: string;
-  packageName: string;
-  versions: readonly string[];
-  /** A proven incompatibility can explain why both versions must stay. */
-  keepBoth?: boolean;
-}
-
-export function buildDuplicateCleanupFinding(
-  options: BuildDuplicateCleanupFindingOptions
-): DuplicateVersionCleanupFinding {
-  const versions = [...new Set(options.versions)].sort((left, right) => left.localeCompare(right));
-  if (versions.length < 2) {
-    throw new Error('A duplicate-version cleanup finding requires at least two distinct versions.');
-  }
-  const excessVersionCount = versions.length - 1;
-  const keepBoth = options.keepBoth === true;
-  return {
-    id: options.findingId,
-    kind: 'duplicate-version',
-    packageName: options.packageName,
-    confidence: keepBoth ? 'blocked' : 'review-required',
-    recommendation: keepBoth ? 'keep-both' : 'analysis-only',
-    executable: false,
-    summary: keepBoth
-      ? `${options.packageName} must remain at multiple versions under current constraints`
-      : `${options.packageName} has ${versions.length} resolved versions. Consolidation is analysis-only`,
-    evidence: [{ kind: 'duplicate-versions', versions, excessVersionCount }],
     relatedActionIds: [],
   };
 }

@@ -1,21 +1,6 @@
-export { buildDeprecatedCleanupFinding, buildDuplicateCleanupFinding } from './findings.js';
-export type {
-  BuildDeprecatedCleanupFindingOptions,
-  BuildDuplicateCleanupFindingOptions,
-} from './findings.js';
-export { assessDuplicateConsolidation } from './consolidation.js';
-export { collectDuplicateConstraintEvidence } from './consolidationEvidence.js';
-export { cleanupGraphSignature } from './graphSignature.js';
+export { buildDeprecatedCleanupFinding } from './findings.js';
+export type { BuildDeprecatedCleanupFindingOptions } from './findings.js';
 export { resolveDeprecatedRemediation } from './deprecatedRemediation.js';
-export type {
-  AssessDuplicateConsolidationOptions,
-  ConsolidationConstraint,
-  ConsolidationConstraintKind,
-  ConsolidationParentUpgrade,
-  ConsolidationSimulation,
-  DuplicateConsolidationAssessment,
-} from './consolidation.js';
-export type { DuplicateConstraintEvidence } from './consolidationEvidence.js';
 export type {
   DeprecatedRemediation,
   ResolveDeprecatedRemediationOptions,
@@ -50,7 +35,6 @@ export type {
   CleanupReportMetrics,
   CleanupSecurityImpact,
   DeprecatedCleanupFinding,
-  DuplicateVersionCleanupFinding,
   RemoveDirectDependencyAction,
   UnusedCleanupFinding,
 } from './types.js';

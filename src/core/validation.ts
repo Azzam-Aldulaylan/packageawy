@@ -177,7 +177,7 @@ export function isScanDataAvailability(value: unknown): value is ScanDataAvailab
 
 // ------------------------------------------------------- hygiene findings
 
-const FINDING_KINDS: ReadonlySet<string> = new Set(['deprecated', 'duplicate-version', 'likely-unused']);
+const FINDING_KINDS: ReadonlySet<string> = new Set(['deprecated', 'likely-unused']);
 const FINDING_CONFIDENCES: ReadonlySet<string> = new Set<FindingConfidence>(['high', 'medium', 'low']);
 const FINDING_SEVERITIES: ReadonlySet<string> = new Set<FindingSeverity>(['info', 'warning', 'attention']);
 const DEPENDENCY_CLASSIFICATIONS: ReadonlySet<string> = new Set<DependencyClassification>(['prod', 'dev', 'optional']);
@@ -212,11 +212,6 @@ function isDeprecatedEvidence(value: Record<string, unknown>): boolean {
   );
 }
 
-function isDuplicateVersionEvidence(value: Record<string, unknown>): boolean {
-  const versions = value['versions'];
-  return value['kind'] === 'duplicate-version' && Array.isArray(versions) && versions.every(isInstallPathVersionEntry);
-}
-
 function isLikelyUnusedEvidence(value: Record<string, unknown>): boolean {
   return (
     value['kind'] === 'likely-unused' &&
@@ -238,6 +233,5 @@ export function isDependencyFinding(value: unknown): value is DependencyFinding 
   const evidence = value['evidence'];
   if (!isRecord(evidence)) return false;
   if (kind === 'deprecated') return isDeprecatedEvidence(evidence);
-  if (kind === 'duplicate-version') return isDuplicateVersionEvidence(evidence);
   return isLikelyUnusedEvidence(evidence);
 }
