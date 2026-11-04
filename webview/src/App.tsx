@@ -340,6 +340,8 @@ export function App(): ReactElement {
   const smartCleanupRequestIdRef = useRef(0);
   const activeSmartCleanupRequestIdRef = useRef<string | null>(null);
   const smartCleanupExecutionRef = useRef<SmartCleanupExecutionSnapshot | null>(null);
+  /** analysisId of a Smart Cleanup restore that is waiting for its host result. */
+  const smartCleanupRestoreRef = useRef<string | null>(null);
   const smartCleanupReviewCacheRef = useRef<SmartCleanupReviewCacheIdentity | null>(null);
   const smartCleanupDrilldownRef = useRef<{
     projectKey: string;
@@ -557,6 +559,12 @@ export function App(): ReactElement {
         return;
       }
 
+      if (incoming.status === 'remove-error' && smartCleanupRestoreRef.current !== null) {
+        smartCleanupRestoreRef.current = null;
+        dispatchSmartCleanup({ type: 'restore-refused', message: incoming.error.message });
+        return;
+      }
+
       if (incoming.status === 'remove-error') {
         setRemoveBusy(false);
         const smartCleanupRemoval = removeOriginRef.current === 'smart-cleanup';
@@ -648,6 +656,14 @@ export function App(): ReactElement {
         return;
       }
 
+      if (incoming.status === 'remove-result' && smartCleanupRestoreRef.current !== null) {
+        if (incoming.result.analysisId === smartCleanupRestoreRef.current && incoming.result.outcome === 'rolled-back') {
+          smartCleanupRestoreRef.current = null;
+          dispatchSmartCleanup({ type: 'restore-finished' });
+        }
+        return;
+      }
+
       if (incoming.status === 'remove-result') {
         if (removeOriginRef.current === 'smart-cleanup') {
           const snapshot = smartCleanupExecutionRef.current;
@@ -685,6 +701,9 @@ export function App(): ReactElement {
                       ? 'Cleanup finished, but the final project source changed before results could be verified.'
                       : 'Cleanup finished, but some refreshed result evidence was unavailable.',
                   });
+            if (incoming.result.restoreAvailable === true && kept) {
+              dispatchSmartCleanup({ type: 'restore-available', analysisId: incoming.result.analysisId });
+            }
           } else {
           const after = dashboardDataRef.current;
           const afterStatus = dashboardSnapshotStatusRef.current;
@@ -2107,6 +2126,13 @@ export function App(): ReactElement {
     });
   }, [removeAnalysis, optInFor]);
 
+  const restoreSmartCleanup = useCallback((analysisId: string) => {
+    if (smartCleanupRestoreRef.current !== null) return;
+    smartCleanupRestoreRef.current = analysisId;
+    dispatchSmartCleanup({ type: 'restore-started', analysisId });
+    vscode.postMessage({ type: 'restore-smart-cleanup', analysisId });
+  }, []);
+
   const keepDependencyFromSmartCleanupConfirmation = useCallback((actionId: string) => {
     const snapshot = smartCleanupExecutionRef.current;
     if (snapshot !== null) {
@@ -2413,6 +2439,7 @@ export function App(): ReactElement {
           preflightBusy={removeOrigin === 'smart-cleanup' && removeBusy}
           onPrepareRemoval={prepareSmartCleanup}
           onConfirmRemoval={confirmSmartCleanup}
+          onRestoreFiles={restoreSmartCleanup}
           onKeepDependency={keepDependencyFromSmartCleanupConfirmation}
           onBackToReview={backFromSmartCleanupConfirmation}
           onOpenDependencyReview={openDependencyReviewFromSmartCleanup}

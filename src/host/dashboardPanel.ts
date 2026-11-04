@@ -420,6 +420,10 @@ export class DashboardPanel {
       this.upgradeCoordinator.handleCancelRemove(message);
       return;
     }
+    if (message.type === 'restore-smart-cleanup') {
+      await this.upgradeCoordinator.handleRestoreSmartCleanup(message);
+      return;
+    }
     if (message.type === 'configure-verification') {
       this.upgradeCoordinator.handleConfigureVerification();
       return;
@@ -499,6 +503,7 @@ export class DashboardPanel {
         });
         return;
       }
+      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.usageCoordinator.handleAnalyzeCleanup();
       return;
     }
@@ -511,6 +516,7 @@ export class DashboardPanel {
         });
         return;
       }
+      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.smartCleanupMetadataCoordinator.analyze(message.requestId);
       return;
     }
@@ -553,6 +559,7 @@ export class DashboardPanel {
       // a scan (and a controller replacement) against a package.json/
       // lockfile an upgrade task is still writing to.
       if (this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
+      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.changeProject();
       return;
     }

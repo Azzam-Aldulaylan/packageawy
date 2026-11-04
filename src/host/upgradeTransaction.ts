@@ -167,6 +167,16 @@ export interface UpgradeTransactionResult {
   rollback: RollbackResult;
   /** Whether a failed-verification decision was needed and how it resolved. */
   retentionDecision: 'not-needed' | 'keep' | 'rollback' | 'cancelled' | 'failed';
+  /**
+   * Present only when the changes were kept: the exact pre-transaction bytes
+   * of every allowlisted file, so the host can offer a later guarded restore.
+   */
+  keptSnapshot?: readonly TransactionFileSnapshot[];
+}
+
+export interface TransactionFileSnapshot {
+  path: string;
+  before: FileState;
 }
 
 export interface UpgradeTransactionOptions {
@@ -230,6 +240,10 @@ type ExpectedEntry =
 function cloneState(state: FileState): FileState {
   if (!state.exists) return { exists: false };
   return { exists: true, contents: Uint8Array.from(state.contents) };
+}
+
+function keptSnapshotOf(entries: readonly SnapshotEntry[]): TransactionFileSnapshot[] {
+  return entries.map((entry) => ({ path: entry.path, before: cloneState(entry.before) }));
 }
 
 function statesEqual(left: FileState, right: FileState): boolean {
@@ -754,6 +768,7 @@ export async function runUpgradeTransaction(
       verification: { status: 'not-run', reason: 'not-configured' },
       rollback: { status: 'not-needed' },
       retentionDecision: 'not-needed',
+      keptSnapshot: keptSnapshotOf(snapshot.entries),
     };
   }
 
@@ -787,6 +802,7 @@ export async function runUpgradeTransaction(
       verification,
       rollback: { status: 'not-needed' },
       retentionDecision: 'not-needed',
+      keptSnapshot: keptSnapshotOf(snapshot.entries),
     };
   }
 
@@ -806,6 +822,7 @@ export async function runUpgradeTransaction(
       verification,
       rollback: { status: 'not-needed' },
       retentionDecision: 'keep',
+      keptSnapshot: keptSnapshotOf(snapshot.entries),
     };
   }
 
