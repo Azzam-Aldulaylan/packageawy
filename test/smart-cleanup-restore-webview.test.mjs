@@ -107,6 +107,37 @@ test('restoring locks the workspace, then reports restored files and offers re-a
   assert.doesNotMatch(html, /Restore dependency files<\/button>/);
 });
 
+test('after a restore the results describe the restored dependencies, not the removed state', () => {
+  const available = smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' });
+  const restoring = smartCleanupReducer(available, { type: 'restore-started', analysisId: 'a1' });
+  const html = render(smartCleanupReducer(restoring, { type: 'restore-finished' }));
+  assert.match(html, /<h4>Restored dependencies<\/h4>/);
+  assert.match(html, /removed by the cleanup and is back in the project/);
+  assert.doesNotMatch(html, /<h4>Removed dependencies<\/h4>/);
+  assert.doesNotMatch(html, /<h4>Verification<\/h4>/);
+  assert.doesNotMatch(html, /smart-cleanup-metrics/);
+});
+
+test('the restore note sits above the change list so the action is visible without scrolling', () => {
+  const html = render(smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' }));
+  assert.ok(html.indexOf('Restore dependency files') < html.indexOf('What changed'));
+});
+
+test('a cleanup with no build or test scripts is not reported as verified', () => {
+  const state = smartCleanupReducer(createSmartCleanupState('fixture'), {
+    type: 'execution-complete',
+    result: { ...result, verification: 'not-configured', detail: 'Removed react. Dependency files were checked. No build or test scripts ran.' },
+  });
+  const html = render(state);
+  assert.match(html, /<h3>Cleanup applied<\/h3>/);
+  assert.match(html, /Dependency files were checked, but no build or test scripts ran/);
+  assert.match(html, /No build or test scripts are configured for verification\./);
+  assert.doesNotMatch(html, /verification passed/);
+  assert.doesNotMatch(html, /Verified cleanup results/);
+  // The detail line only repeated the headline on a completed run.
+  assert.doesNotMatch(html, /smart-cleanup-results__detail/);
+});
+
 test('a refused restore shows the host message as a warning', () => {
   const available = smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' });
   const restoring = smartCleanupReducer(available, { type: 'restore-started', analysisId: 'a1' });

@@ -67,7 +67,10 @@ test('progress lists only checks that perform asynchronous analysis', () => {
 
 test('the summary uses explicit units and large evidence lists share bounded searchable disclosure', () => {
   assert.doesNotMatch(workspace, /\{findingsCount\} findings/);
-  assert.match(workspace, /`\$\{directRemovalCount\} candidates`/);
+  assert.match(workspace, /`\$\{safeRemovalCount\} recommended`/);
+  // Header, Unused signal and Unused section share one breakdown.
+  assert.equal((workspace.match(/\{unusedBreakdown\}/g) ?? []).length, 2);
+  assert.doesNotMatch(workspace, /candidates`|assessed`/);
   assert.match(workspace, /advisory \$\{plan\.security\.length === 1 \? 'finding' : 'findings'\}/);
   assert.match(workspace, /<SmartCleanupFindingList/);
   assert.match(findingList, /type="search"/);
@@ -233,4 +236,21 @@ test('styles handle narrow workspaces and reduced motion', () => {
   assert.match(styles, /\.smart-cleanup-analysis__steps li\[data-status='running'\][\s\S]*?animation: none/);
   assert.match(styles, /\.smart-cleanup-preflight__facts\s*\{[\s\S]*?grid-template-columns: 1fr/);
   assert.match(styles, /\.smart-cleanup-result-packages,[\s\S]*?\.smart-cleanup-result-row\s*\{[\s\S]*?grid-template-columns: 1fr/);
+});
+
+test('a removal that leaves the package installed through other packages is flagged in the list, not only at confirmation', () => {
+  assert.match(adapter, /entry\.kind === 'transitive-dependency'/);
+  assert.match(adapter, /transitiveNote: transitive\.summary/);
+  assert.match(workspace, /recommendation\.transitiveNote === undefined \? null/);
+  assert.match(workspace, /className="smart-cleanup-action__transitive"/);
+  assert.match(workspace, /Removing the direct declaration will not necessarily\s+remove the package from the installed graph\./);
+  assert.match(styles, /\.smart-cleanup-action__transitive \{/);
+});
+
+test('the dashboard never shows a likely-unused count before the usage scan has finished', () => {
+  const filter = readFileSync(join(process.cwd(), 'webview/src/components/HygieneFilter.tsx'), 'utf8');
+  assert.match(filter, /likelyUnusedCount: number \| 'checking' \| null;/);
+  assert.match(filter, /'Likely unused \(checking…\)'/);
+  assert.match(app, /likelyUnusedCount=\{cleanupAnalyzed\s+\? findingCounts\['likely-unused'\]\s+: cleanupChecking \? 'checking' : null\}/);
+  assert.match(app, /cleanupChecking=\{cleanupState\.phase === 'analyzing'\}/);
 });

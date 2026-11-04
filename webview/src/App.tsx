@@ -682,11 +682,7 @@ export function App(): ReactElement {
               failedActionIds: kept ? hostCompletion.failedActionIds : [],
               resolvedAdvisories: hostCompletion.removedAdvisories,
               introducedAdvisories: hostCompletion.introducedAdvisories,
-              verification: incoming.result.verification === 'passed'
-                ? 'passed'
-                : incoming.result.verification === 'failed'
-                  ? 'failed'
-                  : 'not-run',
+              verification: incoming.result.verification,
               rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
               detail: [incoming.result.message, hostCompletion.reason].filter((part) => part !== undefined).join(' '),
             };
@@ -719,11 +715,7 @@ export function App(): ReactElement {
               failedActionIds: [],
               resolvedAdvisories: [],
               introducedAdvisories: [],
-              verification: incoming.result.verification === 'passed'
-                ? 'passed'
-                : incoming.result.verification === 'failed'
-                  ? 'failed'
-                  : 'not-run',
+              verification: incoming.result.verification,
               rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
               detail: `${incoming.result.message} Fresh dashboard evidence was unavailable, so before/after metrics could not be verified.`,
             };
@@ -774,11 +766,7 @@ export function App(): ReactElement {
               failedActionIds: [],
               resolvedAdvisories: [],
               introducedAdvisories: [],
-              verification: incoming.result.verification === 'passed'
-                ? 'passed'
-                : incoming.result.verification === 'failed'
-                  ? 'failed'
-                  : 'not-run',
+              verification: incoming.result.verification,
               rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
               detail: incoming.result.message,
             };
@@ -2294,6 +2282,7 @@ export function App(): ReactElement {
           actionsDisabled={actionsDisabled}
           cleanupFindings={cleanupFindings}
           cleanupAnalyzed={cleanupState.phase === 'done'}
+          cleanupChecking={cleanupState.phase === 'analyzing'}
           onOpenSmartCleanup={startSmartCleanup}
           onOpenBulkActions={() => setBulkActionsOpen(true)}
           onOpenManage={openManage}
@@ -2512,6 +2501,7 @@ function Dashboard({
   actionsDisabled,
   cleanupFindings,
   cleanupAnalyzed,
+  cleanupChecking,
   onOpenSmartCleanup,
   onOpenBulkActions,
   onOpenManage,
@@ -2542,6 +2532,8 @@ function Dashboard({
   /** Likely-unused findings from the last completed "Analyze cleanup" run this session. See App.tsx. */
   cleanupFindings: readonly DependencyFinding[];
   cleanupAnalyzed: boolean;
+  /** The usage scan behind the likely-unused count is running. */
+  cleanupChecking: boolean;
   onOpenSmartCleanup: () => void;
   onOpenBulkActions: () => void;
   onOpenManage: (packageName: string) => void;
@@ -2715,7 +2707,9 @@ function Dashboard({
                 <span>Findings</span>
                 <HygieneFilter
                   value={hygieneFilter}
-                  likelyUnusedCount={findingCounts['likely-unused']}
+                  likelyUnusedCount={cleanupAnalyzed
+                    ? findingCounts['likely-unused']
+                    : cleanupChecking ? 'checking' : null}
                   onChange={onHygieneFilterChange}
                 />
               </div>
