@@ -1607,7 +1607,7 @@ test('Smart Cleanup removal requires a correlated canonical package set', () => 
   );
   assert.equal(
     isWebviewToHostMessage({ type: 'smart-cleanup-remove', requestId: 'cleanup-1', packages: [], dedupeActionId: 'dedupe-1' }),
-    true
+    false
   );
   assert.equal(isWebviewToHostMessage({ type: 'smart-cleanup-remove', packages: ['a'] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'smart-cleanup-remove', requestId: '', packages: ['a'] }), false);
@@ -2101,10 +2101,7 @@ test('every removal-impact response requires one exact correlated package set', 
   assert.equal(isHostToWebviewMessage({ status: 'removal-impact-error', requestId: 'impact-1', error: { code: 'X', message: 'Y' } }), false);
 });
 
-test('a duplicate-check result can carry a dedupe note apart from a partial-check reason', () => {
-  const base = { status: 'smart-cleanup-duplicates-result', requestId: 'cleanup-1', assessments: [] };
-  assert.equal(isHostToWebviewMessage({ ...base, dedupeNote: 'A dedupe preview changed how a direct dependency resolves.' }), true);
-  assert.equal(isHostToWebviewMessage({ ...base, unavailableReason: 'Duplicate analysis timed out.' }), true);
-  assert.equal(isHostToWebviewMessage({ ...base, dedupeNote: '' }), false);
-  assert.equal(isHostToWebviewMessage({ ...base, dedupeNote: 'x'.repeat(1001) }), false);
+test('the removed Smart Cleanup duplicate-check messages are rejected', () => {
+  assert.equal(isHostToWebviewMessage({ status: 'smart-cleanup-duplicates-result', requestId: 'cleanup-1', assessments: [] }), false);
+  assert.equal(isWebviewToHostMessage({ type: 'smart-cleanup-duplicates', requestId: 'cleanup-1' }), false);
 });

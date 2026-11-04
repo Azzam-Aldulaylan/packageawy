@@ -6,8 +6,6 @@ import type { DependencyFinding } from '../../../src/core/hygiene/types.js';
 import type { DependencyReference, DependencyUsageResult } from '../../../src/core/usage/types.js';
 import {
   deprecatedFindingFor,
-  introducedDuplicateFindings,
-  ownDuplicateFinding,
   usageSignificanceCopy,
   usageScopeLabel,
   usageSummaryCounts,
@@ -189,73 +187,6 @@ function WhereUsedCard({
   );
 }
 
-/**
- * "Duplicate versions", only ever the same duplicate-version findings the
- * Hygiene table/badge already derive from (see dependencyDetailsCopy.ts).
- * Hidden entirely when this package has no duplicate of its own and
- * introduces none in anything else, never an empty card.
- */
-function DuplicateVersionsCard({
-  row,
-  ownDuplicate,
-  introduced,
-}: {
-  row: PackageRow;
-  ownDuplicate: DependencyFinding | undefined;
-  introduced: DependencyFinding[];
-}): ReactElement | null {
-  const ownVersions = ownDuplicate?.evidence.kind === 'duplicate-version' ? ownDuplicate.evidence.versions : null;
-  if (ownVersions === null && introduced.length === 0) return null;
-
-  return (
-    <section className="analysis-card usage-detail-card usage-detail-card--duplicates" aria-labelledby="usage-duplicates-heading">
-      <h3 className="analysis-card__title" id="usage-duplicates-heading">
-        Duplicate versions
-      </h3>
-      {ownVersions !== null ? (
-        <>
-          <p className="usage-card__subtitle">Multiple resolved versions of {row.name} found in this project.</p>
-          <table className="usage-dup-table">
-            <thead>
-              <tr>
-                <th>Version</th>
-                <th>Introduced through</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ownVersions.map((entry) => {
-                const extraPaths = entry.totalPaths - 1;
-                return (
-                  <tr key={entry.version}>
-                    <td>
-                      <code>{entry.version}</code>
-                      {entry.direct !== null ? <span className="status-badge status-badge--neutral">Direct</span> : null}
-                    </td>
-                    <td>
-                      {entry.direct !== null ? 'your-project (root)' : (entry.paths[0]?.join(' → ') ?? '—')}
-                      {entry.direct === null && extraPaths > 0 ? (
-                        <span className="usage-dup-table__more">
-                          {' '}
-                          +{entry.truncated ? `${extraPaths}+` : extraPaths} more path{extraPaths === 1 ? '' : 's'}
-                        </span>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </>
-      ) : null}
-      {introduced.length > 0 ? (
-        <p className="usage-dup-also">
-          {row.name} also introduces duplicate versions of {introduced.map((finding) => finding.packageName).join(', ')}.
-        </p>
-      ) : null}
-    </section>
-  );
-}
-
 /** One compact stat in the Hygiene grid: same shell for every finding, positive or negative, so "No" is a first-class, equally visible answer. */
 function HygieneStat({
   ok,
@@ -289,8 +220,8 @@ function HygieneStat({
 }
 
 /**
- * The compact hygiene status strip: Deprecated / Likely unused / Duplicate
- * versions / Security issues, always all four, "No" included, so a clean
+ * The compact hygiene status strip: Deprecated / Likely unused / Security
+ * issues, always all three, "No" included, so a clean
  * package reads as clearly clean rather than an empty section. Security
  * issues never repeats the full advisory list here (see
  * VulnerabilitiesPanel.tsx for that): it links there instead.
@@ -299,18 +230,15 @@ function HygieneCard({
   row,
   deprecated,
   unusedFinding,
-  ownDuplicate,
   onChangeTab,
 }: {
   row: PackageRow;
   deprecated: DependencyFinding | undefined;
   unusedFinding: DependencyFinding | undefined;
-  ownDuplicate: DependencyFinding | undefined;
   onChangeTab: (tab: ManageTabId) => void;
 }): ReactElement {
-  const duplicateVersionCount = ownDuplicate?.evidence.kind === 'duplicate-version' ? ownDuplicate.evidence.versions.length : 0;
   const worst = row.worstSeverity;
-  const needsAttention = deprecated !== undefined || unusedFinding !== undefined || duplicateVersionCount > 0 || worst !== null;
+  const needsAttention = deprecated !== undefined || unusedFinding !== undefined || worst !== null;
 
   return (
     <section
@@ -333,12 +261,6 @@ function HygieneCard({
           icon={unusedFinding === undefined ? <IconCheck /> : <IconAlertTriangle />}
           label="Likely unused"
           value={unusedFinding === undefined ? 'No' : unusedFinding.confidence === 'high' ? 'Yes' : 'Possibly'}
-        />
-        <HygieneStat
-          ok={duplicateVersionCount === 0}
-          icon={duplicateVersionCount === 0 ? <IconCheck /> : <IconAlertTriangle />}
-          label="Duplicate versions"
-          value={duplicateVersionCount === 0 ? 'No' : `Yes (${duplicateVersionCount} versions)`}
         />
         <HygieneStat
           ok={worst === null}
@@ -379,8 +301,6 @@ export function UsageReferencesPanel({
   now: number;
 }): ReactElement {
   const deprecated = deprecatedFindingFor(hygieneFindings, row.name);
-  const ownDuplicate = ownDuplicateFinding(hygieneFindings, row.name);
-  const introduced = introducedDuplicateFindings(hygieneFindings, row.name);
   const unusedFinding = hygieneFindings.find((finding) => finding.kind === 'likely-unused' && finding.packageName === row.name);
 
   const counts = usage !== undefined && usage.phase === 'done' ? usageSummaryCounts(usage.result.references) : null;
@@ -418,8 +338,7 @@ export function UsageReferencesPanel({
           onReanalyze={() => onReanalyzeUsage(row.name)}
           onOpenReference={onOpenUsageReference}
         />
-        <DuplicateVersionsCard row={row} ownDuplicate={ownDuplicate} introduced={introduced} />
-        <HygieneCard row={row} deprecated={deprecated} unusedFinding={unusedFinding} ownDuplicate={ownDuplicate} onChangeTab={onChangeTab} />
+        <HygieneCard row={row} deprecated={deprecated} unusedFinding={unusedFinding} onChangeTab={onChangeTab} />
       </div>
     </div>
   );

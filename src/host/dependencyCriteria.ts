@@ -1,6 +1,6 @@
 /**
  * Pure criteria matching for the "Manage dependencies" picker: build a
- * selection by toggling chips (unused/duplicated/deprecated, prod/dev,
+ * selection by toggling chips (unused/deprecated, prod/dev,
  * vulnerability severity, has-update/major-update) rather than picking one
  * action first. A chip within a group is OR'd with its siblings. A group
  * with nothing selected imposes no constraint at all. Non-empty groups are
@@ -17,7 +17,7 @@ import type { HygieneFilterId } from './hygieneFilter.js';
 import { rowMatchesHygieneFilter } from './hygieneFilter.js';
 import { rowHasUpdate, rowIsMajorUpdate } from './summaryMetrics.js';
 
-export type HealthCriterion = 'likely-unused' | 'duplicate-version' | 'deprecated';
+export type HealthCriterion = 'likely-unused' | 'deprecated';
 export type TypeCriterion = 'prod' | 'dev';
 /** Same four levels summaryMetrics.ts's cards break vulnerabilities down by: 'info' is never surfaced as its user-facing category anywhere in this dashboard. */
 export type SeverityCriterion = Exclude<Severity, 'info'>;
@@ -50,7 +50,6 @@ export function criteriaFromDashboardFilters(
 /** Single source of truth for chip/tag text: both the picker's chips and a matched row's "why matched" tags read from here, so they never drift apart. */
 export const HEALTH_LABELS: Record<HealthCriterion, string> = {
   'likely-unused': 'Likely unused',
-  'duplicate-version': 'Duplicated',
   deprecated: 'Deprecated',
 };
 export const TYPE_LABELS: Record<TypeCriterion, string> = { prod: 'Prod', dev: 'Dev' };
@@ -145,7 +144,7 @@ export interface CriteriaSummaryLine {
 
 /**
  * Plain-language "what this selection matches" summary, one line per
- * non-empty group: e.g. `{ group: 'Health', text: 'Unused or Duplicated' }`:
+ * non-empty group: e.g. `{ group: 'Health', text: 'Unused or Deprecated' }`:
  * for the picker's compact active-criteria explainer. Never technical
  * AND/OR syntax. Chips within a line are joined with "or" (matching the
  * OR-within-a-group semantics above), and a line is omitted entirely when
@@ -200,7 +199,7 @@ export function criteriaCounts(
   findings: readonly DependencyFinding[],
   selected: SelectedCriteria
 ): CriteriaCounts {
-  const health: Record<HealthCriterion, number> = { 'likely-unused': 0, 'duplicate-version': 0, deprecated: 0 };
+  const health: Record<HealthCriterion, number> = { 'likely-unused': 0, deprecated: 0 };
   const type: Record<TypeCriterion, number> = { prod: 0, dev: 0 };
   const severity: Record<SeverityCriterion, number> = { critical: 0, high: 0, moderate: 0, low: 0 };
   const updates: Record<UpdateCriterion, number> = { 'has-update': 0, 'major-update': 0 };
@@ -208,7 +207,6 @@ export function criteriaCounts(
   for (const row of rows) {
     if (matchesType(row, selected.type) && matchesSeverity(row, selected.severity) && matchesUpdates(row, selected.updates)) {
       if (rowMatchesHygieneFilter(row, 'likely-unused', findings)) health['likely-unused'] += 1;
-      if (rowMatchesHygieneFilter(row, 'duplicate-version', findings)) health['duplicate-version'] += 1;
       if (row.deprecated !== undefined) health.deprecated += 1;
     }
     if (matchesHealth(row, findings, selected.health) && matchesSeverity(row, selected.severity) && matchesUpdates(row, selected.updates)) {

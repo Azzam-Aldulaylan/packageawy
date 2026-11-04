@@ -13,7 +13,6 @@ import {
   buildPnpmAddArgs,
   buildInstallArgs,
   buildCoordinatedInstallArgs,
-  buildDedupeArgs,
   buildLockfileReconciliationArgs,
   buildManifestReconciliationArgs,
   buildTransitiveRemediationArgs,
@@ -33,11 +32,6 @@ test('a prod dependency gets --save-prod', () => {
     ignoreScripts: false,
   });
   assert.deepEqual(args, ['install', 'left-pad@2.0.0', '--save-prod']);
-});
-
-test('project dedupe argv is explicit and script-free when configured', () => {
-  assert.deepEqual(buildDedupeArgs('npm', { ignoreScripts: true }), ['dedupe', '--ignore-scripts']);
-  assert.deepEqual(buildDedupeArgs('pnpm', { ignoreScripts: false }), ['dedupe']);
 });
 
 test('a dev dependency gets --save-dev', () => {

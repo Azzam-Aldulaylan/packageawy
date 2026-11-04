@@ -10,18 +10,15 @@ import type { HygieneFilterId } from '../../../src/host/hygieneFilter.js';
 export function HygieneFilter({
   value,
   likelyUnusedCount,
-  duplicateCount,
   onChange,
 }: {
   value: HygieneFilterId;
   likelyUnusedCount: number;
-  duplicateCount: number;
   onChange: (value: HygieneFilterId) => void;
 }): ReactElement {
   const options: readonly { id: HygieneFilterId; label: string }[] = [
     { id: 'all', label: 'All' },
     { id: 'likely-unused', label: `Likely unused (${likelyUnusedCount})` },
-    { id: 'duplicate-version', label: `Duplicate versions (${duplicateCount})` },
   ];
   return (
     <div className="type-filter" role="radiogroup" aria-label="Filter by dependency finding">

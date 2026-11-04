@@ -11,9 +11,9 @@ test('usage summary and detail cards expose restrained semantic color hooks', ()
     'usage-summary-card--primary',
     'usage-summary-card--insight',
     'usage-detail-card--references',
-    'usage-detail-card--duplicates',
     'usage-detail-card--hygiene',
   ]) assert.match(component, new RegExp(className));
+  assert.doesNotMatch(component, /usage-detail-card--duplicates|Duplicate versions/);
 });
 
 test('usage color remains theme-aware and structural', () => {

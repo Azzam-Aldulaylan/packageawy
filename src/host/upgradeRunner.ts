@@ -17,7 +17,6 @@
 import type { DependencyClassification } from '../core/upgrade/plan.js';
 import {
   buildCoordinatedInstallArgs,
-  buildDedupeArgs,
   buildInstallArgs,
   buildLockfileReconciliationArgs,
   buildManifestReconciliationArgs,
@@ -57,10 +56,6 @@ export interface UpgradeManifestReconciliationParams {
   cwd: string;
   ignoreScripts: boolean;
   packageManager: 'npm' | 'pnpm';
-  /** Run the host-verified project-wide dedupe after any manifest reconciliation. */
-  dedupe?: boolean;
-  /** Skip the install step when package.json is unchanged and this is a dedupe-only transaction. */
-  reconcileManifest?: boolean;
 }
 
 export type PreparedManifestReconciliation =
@@ -224,7 +219,6 @@ export class UpgradeExecutionSession {
     }
 
     const reconcileArgs = buildManifestReconciliationArgs(packageManager, { ignoreScripts });
-    const dedupeArgs = buildDedupeArgs(packageManager, { ignoreScripts });
     let executed = false;
     return {
       ok: true,
@@ -244,28 +238,14 @@ export class UpgradeExecutionSession {
             message: 'Upgrades are disabled in untrusted workspaces.',
           };
         }
-        if (params.reconcileManifest !== false) {
-          const reconciled = await this.executeTask(
-            invocation,
-            cwd,
-            'smart-cleanup',
-            reconcileArgs,
-            'Packageawy: Reconcile cleanup changes',
-            `${packageManager} ${reconcileArgs[0]}`
-          );
-          if (!reconciled.ok) return reconciled;
-        }
-        if (params.dedupe === true) {
-          return await this.executeTask(
-            invocation,
-            cwd,
-            'smart-cleanup',
-            dedupeArgs,
-            'Packageawy: Deduplicate dependencies',
-            `${packageManager} ${dedupeArgs[0]}`
-          );
-        }
-        return { ok: true };
+        return await this.executeTask(
+          invocation,
+          cwd,
+          'smart-cleanup',
+          reconcileArgs,
+          'Packageawy: Reconcile cleanup changes',
+          `${packageManager} ${reconcileArgs[0]}`
+        );
       },
     };
   }

@@ -5,7 +5,6 @@ import {
   MAX_SMART_CLEANUP_ACTIONS,
   buildCleanupReport,
   buildDeprecatedCleanupFinding,
-  buildDuplicateCleanupFinding,
   buildRemovalCleanupFinding,
   canonicalCleanupActionBatch,
   cleanupSummaryHeadline,
@@ -79,29 +78,6 @@ test('review-required removal is executable only by deliberate selection and is 
   assert.equal(result.action?.confidence, 'review-required');
   assert.deepEqual(defaultCleanupActionIds([result.action]), []);
   assert.equal(resolveCleanupSelection([result.action], [result.action.id]).ok, true);
-});
-
-test('duplicate findings are typed as analysis-only and cannot carry actions', () => {
-  const finding = buildDuplicateCleanupFinding({
-    findingId: 'duplicate:shared',
-    packageName: 'shared',
-    versions: ['2.0.0', '1.0.0', '2.0.0'],
-  });
-  assert.equal(finding.executable, false);
-  assert.equal(finding.recommendation, 'analysis-only');
-  assert.deepEqual(finding.relatedActionIds, []);
-  assert.deepEqual(finding.evidence[0], {
-    kind: 'duplicate-versions',
-    versions: ['1.0.0', '2.0.0'],
-    excessVersionCount: 1,
-  });
-});
-
-test('a duplicate finding rejects fewer than two distinct versions', () => {
-  assert.throws(
-    () => buildDuplicateCleanupFinding({ findingId: 'duplicate:x', packageName: 'x', versions: ['1.0.0', '1.0.0'] }),
-    /at least two distinct versions/
-  );
 });
 
 test('used deprecated packages require remediation and never gain an automatic replacement action', () => {
@@ -186,7 +162,7 @@ test('selection fails closed for duplicate plan ids, repeated requested ids, and
   });
 });
 
-test('findings and summary are deterministic and duplicate counts remain informational', () => {
+test('findings and summary are deterministic', () => {
   const removable = removal();
   const deprecated = buildDeprecatedCleanupFinding({
     findingId: 'deprecated:z',
@@ -194,24 +170,16 @@ test('findings and summary are deterministic and duplicate counts remain informa
     message: 'deprecated',
     directUsage: 'used',
   });
-  const duplicate = buildDuplicateCleanupFinding({
-    findingId: 'duplicate:a',
-    packageName: 'a',
-    versions: ['1.0.0', '2.0.0', '3.0.0'],
-  });
-  const findings = [duplicate, deprecated, removable.finding];
+  const findings = [deprecated, removable.finding];
   assert.deepEqual(rankCleanupFindings(findings).map((finding) => finding.kind), [
     'unused',
     'deprecated',
-    'duplicate-version',
   ]);
   const summary = summarizeCleanup(findings, [removable.action]);
   assert.deepEqual(summary, {
-    opportunities: 3,
+    opportunities: 2,
     unused: 1,
     deprecated: 1,
-    duplicateVersionGroups: 1,
-    duplicateExcessVersions: 2,
     executableActions: 1,
     actionOverflow: 0,
     defaultSelectedActions: 1,
@@ -219,7 +187,7 @@ test('findings and summary are deterministic and duplicate counts remain informa
     blockedFindings: 0,
     unknownFindings: 0,
   });
-  assert.equal(cleanupSummaryHeadline(summary), '3 cleanup opportunities · 1 recommended removal · 1 duplicate-version group');
+  assert.equal(cleanupSummaryHeadline(summary), '2 cleanup opportunities · 1 recommended removal');
 });
 
 test('completion headline uses only verified improvements and preserves regressions separately', () => {
@@ -228,7 +196,6 @@ test('completion headline uses only verified improvements and preserves regressi
     metrics: {
       directDependencies: { before: 10, after: 8 },
       deprecatedDirectDependencies: { before: null, after: null, unavailableReason: 'Registry unavailable.' },
-      duplicateVersionGroups: { before: 3, after: 3 },
       vulnerabilities: { before: 1, after: 2 },
     },
     actions: [{ actionId: 'a', packageName: 'left-pad', status: 'completed' }],

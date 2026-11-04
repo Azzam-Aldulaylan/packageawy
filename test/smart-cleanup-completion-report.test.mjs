@@ -54,7 +54,7 @@ function row(name, advisories = [], deprecated) {
   };
 }
 
-function snapshot(rows, { advisories = 'complete', updates = 'complete', duplicates = [] } = {}) {
+function snapshot(rows, { advisories = 'complete', updates = 'complete' } = {}) {
   return {
     rows,
     availability: {
@@ -65,12 +65,7 @@ function snapshot(rows, { advisories = 'complete', updates = 'complete', duplica
     ...(advisories === 'unavailable'
       ? { advisoriesError: { code: 'NETWORK', message: 'unavailable' } }
       : {}),
-    hygieneFindings: duplicates.map((packageName) => ({
-      kind: 'duplicate-version',
-      packageName,
-      summary: 'duplicates',
-      evidence: { kind: 'duplicate-version', versions: [{ version: '1.0.0', paths: ['a'] }, { version: '2.0.0', paths: ['b'] }] },
-    })),
+    hygieneFindings: [],
   };
 }
 
@@ -91,7 +86,7 @@ function completion(overrides = {}) {
     row('a', [shared, secondPath, removed]),
     row('b', [attributed(101, 'shared', ['b', 'shared'])]),
     row('c'),
-  ], { duplicates: ['shared'] });
+  ]);
   const after = snapshot([
     row('b', [attributed(101, 'shared', ['b', 'shared'], [{ type: 'CVE', value: 'CVE-2026-12345' }])]),
     row('c'),
@@ -149,7 +144,7 @@ test('a correlated complete refresh produces actual before/after report metrics 
   assert.equal(result.status, 'verified');
   assert.equal(result.report.metrics.directDependencies.before, 3);
   assert.equal(result.report.metrics.directDependencies.after, 2);
-  assert.equal(result.report.metrics.duplicateVersionGroups.improvedBy, 1);
+  assert.equal(result.report.metrics.duplicateVersionGroups, undefined);
   assert.equal(result.report.metrics.deprecatedDirectDependencies.improvedBy, 1);
   assert.equal(result.report.metrics.vulnerabilities.before, 2);
   assert.equal(result.report.metrics.vulnerabilities.after, 1);
@@ -265,7 +260,7 @@ test('partial update availability prevents an overall verified result without di
 });
 
 test('a restored cleanup may verify equal snapshots without claiming an improvement', () => {
-  const unchanged = snapshot([row('a')], { duplicates: ['shared'] });
+  const unchanged = snapshot([row('a')]);
   const result = buildSmartCleanupCompletionReport({
     operation,
     before: {
@@ -292,7 +287,6 @@ test('a restored cleanup may verify equal snapshots without claiming an improvem
   });
   assert.equal(result.status, 'verified');
   assert.equal(result.report.metrics.directDependencies.improvedBy, 0);
-  assert.equal(result.report.metrics.duplicateVersionGroups.improvedBy, 0);
   assert.equal(result.report.metrics.vulnerabilities.improvedBy, 0);
   assert.deepEqual(result.security.removedAdvisories, []);
   assert.deepEqual(result.security.introducedAdvisories, []);

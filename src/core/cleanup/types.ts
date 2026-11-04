@@ -3,7 +3,7 @@
  *
  * A finding explains project state. An action is a separately-authorized
  * mutation the host may offer for that finding. Keeping those concepts
- * separate prevents an informational deprecation or duplicate-version fact
+ * separate prevents an informational deprecation fact
  * from accidentally becoming executable merely because it appears in a
  * cleanup plan.
  */
@@ -14,10 +14,10 @@ export type CleanupAnalyzerOutcome = 'complete' | 'partial' | 'unavailable' | 'c
 
 export type CleanupConfidence = 'low-risk' | 'review-required' | 'blocked' | 'unknown';
 
-export type CleanupFindingKind = 'unused' | 'deprecated' | 'duplicate-version';
+export type CleanupFindingKind = 'unused' | 'deprecated';
 
 export interface CleanupAnalyzerStatus {
-  analyzer: 'usage' | 'deprecation' | 'duplicates' | 'security';
+  analyzer: 'usage' | 'deprecation' | 'security';
   outcome: CleanupAnalyzerOutcome;
   /** Short explanation for a non-complete outcome. */
   message?: string;
@@ -41,11 +41,6 @@ export type CleanupEvidence =
       kind: 'deprecation';
       message: string;
       suggestedReplacement?: string;
-    }
-  | {
-      kind: 'duplicate-versions';
-      versions: string[];
-      excessVersionCount: number;
     };
 
 interface CleanupFindingBase {
@@ -70,23 +65,7 @@ export interface DeprecatedCleanupFinding extends CleanupFindingBase {
   recommendation: 'remove-if-unused' | 'remediation-required' | 'informational' | 'unknown';
 }
 
-/**
- * Duplicate consolidation is deliberately analysis-only in the
- * removal-first release. The literal false and empty tuple make it
- * impossible for a duplicate finding to masquerade as an executable action.
- */
-export interface DuplicateVersionCleanupFinding extends CleanupFindingBase {
-  kind: 'duplicate-version';
-  confidence: 'review-required' | 'blocked' | 'unknown';
-  recommendation: 'analysis-only' | 'keep-both' | 'unknown';
-  executable: false;
-  relatedActionIds: [];
-}
-
-export type CleanupFinding =
-  | UnusedCleanupFinding
-  | DeprecatedCleanupFinding
-  | DuplicateVersionCleanupFinding;
+export type CleanupFinding = UnusedCleanupFinding | DeprecatedCleanupFinding;
 
 export interface RemoveDirectDependencyAction {
   id: string;
@@ -145,7 +124,6 @@ export type CleanupMetric =
 export interface CleanupReportMetrics {
   directDependencies: CleanupMetric;
   deprecatedDirectDependencies: CleanupMetric;
-  duplicateVersionGroups: CleanupMetric;
   vulnerabilities: CleanupMetric;
 }
 

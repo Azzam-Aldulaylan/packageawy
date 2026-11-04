@@ -42,8 +42,6 @@ import type {
   RemoveAnalysisPresentation,
   ScanProgressStage,
   SmartCleanupExecutionCapability,
-  SmartCleanupDedupeActionPresentation,
-  SmartCleanupDuplicateAssessmentPresentation,
   UpgradeAnalysisPresentation,
   UpgradeResultPresentation,
 } from '../../src/host/webviewProtocol.js';
@@ -83,7 +81,6 @@ import { buildSmartCleanupPlan } from './smartCleanupPlanAdapter.js';
 import {
   createSmartCleanupState,
   SMART_CLEANUP_REVIEW_CACHE_MS,
-  selectedSmartCleanupDedupeAction,
   smartCleanupReducer,
   smartCleanupReviewIsReusable,
 } from './smartCleanupState.js';
@@ -110,17 +107,6 @@ function partialErrorText(data: DashboardData): string | null {
   return reasons.length === 0 ? null : reasons.join(', ');
 }
 
-function duplicateGroupCount(data: DashboardData): number {
-  return data.hygieneFindings.filter((finding) => finding.kind === 'duplicate-version').length;
-}
-
-function excessDuplicateVersionCount(data: DashboardData): number {
-  return data.hygieneFindings.reduce((count, finding) => {
-    if (finding.kind !== 'duplicate-version' || finding.evidence.kind !== 'duplicate-version') return count;
-    return count + Math.max(0, finding.evidence.versions.length - 1);
-  }, 0);
-}
-
 function smartCleanupProjectKey(data: DashboardData): string {
   return `${data.project.label}\u0000${data.project.manifestPath}`;
 }
@@ -130,10 +116,9 @@ interface SmartCleanupExecutionSnapshot {
   actionIds: readonly string[];
   packages: readonly string[];
   analysisId: string | null;
-  /** Smart Cleanup analysis request, used to resolve the opaque dedupe action and cancel the combined review. */
+  /** Smart Cleanup analysis request, used to cancel the combined review. */
   requestId: string;
-  removalRequestId?: string;
-  dedupeActionId?: string;
+  removalRequestId: string;
 }
 
 interface UpgradeErrorState {
@@ -350,14 +335,6 @@ export function App(): ReactElement {
     capability: SmartCleanupExecutionCapability | null;
     message?: string;
   }>({ phase: 'idle', findings: [], unavailablePackages: [], capability: null });
-  const [smartCleanupDuplicates, setSmartCleanupDuplicates] = useState<{
-    phase: 'idle' | 'analyzing' | 'done' | 'error';
-    assessments: SmartCleanupDuplicateAssessmentPresentation[];
-    action: SmartCleanupDedupeActionPresentation | null;
-    unavailableReason?: string;
-    dedupeNote?: string;
-    message?: string;
-  }>({ phase: 'idle', assessments: [], action: null });
   const smartCleanupOpenRef = useRef(false);
   const smartCleanupStateRef = useRef(smartCleanupState);
   const smartCleanupRequestIdRef = useRef(0);
@@ -656,11 +633,9 @@ export function App(): ReactElement {
         const smartPackagesMatch = smartSnapshot !== null &&
           incoming.analysis.changes.length === smartSnapshot.packages.length &&
           incoming.analysis.changes.every((change, index) => change.packageName === smartSnapshot.packages[index]);
-        const smartDedupeMatches = smartSnapshot !== null &&
-          incoming.analysis.dedupe?.actionId === smartSnapshot.dedupeActionId;
         if (
           incoming.analysis.package === activeRemoveRef.current &&
-          (removeOriginRef.current !== 'smart-cleanup' || (smartPackagesMatch && smartDedupeMatches))
+          (removeOriginRef.current !== 'smart-cleanup' || smartPackagesMatch)
         ) {
           setRemoveAnalysis(incoming.analysis);
           if (removeOriginRef.current === 'smart-cleanup') {
@@ -753,20 +728,6 @@ export function App(): ReactElement {
                 detail: kept
                   ? `${Math.max(0, snapshot.before.rows.length - after.rows.length)} removed`
                   : 'Dependency files were restored',
-              },
-              {
-                id: 'duplicate-groups',
-                label: 'Duplicate-version groups',
-                before: duplicateGroupCount(snapshot.before),
-                after: duplicateGroupCount(after),
-                detail: 'Measured from the refreshed dependency graph',
-              },
-              {
-                id: 'excess-versions',
-                label: 'Excess resolved versions',
-                before: excessDuplicateVersionCount(snapshot.before),
-                after: excessDuplicateVersionCount(after),
-                detail: 'Versions beyond one resolved version per package',
               },
               ...(snapshot.before.availability.advisories === 'complete' && after.availability.advisories === 'complete'
                 ? [
@@ -1024,39 +985,6 @@ export function App(): ReactElement {
             executionSupported: false,
             reason: 'Smart Cleanup could not verify whether this project supports automated removal.',
           },
-          message: incoming.error.message,
-        });
-        if (incoming.error.code === 'STALE_SOURCE') {
-          dispatchSmartCleanup({ type: 'source-stale', message: incoming.error.message });
-        }
-        return;
-      }
-
-      if (incoming.status === 'smart-cleanup-duplicates-analyzing') {
-        if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
-        setSmartCleanupDuplicates((previous) => ({ ...previous, phase: 'analyzing' }));
-        return;
-      }
-
-      if (incoming.status === 'smart-cleanup-duplicates-result') {
-        if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
-        setSmartCleanupDuplicates({
-          phase: 'done',
-          assessments: incoming.assessments,
-          action: incoming.action ?? null,
-          ...(incoming.unavailableReason === undefined ? {} : { unavailableReason: incoming.unavailableReason }),
-          ...(incoming.dedupeNote === undefined ? {} : { dedupeNote: incoming.dedupeNote }),
-        });
-        return;
-      }
-
-      if (incoming.status === 'smart-cleanup-duplicates-error') {
-        if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
-        smartCleanupReviewCacheRef.current = null;
-        setSmartCleanupDuplicates({
-          phase: 'error',
-          assessments: [],
-          action: null,
           message: incoming.error.message,
         });
         if (incoming.error.code === 'STALE_SOURCE') {
@@ -1913,7 +1841,6 @@ export function App(): ReactElement {
     setSmartCleanupOpen(true);
     activeSmartCleanupRequestIdRef.current = requestId;
     setSmartCleanupMetadata({ phase: 'analyzing', findings: [], unavailablePackages: [], capability: null });
-    setSmartCleanupDuplicates({ phase: 'analyzing', assessments: [], action: null });
     setRemovalImpact({ phase: 'idle' });
     const reusableUsage = cleanupState.phase === 'done' && Date.parse(cleanupState.cacheExpiresAt) > Date.now();
     const reusableUnusedCount = reusableUsage
@@ -1930,7 +1857,6 @@ export function App(): ReactElement {
           label: 'Checking removal safety',
           status: reusableUsage ? (reusableUnusedCount === 0 ? 'complete' : 'running') : 'waiting',
         },
-        { id: 'duplicates', label: 'Simulating safe duplicate consolidation', status: 'running' },
         { id: 'deprecation', label: 'Checking installed-version deprecations', status: 'running' },
       ],
     });
@@ -1941,7 +1867,6 @@ export function App(): ReactElement {
       vscode.postMessage({ type: 'analyze-cleanup' });
     }
     vscode.postMessage({ type: 'analyze-smart-cleanup-metadata', requestId });
-    vscode.postMessage({ type: 'analyze-smart-cleanup-duplicates', requestId });
   }, [cleanupFindings, cleanupState, data, smartCleanupState]);
 
   const closeSmartCleanup = useCallback(() => {
@@ -1951,7 +1876,6 @@ export function App(): ReactElement {
       vscode.postMessage({ type: 'cancel-usage-analysis' });
       const requestId = activeSmartCleanupRequestIdRef.current;
       if (requestId !== null) vscode.postMessage({ type: 'cancel-smart-cleanup-metadata', requestId });
-      if (requestId !== null) vscode.postMessage({ type: 'cancel-smart-cleanup-duplicates', requestId });
       requestCancelRemovalImpact();
     }
     const execution = smartCleanupExecutionRef.current;
@@ -2011,8 +1935,7 @@ export function App(): ReactElement {
     const usageReady = cleanupState.phase === 'done';
     const impactReady = unusedPackages.length === 0 || removalImpact.phase === 'done';
     const metadataReady = smartCleanupMetadata.phase === 'done' || smartCleanupMetadata.phase === 'error';
-    const duplicatesReady = smartCleanupDuplicates.phase === 'done' || smartCleanupDuplicates.phase === 'error';
-    if (!usageReady || !impactReady || !metadataReady || !duplicatesReady) return;
+    if (!usageReady || !impactReady || !metadataReady) return;
 
     const requestId = smartCleanupState.requestId;
     if (requestId === null) return;
@@ -2041,17 +1964,14 @@ export function App(): ReactElement {
         executionSupported: false,
         reason: 'Smart Cleanup could not verify whether this project supports automated removal.',
       },
-      duplicateAssessments: smartCleanupDuplicates.assessments,
-      dedupeAction: smartCleanupDuplicates.action,
-      ...(smartCleanupDuplicates.dedupeNote === undefined ? {} : { dedupeNote: smartCleanupDuplicates.dedupeNote }),
     });
-    const findings = plan.recommendations.length + plan.deprecated.length + plan.duplicates.length + plan.security.length;
+    const findings = plan.recommendations.length + plan.deprecated.length + plan.security.length;
     if (findings === 0) {
       rememberReview();
       dispatchSmartCleanup({
         type: 'analysis-empty',
         requestId,
-        message: 'No unused, deprecated, duplicate-version, or security cleanup findings were detected.',
+        message: 'No unused, deprecated, or security cleanup findings were detected.',
       });
       return;
     }
@@ -2059,10 +1979,6 @@ export function App(): ReactElement {
     if (smartCleanupMetadata.phase === 'error') partialReasons.push('exact deprecation metadata was unavailable');
     if (smartCleanupMetadata.unavailablePackages.length > 0) {
       partialReasons.push(`exact metadata was unavailable for ${smartCleanupMetadata.unavailablePackages.length} packages`);
-    }
-    if (smartCleanupDuplicates.phase === 'error') partialReasons.push('duplicate consolidation analysis was unavailable');
-    else if (smartCleanupDuplicates.unavailableReason !== undefined) {
-      partialReasons.push(smartCleanupDuplicates.unavailableReason);
     }
     if (data.availability.advisories !== 'complete') partialReasons.push('security data was unavailable');
     if (partialReasons.length > 0) {
@@ -2084,7 +2000,6 @@ export function App(): ReactElement {
     data,
     removalImpact,
     smartCleanupMetadata,
-    smartCleanupDuplicates,
     smartCleanupOpen,
     smartCleanupState.phase,
     smartCleanupState.requestId,
@@ -2107,15 +2022,6 @@ export function App(): ReactElement {
           status: removalDone ? 'complete' : usageDone ? 'running' : 'waiting',
         },
         {
-          id: 'duplicates',
-          label: 'Simulating safe duplicate consolidation',
-          status: smartCleanupDuplicates.phase === 'done'
-            ? 'complete'
-            : smartCleanupDuplicates.phase === 'error'
-              ? 'unavailable'
-              : 'running',
-        },
-        {
           id: 'deprecation',
           label: 'Checking installed-version deprecations',
           status: smartCleanupMetadata.phase === 'done'
@@ -2131,7 +2037,6 @@ export function App(): ReactElement {
     cleanupState.phase,
     removalImpact.phase,
     smartCleanupMetadata.phase,
-    smartCleanupDuplicates.phase,
     smartCleanupOpen,
     smartCleanupState.phase,
     smartCleanupState.requestId,
@@ -2146,34 +2051,28 @@ export function App(): ReactElement {
       actionIds.length === 0
     ) return;
     const byId = new Map(smartCleanupState.plan.recommendations.map((item) => [item.id, item]));
-    const selectedDedupe = selectedSmartCleanupDedupeAction(smartCleanupState);
     const recommendations = actionIds.flatMap((id) => {
       const recommendation = byId.get(id);
       return recommendation === undefined ? [] : [recommendation];
     });
-    const dedupeActionId = selectedDedupe?.id;
-    const recognizedCount = recommendations.length + (dedupeActionId !== undefined && actionIds.includes(dedupeActionId) ? 1 : 0);
-    if (recognizedCount !== actionIds.length) {
+    if (recommendations.length !== actionIds.length) {
       dispatchSmartCleanup({ type: 'source-stale', message: 'The cleanup selection is no longer current. Analyze again.' });
       return;
     }
     const packages = recommendations.map((item) => item.packageName).sort((left, right) => left.localeCompare(right));
     const analyzed = removalImpact.phase === 'done' ? new Set(removalImpact.packages) : new Set<string>();
-    if (packages.length > 0 && (removalImpact.phase !== 'done' || !packages.every((name) => analyzed.has(name)))) {
+    if (removalImpact.phase !== 'done' || !packages.every((name) => analyzed.has(name))) {
       dispatchSmartCleanup({ type: 'source-stale', message: 'The cleanup selection is no longer covered by current removal evidence. Analyze again.' });
       return;
     }
-    const removalRequestId = packages.length > 0 && removalImpact.phase === 'done'
-      ? removalImpact.requestId
-      : undefined;
+    const removalRequestId = removalImpact.requestId;
     smartCleanupExecutionRef.current = {
       before: data,
       actionIds: [...actionIds],
       packages,
       analysisId: null,
       requestId: smartCleanupState.requestId,
-      ...(removalRequestId === undefined ? {} : { removalRequestId }),
-      ...(dedupeActionId === undefined ? {} : { dedupeActionId }),
+      removalRequestId,
     };
     const first = packages[0] ?? 'Smart Cleanup';
     activeRemoveRef.current = first;
@@ -2188,8 +2087,7 @@ export function App(): ReactElement {
       type: 'smart-cleanup-remove',
       requestId: smartCleanupState.requestId,
       packages,
-      ...(removalRequestId === undefined ? {} : { removalRequestId }),
-      ...(dedupeActionId === undefined ? {} : { dedupeActionId }),
+      removalRequestId,
     });
   }, [data, removalImpact, smartCleanupState]);
 
@@ -2791,7 +2689,6 @@ function Dashboard({
                 <HygieneFilter
                   value={hygieneFilter}
                   likelyUnusedCount={findingCounts['likely-unused']}
-                  duplicateCount={findingCounts['duplicate-version']}
                   onChange={onHygieneFilterChange}
                 />
               </div>

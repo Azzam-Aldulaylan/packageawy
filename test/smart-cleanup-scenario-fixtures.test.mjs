@@ -4,10 +4,8 @@ import test from 'node:test';
 
 import { computeSourceFingerprint } from '../out/core/cache/sourceFingerprint.js';
 import {
-  assessDuplicateConsolidation,
   buildCleanupReport,
   buildDeprecatedCleanupFinding,
-  buildDuplicateCleanupFinding,
   buildRemovalCleanupFinding,
   resolveCleanupSelection,
   summarizeCleanup,
@@ -217,62 +215,6 @@ test('fixture: deprecated plus used requires migration and never authorizes remo
   assert.deepEqual(finding.relatedActionIds, []);
 });
 
-test('fixture: a potentially convergent duplicate preserves exact versions without inventing an executable action', () => {
-  const finding = buildDuplicateCleanupFinding(fixture.duplicates.convergent);
-
-  assert.equal(finding.recommendation, 'analysis-only');
-  assert.equal(finding.executable, false);
-  assert.deepEqual(finding.evidence[0], {
-    kind: 'duplicate-versions',
-    versions: ['3.3.11', '3.3.8'],
-    excessVersionCount: 1,
-  });
-});
-
-test('fixture: complete package-manager evidence identifies a safely convergent duplicate', () => {
-  const scenario = fixture.duplicates.convergent;
-  const assessment = assessDuplicateConsolidation({
-    packageName: scenario.packageName,
-    resolvedVersions: scenario.versions,
-    constraints: scenario.constraints,
-    constraintsComplete: true,
-    simulation: scenario.simulation,
-  });
-
-  assert.deepEqual(assessment, {
-    outcome: 'safe-convergence',
-    packageName: 'nanoid',
-    currentVersions: ['3.3.8', '3.3.11'],
-    targetVersion: '3.3.11',
-    parentUpgrades: [],
-    reason: 'The complete simulation converged on 3.3.11 without changing a direct parent dependency.',
-  });
-});
-
-test('fixture: incompatible duplicate constraints produce an explicit keep-both result', () => {
-  const finding = buildDuplicateCleanupFinding(fixture.duplicates.keepBoth);
-
-  assert.equal(finding.recommendation, 'keep-both');
-  assert.equal(finding.confidence, 'blocked');
-  assert.equal(finding.executable, false);
-  assert.deepEqual(finding.relatedActionIds, []);
-});
-
-test('fixture: complete conflicting peer constraints prove why duplicate versions must remain', () => {
-  const scenario = fixture.duplicates.keepBoth;
-  const assessment = assessDuplicateConsolidation({
-    packageName: scenario.packageName,
-    resolvedVersions: scenario.versions,
-    constraints: scenario.constraints,
-    constraintsComplete: true,
-    simulation: scenario.simulation,
-  });
-
-  assert.equal(assessment.outcome, 'keep-both');
-  assert.deepEqual(assessment.retainedVersions, ['17.0.2', '18.3.1']);
-  assert.match(assessment.reason, /no retained version satisfies every supplied dependency and peer range/i);
-});
-
 test('fixture: removing the only vulnerable root reports one advisory identity removed, not one per path', () => {
   const vulnerablePath = 'node_modules/direct-root/node_modules/nanoid';
   const before = graph([
@@ -347,7 +289,6 @@ test('fixture: a stale final snapshot yields unavailable metrics and no verified
     metrics: {
       directDependencies: { before: null, after: null, unavailableReason: reason },
       deprecatedDirectDependencies: { before: null, after: null, unavailableReason: reason },
-      duplicateVersionGroups: { before: null, after: null, unavailableReason: reason },
       vulnerabilities: { before: null, after: null, unavailableReason: reason },
     },
     actions: [{
@@ -370,7 +311,6 @@ test('fixture: unavailable advisory verification does not erase verified depende
     metrics: {
       directDependencies: { before: 10, after: 9 },
       deprecatedDirectDependencies: { before: 1, after: 1 },
-      duplicateVersionGroups: { before: 2, after: 2 },
       vulnerabilities: {
         before: null,
         after: null,
@@ -396,7 +336,6 @@ test('fixture: partial execution reports verified improvements and failed action
     metrics: {
       directDependencies: { before: 12, after: 11 },
       deprecatedDirectDependencies: { before: 2, after: 1 },
-      duplicateVersionGroups: { before: 3, after: 3 },
       vulnerabilities: { before: 4, after: 3 },
     },
     actions: [

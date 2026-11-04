@@ -82,11 +82,6 @@ export interface BuildSmartCleanupCompletionReportOptions {
   generatedAt?: string;
 }
 
-function duplicateGroupCount(snapshot: ScanSnapshot): number | null {
-  if (snapshot.hygieneFindings === undefined) return null;
-  return snapshot.hygieneFindings.filter((finding) => finding.kind === 'duplicate-version').length;
-}
-
 function deprecatedCount(packages: readonly string[] | undefined): number | null {
   return packages === undefined ? null : new Set(packages).size;
 }
@@ -101,7 +96,6 @@ function unavailableReport(
     metrics: {
       directDependencies: { before: null, after: null, unavailableReason: reason },
       deprecatedDirectDependencies: { before: null, after: null, unavailableReason: reason },
-      duplicateVersionGroups: { before: null, after: null, unavailableReason: reason },
       vulnerabilities: { before: null, after: null, unavailableReason: reason },
     },
     actions,
@@ -168,8 +162,6 @@ export function buildSmartCleanupCompletionReport(
     return staleResult(generatedAt, options.actions, 'STALE_AFTER_SOURCE', 'Project files changed while cleanup results were being refreshed.');
   }
 
-  const beforeDuplicates = duplicateGroupCount(before.snapshot);
-  const afterDuplicates = duplicateGroupCount(after.snapshot);
   const beforeDeprecated = before.deprecationInstalledVersions === undefined
     ? null
     : deprecatedCount(before.deprecatedDirectPackages);
@@ -191,11 +183,6 @@ export function buildSmartCleanupCompletionReport(
         before: beforeDeprecated,
         after: afterDeprecated,
         unavailableReason: 'Exact installed-version deprecation results were not refreshed for this cleanup.',
-      },
-      duplicateVersionGroups: {
-        before: beforeDuplicates,
-        after: afterDuplicates,
-        unavailableReason: 'Duplicate-version analysis was not present in both correlated snapshots.',
       },
       vulnerabilities: {
         before: beforeSecurity?.advisoryFindings ?? null,

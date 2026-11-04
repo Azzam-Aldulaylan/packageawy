@@ -1,5 +1,5 @@
 /**
- * End-to-end: buildPackageRows attaches deprecated + duplicate-version
+ * End-to-end: buildPackageRows attaches deprecated
  * hygiene findings, reusing the graph it already built for no second
  * lockfile parse, no extra registry call beyond what version fetching already does.
  */
@@ -46,7 +46,7 @@ const LOCKFILE = JSON.stringify({
   },
 });
 
-test('buildPackageRows attaches a deprecated finding and a duplicate-version finding from one scan', async () => {
+test('buildPackageRows attaches a deprecated finding from one scan', async () => {
   const routes = {
     [`${REGISTRY}/old-pkg/latest`]: json({ version: '1.0.0', deprecated: 'This package is no longer maintained.' }),
     [`${REGISTRY}/dup-a/latest`]: json({ version: '1.0.0' }),
@@ -67,17 +67,10 @@ test('buildPackageRows attaches a deprecated finding and a duplicate-version fin
   const deprecated = result.hygieneFindings.find((f) => f.kind === 'deprecated');
   assert.ok(deprecated, 'expected a deprecated finding');
   assert.equal(deprecated.packageName, 'old-pkg');
-
-  const duplicate = result.hygieneFindings.find((f) => f.kind === 'duplicate-version');
-  assert.ok(duplicate, 'expected a duplicate-version finding');
-  assert.equal(duplicate.packageName, 'shared');
-  assert.deepEqual(
-    duplicate.evidence.versions.map((v) => v.version),
-    ['1.0.0', '2.0.0']
-  );
+  assert.equal(result.hygieneFindings.some((f) => f.kind === 'duplicate-version'), false);
 });
 
-test('a clean project (nothing deprecated, nothing duplicated) produces no hygiene findings', async () => {
+test('a clean project (nothing deprecated) produces no hygiene findings', async () => {
   const manifest = JSON.stringify({ name: 'app', dependencies: { clean: '^1.0.0' } });
   const lockfile = JSON.stringify({
     name: 'app',

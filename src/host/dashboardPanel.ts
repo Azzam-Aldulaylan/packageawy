@@ -51,7 +51,6 @@ import { UpgradeAssistantCoordinator } from './upgradeAssistantCoordinator.js';
 import { canRetryMutationEnrichment, classifyMutationEnrichmentStart } from './upgradeAssistantOutcome.js';
 import { UsageAnalysisCoordinator } from './usage/usageCoordinator.js';
 import { SmartCleanupMetadataCoordinator } from './smartCleanupMetadataCoordinator.js';
-import { SmartCleanupDuplicateCoordinator } from './smartCleanupDuplicateCoordinator.js';
 import type { SmartCleanupFinalRefreshEvidence } from './smartCleanupCompletionReport.js';
 import { USAGE_FILE_WATCH_GLOB } from './usage/workspaceFiles.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
@@ -114,8 +113,6 @@ export class DashboardPanel {
   private readonly usageCoordinator: UsageAnalysisCoordinator;
   /** Lazy exact-version metadata used only while the Smart Cleanup workspace is open. */
   private readonly smartCleanupMetadataCoordinator: SmartCleanupMetadataCoordinator;
-  /** Isolated, project-wide duplicate-consolidation preview and opaque action authority. */
-  private readonly smartCleanupDuplicateCoordinator: SmartCleanupDuplicateCoordinator;
   /**
    * Shared across every controller this panel ever builds (initial open and
    * every reload) so ETag caching survives a reload, only the project
@@ -228,8 +225,6 @@ export class DashboardPanel {
       ensureController: () => this.ensureController(),
       getSelectedProject: () => this.selectedProject,
       getSmartCleanupDeprecationEvidence: () => this.smartCleanupMetadataCoordinator.currentDeprecationEvidence(),
-      getSmartCleanupDedupeEvidence: (requestId, actionId) =>
-        this.smartCleanupDuplicateCoordinator.evidence(requestId, actionId),
       isDisposed: () => this.disposed,
       reloadFinalState: async () => {
         await this.reloadAndScan(undefined, { forceUsageRecheck: true });
@@ -272,12 +267,6 @@ export class DashboardPanel {
       isDisposed: () => this.disposed,
       sourceGeneration: () => this.smartCleanupSourceGeneration,
     });
-    this.smartCleanupDuplicateCoordinator = new SmartCleanupDuplicateCoordinator({
-      sink: this.sink,
-      ensureController: () => this.ensureController(),
-      isDisposed: () => this.disposed,
-      sourceGeneration: () => this.smartCleanupSourceGeneration,
-    });
     this.backgroundTimer = new BackgroundRefreshTimer(realTimerScheduler, BACKGROUND_REFRESH_INTERVAL_MS, () => {
       this.onBackgroundTick();
     });
@@ -301,7 +290,6 @@ export class DashboardPanel {
       this.upgradeCoordinator.disposeWhenIdle();
       this.usageCoordinator.dispose();
       this.smartCleanupMetadataCoordinator.dispose();
-      this.smartCleanupDuplicateCoordinator.dispose();
       this.disposeWatchers();
       this.gitHeadWatcher?.dispose();
       this.gitHeadWatcher = undefined;
@@ -528,22 +516,6 @@ export class DashboardPanel {
     }
     if (message.type === 'cancel-smart-cleanup-metadata') {
       this.smartCleanupMetadataCoordinator.cancel(message.requestId);
-      return;
-    }
-    if (message.type === 'analyze-smart-cleanup-duplicates') {
-      if (this.upgradeCoordinator.isMutationBusy()) {
-        this.sink.postMessage({
-          status: 'smart-cleanup-duplicates-error',
-          requestId: message.requestId,
-          error: { code: 'UPGRADE_IN_PROGRESS', message: 'Another dependency operation is already in progress.' },
-        });
-        return;
-      }
-      await this.smartCleanupDuplicateCoordinator.analyze(message.requestId);
-      return;
-    }
-    if (message.type === 'cancel-smart-cleanup-duplicates') {
-      this.smartCleanupDuplicateCoordinator.cancel(message.requestId);
       return;
     }
     if (message.type === 'cancel-usage-analysis') {

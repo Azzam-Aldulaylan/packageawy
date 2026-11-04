@@ -45,10 +45,6 @@ export interface TransitiveRemediationArgsOptions {
   ignoreScripts: boolean;
 }
 
-export interface DedupeArgsOptions {
-  ignoreScripts: boolean;
-}
-
 export function requiresManifestReconciliation(
   changes: readonly Pick<UpgradeArgsOptions, 'classification'>[]
 ): boolean {
@@ -183,16 +179,6 @@ export function buildLockfileReconciliationArgs(
   options: LockfileReconciliationArgsOptions
 ): string[] {
   const args = packageManager === 'pnpm' ? ['install', '--frozen-lockfile'] : ['ci'];
-  if (options.ignoreScripts) args.push('--ignore-scripts');
-  return args;
-}
-
-/** Project-wide deduplication after the host has verified the exact action in an isolated copy. */
-export function buildDedupeArgs(
-  _packageManager: PackageManagerKind,
-  options: DedupeArgsOptions
-): string[] {
-  const args = ['dedupe'];
   if (options.ignoreScripts) args.push('--ignore-scripts');
   return args;
 }

@@ -3,7 +3,6 @@ import type { ReactElement, ReactNode } from 'react';
 
 import type { PackageRow } from '../../../src/core/types.js';
 import type { DependencyFinding } from '../../../src/core/hygiene/types.js';
-import { introducedDuplicateFindings, ownDuplicateFinding } from '../../../src/host/dependencyDetailsCopy.js';
 import { dependencyRowSearchTargetsAdvisory } from '../../../src/host/vulnerabilityUiState.js';
 import type { SortColumn, TableSortState } from '../../../src/host/tableSort.js';
 import { IconChevronRight, IconSliders, IconSortArrow, IconSortNeutral } from '../icons.js';
@@ -37,10 +36,6 @@ function PackageTagsInfo(): ReactElement {
           <dd>Declared in devDependencies. Used while developing, not at runtime.</dd>
           <dt>Deprecated</dt>
           <dd>The maintainer marked this exact version unsupported on the registry.</dd>
-          <dt>Duplicate versions</dt>
-          <dd>More than one version of this package is installed somewhere in the dependency tree.</dd>
-          <dt>Introduces duplicates</dt>
-          <dd>A package this one depends on resolves to more than one version elsewhere in the tree. This row is the direct dependency responsible for pulling one of those versions in.</dd>
           <dt>Likely / possibly unused</dt>
           <dd>No reference to this package was found in your source files. "Possibly" means the scan was less certain: the file scan hit its cap, or this package is commonly loaded without a direct import (a CLI tool, a config-driven plugin).</dd>
         </dl>
@@ -176,7 +171,7 @@ export function PackageTable({
   sortState: TableSortState;
   onSort: (column: SortColumn) => void;
   onOpenAdvisory: (packageName: string, advisoryId: string | number, path: string[], reference?: string) => void;
-  /** Deprecated + duplicate-version findings from the current scan, plus any likely-unused findings from a completed "Analyze cleanup" run. See App.tsx. */
+  /** Deprecated findings from the current scan, plus any likely-unused findings from a completed "Analyze cleanup" run. See App.tsx. */
   hygieneFindings: readonly DependencyFinding[];
   onOpenManage: (packageName: string) => void;
 }): ReactElement {
@@ -265,8 +260,6 @@ export function PackageTable({
               suppressedSearchExpansion.packageNames.has(row.name)
             );
           const isOpen = expandable && (expanded.has(row.name) || autoExpanded);
-          const duplicateFinding = ownDuplicateFinding(hygieneFindings, row.name);
-          const introducedDuplicates = introducedDuplicateFindings(hygieneFindings, row.name);
           const unusedFinding = hygieneFindings.find(
             (finding) => finding.kind === 'likely-unused' && finding.packageName === row.name
           );
@@ -302,23 +295,11 @@ export function PackageTable({
                   </button>
                   {row.dev ||
                   row.deprecated !== undefined ||
-                  duplicateFinding !== undefined ||
-                  introducedDuplicates.length > 0 ||
                   unusedFinding !== undefined ? (
                     <span className="packages__name-tags">
                       {row.dev ? <StatusBadge label="Dev" /> : null}
                       {row.deprecated !== undefined ? (
                         <StatusBadge label="Deprecated" tone="warning" title={row.deprecated} />
-                      ) : null}
-                      {duplicateFinding !== undefined ? (
-                        <StatusBadge label="Duplicate versions" tone="warning" title={duplicateFinding.summary} />
-                      ) : null}
-                      {introducedDuplicates.length > 0 ? (
-                        <StatusBadge
-                          label="Introduces duplicates"
-                          tone="warning"
-                          title={introducedDuplicates.map((finding) => finding.summary).join('\n')}
-                        />
                       ) : null}
                       {unusedFinding?.evidence.kind === 'likely-unused' ? (
                         <StatusBadge

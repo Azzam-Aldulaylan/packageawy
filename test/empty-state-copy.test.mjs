@@ -39,8 +39,4 @@ test('hygiene filters take precedence and explain whether usage analysis has run
     'Analyze cleanup to find likely-unused dependencies'
   );
   assert.equal(filterEmptyStateTitle('all', 'all', 'likely-unused', true), 'No likely-unused dependencies');
-  assert.equal(
-    filterEmptyStateTitle('all', 'all', 'duplicate-version', true),
-    'No dependencies introduce duplicate versions'
-  );
 });
