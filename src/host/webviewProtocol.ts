@@ -582,6 +582,8 @@ export interface RemoveResultPresentation {
   message: string;
   /** Present only for Smart Cleanup. Derived and correlated entirely by the host. */
   smartCleanup?: SmartCleanupCompletionPresentation;
+  /** Set when the host kept a restore point for this Smart Cleanup run. */
+  restoreAvailable?: true;
 }
 
 export type SmartCleanupExecutionCapability =
@@ -826,6 +828,8 @@ export type WebviewToHostMessage =
   /** Same analysisId-lookup discipline as confirm-upgrade/cancel-upgrade, targeting a stored removal analysis instead. */
   | ({ type: 'confirm-remove'; analysisId: string } & ConfirmVerificationOptIn)
   | { type: 'cancel-remove'; analysisId: string | null; requestId?: string }
+  /** Restore the dependency files a kept Smart Cleanup run captured. Only the host-issued analysisId is accepted. */
+  | { type: 'restore-smart-cleanup'; analysisId: string }
   | { type: 'configure-verification' }
   /**
    * Only ever a package name. See resolveRemediationRequest
@@ -1034,6 +1038,9 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   }
   if (type === 'confirm-remove') {
     return isConfirmMessage(value);
+  }
+  if (type === 'restore-smart-cleanup') {
+    return hasOnlyKeys(value, ['type', 'analysisId']) && isNonEmptyString(value['analysisId']);
   }
   if (type === 'cancel-remove') {
     const analysisId = value['analysisId'];
@@ -2219,7 +2226,7 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'remove-result') {
     const result = value['result'];
-    if (!isRecord(result) || !hasOnlyKeys(result, ['analysisId', 'packages', 'outcome', 'verification', 'rollback', 'message', 'smartCleanup'])) {
+    if (!isRecord(result) || !hasOnlyKeys(result, ['analysisId', 'packages', 'outcome', 'verification', 'rollback', 'message', 'smartCleanup', 'restoreAvailable'])) {
       return false;
     }
     const packages = result['packages'];
@@ -2236,7 +2243,9 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
         result['verification'] === 'not-run') &&
       (result['rollback'] === 'not-needed' || result['rollback'] === 'succeeded') &&
       isNonEmptyString(result['message']) &&
-      (result['smartCleanup'] === undefined || isSmartCleanupCompletionPresentation(result['smartCleanup']))
+      (result['smartCleanup'] === undefined || isSmartCleanupCompletionPresentation(result['smartCleanup'])) &&
+      (result['restoreAvailable'] === undefined ||
+        (result['restoreAvailable'] === true && result['smartCleanup'] !== undefined && result['outcome'] !== 'rolled-back'))
     );
   }
   if (status === 'remove-error') {

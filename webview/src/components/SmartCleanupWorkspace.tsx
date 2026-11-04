@@ -25,6 +25,7 @@ import type {
   SmartCleanupConfidence,
   SmartCleanupDeprecatedFinding,
   SmartCleanupRemovalRecommendation,
+  SmartCleanupRestoreState,
   SmartCleanupResult,
   SmartCleanupResultAdvisory,
   SmartCleanupSecurityFinding,
@@ -80,6 +81,7 @@ export interface SmartCleanupWorkspaceProps {
   onOpenDependencyReview: (packageName: string, tab: ManageTabId) => void;
   reviewEvidenceRefreshing?: boolean;
   onCancelExecution?: () => void;
+  onRestoreFiles?: (analysisId: string) => void;
 }
 
 function StatusIcon({ confidence }: { confidence: SmartCleanupConfidence }): ReactElement {
@@ -768,25 +770,78 @@ function ResultAdvisoryItem({ advisory, outcome }: { advisory: SmartCleanupResul
   );
 }
 
-function ResultView({ result, phase }: { result: SmartCleanupResult; phase: SmartCleanupState['phase'] }): ReactElement {
-  const verified = phase === 'complete' && result.verification === 'passed';
+function RestoreNote({
+  restore,
+  onRestoreFiles,
+}: {
+  restore: SmartCleanupRestoreState;
+  onRestoreFiles: ((analysisId: string) => void) | undefined;
+}): ReactElement {
+  if (restore.status === 'restored') {
+    return (
+      <p>
+        package.json and the lockfile were put back as they were before the cleanup, and dependencies were reinstalled.
+        Analyze the project again to see its current state.
+      </p>
+    );
+  }
+  if (restore.status === 'refused') return <p>{restore.message}</p>;
+  const restoring = restore.status === 'restoring';
+  return (
+    <>
+      <p>
+        The cleanup changes were kept. Restore dependency files puts package.json and the lockfile back as they were
+        before the cleanup and reinstalls dependencies. It is refused if either file changed after the cleanup.
+      </p>
+      {onRestoreFiles === undefined ? null : (
+        <button
+          type="button"
+          className="button button--secondary"
+          disabled={restoring}
+          aria-busy={restoring ? 'true' : undefined}
+          onClick={() => onRestoreFiles(restore.analysisId)}
+        >
+          {restoring ? 'Restoring dependency files…' : 'Restore dependency files'}
+        </button>
+      )}
+    </>
+  );
+}
+
+function ResultView({
+  result,
+  phase,
+  restore,
+  onRestoreFiles,
+}: {
+  result: SmartCleanupResult;
+  phase: SmartCleanupState['phase'];
+  restore: SmartCleanupRestoreState | null;
+  onRestoreFiles: ((analysisId: string) => void) | undefined;
+}): ReactElement {
+  const restoredLater = restore?.status === 'restored';
+  const verified = phase === 'complete' && result.verification === 'passed' && !restoredLater;
   const completedRemovals = result.completedActionIds.filter((actionId) => actionId.startsWith('remove-direct:'));
   const completedCount = result.completedActionIds.length;
-  const headline = verified
+  const headline = restoredLater
+    ? 'Dependency files restored'
+    : verified
     ? 'Verified cleanup results'
     : phase === 'complete'
       ? 'Cleanup applied without verified checks'
     : phase === 'cancelled-rolled-back'
       ? 'Dependency files restored'
       : 'Review the incomplete cleanup';
-  const headlineDetail = verified
+  const headlineDetail = restoredLater
+    ? 'The cleanup was reversed. The changes listed below are no longer in the project.'
+    : verified
     ? `${completedCount} cleanup ${completedCount === 1 ? 'action completed' : 'actions completed'} and project verification passed.`
     : phase === 'complete'
       ? `${completedCount} cleanup ${completedCount === 1 ? 'action completed' : 'actions completed'}, but configured verification did not pass.`
       : phase === 'cancelled-rolled-back'
         ? 'Cleanup stopped and the saved dependency files were restored.'
         : `${result.failedActionIds.length} ${result.failedActionIds.length === 1 ? 'action needs' : 'actions need'} attention before the result can be trusted.`;
-  const resultTone = verified ? 'verified' : phase === 'cancelled-rolled-back' ? 'restored' : 'attention';
+  const resultTone = verified ? 'verified' : phase === 'cancelled-rolled-back' || restoredLater ? 'restored' : 'attention';
   const verificationDetail = result.verification === 'passed'
     ? 'Configured project checks passed after cleanup.'
     : result.verification === 'failed'
@@ -795,7 +850,7 @@ function ResultView({ result, phase }: { result: SmartCleanupResult; phase: Smar
   return (
     <div className="smart-cleanup-results">
       <section className="smart-cleanup-results__headline" data-tone={resultTone} data-verified={verified ? 'true' : undefined}>
-        {verified ? <IconCheck /> : phase === 'cancelled-rolled-back' ? <IconHistory /> : <IconAlertTriangle />}
+        {verified ? <IconCheck /> : phase === 'cancelled-rolled-back' || restoredLater ? <IconHistory /> : <IconAlertTriangle />}
         <div>
           <h3>{headline}</h3>
           <p>{headlineDetail}</p>
@@ -875,15 +930,18 @@ function ResultView({ result, phase }: { result: SmartCleanupResult; phase: Smar
           ) : null}
         </section>
       ) : null}
-      <div className="smart-cleanup-results__recovery" data-tone={result.rollback === 'incomplete' ? 'attention' : 'info'}>
+      <div
+        className="smart-cleanup-results__recovery"
+        data-tone={result.rollback === 'incomplete' || restore?.status === 'refused' ? 'attention' : 'info'}
+      >
         <IconHistory />
-        <p>
+        {restore !== null ? <RestoreNote restore={restore} onRestoreFiles={onRestoreFiles} /> : <p>
           {result.rollback === 'restored'
             ? "The saved package.json and active lockfile were restored. node_modules and script side effects were not restored. Run your package manager's install command before trying another cleanup."
             : result.rollback === 'incomplete'
               ? 'Automatic restoration could not be fully verified. Review package.json and the active lockfile before continuing.'
               : 'The cleanup changes were kept. Use source control if you need to reverse them later.'}
-        </p>
+        </p>}
       </div>
       {result.detail === undefined ? null : <p className="smart-cleanup-results__detail">{result.detail}</p>}
     </div>
@@ -931,6 +989,7 @@ export function SmartCleanupWorkspace({
   onOpenDependencyReview,
   reviewEvidenceRefreshing = false,
   onCancelExecution,
+  onRestoreFiles,
 }: SmartCleanupWorkspaceProps): ReactElement {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
@@ -1047,7 +1106,7 @@ export function SmartCleanupWorkspace({
           ) : null}
           {state.phase === 'executing' || state.phase === 'rolling-back' ? <ExecutionView state={state} /> : null}
           {(state.phase === 'complete' || state.phase === 'cancelled-rolled-back' || state.phase === 'incomplete') && state.result !== null
-            ? <ResultView result={state.result} phase={state.phase} />
+            ? <ResultView result={state.result} phase={state.phase} restore={state.restore} onRestoreFiles={onRestoreFiles} />
             : null}
           {showTerminal ? <TerminalView state={state} /> : null}
         </div>
@@ -1110,8 +1169,8 @@ export function SmartCleanupWorkspace({
           ) : null}
           {state.phase === 'complete' || state.phase === 'cancelled-rolled-back' || state.phase === 'incomplete' ? (
             <>
-              <button type="button" className="button button--secondary" onClick={onClose}>Close</button>
-              <button type="button" className="button button--primary" onClick={onAnalyze}><IconRefresh />Analyze current project</button>
+              <button type="button" className="button button--secondary" disabled={!canClose} onClick={onClose}>Close</button>
+              <button type="button" className="button button--primary" disabled={!canClose} onClick={onAnalyze}><IconRefresh />Analyze current project</button>
             </>
           ) : null}
         </footer>

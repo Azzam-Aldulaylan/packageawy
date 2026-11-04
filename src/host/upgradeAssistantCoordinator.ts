@@ -111,6 +111,15 @@ import {
 import { UpgradeExecutionSession } from './upgradeRunner.js';
 import { OperationReservation, SourceGenerationGuard } from './operationReservation.js';
 import { runUpgradeTransaction } from './upgradeTransaction.js';
+import type { UpgradeTransactionFileAdapter } from './upgradeTransaction.js';
+import {
+  SMART_CLEANUP_RESTORE_MESSAGES,
+  SMART_CLEANUP_RESTORE_TASK_TITLE,
+  captureSmartCleanupRestoreFiles,
+  restoreSmartCleanupFiles,
+  smartCleanupRestoreFilesMatchDisk,
+} from './smartCleanupRestorePoint.js';
+import type { SmartCleanupRestoreFile } from './smartCleanupRestorePoint.js';
 import { selectVerificationScripts, suggestVerificationScriptNames } from './verificationPolicy.js';
 import { applyVerificationOptIn } from './verificationOptIn.js';
 import type { VerificationOptInRequest } from './verificationOptIn.js';
@@ -438,6 +447,19 @@ interface StoredRemoval {
   expiresAt: number;
 }
 
+/** A kept Smart Cleanup run's restore point. Single use, and held only in memory. */
+interface StoredSmartCleanupRestore {
+  analysisId: string;
+  projectId: string;
+  projectRoot: string;
+  packageManager: 'npm' | 'pnpm';
+  ignoreScripts: boolean;
+  packages: string[];
+  reservationKey: string;
+  adapter: UpgradeTransactionFileAdapter;
+  files: SmartCleanupRestoreFile[];
+}
+
 interface SmartCleanupRemovalContext {
   evidence?: SmartCleanupRemovalEvidence;
   requestId: string;
@@ -554,6 +576,11 @@ export class UpgradeAssistantCoordinator {
   private readonly getUpgradeConfiguration: () => { ignoreScripts: boolean; verificationScripts: unknown[] };
   private analysis: StoredAnalysis | undefined;
   private removal: StoredRemoval | undefined;
+  private smartCleanupRestore: StoredSmartCleanupRestore | undefined;
+  /** Why the last restore point was dropped, so a late Restore click gets the matching message. */
+  private smartCleanupRestoreDropped:
+    | { analysisId: string; reservationKey: string; reason: 'changed' | 'superseded' }
+    | undefined;
   /** Registered before controller lookup so `cancel-remove { analysisId: null }` also cancels that initial async gap. */
   private pendingRemovalAnalysis: PendingRemovalAnalysis | undefined;
   /** The package a handleAnalyzeUpgrade call is currently in flight for, or null: the target `cancel-upgrade { analysisId: null }` refers to, since no analysisId exists yet at that point. */
@@ -613,6 +640,7 @@ export class UpgradeAssistantCoordinator {
     if (this.reservation.isMutationBusy) return;
     this.analysis = undefined;
     this.removal = undefined;
+    this.discardSmartCleanupRestorePoint();
     this.remediationPlans.clear();
     this.remediationPlanByPackage.clear();
     void this.reservation
@@ -624,7 +652,134 @@ export class UpgradeAssistantCoordinator {
   }
 
   private reserve(packageName: string): boolean {
+    // Any new analysis or dependency change supersedes a kept cleanup's restore point.
+    this.dropSmartCleanupRestorePoint('superseded');
     return this.reservation.reserve(packageName);
+  }
+
+  /** Drops a kept Smart Cleanup restore point. Called for a new analysis, a project switch, or panel teardown. */
+  discardSmartCleanupRestorePoint(): void {
+    this.dropSmartCleanupRestorePoint('superseded');
+  }
+
+  private dropSmartCleanupRestorePoint(reason: 'changed' | 'superseded'): void {
+    const stored = this.smartCleanupRestore;
+    if (stored === undefined) return;
+    this.smartCleanupRestore = undefined;
+    this.smartCleanupRestoreDropped = { analysisId: stored.analysisId, reservationKey: stored.reservationKey, reason };
+  }
+
+  /**
+   * Watcher events also arrive for the cleanup's own writes, so only a
+   * content difference from the bytes the cleanup left drops the restore point.
+   */
+  private async checkSmartCleanupRestorePoint(): Promise<void> {
+    const stored = this.smartCleanupRestore;
+    if (stored === undefined) return;
+    const matches = await smartCleanupRestoreFilesMatchDisk(stored.adapter, stored.files);
+    if (matches === false && this.smartCleanupRestore === stored) this.dropSmartCleanupRestorePoint('changed');
+  }
+
+  /**
+   * Restore the dependency files a kept Smart Cleanup run captured, then
+   * reinstall from the restored lockfile the same way a failed transitive fix
+   * is rolled back. The compare-and-swap guard refuses any file edited since.
+   */
+  async handleRestoreSmartCleanup(message: { analysisId: string }): Promise<void> {
+    const stored = this.smartCleanupRestore;
+    if (stored === undefined || stored.analysisId !== message.analysisId) {
+      const dropped = this.smartCleanupRestoreDropped?.analysisId === message.analysisId
+        ? this.smartCleanupRestoreDropped
+        : undefined;
+      this.options.sink.postMessage({
+        status: 'remove-error',
+        package: dropped?.reservationKey ?? stored?.reservationKey ?? 'Smart Cleanup',
+        error: dropped?.reason === 'changed'
+          ? { code: 'RESTORE_CONFLICT', message: SMART_CLEANUP_RESTORE_MESSAGES.conflict }
+          : { code: 'RESTORE_UNAVAILABLE', message: SMART_CLEANUP_RESTORE_MESSAGES.unavailable },
+      });
+      return;
+    }
+    // Single use, whatever the outcome.
+    this.smartCleanupRestore = undefined;
+    this.smartCleanupRestoreDropped = undefined;
+    if (!this.reserve(stored.reservationKey)) {
+      this.options.sink.postMessage({
+        status: 'remove-error',
+        package: stored.reservationKey,
+        error: { code: 'UPGRADE_IN_PROGRESS', message: 'Another dependency change is already in progress for this project.' },
+      });
+      return;
+    }
+    try {
+      if (this.options.getSelectedProject()?.id !== stored.projectId) {
+        this.options.sink.postMessage({
+          status: 'remove-error',
+          package: stored.reservationKey,
+          error: { code: 'RESTORE_UNAVAILABLE', message: SMART_CLEANUP_RESTORE_MESSAGES.unavailable },
+        });
+        return;
+      }
+      if (!this.reservation.beginMutation(stored.reservationKey)) return;
+      const restored = await restoreSmartCleanupFiles(stored.adapter, stored.files);
+      if (restored.status !== 'restored') {
+        if (restored.wrote && !this.options.isDisposed()) await this.options.reloadFinalState();
+        if (this.options.isDisposed()) return;
+        const detail = restored.wrote
+          ? `${SMART_CLEANUP_RESTORE_MESSAGES.interrupted}${restored.recovered ? '' : ` ${SMART_CLEANUP_RESTORE_MESSAGES.unrecovered}`}`
+          : restored.status === 'conflict'
+            ? SMART_CLEANUP_RESTORE_MESSAGES.conflict
+            : `${restored.message} ${SMART_CLEANUP_RESTORE_MESSAGES.unrecovered}`;
+        this.options.sink.postMessage({
+          status: 'remove-error',
+          package: stored.reservationKey,
+          error: { code: restored.status === 'conflict' ? 'RESTORE_CONFLICT' : 'RESTORE_FAILED', message: detail },
+        });
+        this.options.platform.showWarningMessage(detail);
+        return;
+      }
+
+      const prepared = this.session.prepareLockfileReconciliation({
+        cwd: stored.projectRoot,
+        ignoreScripts: stored.ignoreScripts,
+        packageManager: stored.packageManager,
+        taskTitle: SMART_CLEANUP_RESTORE_TASK_TITLE,
+      });
+      const reinstalled = prepared.ok ? await prepared.execute() : prepared;
+      if (!this.options.isDisposed()) await this.options.reloadFinalState();
+      if (this.options.isDisposed()) return;
+      if (!reinstalled.ok) {
+        this.options.sink.postMessage({
+          status: 'remove-error',
+          package: stored.reservationKey,
+          error: { code: 'RESTORE_INSTALL_FAILED', message: SMART_CLEANUP_RESTORE_MESSAGES.installFailed },
+        });
+        this.options.platform.showWarningMessage(SMART_CLEANUP_RESTORE_MESSAGES.installFailed);
+        return;
+      }
+      this.options.sink.postMessage({
+        status: 'remove-result',
+        result: {
+          analysisId: stored.analysisId,
+          packages: stored.packages,
+          outcome: 'rolled-back',
+          verification: 'not-run',
+          rollback: 'succeeded',
+          message: SMART_CLEANUP_RESTORE_MESSAGES.restored,
+        },
+      });
+      this.options.platform.showInformationMessage(SMART_CLEANUP_RESTORE_MESSAGES.restored);
+    } catch (cause) {
+      if (!this.options.isDisposed()) {
+        this.options.sink.postMessage({
+          status: 'remove-error',
+          package: stored.reservationKey,
+          error: toProtocolError(cause),
+        });
+      }
+    } finally {
+      await this.releaseReservation(stored.reservationKey);
+    }
   }
 
   /**
@@ -660,6 +815,7 @@ export class UpgradeAssistantCoordinator {
     this.activeRemediationAbort?.abort();
     this.analysis = undefined;
     this.removal = undefined;
+    this.discardSmartCleanupRestorePoint();
     this.remediationPlans.clear();
     this.remediationPlanByPackage.clear();
     await this.reservation.releaseReadOnlyCurrent();
@@ -675,6 +831,7 @@ export class UpgradeAssistantCoordinator {
   handleProjectSourceChanged(): void {
     this.sourceGeneration.advance();
     if (this.reservation.isMutationBusy) return;
+    void this.checkSmartCleanupRestorePoint();
 
 
     if (this.pendingAnalyzePackage !== null) {
@@ -3380,6 +3537,16 @@ export class UpgradeAssistantCoordinator {
         },
       });
 
+      // Record the bytes a kept Smart Cleanup left on disk before anything
+      // else can write, so a later restore can prove the files are unchanged.
+      const restoreFiles =
+        stored.smartCleanupRequestId !== undefined &&
+        stored.eligibilities.length > 0 &&
+        transaction.completion === 'kept' &&
+        transaction.keptSnapshot !== undefined
+          ? await captureSmartCleanupRestoreFiles(files, transaction.keptSnapshot)
+          : undefined;
+
       // Reload the kept/restored/partial state while the coordinator still owns the project-wide mutation lock.
       // Smart Cleanup also performs one bounded final reread so its report is
       // correlated to the exact source that produced the refreshed snapshot.
@@ -3466,6 +3633,22 @@ export class UpgradeAssistantCoordinator {
                 });
                 return toSmartCleanupCompletionPresentation(completion, stored.smartCleanupBefore, afterEvidence);
               })();
+      const keepRestorePoint = (): { restoreAvailable?: true } => {
+        if (restoreFiles === undefined || smartCleanupPresentation === undefined) return {};
+        this.smartCleanupRestore = {
+          analysisId: stored.id,
+          projectId: selected.id,
+          projectRoot: controller.root,
+          packageManager: source.packageManager,
+          ignoreScripts: stored.ignoreScripts,
+          packages: removedPackages,
+          reservationKey: stored.reservationKey,
+          adapter: files,
+          files: restoreFiles,
+        };
+        this.smartCleanupRestoreDropped = undefined;
+        return { restoreAvailable: true };
+      };
       if (presentation.kind === 'verified') {
         this.options.sink.postMessage({
           status: 'remove-result',
@@ -3477,6 +3660,7 @@ export class UpgradeAssistantCoordinator {
             rollback: 'not-needed',
             message: presentation.message,
             ...(smartCleanupPresentation === undefined ? {} : { smartCleanup: smartCleanupPresentation }),
+            ...keepRestorePoint(),
           },
         });
         this.options.platform.showInformationMessage(presentation.message);
@@ -3498,6 +3682,7 @@ export class UpgradeAssistantCoordinator {
               rollback: presentation.kind === 'rolled-back' ? 'succeeded' : 'not-needed',
               message: presentation.message,
               ...(smartCleanupPresentation === undefined ? {} : { smartCleanup: smartCleanupPresentation }),
+              ...(presentation.kind === 'unverified' ? keepRestorePoint() : {}),
             },
           });
         }

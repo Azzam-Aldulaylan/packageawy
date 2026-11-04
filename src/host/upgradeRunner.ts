@@ -72,6 +72,8 @@ export interface UpgradeLockfileReconciliationParams {
   cwd: string;
   ignoreScripts: boolean;
   packageManager: 'npm' | 'pnpm';
+  /** Task title shown to the user. Defaults to the transitive-fix title. */
+  taskTitle?: string;
 }
 
 export type PreparedLockfileReconciliation =
@@ -267,7 +269,7 @@ export class UpgradeExecutionSession {
       };
     }
 
-    const { cwd, packageManager, ignoreScripts } = params;
+    const { cwd, packageManager, ignoreScripts, taskTitle } = params;
     const invocation = this.resolveInvocation(cwd, packageManager);
     if (invocation === null) {
       this.platform.showErrorMessage(
@@ -305,7 +307,7 @@ export class UpgradeExecutionSession {
           cwd,
           'transitive-remediation',
           args,
-          'Packageawy: Apply transitive security fix',
+          taskTitle ?? 'Packageawy: Apply transitive security fix',
           `${packageManager} ${args[0]}`
         );
       },

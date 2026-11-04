@@ -121,6 +121,13 @@ export type SmartCleanupPhase =
   | 'incomplete'
   | 'failed';
 
+/** Restore point the host kept for a finished cleanup. The host stays the authority for whether it still applies. */
+export type SmartCleanupRestoreState =
+  | { status: 'available'; analysisId: string }
+  | { status: 'restoring'; analysisId: string }
+  | { status: 'restored' }
+  | { status: 'refused'; message: string };
+
 export interface SmartCleanupState {
   phase: SmartCleanupPhase;
   projectName: string;
@@ -134,6 +141,7 @@ export interface SmartCleanupState {
   execution: SmartCleanupExecutionProgress | null;
   result: SmartCleanupResult | null;
   message: string | null;
+  restore: SmartCleanupRestoreState | null;
 }
 
 export interface SmartCleanupReviewCacheIdentity {
@@ -186,6 +194,10 @@ export type SmartCleanupAction =
   | { type: 'execution-complete'; result: SmartCleanupResult }
   | { type: 'execution-incomplete'; result: SmartCleanupResult; message: string }
   | { type: 'execution-cancelled-and-restored'; result: SmartCleanupResult }
+  | { type: 'restore-available'; analysisId: string }
+  | { type: 'restore-started'; analysisId: string }
+  | { type: 'restore-finished' }
+  | { type: 'restore-refused'; message: string }
   | { type: 'reset' };
 
 const DEFAULT_EXPANDED_CATEGORIES: ReadonlySet<SmartCleanupCategory> = new Set();
@@ -204,6 +216,7 @@ export function createSmartCleanupState(projectName: string): SmartCleanupState 
     execution: null,
     result: null,
     message: null,
+    restore: null,
   };
 }
 
@@ -368,11 +381,25 @@ export function smartCleanupReducer(state: SmartCleanupState, action: SmartClean
         ? { ...state, phase: 'rolling-back', message: action.message }
         : state;
     case 'execution-complete':
-      return { ...state, phase: 'complete', execution: null, result: action.result, message: null };
+      return { ...state, phase: 'complete', execution: null, result: action.result, message: null, restore: null };
     case 'execution-incomplete':
-      return { ...state, phase: 'incomplete', execution: null, result: action.result, message: action.message };
+      return { ...state, phase: 'incomplete', execution: null, result: action.result, message: action.message, restore: null };
     case 'execution-cancelled-and-restored':
-      return { ...state, phase: 'cancelled-rolled-back', execution: null, result: action.result, message: null };
+      return { ...state, phase: 'cancelled-rolled-back', execution: null, result: action.result, message: null, restore: null };
+    case 'restore-available':
+      return (state.phase === 'complete' || state.phase === 'incomplete') && state.result !== null && state.restore === null
+        ? { ...state, restore: { status: 'available', analysisId: action.analysisId } }
+        : state;
+    case 'restore-started':
+      return state.restore?.status === 'available' && state.restore.analysisId === action.analysisId
+        ? { ...state, restore: { status: 'restoring', analysisId: action.analysisId } }
+        : state;
+    case 'restore-finished':
+      return state.restore?.status === 'restoring' ? { ...state, restore: { status: 'restored' } } : state;
+    case 'restore-refused':
+      return state.restore?.status === 'restoring'
+        ? { ...state, restore: { status: 'refused', message: action.message } }
+        : state;
     case 'reset':
       return createSmartCleanupState(state.projectName);
   }
@@ -386,7 +413,7 @@ export function selectedSmartCleanupRecommendations(
 }
 
 export function canCloseSmartCleanup(state: SmartCleanupState): boolean {
-  return state.phase !== 'executing' && state.phase !== 'rolling-back';
+  return state.phase !== 'executing' && state.phase !== 'rolling-back' && state.restore?.status !== 'restoring';
 }
 
 export function smartCleanupAnalysisIsActionable(state: SmartCleanupState): boolean {
