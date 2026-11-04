@@ -17,6 +17,7 @@
 import { configReferencesPackage } from '../../core/usage/configHeuristics.js';
 import { scanFilesBounded } from '../../core/usage/boundedFileScan.js';
 import { findPackageInScripts } from '../../core/usage/packageScripts.js';
+import { prettierAutoLoadReference } from '../../core/usage/prettierPlugins.js';
 import type { DependencyUsageResult } from '../../core/usage/types.js';
 import { UsageReferenceIndex } from '../../core/usage/referenceIndex.js';
 import type { PerformanceRecorder } from '../../core/performance/measurement.js';
@@ -38,6 +39,8 @@ export interface AnalyzeUsageOptions {
   dir: string;
   manifestText: string;
   packageNames: readonly string[];
+  /** The project's Prettier major version, when known. Below 3, installed Prettier plugins count as used. */
+  prettierMajor?: number | null;
   maxFiles?: number;
   onProgress?: (scanned: number, total: number) => void;
   token: CancellationToken;
@@ -132,6 +135,8 @@ export async function analyzeDependencyUsage(
         context: scriptMatch.scriptName,
       });
     }
+    const prettierReference = prettierAutoLoadReference(name, options.prettierMajor ?? null);
+    if (prettierReference !== null) referenceIndex.addReference(name, prettierReference);
   }
 
   const scannedAt = new Date().toISOString();

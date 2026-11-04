@@ -38,6 +38,7 @@ import * as path from 'node:path';
 
 import { buildDependencyGraph } from '../../core/lockfile/build.js';
 import { parseManifest } from '../../core/manifest/parse.js';
+import type { Manifest } from '../../core/manifest/parse.js';
 import { computeSourceFingerprint } from '../../core/cache/sourceFingerprint.js';
 import type { ProjectSourceFingerprint } from '../../core/cache/sourceFingerprint.js';
 import { buildUnusedFinding } from '../../core/usage/unused.js';
@@ -59,6 +60,7 @@ import type { RemovalImpactAssessment } from '../webviewProtocol.js';
 import { shouldRunBackgroundUsageRefresh } from './backgroundUsageRefreshGate.js';
 import type { ProjectUsageAnalysisMarker } from './backgroundUsageRefreshGate.js';
 import { analyzeDependencyUsage } from './usageAnalyzer.js';
+import { projectPrettierMajor } from '../../core/usage/prettierPlugins.js';
 import {
   UsageAnalysisState,
   ForegroundUsageOperationRegistry,
@@ -96,6 +98,27 @@ function cleanupPeerRequirementLookup(
   const index = buildPeerRequirementIndex(graph);
   const noRemovals = new Set<string>();
   return (packageName) => peerRequirementsFor(graph, packageName, noRemovals, index);
+}
+
+function prettierMajorFor(root: string, source: DashboardController['upgradeSource']): number | null {
+  let manifest: Manifest;
+  try {
+    manifest = parseManifest(source.manifestText);
+  } catch {
+    return null;
+  }
+  try {
+    const graph = buildDependencyGraph({
+      root,
+      manifest,
+      lockfileText: source.lockfileText,
+      packageManager: source.packageManager,
+      importerId: source.importerId,
+    });
+    return projectPrettierMajor(graph, manifest);
+  } catch {
+    return projectPrettierMajor(null, manifest);
+  }
 }
 
 export interface WhereUsedMessage {
@@ -360,6 +383,7 @@ export class UsageAnalysisCoordinator {
     identity: UsageSourceIdentity;
     selected: DiscoveredProject;
     manifestText: string;
+    prettierMajor: number | null;
     packageNames: readonly string[];
     backgroundOwner: boolean;
     performance: ReturnType<typeof createPerformanceSession>;
@@ -382,6 +406,7 @@ export class UsageAnalysisCoordinator {
       folder: input.selected.folder,
       dir: input.selected.dir,
       manifestText: input.manifestText,
+      prettierMajor: input.prettierMajor,
       packageNames: input.packageNames,
       token: cts.token,
       performance: input.performance,
@@ -510,6 +535,7 @@ export class UsageAnalysisCoordinator {
       identity,
       selected,
       manifestText: source.manifestText,
+      prettierMajor: prettierMajorFor(controller.root, source),
       packageNames: [message.package],
       backgroundOwner: false,
       performance,
@@ -649,6 +675,7 @@ export class UsageAnalysisCoordinator {
           identity,
           selected,
           manifestText: source.manifestText,
+          prettierMajor: prettierMajorFor(controller.root, source),
           packageNames,
           backgroundOwner: background,
           performance,
@@ -946,6 +973,7 @@ export class UsageAnalysisCoordinator {
           identity,
           selected,
           manifestText: source.manifestText,
+          prettierMajor: projectPrettierMajor(graph, manifest),
           packageNames,
           backgroundOwner: false,
           performance,
