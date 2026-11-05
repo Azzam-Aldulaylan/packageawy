@@ -144,6 +144,12 @@ function RecommendationItem({
       <p className="smart-cleanup-action__reason" id={reasonId}>
         {recommendation.rationale}
         {cannotSelect ? ' This item cannot be included in cleanup.' : ''}
+        {recommendation.transitiveNote === undefined ? null : (
+          <span className="smart-cleanup-action__transitive">
+            <IconAlertTriangle /> {recommendation.transitiveNote}. Removing the direct declaration will not necessarily
+            remove the package from the installed graph.
+          </span>
+        )}
       </p>
       <div className="smart-cleanup-action__evidence">
         {needsReview ? (
@@ -317,7 +323,6 @@ function ReviewView({
   if (plan === null) return <EmptyCategory>No cleanup evidence is available.</EmptyCategory>;
 
   const safeRemovalCount = plan.recommendations.filter((recommendation) => recommendation.confidence === 'safe').length;
-  const recommendedActionCount = safeRemovalCount;
   const review = plan.recommendations.filter((recommendation) => recommendation.confidence === 'review').length;
   const blocked = plan.recommendations.filter(
     (recommendation) => recommendation.confidence === 'blocked' || recommendation.confidence === 'unknown'
@@ -328,8 +333,14 @@ function ReviewView({
     .slice(0, SMART_CLEANUP_MAX_ACTIONS)
     .every((recommendation) => state.selectedActionIds.has(recommendation.id));
   const safeSelected = safeRemovalsSelected;
-  const directRemovalCount = safeRemovalCount + review;
-  const selectableActionCount = directRemovalCount;
+  const selectableActionCount = safeRemovalCount + review;
+  // The header, the Unused signal and the Unused section describe the same
+  // list, so they all use these three words for its counts.
+  const unusedBreakdown = [
+    `${safeRemovalCount} recommended`,
+    ...(review > 0 ? [`${review} ${review === 1 ? 'needs' : 'need'} review`] : []),
+    ...(blocked > 0 ? [`${blocked} unavailable`] : []),
+  ].join(' · ');
   const selectedSecurity = plan.security.flatMap((finding) => {
     const selectedActionIds = new Set(
       finding.directRootActionIds.filter((actionId) => state.selectedActionIds.has(actionId))
@@ -359,11 +370,7 @@ function ReviewView({
                   ? 'Review the available cleanup evidence'
                   : review > 0 ? 'Cleanup plan needs your review' : 'Recommended cleanup is ready'}
               </h3>
-              <p>
-                {recommendedActionCount} recommended {recommendedActionCount === 1 ? 'action' : 'actions'}
-                {review > 0 ? ` · ${review} ${review === 1 ? 'needs' : 'need'} review` : ''}
-                {blocked > 0 ? ` · ${blocked} unavailable` : ''}
-              </p>
+              <p>{unusedBreakdown}</p>
             </div>
           </div>
           {safeRemovalCount > 0 ? (
@@ -380,7 +387,7 @@ function ReviewView({
               category: 'unused' as const,
               icon: <IconTrash />,
               label: 'Unused dependencies',
-              value: `${directRemovalCount} candidates`,
+              value: `${safeRemovalCount} recommended`,
               tone: review > 0 ? 'warning' : 'ok',
             },
             {
@@ -437,7 +444,7 @@ function ReviewView({
         <SmartCleanupCategorySection
           category="unused"
           title="Unused"
-          summary={`${plan.recommendations.length} assessed`}
+          summary={unusedBreakdown}
           detail="Supported code and configuration checks"
           count={plan.recommendations.length}
           expanded={state.expandedCategories.has('unused')}
@@ -821,52 +828,81 @@ function ResultView({
 }): ReactElement {
   const restoredLater = restore?.status === 'restored';
   const verified = phase === 'complete' && result.verification === 'passed' && !restoredLater;
+  const filesCheckedOnly = phase === 'complete' && result.verification === 'not-configured' && !restoredLater;
   const completedRemovals = result.completedActionIds.filter((actionId) => actionId.startsWith('remove-direct:'));
   const completedCount = result.completedActionIds.length;
   const headline = restoredLater
     ? 'Dependency files restored'
     : verified
     ? 'Verified cleanup results'
+    : filesCheckedOnly
+    ? 'Cleanup applied'
     : phase === 'complete'
       ? 'Cleanup applied without verified checks'
     : phase === 'cancelled-rolled-back'
       ? 'Dependency files restored'
       : 'Review the incomplete cleanup';
   const headlineDetail = restoredLater
-    ? 'The cleanup was reversed. The changes listed below are no longer in the project.'
+    ? 'The cleanup was reversed. The dependencies it removed are back in the project.'
     : verified
     ? `${completedCount} cleanup ${completedCount === 1 ? 'action completed' : 'actions completed'} and project verification passed.`
+    : filesCheckedOnly
+    ? `${completedCount} cleanup ${completedCount === 1 ? 'action completed' : 'actions completed'}. Dependency files were checked, but no build or test scripts ran, so run your build and tests before relying on the result.`
     : phase === 'complete'
-      ? `${completedCount} cleanup ${completedCount === 1 ? 'action completed' : 'actions completed'}, but configured verification did not pass.`
+      ? `${completedCount} cleanup ${completedCount === 1 ? 'action completed' : 'actions completed'}, but ${result.verification === 'failed' ? 'configured verification did not pass' : 'project verification did not run'}.`
       : phase === 'cancelled-rolled-back'
         ? 'Cleanup stopped and the saved dependency files were restored.'
         : `${result.failedActionIds.length} ${result.failedActionIds.length === 1 ? 'action needs' : 'actions need'} attention before the result can be trusted.`;
-  const resultTone = verified ? 'verified' : phase === 'cancelled-rolled-back' || restoredLater ? 'restored' : 'attention';
+  const resultTone = verified ? 'verified' : phase === 'cancelled-rolled-back' || restoredLater || filesCheckedOnly ? 'restored' : 'attention';
   const verificationDetail = result.verification === 'passed'
     ? 'Configured project checks passed after cleanup.'
     : result.verification === 'failed'
       ? 'Configured project checks failed after cleanup.'
-      : 'No post-cleanup project verification was run.';
+      : result.verification === 'not-configured'
+        ? 'package.json and the lockfile match the cleanup plan. No build or test scripts are configured for verification.'
+        : 'No post-cleanup project verification was run.';
+  // A restore point is the next decision after a kept cleanup, so its note
+  // sits right under the headline instead of below the change list.
+  const recovery = (
+    <div
+      className="smart-cleanup-results__recovery"
+      data-tone={result.rollback === 'incomplete' || restore?.status === 'refused' ? 'attention' : 'info'}
+    >
+      <IconHistory />
+      {restore !== null ? <RestoreNote restore={restore} onRestoreFiles={onRestoreFiles} /> : <p>
+        {result.rollback === 'restored'
+          ? "The saved package.json and active lockfile were restored. node_modules and script side effects were not restored. Run your package manager's install command before trying another cleanup."
+          : result.rollback === 'incomplete'
+            ? 'Automatic restoration could not be fully verified. Review package.json and the active lockfile before continuing.'
+            : 'The cleanup changes were kept. Use source control if you need to reverse them later.'}
+      </p>}
+    </div>
+  );
   return (
     <div className="smart-cleanup-results">
       <section className="smart-cleanup-results__headline" data-tone={resultTone} data-verified={verified ? 'true' : undefined}>
-        {verified ? <IconCheck /> : phase === 'cancelled-rolled-back' || restoredLater ? <IconHistory /> : <IconAlertTriangle />}
+        {verified || filesCheckedOnly ? <IconCheck /> : phase === 'cancelled-rolled-back' || restoredLater ? <IconHistory /> : <IconAlertTriangle />}
         <div>
           <h3>{headline}</h3>
           <p>{headlineDetail}</p>
         </div>
       </section>
-      <dl className="smart-cleanup-metrics">
-        {result.metrics.map((metric) => <ResultMetric key={metric.id} metric={metric} />)}
-      </dl>
+      {restore === null ? null : recovery}
+      {restoredLater ? null : (
+        <dl className="smart-cleanup-metrics">
+          {result.metrics.map((metric) => <ResultMetric key={metric.id} metric={metric} />)}
+        </dl>
+      )}
       <section className="smart-cleanup-result-changes" aria-labelledby="smart-cleanup-result-changes-title">
         <h3 id="smart-cleanup-result-changes-title">What changed</h3>
         <div className="smart-cleanup-result-change-list">
           <ResultPackages
-            title="Removed dependencies"
+            title={restoredLater ? 'Restored dependencies' : 'Removed dependencies'}
             actionIds={completedRemovals}
-            tone="completed"
-            detail={`${completedRemovals.length} direct ${completedRemovals.length === 1 ? 'dependency was' : 'dependencies were'} removed.`}
+            tone={restoredLater ? 'skipped' : 'completed'}
+            detail={restoredLater
+              ? `${completedRemovals.length} direct ${completedRemovals.length === 1 ? 'dependency was' : 'dependencies were'} removed by the cleanup and ${completedRemovals.length === 1 ? 'is' : 'are'} back in the project.`
+              : `${completedRemovals.length} direct ${completedRemovals.length === 1 ? 'dependency was' : 'dependencies were'} removed.`}
           />
           <ResultPackages
             title="Skipped actions"
@@ -880,7 +916,7 @@ function ResultView({
             tone="failed"
             detail={`${result.failedActionIds.length} ${result.failedActionIds.length === 1 ? 'action requires' : 'actions require'} manual review.`}
           />
-          <section className="smart-cleanup-result-row" data-tone={result.verification === 'passed' ? 'verified' : 'attention'}>
+          {restoredLater ? null : <section className="smart-cleanup-result-row" data-tone={result.verification === 'passed' ? 'verified' : 'attention'}>
             <div className="smart-cleanup-result-row__heading">
               {result.verification === 'passed' ? <IconCheck /> : <IconAlertTriangle />}
               <div>
@@ -889,7 +925,7 @@ function ResultView({
               </div>
             </div>
             <span>{result.verification === 'passed' ? 'Passed' : result.verification === 'failed' ? 'Failed' : 'Not run'}</span>
-          </section>
+          </section>}
         </div>
       </section>
       {result.resolvedAdvisories.length > 0 || result.introducedAdvisories.length > 0 ? (
@@ -930,20 +966,8 @@ function ResultView({
           ) : null}
         </section>
       ) : null}
-      <div
-        className="smart-cleanup-results__recovery"
-        data-tone={result.rollback === 'incomplete' || restore?.status === 'refused' ? 'attention' : 'info'}
-      >
-        <IconHistory />
-        {restore !== null ? <RestoreNote restore={restore} onRestoreFiles={onRestoreFiles} /> : <p>
-          {result.rollback === 'restored'
-            ? "The saved package.json and active lockfile were restored. node_modules and script side effects were not restored. Run your package manager's install command before trying another cleanup."
-            : result.rollback === 'incomplete'
-              ? 'Automatic restoration could not be fully verified. Review package.json and the active lockfile before continuing.'
-              : 'The cleanup changes were kept. Use source control if you need to reverse them later.'}
-        </p>}
-      </div>
-      {result.detail === undefined ? null : <p className="smart-cleanup-results__detail">{result.detail}</p>}
+      {restore === null ? recovery : null}
+      {result.detail === undefined || phase === 'complete' ? null : <p className="smart-cleanup-results__detail">{result.detail}</p>}
     </div>
   );
 }

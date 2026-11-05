@@ -119,6 +119,10 @@ test('a successful Smart Cleanup keeps its restore point and restore puts both f
   const result = await runCleanup(fixture);
   assert.equal(result.outcome, 'verified');
   assert.equal(result.restoreAvailable, true);
+  // No build or test scripts are configured, so only the dependency files were checked.
+  assert.equal(result.verification, 'not-configured');
+  assert.match(result.message, /^Removed react\. Dependency files were checked\. No build or test scripts ran\.$/);
+  assert.doesNotMatch(result.message, /verification passed/);
   assert.equal(await readFile(project.lockfilePath, 'utf8'), lockfile(false));
   assert.doesNotMatch(await readFile(project.manifestPath, 'utf8'), /react/);
 

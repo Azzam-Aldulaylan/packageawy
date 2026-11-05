@@ -28,6 +28,8 @@ export interface SmartCleanupRemovalRecommendation {
   confidence: SmartCleanupConfidence;
   rationale: string;
   evidence: readonly string[];
+  /** Set when other packages still depend on this one, so removing the direct declaration may leave it installed. */
+  transitiveNote?: string;
 }
 
 export interface SmartCleanupDeprecatedFinding {
@@ -100,7 +102,8 @@ export interface SmartCleanupResult {
   failedActionIds: readonly string[];
   resolvedAdvisories: readonly SmartCleanupResultAdvisory[];
   introducedAdvisories: readonly SmartCleanupResultAdvisory[];
-  verification: 'passed' | 'failed' | 'not-run';
+  /** `not-configured`: the dependency files were checked, but no build or test scripts ran. */
+  verification: 'passed' | 'failed' | 'not-configured' | 'not-run';
   rollback: 'not-needed' | 'restored' | 'incomplete';
   detail?: string;
 }

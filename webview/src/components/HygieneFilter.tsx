@@ -13,12 +13,20 @@ export function HygieneFilter({
   onChange,
 }: {
   value: HygieneFilterId;
-  likelyUnusedCount: number;
+  /** `checking` while the usage scan runs, `null` before any scan finished, so a count is never shown before it is known. */
+  likelyUnusedCount: number | 'checking' | null;
   onChange: (value: HygieneFilterId) => void;
 }): ReactElement {
   const options: readonly { id: HygieneFilterId; label: string }[] = [
     { id: 'all', label: 'All' },
-    { id: 'likely-unused', label: `Likely unused (${likelyUnusedCount})` },
+    {
+      id: 'likely-unused',
+      label: likelyUnusedCount === null
+        ? 'Likely unused'
+        : likelyUnusedCount === 'checking'
+          ? 'Likely unused (checking…)'
+          : `Likely unused (${likelyUnusedCount})`,
+    },
   ];
   return (
     <div className="type-filter" role="radiogroup" aria-label="Filter by dependency finding">

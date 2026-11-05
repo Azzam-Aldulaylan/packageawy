@@ -62,6 +62,7 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
           : assessment?.status === 'blocked'
             ? 'blocked'
             : 'unknown';
+      const transitive = assessment?.evidence.find((entry) => entry.kind === 'transitive-dependency');
       const evidence = evidenceCapabilityReason === null
         ? assessment?.evidence.map((entry) => entry.summary) ?? [
         'Removal-safety evidence is incomplete, so this dependency cannot be selected.',
@@ -83,6 +84,7 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
               ? 'A known dependency requirement blocks automatic removal.'
               : `Not verified: ${evidence[0] ?? 'The removal-safety analysis did not return a reason.'}`,
         evidence,
+        ...(transitive === undefined ? {} : { transitiveNote: transitive.summary }),
       }];
     });
   const recommendationByPackage = new Map(recommendations.map((recommendation) => [recommendation.packageName, recommendation]));

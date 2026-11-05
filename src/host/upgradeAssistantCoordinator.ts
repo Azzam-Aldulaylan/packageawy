@@ -105,6 +105,7 @@ import {
 import { buildRemoveAnalysisPresentation } from './removeAnalysisPresentation.js';
 import {
   classifyUpgradeApplication,
+  describeRemovedPackages,
   describeRemoveTransactionOutcome,
   describeUpgradeTransactionOutcome,
 } from './upgradeAssistantOutcome.js';
@@ -3567,8 +3568,14 @@ export class UpgradeAssistantCoordinator {
         transaction
       );
       const removedPackages = stored.eligibilities.map((item) => item.packageName);
+      // With no build or test scripts, only the dependency-file structure
+      // check ran. That is not project verification, so it is not reported
+      // as passed.
+      const structureOnly = transaction.verification.status === 'passed' && stored.verificationScripts.length === 0;
       const verification =
-        transaction.verification.status === 'passed'
+        structureOnly
+          ? 'not-configured'
+          : transaction.verification.status === 'passed'
           ? 'passed'
           : transaction.verification.status === 'failed'
             ? 'failed'
@@ -3650,6 +3657,9 @@ export class UpgradeAssistantCoordinator {
         return { restoreAvailable: true };
       };
       if (presentation.kind === 'verified') {
+        const message = structureOnly
+          ? `Removed ${describeRemovedPackages(removedPackages)}. Dependency files were checked. No build or test scripts ran.`
+          : presentation.message;
         this.options.sink.postMessage({
           status: 'remove-result',
           result: {
@@ -3658,12 +3668,12 @@ export class UpgradeAssistantCoordinator {
             outcome: 'verified',
             verification,
             rollback: 'not-needed',
-            message: presentation.message,
+            message,
             ...(smartCleanupPresentation === undefined ? {} : { smartCleanup: smartCleanupPresentation }),
             ...keepRestorePoint(),
           },
         });
-        this.options.platform.showInformationMessage(presentation.message);
+        this.options.platform.showInformationMessage(message);
       } else if (presentation.kind === 'error') {
         this.options.sink.postMessage({
           status: 'remove-error',
