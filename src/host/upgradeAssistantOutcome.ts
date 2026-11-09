@@ -128,7 +128,7 @@ export function describeUpgradeTransactionOutcome(
   };
 }
 
-function describeRemovedPackages(packageNames: readonly string[]): string {
+export function describeRemovedPackages(packageNames: readonly string[]): string {
   return packageNames.length === 1 ? (packageNames[0] ?? '') : `${packageNames.length} dependencies`;
 }
 
