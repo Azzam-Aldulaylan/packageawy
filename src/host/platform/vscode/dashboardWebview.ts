@@ -18,6 +18,7 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 
 import { DashboardPanel } from '../../dashboardPanel.js';
+import { OPEN_MANIFEST_UNAVAILABLE_MESSAGE, resolveManifestTarget } from '../../openManifestTarget.js';
 import type { HostPlatform, WebviewChannel } from '../hostPlatform.js';
 
 const VIEW_TYPE = 'packageawy';
@@ -118,8 +119,36 @@ function watchDevBuild(
   );
 }
 
+/**
+ * "Open in Packageawy" on a package.json. An open dashboard switches to that
+ * project. Otherwise the file is checked first, so a file that is not a
+ * workspace project shows a message instead of opening an empty panel.
+ */
+export async function openManifestInDashboard(
+  context: vscode.ExtensionContext,
+  platform: HostPlatform,
+  manifestPath: string
+): Promise<void> {
+  if (DashboardPanel.openManifest(manifestPath)) return;
+  let project;
+  try {
+    ({ project } = await resolveManifestTarget(platform, manifestPath));
+  } catch {
+    // Discovery failed: the panel runs it again and shows the error itself.
+    showDashboard(context, platform, manifestPath);
+    return;
+  }
+  if (project === undefined) {
+    platform.showInformationMessage(OPEN_MANIFEST_UNAVAILABLE_MESSAGE);
+    return;
+  }
+  // Opened while discovery ran: hand the request to that panel instead.
+  if (DashboardPanel.openManifest(manifestPath)) return;
+  showDashboard(context, platform, manifestPath);
+}
+
 /** Reveals the open dashboard, or creates it. */
-export function showDashboard(context: vscode.ExtensionContext, platform: HostPlatform): void {
+export function showDashboard(context: vscode.ExtensionContext, platform: HostPlatform, initialManifestPath?: string): void {
   if (DashboardPanel.reveal()) return;
 
   const panel = vscode.window.createWebviewPanel(VIEW_TYPE, TITLE, vscode.ViewColumn.One, {
@@ -136,5 +165,6 @@ export function showDashboard(context: vscode.ExtensionContext, platform: HostPl
     integrationTestMode:
       context.extensionMode === vscode.ExtensionMode.Test ||
       process.env['PACKAGEAWY_EXTENSION_TEST'] === '1',
+    ...(initialManifestPath === undefined ? {} : { initialManifestPath }),
   });
 }

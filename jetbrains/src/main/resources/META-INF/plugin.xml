@@ -38,4 +38,16 @@
                              nonDefaultProject="true"/>
         <notificationGroup id="Packageawy" displayType="BALLOON"/>
     </extensions>
+
+    <actions>
+        <action id="Packageawy.OpenPackageJson"
+                class="io.github.azzamaldulaylan.packageawy.ide.OpenPackageJsonAction"
+                text="Open in Packageawy"
+                description="Open this package.json's project in the Packageawy dashboard"
+                icon="/icons/toolWindow.svg">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>
