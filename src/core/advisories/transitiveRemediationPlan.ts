@@ -215,7 +215,7 @@ function collectOccurrences(snapshot: RemediationGraphSnapshot, state: RawOccurr
 
   for (const node of snapshot.graph.nodes.values()) {
     if (node.version === null || !index.distance.has(node.path)) continue;
-    for (const advisory of snapshot.advisoriesByName.get(node.name) ?? []) {
+    for (const advisory of snapshot.advisoriesByName.get(node.registryName ?? node.name) ?? []) {
       if (semver.validRange(advisory.vulnerableVersions) === null) {
         invalidAdvisoryRange = true;
         continue;
@@ -229,7 +229,7 @@ function collectOccurrences(snapshot: RemediationGraphSnapshot, state: RawOccurr
         state,
         advisory,
         aliases: aliasesFor(advisory),
-        flaggedPackage: node.name,
+        flaggedPackage: node.registryName ?? node.name,
         instance: {
           lockfilePath: node.path,
           version: node.version,

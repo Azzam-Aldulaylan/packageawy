@@ -25,7 +25,7 @@ export type AdvisoriesByName = ReadonlyMap<string, readonly Advisory[]>;
 /** Advisories that actually apply to the version resolved at this node. */
 function applicableAdvisories(node: DependencyNode, byName: AdvisoriesByName): Advisory[] {
   if (node.version === null) return [];
-  const advisories = byName.get(node.name);
+  const advisories = byName.get(node.registryName ?? node.name);
   if (advisories === undefined) return [];
   return advisories.filter((a) => {
     try {
@@ -72,7 +72,7 @@ function attributeFromRoot(
       // transitive advisory, and is known here for free from the graph walk.
       out.push({
         advisory,
-        flaggedPackage: node.name,
+        flaggedPackage: node.registryName ?? node.name,
         path: [...chain],
         flaggedVersion: node.version,
         patchedVersion: { status: 'unknown' },
@@ -83,7 +83,7 @@ function attributeFromRoot(
       const depNode = resolveDependency(graph, node.path, depName, ['runtime', 'optional']);
       if (depNode === null || visited.has(depNode.path)) continue;
       visited.add(depNode.path);
-      queue.push({ node: depNode, chain: [...chain, depNode.name] });
+      queue.push({ node: depNode, chain: [...chain, depName] });
     }
   }
 
@@ -103,6 +103,39 @@ export function attributeAdvisories(
   for (const root of directNodes(graph)) {
     const attributed = attributeFromRoot(graph, root, byName);
     if (attributed.length > 0) result.set(root.name, attributed);
+  }
+  return result;
+}
+
+const NOT_REGISTRY: ReadonlySet<string> = new Set(['workspace-link', 'file', 'git', 'tarball']);
+
+/** A clean advisory response proves nothing for nodes without a version. */
+export function advisoryCoverageByRoot(graph: DependencyGraph): Map<string, 'complete' | 'partial'> {
+  const result = new Map<string, 'complete' | 'partial'>();
+  for (const root of directNodes(graph)) {
+    const visited = new Set<string>();
+    const queue = [root];
+    let complete = true;
+    for (let index = 0; index < queue.length; index += 1) {
+      const node = queue[index];
+      if (node === undefined || visited.has(node.path)) continue;
+      visited.add(node.path);
+      // Workspace links and file:, git: or tarball dependencies have no
+      // registry version by design. Only a version that should be known and
+      // is not (no lockfile, nothing installed) leaves coverage partial.
+      const outsideRegistry = node.unresolvable !== undefined && NOT_REGISTRY.has(node.unresolvable);
+      if (!outsideRegistry && (node.version === null || semver.valid(node.version) === null)) complete = false;
+      for (const name of node.deps) {
+        const target = resolveDependency(graph, node.path, name, ['runtime', 'optional']);
+        if (target !== null) {
+          if (!visited.has(target.path)) queue.push(target);
+        } else if (node.edges.some((edge) => edge.name === name && edge.kind === 'runtime')) {
+          // A missing optional dependency (another platform's binary) is normal.
+          complete = false;
+        }
+      }
+    }
+    result.set(root.name, complete ? 'complete' : 'partial');
   }
   return result;
 }

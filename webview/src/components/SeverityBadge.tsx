@@ -11,10 +11,12 @@ import { severityDisplay } from '../../../src/host/severityDisplay.js';
 export function SeverityBadge({
   severity,
   advisoriesAvailable = true,
+  checked = true,
 }: {
   severity: Severity | null;
   advisoriesAvailable?: boolean;
+  checked?: boolean;
 }): ReactElement {
-  const { label, className } = severityDisplay(severity, advisoriesAvailable);
-  return <span className={`severity severity--${className}`}>{label}</span>;
+  const { label, className, reason } = severityDisplay(severity, advisoriesAvailable, checked);
+  return <span className={`severity severity--${className}`} title={reason} aria-label={reason === undefined ? undefined : `${label}. ${reason}`}>{label}</span>;
 }
