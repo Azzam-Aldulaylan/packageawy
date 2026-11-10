@@ -1097,6 +1097,9 @@ export class UpgradeAssistantCoordinator {
         requestId: message.requestId,
         targets,
       });
+      void controller.enrichUpdateVersions(targets.options.map(option => ({
+        name: row.registryName ?? row.name, version: option.version,
+      })), this.options.sink);
     } catch (cause) {
       if (this.options.isDisposed()) return;
       this.options.sink.postMessage({

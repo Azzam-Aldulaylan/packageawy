@@ -461,6 +461,7 @@ export function UpgradeReviewPanel({
   };
   const targetSelector = row.upgradeTo === null ? null : (
     <UpgradeTargetSelector
+      registryName={row.registryName ?? row.name}
       state={targetState}
       selectedVersion={targetVersion}
       fallbackVersion={row.upgradeTo}

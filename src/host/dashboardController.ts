@@ -47,6 +47,9 @@ import type { BuildInfo } from './dashboardData.js';
 import { toHostToWebviewMessage } from './dashboardData.js';
 import { otherPackageManagerMessage } from './packageManagerSupport.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
+import { UpdateAdvisories, offeredVersionPairs } from './updateAdvisories.js';
+import type { UpdateVersionPair } from './updateAdvisories.js';
+import type { UpdateAdvisoryContext } from './webviewProtocol.js';
 import { updatesSettled } from './registrySignIn.js';
 
 export interface MessageSink {
@@ -182,6 +185,10 @@ export class DashboardController {
   private lastGeneratedAt: string | undefined;
   private inFlight: AbortController | undefined;
   private disposed = false;
+  private readonly updateAdvisories: UpdateAdvisories;
+  private updateContext: UpdateAdvisoryContext | undefined;
+  private scanId = 0;
+  private settingsGeneration = 0;
   /**
    * Derived from `options.manifestText`: recomputed by `updateProjectSnapshot`
    * whenever the snapshot changes, so it always reflects the manifest the most
@@ -238,6 +245,7 @@ export class DashboardController {
 
   constructor(options: DashboardControllerOptions) {
     this.options = options;
+    this.updateAdvisories = new UpdateAdvisories(options.httpClient, () => this.publicAdvisoryCheckEnabled());
     this.declaredDependencies = DashboardController.parseDeclaredDependencies(options.manifestText);
   }
 
@@ -383,6 +391,8 @@ export class DashboardController {
    * (see `run()`). External callers (the panel) are free to ignore it.
    */
   beginRevalidation(): number {
+    this.updateAdvisories.clear();
+    this.updateContext = undefined;
     this.revalidationGeneration += 1;
     return this.revalidationGeneration;
   }
@@ -409,7 +419,7 @@ export class DashboardController {
    */
   announceRevalidating(sink: MessageSink): void {
     if (this.lastResult === undefined) return;
-    sink.postMessage(
+    this.postSnapshot(sink,
       toHostToWebviewMessage(
         this.lastResult,
         { isEmpty: this.lastResult.rows.length === 0, isStale: true },
@@ -622,7 +632,11 @@ export class DashboardController {
     // generatedAt/lockfilePath/sourceFingerprint): assigning it here just
     // carries those extra fields along invisibly. Nothing that reads
     // `lastResult` as a ScanSnapshot ever looks at them.
-    this.lastResult = cached;
+    const aliases = new Map(this.declaredDependencies.map(dependency => [dependency.name, dependency.aliasTarget]));
+    this.lastResult = { ...cached, rows: cached.rows.map(row => {
+      const alias = aliases.get(row.name);
+      return alias === undefined ? row : { ...row, registryName: alias };
+    }) };
     this.lastResultSourceFingerprint = cached.sourceFingerprint;
     this.lastGeneratedAt = cached.generatedAt;
   }
@@ -683,7 +697,10 @@ export class DashboardController {
       if (this.optionsGeneration === this.revalidationGeneration) {
         this.eligibleGeneration = this.revalidationGeneration;
       }
-      sink.postMessage(
+      if (this.updateContext === undefined && this.optionsGeneration === this.revalidationGeneration) {
+        this.updateContext = this.makeUpdateContext();
+      }
+      this.postSnapshot(sink,
         toHostToWebviewMessage(
           cached,
           { isEmpty: cached.rows.length === 0, isStale: false },
@@ -694,6 +711,7 @@ export class DashboardController {
           this.readOnlyReason()
         )
       );
+      this.enrichOfferedVersions(sink);
       if (freshness !== 'fresh') {
         // Age only affects network/cache freshness. The source fingerprint
         // already matched locally-authoritative input, so keep the snapshot
@@ -759,21 +777,58 @@ export class DashboardController {
     return this.options.publicAdvisoryCheckEnabled?.(this.options.root) ?? true;
   }
 
-  handleAdvisorySettingChanged(): void {
+  handleAdvisorySettingChanged(sink?: MessageSink): void {
+    if (sink !== undefined && this.updateContext !== undefined) {
+      sink.postMessage({ status: 'update-advisories', context: this.updateContext, results: [] });
+    }
+    this.settingsGeneration += 1;
+    this.updateContext = undefined;
+    this.updateAdvisories.clear();
     this.inFlight?.abort();
   }
 
   /** Call from the panel's onDidDispose so an in-flight run stops with it. */
   dispose(): void {
     this.disposed = true;
+    this.updateContext = undefined;
+    this.updateAdvisories.clear();
     this.inFlight?.abort();
     this.inFlight = undefined;
+  }
+
+  private makeUpdateContext(): UpdateAdvisoryContext {
+    return { scanId: this.scanId, projectId: this.options.projectInfo.id,
+      sourceGeneration: this.revalidationGeneration, settingsGeneration: this.settingsGeneration };
+  }
+
+  private postSnapshot(sink: MessageSink, message: HostToWebviewMessage): void {
+    if ('data' in message && this.updateContext !== undefined) {
+      message = { ...message, data: { ...message.data, updateAdvisoryContext: this.updateContext,
+        updateAdvisories: this.publicAdvisoryCheckEnabled() ? this.updateAdvisories.results() : [] } };
+    }
+    sink.postMessage(message);
+  }
+
+  private enrichOfferedVersions(sink: MessageSink): void {
+    void this.enrichUpdateVersions(offeredVersionPairs(this.lastResult?.rows ?? []), sink);
+  }
+
+  /** Host-derived picker options share exact-version memory and the bounded request queue. */
+  enrichUpdateVersions(pairs: readonly UpdateVersionPair[], sink: MessageSink): Promise<void> {
+    const context = this.updateContext;
+    if (context === undefined || this.disposed) return Promise.resolve();
+    return this.updateAdvisories.enrich(pairs,
+      () => !this.disposed && this.updateContext === context,
+      results => sink.postMessage({ status: 'update-advisories', context, results }));
   }
 
   private async run(
     sink: MessageSink,
     reason: BackgroundRefreshReason = 'structural'
   ): Promise<BackgroundRefreshOutcome> {
+    this.scanId += 1;
+    this.updateContext = undefined;
+    this.updateAdvisories.clear(true);
     const performance = createPerformanceSession('Packageawy scan', this.performanceEnabled());
     // Time-only refresh requires an already-eligible snapshot. A targeted
     // local-mutation refresh starts one step earlier: updateProjectSnapshot
@@ -910,7 +965,11 @@ export class DashboardController {
         // mode this is an idempotent assignment because no generation moved.
         this.optionsGeneration = generationAtStart;
       }
-      sink.postMessage(
+      if (generationAtStart === this.revalidationGeneration &&
+          (this.optionsGeneration === generationBeforeThisRun || this.optionsGeneration === generationAtStart)) {
+        this.updateContext = this.makeUpdateContext();
+      }
+      this.postSnapshot(sink,
         toHostToWebviewMessage(
           snapshot,
           { isEmpty: snapshot.rows.length === 0, isStale: false },
@@ -921,6 +980,7 @@ export class DashboardController {
           this.readOnlyReason()
         )
       );
+      this.enrichOfferedVersions(sink);
       return { status: 'succeeded' };
     } catch (cause) {
       if (controller.signal.aborted) {

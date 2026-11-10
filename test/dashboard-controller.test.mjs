@@ -49,7 +49,7 @@ function recordingSink() {
       return posted.map((m) => m.status);
     },
     postMessage(message) {
-      posted.push(message);
+      if (message.status !== 'update-advisories') posted.push(message);
     },
   };
 }
@@ -79,7 +79,10 @@ function generationalClient({ versions, delayMs = {} }) {
       return json({ version: versions[generation] ?? versions[versions.length - 1] });
     },
     async post(url, body, options = {}) {
-      const generation = generationOf(options.signal);
+      // Offered-version enrichment has its own cancellation signal and is
+      // independent of the installed-tree scan generations exercised here.
+      await Promise.resolve();
+      const generation = signals.indexOf(options.signal);
       await new Promise((resolve) => setTimeout(resolve, delayMs[generation] ?? 0));
       return json({});
     },

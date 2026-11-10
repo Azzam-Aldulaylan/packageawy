@@ -20,7 +20,7 @@ function advisory(severity, flaggedPackage, title) {
 }
 
 test('null severity reads as Safe', () => {
-  assert.deepEqual(severityDisplay(null), { label: 'Safe', className: 'none' });
+  assert.deepEqual(severityDisplay(null), { label: 'Safe', className: 'none', reason: 'No known vulnerabilities in the installed dependency tree.' });
 });
 
 test('an unavailable advisory scan never labels a null severity Safe', () => {

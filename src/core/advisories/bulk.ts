@@ -96,12 +96,13 @@ export async function fetchBulkAdvisories(
   client: HttpClient,
   requestBody: Record<string, string[]>,
   signal?: AbortSignal,
-  enabled: () => boolean = () => true
+  enabled: () => boolean = () => true,
+  strict = false
 ): Promise<Map<string, Advisory[]>> {
   const chunks = splitBulkRequestBody(requestBody);
   const settled = await runPool(chunks, (chunk, chunkSignal) => {
     if (!enabled()) throw new FetchError('CANCELLED', 'Security checks are turned off for this project.');
-    return fetchBulkAdvisoryChunk(client, chunk, chunkSignal);
+    return fetchBulkAdvisoryChunk(client, chunk, chunkSignal, strict);
   }, {
     limit: 2, ...(signal === undefined ? {} : { signal }),
   });
@@ -118,7 +119,8 @@ export async function fetchBulkAdvisories(
 async function fetchBulkAdvisoryChunk(
   client: HttpClient,
   requestBody: Record<string, string[]>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  strict = false
 ): Promise<Map<string, Advisory[]>> {
   const url = `${ADVISORIES_HOST}${ADVISORIES_PATH}`;
   const body = JSON.stringify(requestBody);
@@ -136,12 +138,19 @@ async function fetchBulkAdvisoryChunk(
   } catch {
     throw new FetchError('PARSE_ERROR', `invalid JSON from ${url}`);
   }
-  if (typeof json !== 'object' || json === null) {
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) {
     throw new FetchError('PARSE_ERROR', `unexpected JSON shape from ${url}`);
   }
 
   const result = new Map<string, Advisory[]>();
   for (const [name, rawList] of Object.entries(json as Record<string, unknown>)) {
+    if (strict && (!Array.isArray(rawList) || rawList.some((raw) => {
+      const advisory = parseAdvisory(raw);
+      return advisory === null || advisory.vulnerableVersions.trim() === '' ||
+        semver.validRange(advisory.vulnerableVersions) === null;
+    }))) {
+      throw new FetchError('PARSE_ERROR', `invalid advisory evidence from ${url}`);
+    }
     if (name === '__proto__' || !Array.isArray(rawList)) continue;
     const advisories = rawList.map(parseAdvisory).filter((a): a is Advisory => a !== null);
     if (advisories.length > 0) result.set(name, advisories);

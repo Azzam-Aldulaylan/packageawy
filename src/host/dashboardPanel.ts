@@ -297,7 +297,7 @@ export class DashboardPanel {
     this.advisorySettingSubscription = platform.onDidChangeSetting(PUBLIC_ADVISORY_CHECK_SETTING, () => {
       if (this.disposed) return;
       this.upgradeCoordinator.handleAdvisorySettingChanged();
-      this.controller?.handleAdvisorySettingChanged();
+      this.controller?.handleAdvisorySettingChanged(this.sink);
       this.advisorySettingRefreshPending = true;
       void this.flushAdvisorySettingRefresh();
     });

@@ -240,7 +240,7 @@ test('the controller reads the setting for each scan and skips the advisory requ
   const second = sink();
   await controller.handleRefresh(second);
   assert.equal(second.posted.at(-1).data.availability.advisories, 'complete');
-  assert.deepEqual(client.posts, [BULK]);
+  assert.deepEqual(client.posts, [BULK, BULK], 'installed inventory and offered versions are checked separately');
 });
 
 test('a cached scan from the other setting is not shown', async () => {

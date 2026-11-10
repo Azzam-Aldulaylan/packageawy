@@ -1,7 +1,10 @@
+import { useContext } from 'react';
 import type { ReactElement } from 'react';
 
 import type { UpgradeReason } from '../../../src/core/types.js';
 import type { ProtocolError, UpgradeTargetOptions } from '../../../src/host/webviewProtocol.js';
+import { updateAdvisoryWarning } from '../../../src/host/updateAdvisoryState.js';
+import { UpdateAdvisoryContext } from './UpdateVersionWarning.js';
 
 export type UpgradeTargetLoadState =
   | { phase: 'loading' }
@@ -23,6 +26,7 @@ function optionLabel(
 
 export function UpgradeTargetSelector({
   state,
+  registryName,
   selectedVersion,
   fallbackVersion,
   fallbackReason,
@@ -30,12 +34,18 @@ export function UpgradeTargetSelector({
   onChange,
 }: {
   state: UpgradeTargetLoadState;
+  registryName?: string;
   selectedVersion: string | null;
   fallbackVersion: string | null;
   fallbackReason?: UpgradeReason | null;
   disabled: boolean;
   onChange: (version: string) => void;
 }): ReactElement {
+  const results = useContext(UpdateAdvisoryContext);
+  const labelWithWarning = (version: string, label: string): string => {
+    const warning = updateAdvisoryWarning(results.find(result => result.name === registryName && result.version === version));
+    return warning === undefined ? label : `${label}. ${warning}`;
+  };
   const ready = state.phase === 'ready' ? state.targets : null;
   const stable = ready?.options.filter((option) => option.channel === 'stable') ?? [];
   const prerelease = ready?.options.filter((option) => option.channel === 'prerelease') ?? [];
@@ -70,13 +80,13 @@ export function UpgradeTargetSelector({
           {state.phase === 'loading' ? <option value={value}>Loading published versions…</option> : null}
           {ready !== null ? (
             <>
-              {selectedIsOutsideCurrentOptions ? <option value={value}>{value} ({value === fallbackVersion ? fallbackLabel : 'selected target'})</option> : null}
+              {selectedIsOutsideCurrentOptions ? <option value={value}>{labelWithWarning(value, `${value} (${value === fallbackVersion ? fallbackLabel : 'selected target'})`)}</option> : null}
               {ready.recommendedVersion === null ? <option value="">Select a version…</option> : null}
               {stable.length > 0 ? (
                 <optgroup label="Stable releases">
                   {stable.map((option) => (
                     <option value={option.version} key={option.version}>
-                      {optionLabel(option)}
+                      {labelWithWarning(option.version, optionLabel(option))}
                     </option>
                   ))}
                 </optgroup>
@@ -85,7 +95,7 @@ export function UpgradeTargetSelector({
                 <optgroup label="Prereleases (review carefully)">
                   {prerelease.map((option) => (
                     <option value={option.version} key={option.version}>
-                      {optionLabel(option)}
+                      {labelWithWarning(option.version, optionLabel(option))}
                     </option>
                   ))}
                 </optgroup>
@@ -93,7 +103,7 @@ export function UpgradeTargetSelector({
             </>
           ) : null}
           {usableFallback !== null ? (
-            <option value={usableFallback}>{usableFallback} ({fallbackLabel})</option>
+            <option value={usableFallback}>{labelWithWarning(usableFallback, `${usableFallback} (${fallbackLabel})`)}</option>
           ) : null}
         </select>
         {ready?.truncated === true ? (
