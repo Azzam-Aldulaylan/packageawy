@@ -114,7 +114,7 @@ test('local specifiers are classified like pnpm and must stay inside the workspa
 test('package patterns that leave the workspace are unknown, in every brace expansion', async (t) => {
   const fine = await workspace(t, { yaml: "packages:\n  - '{apps,packages}/*'\n  - 'packages/p{1..2}'\n" });
   assert.equal((await read(fine)).unavailableReason, undefined);
-  for (const pattern of ['../shared/*', '/abs/*', '!../x', '{.,.}{.,.}/outside/*', '{/,packages/}*', '{a,{b,../c}}/*']) {
+  for (const pattern of ['../shared/*', '/abs/*', '!../x', '{.,.}{.,.}/outside/*', '{/,packages/}*', '{a,{b,../c}}/*', '{-..0}{-..0}/outside', '{-..0}git/*', '{a..z}/*']) {
     const root = await workspace(t, { yaml: `packages:\n  - 'apps/*'\n  - '${pattern}'\n` });
     assert.match((await read(root)).unavailableReason, /pattern points outside/, pattern);
   }

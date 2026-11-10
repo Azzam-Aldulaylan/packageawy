@@ -121,6 +121,9 @@ function expandBraces(pattern: string, limit = { left: 256 }): string[] | undefi
 
 /** True when every expansion of a pattern is relative and never steps up with `..`. */
 function isContainedPattern(pattern: string): boolean {
+  // Numeric ranges only produce digits. A character range such as {-..0} can produce `.` and `/`, so it is not interpreted.
+  const ranges = pattern.match(/\{[^{},]*\.\.[^{},]*\}/g) ?? [];
+  if (ranges.some((range) => !/^\{-?\d+\.\.-?\d+(?:\.\.-?\d+)?\}$/.test(range))) return false;
   return expandBraces(pattern)?.every((expanded) => !/^(?:[\\/]|[a-z]:)/i.test(expanded) &&
     !expanded.split(/[\\/]/).includes('..')) ?? false;
 }
