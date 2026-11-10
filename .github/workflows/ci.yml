@@ -52,8 +52,8 @@ jobs:
       # manifest field, a broken .vscodeignore, or a build vscode:prepublish
       # can't reproduce. @vscode/vsce is a pinned devDependency (no global
       # tool, no publish credentials needed for `package`), so this is fully
-      # deterministic and runs offline. The resulting .vsix is not uploaded
-      # or committed. It is discarded with the runner.
+      # deterministic and runs offline. This copy is discarded with the
+      # runner. The package-vsix job builds the one the smoke tests install.
       - name: Package (smoke check)
         run: npm run package
 
@@ -87,5 +87,84 @@ jobs:
       - name: Extension Host lifecycle and watcher tests (Windows)
         if: runner.os == 'Windows'
         run: npm run test:extension-host
+        env:
+          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+
+  # Builds the VSIX once so every smoke run below tests the same archive,
+  # the one users would install, instead of a fresh build per runner.
+  package-vsix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Package
+        run: npm run package
+
+      # Reads the archive itself, not the working tree, and fails if a runtime
+      # file is missing or if source maps, sources, tests or node_modules
+      # slipped past .vscodeignore.
+      - name: Check VSIX contents
+        shell: bash
+        run: node scripts/integration/check-vsix-contents.mjs packageawy-*.vsix
+
+      # Only needed by the smoke jobs in this run, so keep it briefly.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: packageawy-*.vsix
+          if-no-files-found: error
+          retention-days: 7
+
+  # Installs the packaged VSIX with the VS Code CLI into an empty extensions
+  # folder and opens the dashboard on a small npm project. The extension-host
+  # job loads the repository instead, so it cannot catch a broken archive.
+  # macOS is here because it has no other VS Code coverage in CI.
+  vsix-smoke:
+    needs: package-vsix
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        vscode: [stable, 1.90.0]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Only @vscode/test-electron is used from node_modules. The extension
+      # under test comes from the downloaded VSIX, so nothing is built here.
+      - name: Install
+        run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+          path: vsix
+
+      - name: VSIX install and dashboard smoke test (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: xvfb-run -a node scripts/integration/run-vsix-smoke.mjs vsix/packageawy-*.vsix
+        env:
+          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+
+      - name: VSIX install and dashboard smoke test (Windows and macOS)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: node scripts/integration/run-vsix-smoke.mjs vsix/packageawy-*.vsix
         env:
           VSCODE_TEST_VERSION: ${{ matrix.vscode }}
