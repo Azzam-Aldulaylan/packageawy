@@ -80,6 +80,8 @@ export interface DashboardPanelOptions {
   createdAt?: number;
   /** Absolute path of a package.json to select on first load instead of asking. */
   initialManifestPath?: string;
+  /** Opted into only by the VS Code host. The sidecar waits for ready. */
+  speculativeStartup?: boolean;
 }
 
 export interface DashboardPanelIntegrationTestSnapshot {
@@ -157,8 +159,22 @@ export class DashboardPanel {
   private candidateCount = 0;
   /** A package.json the user asked to open ("Open in Packageawy") that the next initial selection uses. */
   private requestedManifestPath: string | undefined;
-  /** Set by the first `ready`: before that, a requested project waits for the webview's own load. */
+  /** Set by the first `ready`: requests before it supersede speculative startup. */
   private webviewReady = false;
+  /** Opens after startup preparation so its first live message is the ready-time replay. */
+  private deliveryReady = false;
+  private readonly speculativeStartup: boolean;
+  private startupGeneration = 0;
+  private startup: {
+    generation: number;
+    preparation: Promise<void>;
+    candidate?: DiscoveredProject;
+    controller?: DashboardController;
+    error?: ProtocolError;
+  } | undefined;
+  private firstSnapshotDelivered = false;
+  private automaticUsagePending = false;
+  private automaticUsageForce = false;
   /** Incremented at the start of every `reloadAndScan` call. See that method's doc comment for the race it closes. */
   private reloadGeneration = 0;
 
@@ -209,12 +225,14 @@ export class DashboardPanel {
     this.integrationTestMode = options.integrationTestMode;
     this.createdAt = options.createdAt ?? Date.now();
     this.requestedManifestPath = options.initialManifestPath;
+    this.speculativeStartup = options.speculativeStartup === true;
     this.buildInfo = {
       extensionVersion: options.extensionVersion,
       builtAt: __BUILD_TIME__,
     };
     this.sink = {
       postMessage: (message) => {
+        if (this.disposed || !this.deliveryReady) return;
         this.recordIntegrationTestMessage({ direction: 'outbound', message });
         if (this.performanceEnabled()) {
           const performance = createPerformanceSession('Packageawy webview message', true);
@@ -224,6 +242,12 @@ export class DashboardPanel {
           performance.finish({ status: message.status });
         }
         this.channel.postMessage(message);
+        if ('data' in message && !this.firstSnapshotDelivered) {
+          this.firstSnapshotDelivered = true;
+          if (this.automaticUsagePending) {
+            queueMicrotask(() => this.requestAutomaticUsageRefresh());
+          }
+        }
       },
     };
     this.etagStore = new PersistentEtagStore(platform.cacheStore ?? platform.globalState);
@@ -261,7 +285,7 @@ export class DashboardPanel {
           this.branchChangeCoordinator.mutationReleased();
           return;
         }
-        void this.usageCoordinator.runPendingBackgroundRefresh();
+        if (this.firstSnapshotDelivered) void this.usageCoordinator.runPendingBackgroundRefresh();
       },
       performanceEnabled: this.performanceEnabled,
       storeProjectCompatibilityReferences: (packageName, references, folder) =>
@@ -347,7 +371,9 @@ export class DashboardPanel {
   }
 
   static create(platform: HostPlatform, channel: WebviewChannel, options: DashboardPanelOptions): void {
-    DashboardPanel.current = new DashboardPanel(platform, channel, options);
+    const panel = new DashboardPanel(platform, channel, options);
+    DashboardPanel.current = panel;
+    if (panel.speculativeStartup) panel.startStartup();
   }
 
   /**
@@ -445,12 +471,39 @@ export class DashboardPanel {
 
   private async handleMessage(message: WebviewToHostMessage): Promise<void> {
     if (message.type === 'ready') {
+      const firstReady = !this.webviewReady;
       this.webviewReady = true;
+      if (firstReady && this.branchChangeCoordinator.hasPending) this.branchChangeCoordinator.mutationReleased();
       await this.upgradeCoordinator.handleWebviewReady();
+      if (firstReady && this.startup !== undefined) {
+        const startup = this.startup;
+        await startup.preparation;
+        if (this.disposed) return;
+        this.startup = undefined;
+        const matches = startup.generation === this.startupGeneration &&
+          (this.requestedManifestPath === undefined || (startup.candidate !== undefined &&
+            findProjectForManifest([startup.candidate], this.requestedManifestPath) !== undefined));
+        this.deliveryReady = true;
+        if (matches && startup.error !== undefined) {
+          this.sink.postMessage({ status: 'fatal-error', error: startup.error });
+          return;
+        }
+        if (matches && startup.controller !== undefined && this.controller === startup.controller &&
+            this.selectedProject?.id === startup.candidate?.id) {
+          this.requestAutomaticUsageRefresh();
+          await startup.controller.handleStartupReady(this.sink);
+          return;
+        }
+        startup.controller?.dispose();
+        this.controller?.dispose();
+        this.controller = undefined;
+        this.pending = undefined;
+      }
+      this.deliveryReady = true;
       const controller = await this.ensureController();
       if (controller === undefined) return;
       await controller.handleReady(this.sink);
-      void this.usageCoordinator.requestBackgroundUsageRefresh();
+      this.requestAutomaticUsageRefresh();
       return;
     }
     if (message.type === 'load-upgrade-targets') {
@@ -666,7 +719,7 @@ export class DashboardPanel {
         const controller = await this.ensureController();
         if (controller === undefined) return;
         await controller.handleReady(this.sink);
-        void this.usageCoordinator.requestBackgroundUsageRefresh({ force: true });
+        this.requestAutomaticUsageRefresh({ force: true });
         return;
       }
       await this.reloadAndScan(this.selectedProject, { forceUsageRecheck: true });
@@ -679,7 +732,7 @@ export class DashboardPanel {
     const controller = await this.ensureController();
     if (controller === undefined) return; // ensureController already posted the failure.
     await controller.handleReady(this.sink);
-    void this.usageCoordinator.requestBackgroundUsageRefresh();
+    this.requestAutomaticUsageRefresh();
   }
 
   /**
@@ -764,10 +817,12 @@ export class DashboardPanel {
   private async openManifest(manifestPath: string): Promise<void> {
     if (!this.webviewReady) {
       this.requestedManifestPath = manifestPath;
+      if (this.speculativeStartup) this.startStartup();
       return;
     }
     // The first load (and its picker, when there are several projects) is
     // still running: let it settle, then switch.
+    if (this.controller === undefined && this.startup !== undefined) await this.startup.preparation;
     if (this.controller === undefined && this.pending !== undefined) await this.pending;
     if (this.disposed) return;
     if (this.controller === undefined) {
@@ -981,7 +1036,7 @@ export class DashboardPanel {
     // usage analysis, or the mutation lock this call may itself still be
     // running under, e.g. an upgrade's `reloadFinalState`) is still busy.
     // See UsageAnalysisCoordinator.requestBackgroundUsageRefresh's doc.
-    void this.usageCoordinator.requestBackgroundUsageRefresh({ force: options.forceUsageRecheck === true });
+    this.requestAutomaticUsageRefresh({ force: options.forceUsageRecheck === true });
 
     // Whatever is pending now is guaranteed to be from the *currently
     // active* watchers: any old-project leftover was already cleared above
@@ -1133,7 +1188,7 @@ export class DashboardPanel {
         ...(terminalOutcome.status === 'failed' ? { error: terminalOutcome.error } : {}),
       });
       if (terminalOutcome.status !== 'succeeded' || this.controller !== controller) return;
-      void this.usageCoordinator.requestBackgroundUsageRefresh({ force: true });
+      this.requestAutomaticUsageRefresh({ force: true });
     });
   }
 
@@ -1144,6 +1199,75 @@ export class DashboardPanel {
     this.refreshMutationEnrichmentInBackground(lifecycle.refreshId, lifecycle.packageName);
   }
 
+  private requestAutomaticUsageRefresh(options: { force?: boolean } = {}): void {
+    if (this.disposed) return;
+    this.automaticUsagePending = true;
+    this.automaticUsageForce ||= options.force === true;
+    if (!this.firstSnapshotDelivered) return;
+    const force = this.automaticUsageForce;
+    this.automaticUsagePending = false;
+    this.automaticUsageForce = false;
+    void this.usageCoordinator.requestBackgroundUsageRefresh({ force });
+  }
+
+  /** Discovery and disk reads are speculative too. Never select or write from an old request. */
+  private startStartup(): void {
+    this.startupGeneration += 1;
+    this.reloadGeneration += 1;
+    const previousProjectId = this.selectedProject?.id;
+    this.controller?.dispose();
+    this.controller = undefined;
+    this.pending = undefined;
+    // Change selection before discovery so a held watcher read cannot apply
+    // its old project's data, even while the replacement is being discovered.
+    this.selectedProject = undefined;
+    this.selectedPackageManager = null;
+    this.usageCoordinator.invalidateProjectSource(previousProjectId);
+    this.automaticUsagePending = false;
+    this.automaticUsageForce = false;
+    this.fileChangeCoordinator.discardPending();
+    this.disposeWatchers();
+    this.gitWatcherSetupGeneration += 1;
+    this.gitHeadWatcher?.dispose();
+    this.gitHeadWatcher = undefined;
+    this.gitWatchedProjectPath = undefined;
+    const startup: NonNullable<DashboardPanel['startup']> = {
+      generation: this.startupGeneration, preparation: Promise.resolve(),
+    };
+    this.startup = startup;
+    const requested = this.requestedManifestPath;
+    const isCurrent = (): boolean => !this.disposed && startup.generation === this.startupGeneration;
+    startup.preparation = (async () => {
+      const performance = createPerformanceSession('Packageawy project load', this.performanceEnabled());
+      try {
+        // A discovery failure leaves early start. The first ready then runs
+        // today's selection flow, which reports it in the usual way.
+        const candidates = await discoverProjects(this.platform, performance).catch(() => undefined);
+        if (candidates === undefined || !isCurrent()) return;
+        const candidate = requested === undefined
+          ? (candidates.length === 1 ? candidates[0] : undefined)
+          : findProjectForManifest(candidates, requested);
+        if (candidate === undefined) return;
+        startup.candidate = candidate;
+        this.candidateCount = candidates.length;
+        this.selectedProject = candidate;
+        const project = await loadProject(this.platform, candidate, performance);
+        if (!isCurrent()) return;
+        this.setupFileWatchers(candidate, path.join(project.root, 'package.json'));
+        this.selectedLockfilePath = project.lockfilePath;
+        const controller = this.buildController(project, toProjectInfo(candidate), candidates.length > 1,
+          this.cacheKeyFor(candidate, project));
+        this.controller = controller;
+        startup.controller = controller;
+        controller.startStartup(this.sink);
+      } catch (cause) {
+        if (isCurrent()) startup.error = toProtocolError(cause);
+      } finally {
+        performance.finish();
+      }
+    })();
+  }
+
   /**
    * Project resolution is async and can fail (no folder open, no package.json,
    * or the user cancels the initial picker). That is reported as fatal-error
@@ -1152,6 +1276,8 @@ export class DashboardPanel {
    * `ready`, which runs this whole selection flow again from scratch.
    */
   private async ensureController(): Promise<DashboardController | undefined> {
+    if (this.controller === undefined && this.startup !== undefined) await this.startup.preparation;
+    if (this.disposed) return undefined;
     if (this.controller !== undefined) return this.controller;
     this.pending ??= this.createController();
     const controller = await this.pending;
@@ -1293,7 +1419,7 @@ export class DashboardPanel {
     const controller = this.controller;
     void controller.refreshInBackground(this.sink, 'time').then((outcome) => {
       if (outcome.status !== 'succeeded' || this.disposed || this.controller !== controller) return;
-      void this.usageCoordinator.requestBackgroundUsageRefresh();
+      this.requestAutomaticUsageRefresh();
     });
   }
 
@@ -1386,7 +1512,9 @@ export class DashboardPanel {
   }
 
   private async reconcileAfterGitHeadChange(headGeneration: number): Promise<void> {
-    if (this.disposed || !this.branchChangeCoordinator.hasPending) return;
+    // Startup installs HEAD watchers too. Reconciliation may need a picker,
+    // so keep its pending event until the first ready can present that UI.
+    if (this.disposed || !this.webviewReady || !this.branchChangeCoordinator.hasPending) return;
     if (this.upgradeCoordinator.isMutationBusy()) return;
     const previous = this.selectedProject;
     const performance = createPerformanceSession('Packageawy branch reconciliation', this.performanceEnabled());
@@ -1486,7 +1614,7 @@ export class DashboardPanel {
         this.projectCompatibilityInvalidationTimer = undefined;
         void this.upgradeCoordinator.checkOpenAnalysisFreshness();
         if (!this.branchChangeCoordinator.hasPending) {
-          void this.usageCoordinator.requestBackgroundUsageRefresh();
+          this.requestAutomaticUsageRefresh();
         }
       }, FILE_EVENT_DEBOUNCE_MS);
     };
@@ -1633,6 +1761,6 @@ export class DashboardPanel {
     // The watcher event cleared the likely-unused findings. Bring them back
     // for the new source. Some editors report a change only after the
     // change's own refresh has already run.
-    void this.usageCoordinator.requestBackgroundUsageRefresh();
+    this.requestAutomaticUsageRefresh();
   }
 }

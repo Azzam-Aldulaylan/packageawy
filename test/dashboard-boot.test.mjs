@@ -53,6 +53,7 @@ for (const [name, options, enabled] of [
     const view = open(options);
     assert.match(view.panel.webview.html, new RegExp(`data-render-acknowledgements="${enabled}"`));
     assert.match(view.panel.webview.html, new RegExp(`data-performance-debug="${options.performance === true}"`));
+    assert.equal(view.options.speculativeStartup, true, 'VS Code opts into startup at panel creation');
     assert.equal(view.options.createdAt, 1050, 'the timestamp is captured at native panel creation');
   });
 }

@@ -22,6 +22,7 @@ function panel(t, integrationTestMode) {
 
 test('the integration log records rendered as a separate inbound entry after the outbound snapshot', t => {
   const { receive, posted, current } = panel(t, true);
+  current.deliveryReady = true; // This fixture injects an already-delivered dashboard snapshot.
   current.sink.postMessage({ status: 'ready', data: { generatedAt: 'warm-snapshot', rows: [] } });
   const before = DashboardPanel.integrationTestSnapshot();
   assert.equal(before.panelCreatedAt, 1234);

@@ -169,6 +169,7 @@ export function showDashboard(context: vscode.ExtensionContext, platform: HostPl
   DashboardPanel.create(platform, createChannel(panel, context), {
     extensionVersion: String(context.extension.packageJSON['version'] ?? 'unknown'),
     integrationTestMode,
+    speculativeStartup: true,
     createdAt,
     ...(initialManifestPath === undefined ? {} : { initialManifestPath }),
   });
