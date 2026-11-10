@@ -632,11 +632,9 @@ export class DashboardController {
     // generatedAt/lockfilePath/sourceFingerprint): assigning it here just
     // carries those extra fields along invisibly. Nothing that reads
     // `lastResult` as a ScanSnapshot ever looks at them.
-    const aliases = new Map(this.declaredDependencies.map(dependency => [dependency.name, dependency.aliasTarget]));
-    this.lastResult = { ...cached, rows: cached.rows.map(row => {
-      const alias = aliases.get(row.name);
-      return alias === undefined ? row : { ...row, registryName: alias };
-    }) };
+    // Row identities belong to the scanned lockfile, whose alias targets can
+    // differ from the manifest. Preserve them exactly on replay.
+    this.lastResult = cached;
     this.lastResultSourceFingerprint = cached.sourceFingerprint;
     this.lastGeneratedAt = cached.generatedAt;
   }

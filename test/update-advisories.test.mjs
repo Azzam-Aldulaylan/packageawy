@@ -221,13 +221,14 @@ test('protocol validates correlation and exact-version facts and the sidecar for
   assert.deepEqual(forwarded, [['webview/postMessage', { message }]]);
 });
 
-test('older cached alias rows recover their registry name before enrichment', async () => {
+test('older cached alias rows leave offered versions unchecked without a registry identity', async () => {
   const f = fixture({ rows: [{ ...row, name: 'alias', upgradeTo: null, upgradeReason: null, range: 'npm:real@^1' }],
     manifest: JSON.stringify({ dependencies: { alias: 'npm:real@^1' } }) });
   await f.controller.handleReady(f.sink);
   await tick();
-  assert.equal(f.posted[0].data.rows[0].registryName, 'real');
-  assert.deepEqual(f.requests, [{ real: ['2.0.0', '1.1.0'] }]);
+  assert.equal(f.posted[0].data.rows[0].registryName, undefined);
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(updates(f), []);
   f.controller.dispose();
 });
 

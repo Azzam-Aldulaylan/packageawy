@@ -9,7 +9,11 @@ export type UpdateVersionPair = { name: string; version: string };
 const severityRank: Severity[] = ['info', 'low', 'moderate', 'high', 'critical'];
 
 export function offeredVersionPairs(rows: readonly PackageRow[]): UpdateVersionPair[] {
-  return rows.flatMap(row => [row.upgradeTo, row.latest, row.wanted]
+  // Older alias rows may lack a registry identity. Leave their versions
+  // unchecked until a scan supplies it rather than checking the installed name.
+  return rows.filter(row => row.registryName !== undefined ||
+    (row.unresolvable !== 'alias' && !row.range.trim().startsWith('npm:')))
+    .flatMap(row => [row.upgradeTo, row.latest, row.wanted]
     .filter((version): version is string => version !== null)
     .map(version => ({ name: row.registryName ?? row.name, version })));
 }
