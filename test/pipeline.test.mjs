@@ -2,7 +2,8 @@
  * buildPackageRows: the lockfile graph, version fetching, and advisory stages together.
  *
  * Everything runs against a fake HttpClient and a fake AuditRunner, so the
- * suite is deterministic and touches neither the network nor a subprocess.
+ * suite is deterministic and touches neither the network nor a subprocess,
+ * apart from one test that runs a fake npm to prove a stuck audit times out.
  * The assertions on WHICH urls were requested matter as much as the row
  * contents: version fetching is designed to avoid fetching the packument for
  * every package, and the pipeline's escalation step must not regress that.
@@ -10,7 +11,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import { NodeAuditRunner } from '../out/core/audit/npmAudit.js';
 import { PerformanceSession } from '../out/core/performance/measurement.js';
 import { buildPackageRows } from '../out/core/pipeline.js';
 import { MemoryEtagStore } from '../out/core/registry/versions.js';
@@ -334,6 +340,29 @@ test('an audit runner that fails to spawn is not fatal', async () => {
   assert.equal(result.auditUnavailable, true);
   assert.equal(result.rows.length, 2);
   assert.equal(rowFor(result, 'minimatch').upgradeTo, '3.1.5');
+});
+
+test('a hanging npm audit times out and the rows still render', async () => {
+  const client = fakeClient({ ...LATEST_ROUTES, [`${REGISTRY}/minimatch`]: MINIMATCH_PACKUMENT }, BULK_RESPONSE);
+  const dir = await mkdtemp(path.join(tmpdir(), 'packageawy-pipeline-audit-'));
+  try {
+    const runner = new NodeAuditRunner({
+      spawnConfig: {
+        command: process.execPath,
+        prefixArgs: [fileURLToPath(new URL('./fixtures/fake-npm/npm.cjs', import.meta.url)), 'hang', path.join(dir, 'pids.json')],
+      },
+      timeoutMs: 300,
+      terminationGraceMs: 200,
+    });
+
+    const result = await buildPackageRows(baseOptions(client, { root: dir, auditRunner: runner }));
+
+    assert.equal(result.auditUnavailable, true);
+    assert.equal(result.rows.length, 2);
+    assert.equal(rowFor(result, 'minimatch').upgradeTo, '3.1.5');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('a failed packument escalation leaves the security fix unverified, but the general update still stands', async () => {

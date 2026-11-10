@@ -35,7 +35,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # The plugin bundles dist/webview.js, dist/webview.css and dist/sidecar.js.
+      # The plugin bundles dist/webview.js, dist/webview.css, dist/sidecar.js and dist/ThirdPartyNotices.txt.
       - name: Build the webview and sidecar
         run: |
           npm ci

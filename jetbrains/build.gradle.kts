@@ -74,7 +74,7 @@ val stubSidecar = layout.projectDirectory.file("src/test/stub-sidecar/sidecar.js
 val useStubSidecar = providers.gradleProperty("packageawy.stubSidecar").map { it.toBoolean() }.orElse(false)
 
 val checkBundledFiles = tasks.register("checkBundledFiles") {
-    val required = listOf("webview.js", "webview.css") + if (useStubSidecar.get()) emptyList() else listOf("sidecar.js")
+    val required = listOf("webview.js", "webview.css", "ThirdPartyNotices.txt") + if (useStubSidecar.get()) emptyList() else listOf("sidecar.js")
     val files = required.map { rootDist.file(it).asFile }
     inputs.property("required", required)
     doLast {
@@ -88,7 +88,7 @@ val checkBundledFiles = tasks.register("checkBundledFiles") {
 tasks {
     jar {
         from(rootDist) {
-            include("webview.js", "webview.css")
+            include("webview.js", "webview.css", "ThirdPartyNotices.txt")
             into("packageawy")
         }
     }
@@ -98,6 +98,10 @@ tasks {
         dependsOn(checkBundledFiles)
         from(if (useStubSidecar.get()) stubSidecar else rootDist.file("sidecar.js")) {
             into("packageawy/sidecar")
+        }
+        // License notices for the bundled JavaScript, at the plugin's top level.
+        from(rootDist.file("ThirdPartyNotices.txt")) {
+            into("packageawy")
         }
     }
 
