@@ -8,10 +8,15 @@
  * VS Code builds) logs DEP0190 for every spawn that passes args with a shell,
  * so every scan and Refresh printed a deprecation warning.
  *
- * Resolution runs a few short probes, so it is cached per project root for
- * this runner's lifetime (one dashboard panel). A cached pair whose run
- * fails (other than a cancel or timeout) is dropped so the next scan resolves
- * again.
+ * Resolution is asynchronous and cancellable (npmResolverAsync.ts): it
+ * starts when the scan starts audit, which the pipeline already runs alongside
+ * the registry requests, so it never blocks the event loop, cancellation or
+ * RPC. The result is cached per project root for this runner's lifetime (one
+ * dashboard panel). A cached pair is dropped so the next scan resolves again
+ * when its run fails (other than a cancel or timeout) or its output is not an
+ * audit report (for example npm-cli.js was removed and node printed only an
+ * error). npm audit exits 1 when it finds vulnerabilities, so the exit code
+ * alone never invalidates.
  *
  * When resolution fails:
  *   - Windows: audit is reported unavailable. Upgrades already require the
@@ -25,16 +30,20 @@
 import {
   AuditUnavailableError,
   NodeAuditRunner,
+  parseNpmAuditOutput,
   type AuditRunner,
   type NodeAuditRunnerOptions,
 } from '../core/audit/npmAudit.js';
-import { createNodeNpmResolverDeps, resolveNpmInvocation, type NpmResolutionResult } from './npmResolver.js';
+import type { NpmResolutionResult } from './npmResolver.js';
+import { createNodeNpmResolverAsyncDeps, resolveNpmInvocationAsync } from './npmResolverAsync.js';
 
 type AuditSpawnConfig = NonNullable<NodeAuditRunnerOptions['spawnConfig']>;
+type AuditResult = { stdout: string; exitCode: number | null };
 
 export interface ResolvedNpmAuditRunnerDeps {
   platform: NodeJS.Platform;
-  resolve(cwd: string): NpmResolutionResult;
+  /** Must not block; rejects with an AbortError when `signal` aborts. */
+  resolve(cwd: string, signal?: AbortSignal): Promise<NpmResolutionResult>;
   /** `spawnConfig` undefined means the platform default (POSIX fallback only). */
   createRunner(spawnConfig: AuditSpawnConfig | undefined): AuditRunner;
 }
@@ -49,39 +58,83 @@ export function auditSpawnConfigFor(resolution: NpmResolutionResult): AuditSpawn
   };
 }
 
+/** True when stdout is an audit report the scan can use. */
+export function isUsableAuditOutput(stdout: string): boolean {
+  try {
+    parseNpmAuditOutput(stdout);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class ResolvedNpmAuditRunner implements AuditRunner {
   private readonly runners = new Map<string, AuditRunner>();
+  private readonly pending = new Map<string, Promise<AuditRunner | null>>();
 
   constructor(private readonly deps: ResolvedNpmAuditRunnerDeps = defaultDeps()) {}
 
-  async run(cwd: string, signal?: AbortSignal): Promise<{ stdout: string; exitCode: number | null }> {
-    const runner = this.runnerFor(cwd);
+  async run(cwd: string, signal?: AbortSignal): Promise<AuditResult> {
+    if (signal?.aborted) throw abortError();
+    const runner = await this.runnerFor(cwd, signal);
     if (runner === null) {
       throw new AuditUnavailableError('npm could not be located for npm audit.');
     }
+    let result: AuditResult;
     try {
-      return await runner.run(cwd, signal);
+      result = await runner.run(cwd, signal);
     } catch (error) {
-      if (!isAbortOrTimeout(error)) this.runners.delete(cwd);
+      if (!isAbortOrTimeout(error)) this.invalidate(cwd, runner);
       throw error;
     }
+    if (!isUsableAuditOutput(result.stdout)) this.invalidate(cwd, runner);
+    return result;
   }
 
-  private runnerFor(cwd: string): AuditRunner | null {
+  private invalidate(cwd: string, runner: AuditRunner): void {
+    if (this.runners.get(cwd) === runner) this.runners.delete(cwd);
+  }
+
+  private async runnerFor(cwd: string, signal: AbortSignal | undefined): Promise<AuditRunner | null> {
     const cached = this.runners.get(cwd);
     if (cached !== undefined) return cached;
-    const spawnConfig = auditSpawnConfigFor(this.deps.resolve(cwd));
-    const runner =
-      spawnConfig !== undefined
-        ? this.deps.createRunner(spawnConfig)
-        : this.deps.platform === 'win32'
-          ? null
-          : this.deps.createRunner(undefined);
-    // A failed Windows resolution is not cached: with no Node install the
-    // probes are plain existence checks, and a later install is picked up.
-    if (runner !== null) this.runners.set(cwd, runner);
-    return runner;
+    const inFlight = this.pending.get(cwd);
+    if (inFlight !== undefined) {
+      try {
+        return await inFlight;
+      } catch (error) {
+        // Another scan's cancel stopped the shared resolution; this one goes on.
+        if (signal?.aborted || !isAbortOrTimeout(error)) throw error;
+      }
+    }
+    return this.resolveRunner(cwd, signal);
   }
+
+  private resolveRunner(cwd: string, signal: AbortSignal | undefined): Promise<AuditRunner | null> {
+    const promise = (async () => {
+      const spawnConfig = auditSpawnConfigFor(await this.deps.resolve(cwd, signal));
+      const runner =
+        spawnConfig !== undefined
+          ? this.deps.createRunner(spawnConfig)
+          : this.deps.platform === 'win32'
+            ? null
+            : this.deps.createRunner(undefined);
+      // A failed Windows resolution is not cached: with no Node install the
+      // probes are plain existence checks, and a later install is picked up.
+      if (runner !== null) this.runners.set(cwd, runner);
+      return runner;
+    })();
+    this.pending.set(cwd, promise);
+    const clear = (): void => {
+      if (this.pending.get(cwd) === promise) this.pending.delete(cwd);
+    };
+    promise.then(clear, clear);
+    return promise;
+  }
+}
+
+function abortError(): Error {
+  return Object.assign(new Error('npm audit was cancelled.'), { name: 'AbortError' });
 }
 
 function isAbortOrTimeout(error: unknown): boolean {
@@ -91,7 +144,7 @@ function isAbortOrTimeout(error: unknown): boolean {
 function defaultDeps(): ResolvedNpmAuditRunnerDeps {
   return {
     platform: process.platform,
-    resolve: (cwd) => resolveNpmInvocation(createNodeNpmResolverDeps(cwd)),
+    resolve: (cwd, signal) => resolveNpmInvocationAsync(createNodeNpmResolverAsyncDeps(cwd, signal)),
     createRunner: (spawnConfig) => new NodeAuditRunner(spawnConfig === undefined ? {} : { spawnConfig }),
   };
 }
