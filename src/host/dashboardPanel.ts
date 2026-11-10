@@ -711,6 +711,10 @@ export class DashboardPanel {
       return;
     }
     if (message.type === 'refresh') {
+      // A Refresh before the first ready waits for startup's own disk read,
+      // so it rereads after that read instead of being overwritten by it.
+      await this.settleStartupPreparation();
+      if (this.disposed) return;
       // Ignored, not queued, while an upgrade holds the panel's lock: this
       // covers both the webview's Refresh button (also disabled client-
       // side while an upgrade is active, see App.tsx) and the Command
@@ -1220,6 +1224,15 @@ export class DashboardPanel {
     this.automaticUsagePending = false;
     this.automaticUsageForce = false;
     void this.usageCoordinator.requestBackgroundUsageRefresh({ force });
+  }
+
+  private async settleStartupPreparation(): Promise<void> {
+    while (this.startup !== undefined && !this.disposed) {
+      const startup = this.startup;
+      await startup.preparation;
+      // A newer pre-ready target replaced it while waiting. Wait for that one.
+      if (this.startup === startup) return;
+    }
   }
 
   /** Discovery and disk reads are speculative too. Never select or write from an old request. */

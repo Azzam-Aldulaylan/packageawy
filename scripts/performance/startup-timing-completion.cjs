@@ -57,7 +57,10 @@ function completionState({ messages, reports, openedAt }) {
     snapshots.some((snapshot) => snapshot.at <= event.at &&
       messages.indexOf(snapshot) < messages.indexOf(event) &&
       snapshot.message.data?.generatedAt === event.message.generatedAt);
-  const lastPainted = lastData === undefined ? undefined : messages.find((event) => matchingPaint(event, [lastData]));
+  // The webview acknowledges each generatedAt once, so a repeat posting of an
+  // already painted snapshot counts as painted through its earlier posting.
+  const lastPainted = lastData === undefined ? undefined : messages.find((event) => matchingPaint(event,
+    dataEvents.filter((snapshot) => snapshot.message.data?.generatedAt === lastData.message.data?.generatedAt)));
   const firstPaintedRows = messages.find((event) => matchingPaint(event,
     dataEvents.filter((snapshot) => (snapshot.message.data?.rows?.length ?? 0) > 0)));
   const state = {

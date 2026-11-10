@@ -163,6 +163,32 @@ test('completion waits for fresh paint after cached rows have already painted', 
   assert.equal(finished.completeAt, 1700);
 });
 
+test('completion accepts an earlier paint when a failed scan keeps the replayed cached rows', () => {
+  const cached = { ...rows(6), generatedAt: 'cached' };
+  const paint = rendered(1200, cached.generatedAt);
+  const replay = message(1400, 'stale', cached);
+  const input = {
+    messages: [message(1100, 'ready', cached), paint, replay],
+    reports: [cacheReport(1050, 'hit=true  freshness=expired')],
+    openedAt: OPENED,
+  };
+  assert.equal(completionState(input).complete, false);
+  // A failed background scan retains the cached snapshot and prints its report.
+  input.reports.push(scanReport(1500));
+  const scanned = completionState(input);
+  assert.equal(scanned.scanDone, true);
+  assert.equal(scanned.complete, false);
+  assert.equal(scanned.waitingFor, 'likely-unused analysis');
+  input.reports.push(usageReport(1600));
+  const finished = completionState(input);
+  assert.equal(finished.scanDone, true);
+  assert.equal(finished.usageDone, true);
+  assert.equal(finished.lastData, replay);
+  assert.equal(finished.firstPaintedRows, paint);
+  assert.equal(finished.complete, true);
+  assert.equal(finished.completeAt, 1600);
+});
+
 test('completion waits for a matching painted acknowledgement, including an older warm timestamp', () => {
   const generatedAt = '2020-01-01T00:00:00.000Z';
   const snapshot = { ...message(1100, 'ready', { ...rows(6), generatedAt }), direction: 'outbound' };

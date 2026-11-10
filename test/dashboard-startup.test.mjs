@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
 import { DashboardController } from '../out/host/dashboardController.js';
 import { PersistentProjectCacheStore } from '../out/core/cache/projectCacheStore.js';
 import { MemoryEtagStore } from '../out/core/registry/versions.js';
@@ -135,6 +136,58 @@ test('ready waits for delayed discovery and project load then joins the one star
   await ready;
   assert.deepEqual(statuses(s.posted), ['loading', 'ready']);
 });
+
+for (const replace of [false, true]) {
+  test(`command Refresh waits for held startup reads${replace ? ' and a newer pre-ready target' : ''}`, async t => {
+    const disk = [deferred(), deferred()];
+    let loads = 0;
+    const s = await panel(t, { projects: replace ? ['a', 'b'] : ['a'],
+      load: () => disk[loads++]?.promise });
+    let refresh;
+    t.after(async () => {
+      disk.forEach(gate => gate.resolve());
+      s.gate.resolve();
+      await refresh;
+    });
+    await until(() => loads === 1); // Startup has read the old manifest and is finding its lockfile.
+    const startup = s.current.startup;
+    const freshManifest = manifest.replaceAll('^1.0.0', '^2.0.0');
+    await writeFile(`${s.root}/a/package.json`, freshManifest);
+    let reloads = 0;
+    const load = s.current.loadProjectMeasured.bind(s.current);
+    s.current.loadProjectMeasured = (...args) => { reloads++; return load(...args); };
+    refresh = s.refresh(); // The command palette bypasses the webview's ready handshake.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reloads, 0, 'Refresh waits before rereading disk');
+    if (replace) {
+      s.open('b');
+      await until(() => loads === 2);
+      await writeFile(`${s.root}/b/package.json`, freshManifest);
+      disk[0].resolve();
+      await startup.preparation;
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(reloads, 0, 'Refresh also waits for the replacement startup');
+    }
+    disk.forEach(gate => gate.resolve());
+    await until(() => s.current.controller?.scanId === 2);
+    assert.equal(s.current.controller.upgradeSource.manifestText, freshManifest);
+    assert.equal(s.current.controller.isEligible(), false, 'held scans cannot authorize the old content');
+    assert.deepEqual(s.posted, []);
+    s.gate.resolve();
+    await refresh;
+    await s.ready();
+    assert.ok(s.snapshots().length > 0);
+    for (const snapshot of s.snapshots()) {
+      assert.equal(snapshot.data.project.manifestPath, `${replace ? 'b' : 'a'}/package.json`);
+      assert.equal(snapshot.data.rows[0].range, '^2.0.0');
+    }
+    assert.equal(s.current.controller.lastResult.rows[0].range, '^2.0.0');
+    assert.equal(s.current.controller.isEligible(), true);
+    assert.ok(s.controllers.every(c => c.disposed || c === s.current.controller));
+    s.close();
+    assert.ok(s.controllers.every(c => c.disposed), 'closing disposes every controller created by startup and Refresh');
+  });
+}
 
 test('finished startup replays without another scan and a webview reload uses ordinary ready', async t => {
   const s = await panel(t);

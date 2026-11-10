@@ -115,18 +115,19 @@ export async function panel(t, { projects = ['a'], target = 'a', early = true, t
   current.httpClient.get = client.get;
   current.httpClient.post = client.post;
   current.auditRunner.run = client.run;
-  if (saved) {
-    const build = current.buildController.bind(current);
-    current.buildController = (...args) => {
-      const controller = build(...args);
-      seed(controller, saved);
-      return controller;
-    };
-  }
+  const controllers = [];
+  const build = current.buildController.bind(current);
+  current.buildController = (...args) => {
+    const controller = build(...args);
+    controllers.push(controller);
+    if (saved) seed(controller, saved);
+    return controller;
+  };
   let closed = false;
   const close = () => { if (!closed) { closed = true; dispose(); } };
   t.after(async () => { close(); gate.resolve(); await rm(root, { recursive: true, force: true }); });
-  return { current, posted, client, gate, platform, root, watchers, picks, notices, searches, close,
+  return { current, controllers, posted, client, gate, platform, root, watchers, picks, notices, searches, close,
+    refresh: () => DashboardPanel.refresh(),
     ready: () => DashboardPanel.dispatchIntegrationTestMessage({ type: 'ready' }),
     open: name => DashboardPanel.openManifest(path.join(root, name, 'package.json')),
     snapshots: () => posted.filter(message => 'data' in message),
