@@ -16,7 +16,10 @@ import type {
   RunningProcess,
   WorkspaceFolder,
 } from '../hostPlatform.js';
+import { REGISTRY_CACHE_STORAGE_KEY } from '../../../core/cache/persistentEtagStore.js';
+import { FileKeyValueStore, migrateStoreKeys } from '../fileKeyValueStore.js';
 import { watchGitHead } from './gitHead.js';
+import { settingsCommandFor } from './settingsScope.js';
 
 const SETTINGS_SECTION = 'packageawy';
 
@@ -41,10 +44,15 @@ function toVsCodeToken(token: CancellationToken | undefined): {
 export class VsCodePlatform implements HostPlatform {
   readonly workspaceState: KeyValueStore;
   readonly globalState: KeyValueStore;
+  readonly cacheStore: KeyValueStore;
 
-  constructor(context: Pick<vscode.ExtensionContext, 'workspaceState' | 'globalState'>) {
+  constructor(context: Pick<vscode.ExtensionContext, 'workspaceState' | 'globalState' | 'globalStorageUri'>) {
     this.workspaceState = context.workspaceState;
     this.globalState = context.globalState;
+    // Registry responses live in files under the extension's global storage
+    // folder, not in global state, which VS Code loads as one value.
+    this.cacheStore = new FileKeyValueStore(vscode.Uri.joinPath(context.globalStorageUri, 'cache').fsPath);
+    void migrateStoreKeys(context.globalState, this.cacheStore, [REGISTRY_CACHE_STORAGE_KEY]).catch(() => undefined);
   }
 
   workspaceFolders(): readonly WorkspaceFolder[] {
@@ -202,7 +210,18 @@ export class VsCodePlatform implements HostPlatform {
     void vscode.env.openExternal(vscode.Uri.parse(url));
   }
 
-  openSettings(key: string): void {
-    void vscode.commands.executeCommand('workbench.action.openSettings', `${SETTINGS_SECTION}.${key}`);
+  openSettings(key: string, resourcePath?: string): void {
+    const fullKey = `${SETTINGS_SECTION}.${key}`;
+    if (resourcePath === undefined) {
+      void vscode.commands.executeCommand('workbench.action.openSettings', fullKey);
+      return;
+    }
+    const inspection = vscode.workspace
+      .getConfiguration(SETTINGS_SECTION, vscode.Uri.file(resourcePath))
+      .inspect(key);
+    // A .code-workspace file means separate workspace and folder settings.
+    const multiRoot = vscode.workspace.workspaceFile !== undefined;
+    const { command, query } = settingsCommandFor(fullKey, inspection, multiRoot);
+    void vscode.commands.executeCommand(command, command === 'workbench.action.openSettings' ? query : { query });
   }
 }

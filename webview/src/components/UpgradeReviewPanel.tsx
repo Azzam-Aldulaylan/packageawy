@@ -1,4 +1,4 @@
-import { memo, useRef } from 'react';
+import { memo, useContext, useRef } from 'react';
 import type { ReactElement, RefObject } from 'react';
 
 import type { PackageRow } from '../../../src/core/types.js';
@@ -39,6 +39,7 @@ import type { UpgradeReviewArea, UpgradeReviewSignal, UpgradeReviewTone as Revie
 import { ProjectCompatibilitySection } from './ProjectCompatibilitySection.js';
 import { StatusBanner } from './StatusBanner.js';
 import { UpgradeTargetSelector } from './UpgradeTargetSelector.js';
+import { selectedSuggestions, VerificationOptInContext } from './VerificationSuggestions.js';
 import type { UpgradeTargetLoadState } from './UpgradeTargetSelector.js';
 import type { UsageRequestState } from './UsageReferencesPanel.js';
 import { usageSummaryCounts } from '../../../src/host/dependencyDetailsCopy.js';
@@ -432,6 +433,7 @@ export function UpgradeReviewPanel({
   onOpenAdvisory?: ((packageName: string, advisoryId: string | number, path: string[], reference?: string) => void) | undefined;
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
 }): ReactElement {
+  const verificationOptIn = useContext(VerificationOptInContext);
   const dependencyRef = useRef<HTMLDetailsElement>(null);
   const projectRef = useRef<HTMLDetailsElement>(null);
   const securityRef = useRef<HTMLDetailsElement>(null);
@@ -560,7 +562,12 @@ export function UpgradeReviewPanel({
   const expired = upgradeAnalysisFreshness(analysis.analyzedAt, analysis.expiresAt, now) === 'expired';
   const executionBlocked = hardStale || expired;
   const action = upgradeConfirmationAction(coordinated ? analysis : { ...analysis, smartPlan: null });
-  const signals = buildUpgradeReviewSignals(analysis, advisoriesAvailable, advisoriesOff);
+  const signals = buildUpgradeReviewSignals(
+    analysis,
+    advisoriesAvailable,
+    advisoriesOff,
+    selectedSuggestions(analysis.verification, verificationOptIn.selectionFor(analysis.analysisId))
+  );
 
   return withTargetSelector(
     <div className="review-panel">
