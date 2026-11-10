@@ -1,6 +1,8 @@
 import * as esbuild from 'esbuild';
 import { existsSync, readFileSync } from 'node:fs';
 
+import { NOTICES_FILENAME, writeThirdPartyNotices } from './scripts/third-party-notices.mjs';
+
 const watch = process.argv.includes('--watch');
 const production = process.argv.includes('--production');
 
@@ -82,5 +84,9 @@ if (watch) {
   await Promise.all(contexts.map((c) => c.watch()));
   console.log('watching...');
 } else {
-  await Promise.all(configs.map((c) => esbuild.build(c)));
+  // The metafile lists every input that reached an output, which is how the
+  // license notices know exactly which packages these bundles carry. Both the
+  // VSIX and the JetBrains plugin ship dist/ThirdPartyNotices.txt.
+  const results = await Promise.all(configs.map((c) => esbuild.build({ ...c, metafile: true })));
+  writeThirdPartyNotices(results.map((r) => r.metafile), `dist/${NOTICES_FILENAME}`);
 }

@@ -253,6 +253,9 @@ export function vulnerabilitiesCardValue(
   if (availability.advisories === 'complete') {
     return { count: metrics.vulnerable, subtitle: vulnerabilitiesCardSubtitle(metrics) };
   }
+  if (availability.advisories === 'partial') {
+    return { count: incompleteCount(metrics.vulnerable), subtitle: 'Install dependencies to complete security checks' };
+  }
   return { count: '—', subtitle: 'Advisory data unavailable' };
 }
 
@@ -277,6 +280,9 @@ export function attentionCardSubtitle(metrics: SummaryMetrics): string {
 export function attentionCardValue(metrics: SummaryMetrics, availability: ScanDataAvailability): SummaryCardValue {
   if (availability.advisories === 'complete') {
     return { count: metrics.needsAttention, subtitle: attentionCardSubtitle(metrics) };
+  }
+  if (availability.advisories === 'partial') {
+    return { count: incompleteCount(metrics.needsAttention), subtitle: 'Install dependencies to complete security checks' };
   }
   return { count: incompleteCount(metrics.needsAttention), subtitle: 'Advisory data unavailable' };
 }

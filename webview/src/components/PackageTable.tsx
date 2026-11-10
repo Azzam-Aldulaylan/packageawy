@@ -318,7 +318,11 @@ export function PackageTable({
                   <AvailableVersionCell row={row} resolutionAvailable={!unavailableUpdatePackages.has(row.name)} />
                 </td>
                 <td>
-                  <SeverityBadge severity={row.worstSeverity} advisoriesAvailable={advisoriesAvailable} />
+                  <SeverityBadge
+                    severity={row.worstSeverity}
+                    advisoriesAvailable={advisoriesAvailable}
+                    checked={row.advisoryCoverage !== 'partial'}
+                  />
                 </td>
                 <td className="packages__action-cell">
                   <div className="packages__actions">

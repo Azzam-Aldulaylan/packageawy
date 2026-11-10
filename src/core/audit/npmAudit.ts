@@ -31,6 +31,7 @@
 import { spawn } from 'node:child_process';
 
 import semver from 'semver';
+import { terminateProcessTree } from '../async/processTree.js';
 import type { FixAvailable } from '../types.js';
 
 /**
@@ -77,30 +78,132 @@ export function resolveAuditSpawnConfig(
   return { command: isWindows ? 'npm.cmd' : 'npm', shell: isWindows };
 }
 
+/**
+ * How long a single `npm audit` may run before the scan gives up on it. Audit
+ * only adds `fixAvailable`, and the rows wait on it, so a proxy that silently
+ * drops traffic must not hold the dashboard for minutes. One minute covers a
+ * cold audit of a large monorepo on a slow link.
+ */
+export const DEFAULT_AUDIT_TIMEOUT_MS = 60_000;
+/** Large monorepo reports run to a few MB. Anything past this is not a report. */
+export const DEFAULT_AUDIT_STDOUT_LIMIT_BYTES = 32 * 1024 * 1024;
+const DEFAULT_AUDIT_TERMINATION_GRACE_MS = 1_000;
+
+export interface NodeAuditRunnerOptions {
+  timeoutMs?: number;
+  stdoutLimitBytes?: number;
+  terminationGraceMs?: number;
+  /**
+   * Test seam: run this command instead of the platform npm. `prefixArgs`
+   * come before the fixed audit arguments. Never fed from user input.
+   */
+  spawnConfig?: { command: string; prefixArgs?: readonly string[]; shell?: boolean };
+}
+
 export class NodeAuditRunner implements AuditRunner {
+  constructor(private readonly options: NodeAuditRunnerOptions = {}) {}
+
   run(cwd: string, signal?: AbortSignal): Promise<{ stdout: string; exitCode: number | null }> {
     return new Promise((resolve, reject) => {
+      const abortError = (): Error =>
+        Object.assign(new Error('npm audit was cancelled.'), { name: 'AbortError' });
+      if (signal?.aborted) {
+        reject(abortError());
+        return;
+      }
+
       // Deferred: locating npm when the extension host's inherited PATH lacks it
       // (nvm/fnm/volta) is the spec's separate "npm Binary Resolution" concern,
       // owned by whatever implements the Upgrade action, which needs it too.
-      const { command, shell } = resolveAuditSpawnConfig(process.platform);
-      const child = spawn(command, AUDIT_ARGS, {
+      const platformConfig = resolveAuditSpawnConfig(process.platform);
+      const override = this.options.spawnConfig;
+      const command = override?.command ?? platformConfig.command;
+      const shell = override?.shell ?? (override === undefined ? platformConfig.shell : false);
+      const child = spawn(command, [...(override?.prefixArgs ?? []), ...AUDIT_ARGS], {
         cwd,
         shell,
-        ...(signal === undefined ? {} : { signal }),
+        windowsHide: true,
+        // Audit never reads stdin. An open stdin pipe could leave it waiting.
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Its own POSIX process group, so a timeout or cancel can stop npm and
+        // everything npm started without signalling the extension host.
+        detached: process.platform !== 'win32',
       });
 
-      let stdout = '';
-      child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => {
-        stdout += chunk;
+      const stdoutLimit = this.options.stdoutLimitBytes ?? DEFAULT_AUDIT_STDOUT_LIMIT_BYTES;
+      const grace = this.options.terminationGraceMs ?? DEFAULT_AUDIT_TERMINATION_GRACE_MS;
+      const stdoutChunks: Buffer[] = [];
+      let stdoutBytes = 0;
+      let failure: Error | undefined;
+      let settled = false;
+      let treeTermination: Promise<void> = Promise.resolve();
+      const timers: ReturnType<typeof setTimeout>[] = [];
+
+      const cleanup = (): void => {
+        for (const timer of timers) clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+      };
+      const settleWithFailure = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        void treeTermination.then(() => reject(error));
+      };
+      const stop = (error: Error): void => {
+        if (failure !== undefined || settled) return;
+        failure = error;
+        treeTermination = terminateProcessTree(child, 'SIGTERM');
+        const forceKill = setTimeout(() => {
+          treeTermination = terminateProcessTree(child, 'SIGKILL');
+          // A child stuck in uninterruptible I/O may never emit close. The
+          // scan still moves on: the result is "audit unavailable" either way.
+          const giveUp = setTimeout(() => settleWithFailure(error), grace);
+          giveUp.unref();
+          timers.push(giveUp);
+        }, grace);
+        forceKill.unref();
+        timers.push(forceKill);
+      };
+      const abort = (): void => stop(abortError());
+
+      const deadline = setTimeout(
+        () => stop(Object.assign(new Error('npm audit timed out.'), { name: 'TimeoutError' })),
+        this.options.timeoutMs ?? DEFAULT_AUDIT_TIMEOUT_MS
+      );
+      deadline.unref();
+      timers.push(deadline);
+      signal?.addEventListener('abort', abort, { once: true });
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (failure !== undefined) return;
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > stdoutLimit) {
+          stop(new AuditUnavailableError('npm audit output exceeded the size limit.'));
+          return;
+        }
+        stdoutChunks.push(chunk);
       });
+      // Always drained and discarded: a full stderr pipe blocks the child, and
+      // nothing here reads audit's progress or warning text.
+      child.stderr.resume();
 
       // Only a genuine spawn failure (ENOENT: npm isn't on PATH at all) is a
       // rejection. A non-zero exit is the expected outcome. See trap 1 above.
-      child.on('error', reject);
+      child.on('error', (error) => {
+        failure ??= error;
+        if (child.pid === undefined) settleWithFailure(error);
+      });
       child.on('close', (exitCode) => {
-        resolve({ stdout, exitCode });
+        if (failure !== undefined) {
+          // A leader can exit before a descendant that ignored SIGTERM.
+          if (!settled) treeTermination = terminateProcessTree(child, 'SIGKILL');
+          settleWithFailure(failure);
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve({ stdout: Buffer.concat(stdoutChunks).toString('utf8'), exitCode });
       });
     });
   }

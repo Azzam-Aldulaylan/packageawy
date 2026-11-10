@@ -171,7 +171,7 @@ function packageReferenceCandidates(name: string, reference: string): string[] {
 
   const values = [
     `${actualName}@${actualReference}`,
-    actualReference.startsWith(`${actualName}@`) ? actualReference : '',
+    packageIdentity(actualReference, null) !== null ? actualReference : '',
   ].filter((value) => value !== '');
   return [...new Set(values)];
 }
@@ -296,6 +296,39 @@ export function buildPnpmGraph(options: BuildPnpmGraphOptions): DependencyGraph 
     );
   }
 
+  // An alias has its own installed name and path, but shares the resolved
+  // snapshot's registry identity, version, and outgoing relationships.
+  const aliasSources = new Map<string, string>();
+  const installedTarget = (name: string, targetId: string, path: string): string => {
+    const target = nodes.get(targetId);
+    if (target === undefined || target.name === name) return targetId;
+    nodes.set(path, {
+      ...target,
+      name,
+      registryName: target.registryName ?? target.name,
+      path,
+      deps: [...target.deps],
+      edges: target.edges.map((edge) => ({ ...edge })),
+    });
+    aliasSources.set(path, targetId);
+    return path;
+  };
+  for (const node of [...nodes.values()]) {
+    node.edges = node.edges.map((edge) => edge.targetNodeId === null ? edge : {
+      ...edge,
+      targetNodeId: installedTarget(edge.name, edge.targetNodeId, `pnpm:alias:${node.path}:${edge.name}`),
+    });
+  }
+  // A target snapshot may occur later in the lockfile. Copy its final edges
+  // so aliases of packages that themselves use aliases retain those paths.
+  for (const [path, sourceId] of aliasSources) {
+    const alias = nodes.get(path);
+    const source = nodes.get(sourceId);
+    if (alias !== undefined && source !== undefined) {
+      alias.edges = source.edges.map((edge) => ({ ...edge }));
+    }
+  }
+
   const importer = asRecord(asRecord(lock['importers'])?.[importerId]);
   const directTargets = new Map<string, string>();
   const directNames = new Set<string>();
@@ -314,19 +347,22 @@ export function buildPnpmGraph(options: BuildPnpmGraphOptions): DependencyGraph 
       // The manifest is authoritative for which packages are direct. An old
       // importer entry left behind by lockfile drift must not create a row.
       if (declared === undefined) continue;
-      if (declared.unresolvable !== undefined) {
+      if (declared.unresolvable !== undefined && declared.unresolvable !== 'alias') {
         const synthetic = emptyDirectNode(declared, importerId);
         nodes.set(synthetic.path, synthetic);
         directNames.add(name);
         continue;
       }
-      const targetId = resolveReference(idsByLockKey, name, reference.version);
+      const resolvedId = resolveReference(idsByLockKey, name, reference.version);
+      const targetId = resolvedId === null ? null
+        : installedTarget(name, resolvedId, `pnpm:importer:${importerId}:${name}`);
       if (targetId !== null) {
         const target = nodes.get(targetId);
         if (target !== undefined) {
           target.direct = true;
           target.dev = declared.dev;
           target.range = declared.range;
+          if (declared.unresolvable !== undefined) target.unresolvable = declared.unresolvable;
           directTargets.set(name, targetId);
           directNames.add(name);
           continue;

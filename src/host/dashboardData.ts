@@ -84,7 +84,7 @@ export function toHostToWebviewMessage(
   if (options.isStale) return { status: 'stale', data };
   if (
     result.availability.updates === 'partial' ||
-    result.availability.advisories === 'unavailable' ||
+    result.availability.advisories !== 'complete' ||
     result.advisoriesError !== undefined ||
     result.auditUnavailable === true
   ) {

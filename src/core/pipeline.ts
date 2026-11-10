@@ -14,12 +14,13 @@
 import type { AuditRunner } from './audit/npmAudit.js';
 import { runNpmAudit, mapFixAvailableToDirectDependencies } from './audit/npmAudit.js';
 import { worstSeverity, resolveUpgradeTarget } from './advisories/aggregate.js';
-import { attributeAdvisories } from './advisories/attribution.js';
+import { advisoryCoverageByRoot, attributeAdvisories } from './advisories/attribution.js';
 import { attachPatchedVersions, distinctFlaggedPackages } from './advisories/remediation.js';
 import { buildBulkRequestBody, fetchBulkAdvisories } from './advisories/bulk.js';
 import { enrichAdvisoriesWithGitHubIdentifiers, GITHUB_ADVISORIES_API } from './advisories/githubIdentifiers.js';
 import { directNodes } from './lockfile/parse.js';
 import { buildDependencyGraph } from './lockfile/build.js';
+import { npmAlias } from './lockfile/identity.js';
 import { computeGraphHygieneFindings } from './hygiene/index.js';
 import type { DependencyFinding } from './hygiene/index.js';
 import { isCatalogSpecifier, parseManifest } from './manifest/parse.js';
@@ -173,6 +174,7 @@ export async function buildPackageRows(
     performance: recorder,
   });
   const roots = directNodes(graph);
+  const advisoryCoverage = advisoryCoverageByRoot(graph);
   recorder.setMetadata('graph nodes', graph.nodes.size);
 
   const packumentPromises = new Map<string, Promise<PackumentDoc>>();
@@ -248,9 +250,13 @@ export async function buildPackageRows(
   // Unresolvable nodes (workspace links, file:/git: specifiers, no lockfile)
   // have no registry entry. Asking would be a guaranteed 404 presented to the
   // user as an error on a perfectly healthy dependency.
-  const requests: VersionRequest[] = roots
-    .filter((n) => n.unresolvable === undefined)
-    .map((n) => ({ name: n.name, range: n.range, installed: n.version }));
+  const versionNodes = roots.filter((node) => node.unresolvable === undefined ||
+    (node.unresolvable === 'alias' && node.registryName !== undefined && node.version !== null));
+  const requests: VersionRequest[] = versionNodes.map((node) => ({
+    name: node.registryName ?? node.name,
+    range: npmAlias(node.range)?.range ?? node.range,
+    installed: node.version,
+  }));
 
   const fetchOptions: Parameters<typeof fetchAllVersions>[0] = {
     client: httpClient,
@@ -272,12 +278,12 @@ export async function buildPackageRows(
   endVersions({ requests: requests.length });
   const versionsByName = new Map<string, VersionInfo>();
   const unavailableUpdatePackages: string[] = [];
-  requests.forEach((req, i) => {
+  versionNodes.forEach((node, i) => {
     const result = settled[i];
     // A per-package failure is simply an absent entry: that row renders with
     // null wanted/latest and doesn't disturb any other row.
-    if (result?.ok === true) versionsByName.set(req.name, result.value);
-    else unavailableUpdatePackages.push(req.name);
+    if (result?.ok === true) versionsByName.set(node.name, result.value);
+    else unavailableUpdatePackages.push(node.name);
   });
   throwIfAborted(signal);
 
@@ -352,7 +358,7 @@ export async function buildPackageRows(
   });
   const fallbackSettled = await runPool(
     fallbackNodes,
-    (node, poolSignal) => loadPackument(node.name, 'upgrade-target fallback', poolSignal),
+    (node, poolSignal) => loadPackument(node.registryName ?? node.name, 'upgrade-target fallback', poolSignal),
     {
       limit: options.concurrency ?? DEFAULT_CONCURRENCY,
       ...(signal === undefined ? {} : { signal }),
@@ -397,10 +403,13 @@ export async function buildPackageRows(
       optional: declaredByName.get(node.name)?.optional ?? false,
       range: node.range,
       advisories,
+      advisoryCoverage: advisoryCoverage.get(node.name) ?? 'partial',
       worstSeverity: worstSeverity(advisories),
-      // A catalog specifier is owned by pnpm-workspace.yaml, never rewritten here.
-      upgradeTo: catalogOwned ? null : (candidate?.target ?? null),
-      upgradeReason: catalogOwned ? null : (candidate?.reason ?? null),
+      // A catalog specifier is owned by pnpm-workspace.yaml, and an npm:
+      // alias would lose its declaration in an ordinary install. Neither is
+      // offered an upgrade here.
+      upgradeTo: catalogOwned || node.registryName !== undefined ? null : (candidate?.target ?? null),
+      upgradeReason: catalogOwned || node.registryName !== undefined ? null : (candidate?.reason ?? null),
     };
     if (info?.description !== undefined) row.description = info.description;
     if (info?.license !== undefined) row.license = info.license;
@@ -414,7 +423,8 @@ export async function buildPackageRows(
 
   const availability: ScanDataAvailability = {
     updates: unavailableUpdatePackages.length === 0 ? 'complete' : 'partial',
-    advisories: advisoriesError === undefined ? 'complete' : 'unavailable',
+    advisories: advisoriesError !== undefined ? 'unavailable'
+      : [...advisoryCoverage.values()].includes('partial') ? 'partial' : 'complete',
     unavailableUpdatePackages,
   };
   const result: BuildPackageRowsResult = { rows, availability, hygieneFindings };
