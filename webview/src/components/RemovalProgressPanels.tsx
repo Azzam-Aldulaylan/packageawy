@@ -4,6 +4,24 @@ import type { PackageRow } from '../../../src/core/types.js';
 import type { RemoveProgressPhase, RemoveResultPresentation } from '../../../src/host/webviewProtocol.js';
 import { IconRefresh } from '../icons.js';
 
+/** Which removal view the Manage dialog shows. `review` is the normal Removal review. */
+export type RemovalView = 'review' | 'running' | 'result' | 'error';
+
+const VIEW_HEADING: Record<Exclude<RemovalView, 'review'>, string> = {
+  running: 'removal-running-heading',
+  result: 'removal-result-heading',
+  error: 'removal-error-heading',
+};
+
+/**
+ * The heading id to focus after the removal view changes, or null when the
+ * view stayed the same or went back to the review, which keeps its own focus.
+ */
+export function removalViewFocusTarget(previous: RemovalView, next: RemovalView): string | null {
+  if (previous === next || next === 'review') return null;
+  return VIEW_HEADING[next];
+}
+
 type StepStatus = 'complete' | 'running' | 'waiting';
 
 const STEPS: ReadonlyArray<{ phase: RemoveProgressPhase | null; label: string; running: string }> = [
@@ -44,7 +62,7 @@ export function RemovalRunningPanel({
   return (
     <div className="upgrade-tab removal-running">
       <section className="analysis-card analysis-card--full" aria-labelledby="removal-running-heading">
-        <h3 className="analysis-card__title" id="removal-running-heading">Removing {row.name}</h3>
+        <h3 className="analysis-card__title" id="removal-running-heading" tabIndex={-1}>Removing {row.name}</h3>
         <p className="analysis-card__pending-label" role="status" aria-live="polite">
           <IconRefresh className="banner__icon--spin" aria-hidden="true" /> {current?.running ?? 'Working'}…
         </p>
@@ -95,7 +113,7 @@ export function RemovalResultPanel({
   return (
     <div className="upgrade-tab" role="status" aria-live="polite">
       <section className="analysis-card analysis-card--full" aria-labelledby="removal-result-heading">
-        <h3 className="analysis-card__title" id="removal-result-heading">{removalResultTitle(result)}</h3>
+        <h3 className="analysis-card__title" id="removal-result-heading" tabIndex={-1}>{removalResultTitle(result)}</h3>
         {result.packages.map((name) => (
           <p key={name} className="analysis-card__hint">
             <code>{name}</code>
@@ -122,6 +140,40 @@ export function RemovalResultPanel({
             Build and test checks did not confirm this change. Run your project checks before you commit.
           </p>
         ) : null}
+      </section>
+    </div>
+  );
+}
+
+export function removalRollbackLabel(code: string): string {
+  if (code === 'ROLLBACK_CONFLICT') return 'Incomplete, newer edits were kept';
+  if (code === 'ROLLBACK_FAILED') return 'Failed';
+  return 'Not confirmed';
+}
+
+/**
+ * A removal that failed after its package already left the project. Stays
+ * until the dialog is closed, so the failure is never lost with the row.
+ */
+export function RemovalErrorPanel({
+  row,
+  error,
+}: {
+  row: PackageRow;
+  error: { code: string; message: string };
+}): ReactElement {
+  return (
+    <div className="upgrade-tab" role="alert">
+      <section className="analysis-card analysis-card--full" aria-labelledby="removal-error-heading">
+        <h3 className="analysis-card__title" id="removal-error-heading" tabIndex={-1}>Removal did not finish</h3>
+        <p className="analysis-card__hint">{error.message}</p>
+        <dl className="manage-glance">
+          <div className="manage-glance__row"><dt>Package</dt><dd><code>{row.name}</code> <code>{row.current ?? row.range}</code></dd></div>
+          <div className="manage-glance__row"><dt>Rollback</dt><dd>{removalRollbackLabel(error.code)}</dd></div>
+        </dl>
+        <p className="analysis-card__hint">
+          Check package.json and the lockfile before you install again. This package no longer appears in the project.
+        </p>
       </section>
     </div>
   );

@@ -13,6 +13,7 @@ const {
   dashboardProjectKey,
   dialogsAfterOpenRequest,
   manageDialogRow,
+  manageRemovalAfterError,
   manageRemovalAfterProgress,
   manageRemovalAfterResult,
   manageRemovalAfterSnapshot,
@@ -154,4 +155,42 @@ test('the app holds Manage removals and clears them on close and new reviews', (
   assert.match(app, /resultInDialog: true as const/);
   assert.match(app, /manageDialogRow\(manageRow, data\.rows, manageRemoval\)/);
   assert.match(app, /removalRunning \|\|\s+removalImpact\.phase === 'analyzing'/);
+});
+
+const rollbackConflict = { code: 'ROLLBACK_CONFLICT', message: 'Rollback was incomplete.' };
+
+test('an error after the host reloaded without the package keeps the dialog and the error', () => {
+  let state = { manageRow: 'left-pad', hold: beginManageRemoval(leftPad, project, 'removal-1') };
+  // The host reloads before it reports the failure.
+  state = snapshotStep(state, project, ['lodash']);
+  assert.equal(state.manageRow, 'left-pad');
+  state = { ...state, hold: manageRemovalAfterError(state.hold, rollbackConflict, ['lodash']) };
+  assert.equal(state.hold.phase, 'error');
+  assert.deepEqual(state.hold.error, rollbackConflict);
+  assert.equal(manageDialogRow(state.manageRow, [{ name: 'lodash' }], state.hold), leftPad);
+  // Later rescans keep showing it until the user closes the dialog.
+  state = snapshotStep(state, project, ['lodash']);
+  assert.equal(state.manageRow, 'left-pad');
+  assert.equal(state.hold.phase, 'error');
+});
+
+test('an error while the package is still listed hands back to the Removal review', () => {
+  const hold = beginManageRemoval(leftPad, project, 'removal-1');
+  assert.equal(manageRemovalAfterError(hold, rollbackConflict, ['left-pad']), null);
+  const result = manageRemovalAfterResult(hold, removedResult);
+  assert.equal(manageRemovalAfterError(result, rollbackConflict, []), result);
+});
+
+test('dismissing a removal error closes Manage, and a later restore does not reopen it', () => {
+  let state = { manageRow: 'left-pad', hold: manageRemovalAfterError(beginManageRemoval(leftPad, project, 'removal-1'), rollbackConflict, []) };
+  assert.equal(state.hold.phase, 'error');
+  // Close clears both the open row and the held removal.
+  state = { manageRow: null, hold: null };
+  state = snapshotStep(state, project, ['left-pad', 'lodash']);
+  assert.deepEqual(state, { manageRow: null, hold: null });
+});
+
+test('the app keeps a removal error in the dialog that started it', () => {
+  assert.match(app, /setManageRemoval\(manageRemovalAfterError\(/);
+  assert.match(app, /\{ phase: 'error', error: heldRemoval\.error \}/);
 });

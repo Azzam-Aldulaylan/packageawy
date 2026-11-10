@@ -15,7 +15,7 @@ const bundle = await build({
   stdin: {
     contents: [
       'export { ManageDependencyModal, manageFooterNote } from "./webview/src/components/ManageDependencyModal.tsx";',
-      'export { RemovalResultPanel, RemovalRunningPanel, removalProgressSteps } from "./webview/src/components/RemovalProgressPanels.tsx";',
+      'export { RemovalErrorPanel, RemovalResultPanel, RemovalRunningPanel, removalProgressSteps, removalViewFocusTarget } from "./webview/src/components/RemovalProgressPanels.tsx";',
       'export { RemovalReviewPanel } from "./webview/src/components/RemovalReviewPanel.tsx";',
     ].join('\n'),
     resolveDir: process.cwd(),
@@ -39,12 +39,15 @@ const bundle = await build({
 const {
   ManageDependencyModal,
   manageFooterNote,
+  RemovalErrorPanel,
   RemovalResultPanel,
   RemovalReviewPanel,
   RemovalRunningPanel,
   removalProgressSteps,
+  removalViewFocusTarget,
 } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 
+const manageSource = await readFile(join(process.cwd(), 'webview/src/components/ManageDependencyModal.tsx'), 'utf8');
 const coordinator = await readFile(join(process.cwd(), 'src/host/upgradeAssistantCoordinator.ts'), 'utf8');
 
 const noop = () => {};
@@ -251,4 +254,41 @@ test('peer dependencies read from the lockfile even when the usage scan is incom
   assert.match(incomplete, /Peer dependencies No conflicts in the lockfile/);
   assert.match(renderReview({ status: 'low-risk', evidence: [] }), /Peer dependencies No conflicts in the lockfile/);
   assert.match(renderReview(undefined), /Peer dependencies Not checked/);
+});
+
+test('a removal error after the package left shows the failure and rollback outcome', () => {
+  const raw = renderToStaticMarkup(createElement(RemovalErrorPanel, {
+    row,
+    error: { code: 'ROLLBACK_CONFLICT', message: 'Rollback was incomplete because dependency files changed concurrently.' },
+  }));
+  const html = text(raw);
+  assert.match(raw, /role="alert"/);
+  assert.match(raw, /id="removal-error-heading" tabindex="-1"/);
+  assert.match(html, /Removal did not finish/);
+  assert.match(html, /Rollback was incomplete because dependency files changed concurrently\./);
+  assert.match(html, /Rollback Incomplete, newer edits were kept/);
+  assertPlainCopy(raw);
+  const manage = text(renderManage({ removalRun: { phase: 'error', error: { code: 'ROLLBACK_FAILED', message: 'Rollback failed.' } } }));
+  assert.match(manage, /Removal did not finish/);
+  assert.match(manage, /Rollback Failed/);
+  assert.match(manage, /Close/);
+});
+
+test('focus moves to the heading of each new removal view', () => {
+  assert.equal(removalViewFocusTarget('review', 'running'), 'removal-running-heading');
+  assert.equal(removalViewFocusTarget('running', 'result'), 'removal-result-heading');
+  assert.equal(removalViewFocusTarget('running', 'error'), 'removal-error-heading');
+  assert.equal(removalViewFocusTarget('running', 'running'), null);
+  assert.equal(removalViewFocusTarget('result', 'review'), null);
+  for (const [view, progress] of [['running', { phase: 'running', progress: null }], ['result', { phase: 'result', result: result('verified', 'passed') }]]) {
+    assert.match(renderManage({ removalRun: progress }), new RegExp(`id="removal-${view}-heading" tabindex="-1"`));
+  }
+});
+
+test('Manage focuses the new view and handles Escape on the document', () => {
+  assert.match(manageSource, /removalViewFocusTarget\(previousRemovalView\.current, removalView\)/);
+  assert.match(manageSource, /querySelector<HTMLElement>\(`#\$\{target\}`\)\?\.focus\(\)/);
+  assert.match(manageSource, /ownerDocument\.addEventListener\('keydown', onKeyDown\)/);
+  assert.match(manageSource, /!isTopmostTrap\(node\)/);
+  assert.doesNotMatch(manageSource, /node\.addEventListener\('keydown'/);
 });

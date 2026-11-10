@@ -16,14 +16,20 @@ import {
   shouldShowUpgradeVulnerabilitySeverity,
 } from '../../../src/host/upgradeReviewUiState.js';
 import type { UpgradeEnrichmentUiState } from '../../../src/host/upgradeReviewUiState.js';
-import { trapFocus } from '../focusTrap.js';
+import { isTopmostTrap, trapFocus } from '../focusTrap.js';
 import { CLASSIFICATION_LABEL, classificationOf } from '../dependencyClassification.js';
 import { IconFolder, IconInfo, IconRefresh, IconShield, IconSliders, IconTrash, IconTrendUp, IconX } from '../icons.js';
 import type { RemovalImpactState } from '../removalImpactState.js';
 import type { TransitiveFixUiState } from '../transitiveRemediationState.js';
 import { OverviewPanel } from './OverviewPanel.js';
 import { PackageIcon } from './PackageIcon.js';
-import { RemovalResultPanel, RemovalRunningPanel } from './RemovalProgressPanels.js';
+import {
+  RemovalErrorPanel,
+  RemovalResultPanel,
+  RemovalRunningPanel,
+  removalViewFocusTarget,
+} from './RemovalProgressPanels.js';
+import type { RemovalView } from './RemovalProgressPanels.js';
 import { RemovalReviewPanel } from './RemovalReviewPanel.js';
 import { StatusBadge } from './StatusBadge.js';
 import { UpgradeReviewPanel } from './UpgradeReviewPanel.js';
@@ -73,7 +79,8 @@ interface RemovalReviewState {
 /** A removal this dialog started: running, or finished with the host's result. */
 export type ManageRemovalRun =
   | { phase: 'running'; progress: RemoveProgressPhase | null }
-  | { phase: 'result'; result: RemoveResultPresentation };
+  | { phase: 'result'; result: RemoveResultPresentation }
+  | { phase: 'error'; error: { code: string; message: string } };
 
 /**
  * The Manage dialog footer line. The read-only promise holds only until a
@@ -84,7 +91,7 @@ export function manageFooterNote(
   removal: ManageRemovalRun | null = null
 ): string | null {
   if (removal !== null) {
-    if (removal.phase === 'running') return null;
+    if (removal.phase !== 'result') return null;
     return removal.result.outcome === 'rolled-back'
       ? 'Your dependency files were restored.'
       : 'Changes were applied to package.json and the lockfile.';
@@ -396,20 +403,32 @@ export function ManageDependencyModal({
     return node === null ? undefined : trapFocus(node);
   }, []);
 
+  // Listens on the document, like the focus trap, so Escape still closes the
+  // dialog when a view swap removed the focused control and focus fell out.
   useEffect(() => {
     const node = dialogRef.current;
     if (node === null) return;
+    const ownerDocument = node.ownerDocument;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        if (blockClose) return;
-        event.preventDefault();
-        onClose();
-        return;
-      }
+      if (event.key !== 'Escape' || event.defaultPrevented || !isTopmostTrap(node)) return;
+      if (blockClose) return;
+      event.preventDefault();
+      onClose();
     };
-    node.addEventListener('keydown', onKeyDown);
-    return () => node.removeEventListener('keydown', onKeyDown);
+    ownerDocument.addEventListener('keydown', onKeyDown);
+    return () => ownerDocument.removeEventListener('keydown', onKeyDown);
   }, [blockClose, onClose]);
+
+  // When the removal view changes, the control that had focus (for example
+  // the Remove button) is gone. Move focus to the new view's heading.
+  const removalView: RemovalView = removalRun === null ? 'review' : removalRun.phase;
+  const previousRemovalView = useRef<RemovalView>(removalView);
+  useEffect(() => {
+    const target = removalViewFocusTarget(previousRemovalView.current, removalView);
+    previousRemovalView.current = removalView;
+    if (target === null || activeTab !== 'removal') return;
+    dialogRef.current?.querySelector<HTMLElement>(`#${target}`)?.focus();
+  }, [activeTab, removalView]);
 
   const onOverlayClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
     if (event.target === event.currentTarget && !blockClose) onClose();
@@ -547,6 +566,8 @@ export function ManageDependencyModal({
     content = <RemovalRunningPanel row={row} progress={removalRun.progress} />;
   } else if (removalRun?.phase === 'result') {
     content = <RemovalResultPanel row={row} result={removalRun.result} />;
+  } else if (removalRun?.phase === 'error') {
+    content = <RemovalErrorPanel row={row} error={removalRun.error} />;
   } else {
     content = (
       <RemovalReviewPanel

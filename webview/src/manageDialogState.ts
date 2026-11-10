@@ -38,9 +38,11 @@ export interface ManageRemovalHold<Row extends { name: string }> {
   projectKey: string;
   analysisId: string;
   row: Row;
-  phase: 'running' | 'result';
+  phase: 'running' | 'result' | 'error';
   progress: RemoveProgressPhase | null;
   result: RemoveResultPresentation | null;
+  /** Set in the `error` phase: the removal failed after its package left the project. */
+  error: { code: string; message: string } | null;
 }
 
 export function beginManageRemoval<Row extends { name: string }>(
@@ -48,7 +50,7 @@ export function beginManageRemoval<Row extends { name: string }>(
   projectKey: string,
   analysisId: string
 ): ManageRemovalHold<Row> {
-  return { projectKey, analysisId, row, phase: 'running', progress: null, result: null };
+  return { projectKey, analysisId, row, phase: 'running', progress: null, result: null, error: null };
 }
 
 /** The package a hold keeps the Manage dialog open for, if any. */
@@ -71,6 +73,24 @@ export function manageRemovalAfterResult<Row extends { name: string }>(
 ): ManageRemovalHold<Row> | null {
   if (hold === null || hold.phase !== 'running' || hold.analysisId !== result.analysisId) return hold;
   return { ...hold, phase: 'result', progress: null, result };
+}
+
+/**
+ * A removal that fails while running. When its package is still listed the
+ * hold ends and the Removal review shows the error with its Re-run action.
+ * When the package is already gone (the host reloaded the project before
+ * reporting, for example after an incomplete rollback), the hold keeps the
+ * removed row and the error until the user closes the dialog. Otherwise the
+ * dialog would vanish without showing the failure.
+ */
+export function manageRemovalAfterError<Row extends { name: string }>(
+  hold: ManageRemovalHold<Row> | null,
+  error: { code: string; message: string },
+  listedNames: readonly string[]
+): ManageRemovalHold<Row> | null {
+  if (hold === null || hold.phase !== 'running') return hold;
+  if (listedNames.includes(hold.row.name)) return null;
+  return { ...hold, phase: 'error', progress: null, error };
 }
 
 /** A snapshot from another project drops the hold. Same-project rescans keep it. */

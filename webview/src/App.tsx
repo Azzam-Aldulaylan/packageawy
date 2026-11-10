@@ -86,6 +86,7 @@ import {
   dashboardProjectKey,
   dialogsAfterOpenRequest,
   manageDialogRow,
+  manageRemovalAfterError,
   manageRemovalAfterProgress,
   manageRemovalAfterResult,
   manageRemovalAfterSnapshot,
@@ -619,9 +620,14 @@ export function App(): ReactElement {
       }
 
       if (incoming.status === 'remove-error' && manageRemovalRef.current?.phase === 'running') {
-        // Show the failure in the Removal review that started the removal,
-        // even if a rescan during the run reset the review state.
-        setManageRemoval(null);
+        // Show the failure in the Manage dialog that started the removal,
+        // even if a rescan during the run reset the review state or the
+        // package already left the project.
+        setManageRemoval(manageRemovalAfterError(
+          manageRemovalRef.current,
+          incoming.error,
+          dashboardDataRef.current?.rows.map((candidate) => candidate.name) ?? []
+        ));
         removeOriginRef.current = 'manage-dependency';
         setRemoveOrigin('manage-dependency');
       }
@@ -2560,7 +2566,9 @@ export function App(): ReactElement {
                     ? null
                     : heldRemoval.phase === 'result' && heldRemoval.result !== null
                       ? { phase: 'result', result: heldRemoval.result }
-                      : { phase: 'running', progress: heldRemoval.progress }
+                      : heldRemoval.phase === 'error' && heldRemoval.error !== null
+                        ? { phase: 'error', error: heldRemoval.error }
+                        : { phase: 'running', progress: heldRemoval.progress }
                 }
                 onAnalyzeRemediation={requestAnalyzeRemediation}
                 onReviewRemediation={reviewRemediation}
