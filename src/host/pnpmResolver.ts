@@ -1,55 +1,182 @@
-/** Resolve pnpm as trusted JavaScript run by the already-resolved Node binary. */
+/** Discover installation-owned pnpm entry points without a shell or workspace binaries. */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 
-import type { NpmInvocation } from './npmResolver.js';
+import { probeLoginShellPath, type NpmInvocation } from './npmResolver.js';
 import type { PackageManagerInvocation } from './resolverVerifier.js';
 
+export const PNPM_NOT_FOUND_MESSAGE =
+  'Packageawy searched npm global packages, Corepack, PATH, PNPM_HOME, common installation folders and the login-shell PATH for pnpm. Install pnpm or set PNPM_HOME.';
+
 export interface PnpmResolverDeps {
+  platform?: NodeJS.Platform;
+  cwd?: string;
+  /** Lock/workspace root, also excluding sibling workspace members. */
+  projectRoot?: string;
+  pathEnv?: string;
+  homeDir?: string;
+  pnpmHome?: string;
+  localAppData?: string;
+  appData?: string;
+  packageManager?: string;
   exists(path: string): boolean;
+  realpath?(path: string): string;
   probe(executable: string, prefixArgs: readonly string[]): string | undefined;
+  probeLoginShellPath?(): string | undefined;
 }
 
-export function pnpmInvocationCandidates(npm: NpmInvocation): PackageManagerInvocation[] {
-  // npmCliJs is <global-root>/npm/bin/npm-cli.js for both POSIX and the
-  // supported Windows layout. Only sibling, installation-owned packages are
-  // considered. Workspace node_modules is never searched.
-  const globalRoot = path.dirname(path.dirname(path.dirname(npm.npmCliJs)));
+export function pnpmInvocationCandidates(
+  npm: NpmInvocation,
+  platform: NodeJS.Platform = process.platform
+): PackageManagerInvocation[] {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const globalRoot = p.dirname(p.dirname(p.dirname(npm.npmCliJs)));
   return [
-    { executable: npm.node, prefixArgs: [path.join(globalRoot, 'pnpm', 'bin', 'pnpm.cjs')] },
-    { executable: npm.node, prefixArgs: [path.join(globalRoot, 'corepack', 'dist', 'corepack.js'), 'pnpm'] },
-    { executable: npm.node, prefixArgs: [path.join(globalRoot, 'corepack', 'dist', 'corepack.cjs'), 'pnpm'] },
+    { executable: npm.node, prefixArgs: [p.join(globalRoot, 'pnpm', 'bin', 'pnpm.cjs')] },
+    { executable: npm.node, prefixArgs: [p.join(globalRoot, 'corepack', 'dist', 'corepack.js'), 'pnpm'] },
+    { executable: npm.node, prefixArgs: [p.join(globalRoot, 'corepack', 'dist', 'corepack.cjs'), 'pnpm'] },
   ];
 }
 
+function installationDirs(deps: PnpmResolverDeps): string[] {
+  const p = deps.platform === 'win32' ? path.win32 : path.posix;
+  const dirs = [...(deps.pathEnv ?? '').split(deps.platform === 'win32' ? ';' : ':')];
+  if (deps.pnpmHome) dirs.push(deps.pnpmHome);
+  if (deps.homeDir) {
+    const home = deps.homeDir;
+    if (deps.platform === 'win32') {
+      const local = deps.localAppData ?? p.join(home, 'AppData', 'Local');
+      dirs.push(p.join(local, 'pnpm'), p.join(local, 'Microsoft', 'WinGet', 'Links'),
+        p.join(deps.appData ?? p.join(home, 'AppData', 'Roaming'), 'npm'),
+        p.join(home, 'scoop', 'shims'));
+    } else {
+      dirs.push(p.join(home, 'Library', 'pnpm'), p.join(home, '.local', 'share', 'pnpm'),
+        p.join(home, '.local', 'bin'), p.join(home, '.local', 'share', 'mise', 'shims'),
+        p.join(home, '.asdf', 'shims'));
+    }
+    dirs.push(p.join(home, '.volta', 'bin'));
+  }
+  if (deps.platform !== 'win32') dirs.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin');
+  return [...new Set(dirs)];
+}
+
 export function resolvePnpmInvocation(
-  npm: NpmInvocation,
+  npm: NpmInvocation | null,
   deps: PnpmResolverDeps
 ): PackageManagerInvocation | null {
-  for (const candidate of pnpmInvocationCandidates(npm)) {
-    const cli = candidate.prefixArgs[0];
-    if (cli === undefined || !deps.exists(cli)) continue;
+  const platform = deps.platform ?? process.platform;
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const root = deps.projectRoot ?? deps.cwd;
+  const inside = (file: string, directory: string): boolean => {
+    const relative = p.relative(directory, file);
+    return relative === '' || (!relative.startsWith(`..${p.sep}`) && relative !== '..' && !p.isAbsolute(relative));
+  };
+  const safe = (file: string): boolean => {
+    if (!p.isAbsolute(file) || (root !== undefined && inside(file, root))) return false;
+    try {
+      return root === undefined || !inside(deps.realpath?.(file) ?? file, deps.realpath?.(root) ?? root);
+    } catch {
+      return false;
+    }
+  };
+  const wanted = /^pnpm@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\+.*)?$/.exec(deps.packageManager ?? '')?.[1];
+  let fallback: PackageManagerInvocation | null = null;
+  const seen = new Set<string>();
+  const validate = (candidate: PackageManagerInvocation): PackageManagerInvocation | null => {
+    const key = JSON.stringify(candidate);
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const files = [candidate.executable, ...candidate.prefixArgs.slice(0, 1)];
+    if (!files.every(safe)) return null;
+    const cli = candidate.prefixArgs[0] ?? candidate.executable;
+    if (!deps.exists(cli)) return null;
     const version = deps.probe(candidate.executable, candidate.prefixArgs);
-    if (version !== undefined) return { ...candidate, version };
+    if (version === undefined) return null;
+    const result = { ...candidate, version };
+    fallback ??= result;
+    return wanted === undefined || version === wanted ? result : null;
+  };
+  if (npm !== null) {
+    for (const candidate of pnpmInvocationCandidates(npm, platform)) {
+      const result = validate(candidate);
+      if (result !== null) return result;
+    }
   }
-  return null;
+  const search = (dirs: readonly string[]): PackageManagerInvocation | null => {
+    for (const dir of dirs) {
+      if (!safe(dir)) continue;
+      // Windows batch wrappers are never executed. Resolve npm's standard
+      // pnpm.cmd layout to JS, or use a standalone/manager-owned PE binary.
+      const files = platform === 'win32'
+        ? [p.join(dir, 'pnpm.exe'), p.join(dir, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs'),
+          p.join(dir, 'pnpm.cjs')]
+        : [p.join(dir, 'pnpm')];
+      for (const file of files) {
+        if (!safe(file) || !deps.exists(file)) continue;
+        let real: string;
+        try { real = deps.realpath?.(file) ?? file; } catch { continue; }
+        const candidate = /\.(?:cjs|mjs|js)$/i.test(real)
+          ? npm === null ? null : { executable: npm.node, prefixArgs: [real] }
+          : { executable: file, prefixArgs: [] };
+        if (candidate === null) continue;
+        const result = validate(candidate);
+        if (result !== null) return result;
+      }
+    }
+    return null;
+  };
+  const result = search(installationDirs({ ...deps, platform }));
+  if (result !== null) return result;
+  if (platform !== 'win32') {
+    const shellPath = deps.probeLoginShellPath?.();
+    if (shellPath !== undefined) {
+      const result = search(shellPath.split(':'));
+      if (result !== null) return result;
+    }
+  }
+  return fallback;
 }
 
 export function resolveInstalledPnpmInvocation(
-  npm: NpmInvocation,
+  npm: NpmInvocation | null,
   cwd: string
 ): PackageManagerInvocation | null {
+  let projectRoot = cwd;
+  for (let dir = cwd; ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, 'pnpm-workspace.yaml')) || existsSync(path.join(dir, 'pnpm-lock.yaml'))) {
+      projectRoot = dir;
+      break;
+    }
+    if (path.dirname(dir) === dir) break;
+  }
+  let packageManager: string | undefined;
+  for (let dir = cwd; ; dir = path.dirname(dir)) {
+    try {
+      const manifest: unknown = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      if (typeof manifest === 'object' && manifest !== null && 'packageManager' in manifest &&
+          typeof manifest.packageManager === 'string') packageManager = manifest.packageManager;
+    } catch { /* A missing manifest simply leaves the version preference unset. */ }
+    if (packageManager !== undefined || dir === projectRoot || path.dirname(dir) === dir) break;
+  }
+  // Like npm resolution, validate on every call so changed installs and project pins are reflected.
   return resolvePnpmInvocation(npm, {
+    platform: process.platform, cwd, projectRoot, homeDir: homedir(),
+    ...(process.env['PATH'] === undefined ? {} : { pathEnv: process.env['PATH'] }),
+    ...(process.env['PNPM_HOME'] === undefined ? {} : { pnpmHome: process.env['PNPM_HOME'] }),
+    ...(process.env['LOCALAPPDATA'] === undefined ? {} : { localAppData: process.env['LOCALAPPDATA'] }),
+    ...(process.env['APPDATA'] === undefined ? {} : { appData: process.env['APPDATA'] }),
+    ...(packageManager === undefined ? {} : { packageManager }),
     exists: existsSync,
+    realpath: realpathSync,
+    probeLoginShellPath: () => probeLoginShellPath(cwd),
     probe(executable, prefixArgs) {
       try {
+        accessSync(executable, constants.X_OK);
         const output = execFileSync(executable, [...prefixArgs, '--version'], {
-          cwd,
-          encoding: 'utf8',
-          timeout: 5000,
-          stdio: ['ignore', 'pipe', 'ignore'],
+          cwd, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
         });
         const version = output.trim();
         return version.length === 0 ? undefined : version.slice(0, 100);

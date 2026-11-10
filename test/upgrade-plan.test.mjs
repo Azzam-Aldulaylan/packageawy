@@ -69,6 +69,28 @@ test('pnpm uses add with the same explicit classification and ignore-scripts pol
   }), ['install', 'left-pad@2.0.0', '--save-prod']);
 });
 
+test('pnpm adds -w only for the workspace root across direct, coordinated, removal and update plans', () => {
+  for (const workspace of [
+    undefined,
+    { importerId: '.', hasWorkspaceManifest: false },
+    { importerId: 'packages/app', hasWorkspaceManifest: true },
+    { importerId: '.', hasWorkspaceManifest: true },
+  ]) {
+    const root = workspace?.importerId === '.' && workspace.hasWorkspaceManifest;
+    const options = { packageName: 'pkg', target: '2.0.0', classification: 'prod', ignoreScripts: true, workspace };
+    for (const manager of ['npm', 'pnpm']) {
+      const plans = [
+        buildInstallArgs(manager, options),
+        buildCoordinatedInstallArgs(manager, { changes: [options], ignoreScripts: true, workspace }),
+        // Removals stage package.json and reconcile with install.
+        buildManifestReconciliationArgs(manager, { ignoreScripts: true, workspace }),
+        buildTransitiveRemediationArgs(manager, ['pkg'], { ignoreScripts: true, workspace }),
+      ];
+      for (const args of plans) assert.equal(args.includes('-w'), manager === 'pnpm' && !!root);
+    }
+  }
+});
+
 test('coordinated plans install same-classification changes atomically with literal argv', () => {
   const changes = [
     { packageName: 'some-library', target: '5.0.0', classification: 'prod' },

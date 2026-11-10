@@ -399,8 +399,17 @@ function realProbeVersion(node: string, npmCliJs: string, cwd: string): string |
 }
 
 function realProbeLoginShellNode(cwd: string): string | undefined {
+  return probeLoginShell(cwd, LOGIN_SHELL_PROBE_ARGS);
+}
+
+/** Reuse the login-shell environment probe for package managers installed outside Node. */
+export function probeLoginShellPath(cwd: string): string | undefined {
+  return probeLoginShell(cwd, ['-lic', 'printf "%s\\n" "$PATH"']);
+}
+
+function probeLoginShell(cwd: string, args: readonly string[]): string | undefined {
   const shell = process.env['SHELL'] ?? '/bin/zsh';
-  const output = runFixedProbe(shell, LOGIN_SHELL_PROBE_ARGS, { cwd });
+  const output = runFixedProbe(shell, args, { cwd });
   return output?.split('\n').pop()?.trim() || undefined;
 }
 

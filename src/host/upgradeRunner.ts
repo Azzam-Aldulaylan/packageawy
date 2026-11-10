@@ -14,6 +14,9 @@
  * npmResolver.ts for why.
  */
 
+import { existsSync } from 'node:fs';
+import * as path from 'node:path';
+
 import type { DependencyClassification } from '../core/upgrade/plan.js';
 import {
   buildCoordinatedInstallArgs,
@@ -23,7 +26,7 @@ import {
 } from '../core/upgrade/plan.js';
 import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.js';
 import type { Disposable, HostPlatform } from './platform/hostPlatform.js';
-import { resolveInstalledPnpmInvocation } from './pnpmResolver.js';
+import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
 import type { PackageManagerInvocation } from './resolverVerifier.js';
 import { PendingUpgradeRuns, UpgradeLock, isSuccessfulExitCode } from './upgradeTracker.js';
 import type { VerificationExecutionResult } from './upgradeTransaction.js';
@@ -31,6 +34,7 @@ import { buildVerificationScriptArgs } from './verificationPolicy.js';
 import type { VerificationScript } from './verificationPolicy.js';
 
 export interface UpgradeRunParams {
+  importerId?: string;
   packageName: string;
   currentVersion: string;
   target: string;
@@ -53,6 +57,7 @@ export type UpgradeRunOutcome = { ok: true } | { ok: false; code: string; messag
  * be validated and written by the host before the returned execution runs.
  */
 export interface UpgradeManifestReconciliationParams {
+  importerId?: string;
   cwd: string;
   ignoreScripts: boolean;
   packageManager: 'npm' | 'pnpm';
@@ -158,23 +163,29 @@ export class UpgradeExecutionSession {
     const invocation = this.resolveInvocation(params.cwd, params.packageManager);
     if (invocation === null) {
       this.platform.showErrorMessage(
-        `Packageawy could not locate a working ${params.packageManager} installation.`
+        params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${params.packageManager} installation.`
       );
       return {
         ok: false,
         code: 'PACKAGE_MANAGER_NOT_FOUND',
-        message: `A working ${params.packageManager} installation could not be located.`,
+        message: params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${params.packageManager} installation could not be located.`,
       };
     }
 
+    const workspace = {
+      importerId: params.importerId ?? '.',
+      hasWorkspaceManifest: existsSync(path.join(params.cwd, 'pnpm-workspace.yaml')),
+    };
     const args =
       params.coordinatedChanges !== undefined && params.coordinatedChanges.length > 1
         ? buildCoordinatedInstallArgs(params.packageManager, {
             changes: params.coordinatedChanges,
+            workspace,
             ignoreScripts: params.ignoreScripts,
           })
         : buildInstallArgs(params.packageManager, {
             packageName: params.packageName,
+            workspace,
             target: params.target,
             classification: params.classification,
             ignoreScripts: params.ignoreScripts,
@@ -211,16 +222,22 @@ export class UpgradeExecutionSession {
     const invocation = this.resolveInvocation(cwd, packageManager);
     if (invocation === null) {
       this.platform.showErrorMessage(
-        `Packageawy could not locate a working ${packageManager} installation.`
+        packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`
       );
       return {
         ok: false,
         code: 'PACKAGE_MANAGER_NOT_FOUND',
-        message: `A working ${packageManager} installation could not be located.`,
+        message: packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${packageManager} installation could not be located.`,
       };
     }
 
-    const reconcileArgs = buildManifestReconciliationArgs(packageManager, { ignoreScripts });
+    const reconcileArgs = buildManifestReconciliationArgs(packageManager, {
+      ignoreScripts,
+      workspace: {
+        importerId: params.importerId ?? '.',
+        hasWorkspaceManifest: existsSync(path.join(cwd, 'pnpm-workspace.yaml')),
+      },
+    });
     let executed = false;
     return {
       ok: true,
@@ -273,12 +290,12 @@ export class UpgradeExecutionSession {
     const invocation = this.resolveInvocation(cwd, packageManager);
     if (invocation === null) {
       this.platform.showErrorMessage(
-        `Packageawy could not locate a working ${packageManager} installation.`
+        packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`
       );
       return {
         ok: false,
         code: 'PACKAGE_MANAGER_NOT_FOUND',
-        message: `A working ${packageManager} installation could not be located.`,
+        message: packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${packageManager} installation could not be located.`,
       };
     }
 
@@ -321,7 +338,7 @@ export class UpgradeExecutionSession {
     }
     const invocation = this.resolveInvocation(params.cwd, params.packageManager);
     if (invocation === null) {
-      return { status: 'failed', checks: [], message: `A working ${params.packageManager} installation could not be located.` };
+      return { status: 'failed', checks: [], message: params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${params.packageManager} installation could not be located.` };
     }
 
     const checks: Array<{ id: string; status: 'passed' | 'failed'; message?: string }> = [];
@@ -348,11 +365,11 @@ export class UpgradeExecutionSession {
 
   private resolveInvocation(cwd: string, packageManager: 'npm' | 'pnpm'): PackageManagerInvocation | null {
     const npm = resolveNpmInvocation(createNodeNpmResolverDeps(cwd));
-    if (!npm.ok) return null;
     if (packageManager === 'npm') {
+      if (!npm.ok) return null;
       return { executable: npm.invocation.node, prefixArgs: [npm.invocation.npmCliJs] };
     }
-    return resolveInstalledPnpmInvocation(npm.invocation, cwd);
+    return resolveInstalledPnpmInvocation(npm.ok ? npm.invocation : null, cwd);
   }
 
   private async executeTask(
