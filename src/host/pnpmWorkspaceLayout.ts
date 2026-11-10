@@ -90,6 +90,39 @@ function referencesOutside(value: unknown, baseDir: string): boolean {
   return Object.values(asRecord(value) ?? {}).some((entry) => referencesOutside(entry, baseDir));
 }
 
+/**
+ * Every brace expansion of a pattern, with `{a..b}` ranges kept as one
+ * literal. Undefined when there are too many to check.
+ */
+function expandBraces(pattern: string, limit = { left: 256 }): string[] | undefined {
+  const text = pattern.replace(/\{[^{},]*\.\.[^{},]*\}/g, 'range');
+  const open = text.indexOf('{');
+  let depth = 0;
+  const commas: number[] = [];
+  for (let index = open; open !== -1 && index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '{') depth += 1;
+    else if (char === '}' && --depth === 0) {
+      if (commas.length === 0) return expandBraces(text.slice(0, open) + text.slice(open + 1, index) + text.slice(index + 1), limit);
+      const options = [open, ...commas].map((start, i) => text.slice(start + 1, [...commas, index][i]));
+      const results: string[] = [];
+      for (const option of options) {
+        const expanded = expandBraces(text.slice(0, open) + option + text.slice(index + 1), limit);
+        if (expanded === undefined) return undefined;
+        results.push(...expanded);
+      }
+      return results;
+    } else if (char === ',' && depth === 1) commas.push(index);
+  }
+  return --limit.left < 0 ? undefined : [text];
+}
+
+/** True when every expansion of a pattern is relative and never steps up with `..`. */
+function isContainedPattern(pattern: string): boolean {
+  return expandBraces(pattern)?.every((expanded) => !/^(?:[\\/]|[a-z]:)/i.test(expanded) &&
+    !expanded.split(/[\\/]/).includes('..')) ?? false;
+}
+
 /** Why a manifest cannot be staged as written, or undefined when it can. */
 function manifestProblem(text: string, baseDir: string, relative: string): string | undefined {
   let manifest: Record<string, unknown> | null;
@@ -128,7 +161,8 @@ async function collectManifestDirs(
     try {
       real = await realpath(path.join(realRoot, ...relative.split('/').filter(Boolean)));
       if (!isInside(realRoot, real)) return void reasons.push(`${relative} resolves outside the workspace.`);
-      if (seen.has(real)) return;
+      // A second path to the same directory is an alias or a cycle, which the staged copy cannot mirror.
+      if (seen.has(real)) return void reasons.push(`${relative} is a second path to a directory already staged.`);
       seen.add(real);
       if (++reads > MAX_DIRECTORY_READS || depth > MAX_DEPTH) {
         return void reasons.push('The workspace has more directories than the review can stage.');
@@ -136,6 +170,11 @@ async function collectManifestDirs(
       entries = await readdir(real, { withFileTypes: true });
     } catch {
       return void reasons.push(`${relative || 'The workspace root'} could not be read.`);
+    }
+    for (const entry of entries) {
+      if (entry.name === 'package.json5' || entry.name === 'package.yaml') {
+        reasons.push(`${relative === '' ? '' : `${relative}/`}${entry.name} is a manifest format the review does not stage.`);
+      }
     }
     if (entries.some((entry) => entry.name === 'package.json' && !entry.isDirectory())) {
       if (dirs.length >= MAX_MANIFESTS) return void reasons.push('The workspace has more packages than the review can stage.');
@@ -211,8 +250,7 @@ export async function readPnpmWorkspaceLayout(input: {
     if (!WORKSPACE_SETTINGS.has(key)) reasons.push(`pnpm-workspace.yaml sets ${key}, which the review does not stage.`);
   }
   const patterns = Array.isArray(settings['packages']) ? settings['packages'] : [];
-  if (patterns.some((pattern) => typeof pattern !== 'string' || /^(?:[\\/]|[a-z]:)/i.test(pattern.replace(/^!/, '')) ||
-    pattern.replace(/^!/, '').split(/[\\/]/).includes('..'))) {
+  if (patterns.some((pattern) => typeof pattern !== 'string' || !isContainedPattern(pattern.replace(/^!/, '')))) {
     reasons.push('A workspace package pattern points outside the workspace.');
   }
   if (referencesOutside({ ...settings, packages: [] }, '.')) {
@@ -221,6 +259,11 @@ export async function readPnpmWorkspaceLayout(input: {
 
   const files: { path: string; text: string }[] = [];
   if (workspaceText !== undefined) files.push({ path: WORKSPACE_MANIFEST, text: workspaceText });
+  for (const pnpmfile of ['.pnpmfile.cjs', '.pnpmfile.mjs']) {
+    if (await readContained(realRoot, pnpmfile, reasons) !== undefined) {
+      reasons.push(`The workspace has ${pnpmfile}, whose hooks only a real install runs.`);
+    }
+  }
   const npmrc = await readContained(realRoot, NPMRC, reasons);
   const npmrcText = npmrc === undefined ? undefined : stagedNpmrc(npmrc, reasons);
   if (npmrcText !== undefined) files.push({ path: NPMRC, text: npmrcText });

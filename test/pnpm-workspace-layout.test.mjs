@@ -111,17 +111,26 @@ test('local specifiers are classified like pnpm and must stay inside the workspa
   assert.match((await read(override)).unavailableReason, /workspace setting points at a local path/);
 });
 
-test('package patterns that leave the workspace are unknown', async (t) => {
-  for (const pattern of ['../shared/*', '/abs/*', '!../x']) {
+test('package patterns that leave the workspace are unknown, in every brace expansion', async (t) => {
+  const fine = await workspace(t, { yaml: "packages:\n  - '{apps,packages}/*'\n  - 'packages/p{1..2}'\n  - '!(x)/**'\n" });
+  assert.equal((await read(fine)).unavailableReason, undefined);
+  for (const pattern of ['../shared/*', '/abs/*', '!../x', '{.,.}{.,.}/outside/*', '{/,packages/}*', '{a,{b,../c}}/*']) {
     const root = await workspace(t, { yaml: `packages:\n  - 'apps/*'\n  - '${pattern}'\n` });
     assert.match((await read(root)).unavailableReason, /pattern points outside/, pattern);
   }
 });
 
-test('symlinks are followed inside the workspace only', async (t) => {
+test('symlinks are followed inside the workspace, but aliases and escapes are unknown', async (t) => {
+  const aliased = await workspace(t);
+  await symlink(path.join(aliased, 'packages/shared'), path.join(aliased, 'packages/aaa'));
+  assert.match((await read(aliased)).unavailableReason, /second path to a directory/);
+
+  const narrowed = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n  - 'packages/shared'\n" });
+  await symlink(path.join(narrowed, 'packages/shared'), path.join(narrowed, 'packages/aaa'));
+  const layout = await read(narrowed);
+  assert.match(layout.unavailableReason, /second path to a directory/);
+
   const root = await workspace(t);
-  await symlink(path.join(root, 'packages/shared'), path.join(root, 'packages/alias'));
-  assert.equal((await read(root)).unavailableReason, undefined);
 
   const outside = await outsideDir(t);
   await writeManifest(outside, 'secret', { name: 'secret' });
@@ -160,4 +169,19 @@ test('editing any staged manifest changes the fingerprint', async (t) => {
   const before = await read(root);
   await writeManifest(root, 'packages/shared/.internal', { name: 'internal', version: '2.0.0' });
   assert.notEqual((await read(root)).fingerprint, before.fingerprint);
+});
+
+test('default pnpmfiles and other manifest formats are unknown and fingerprinted', async (t) => {
+  const root = await workspace(t);
+  const before = await read(root);
+  await writeFile(path.join(root, '.pnpmfile.cjs'), 'module.exports = { hooks: {} };\n');
+  const withHooks = await read(root);
+  assert.match(withHooks.unavailableReason, /\.pnpmfile\.cjs/);
+  assert.notEqual(withHooks.fingerprint, before.fingerprint);
+  assert.ok(!paths(withHooks).includes('.pnpmfile.cjs'));
+
+  const yamlManifest = await workspace(t);
+  await mkdir(path.join(yamlManifest, 'packages/other'), { recursive: true });
+  await writeFile(path.join(yamlManifest, 'packages/other/package.yaml'), 'name: other\n');
+  assert.match((await read(yamlManifest)).unavailableReason, /packages\/other\/package.yaml is a manifest format/);
 });
