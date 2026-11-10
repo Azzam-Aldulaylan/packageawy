@@ -177,6 +177,14 @@ export type ProjectSnapshot = Pick<
   | 'cacheKey'
 >;
 
+/** Only the speculative first ready may join this task. Other runs still restart. */
+interface StartupTask {
+  promise: Promise<BackgroundRefreshOutcome | undefined>;
+  running: boolean;
+  scanId: number;
+  outcome?: BackgroundRefreshOutcome | undefined;
+}
+
 export class DashboardController {
   private options: DashboardControllerOptions;
   private lastResult: ScanSnapshot | undefined;
@@ -184,6 +192,7 @@ export class DashboardController {
   private lastResultSourceFingerprint: ProjectSourceFingerprint | undefined;
   private lastGeneratedAt: string | undefined;
   private inFlight: AbortController | undefined;
+  private startupTask: StartupTask | undefined;
   private disposed = false;
   private readonly updateAdvisories: UpdateAdvisories;
   private updateContext: UpdateAdvisoryContext | undefined;
@@ -650,6 +659,35 @@ export class DashboardController {
     endWrite({ rows: snapshot.rows.length });
   }
 
+  startStartup(sink: MessageSink): void {
+    const task: StartupTask = { promise: Promise.resolve(undefined), running: true, scanId: this.scanId };
+    this.startupTask = task;
+    const startupSink: MessageSink = {
+      postMessage: message => {
+        if (this.disposed) return;
+        // Record fatal state at the point it is produced. Ready can arrive
+        // before the task promise's completion continuation has run.
+        if (message.status === 'fatal-error') task.outcome = { status: 'failed', error: message.error };
+        sink.postMessage(message);
+      },
+    };
+    task.promise = this.presentReady(startupSink).then(outcome => {
+      task.outcome = outcome;
+      task.running = false;
+      return outcome;
+    });
+    // presentReady starts its run synchronously, before the first await.
+    task.scanId = this.scanId;
+  }
+
+  async handleStartupReady(sink: MessageSink): Promise<void> {
+    const task = this.startupTask;
+    this.startupTask = undefined;
+    // A watcher or another refresh may have replaced startup's run. Only
+    // the specifically identified startup task gets the join exception.
+    await this.presentReady(sink, task?.scanId === this.scanId ? task : undefined);
+  }
+
   /**
    * The webview mounted and asked for state.
    *
@@ -662,6 +700,10 @@ export class DashboardController {
    * remains structurally gated until a complete run succeeds.
    */
   async handleReady(sink: MessageSink): Promise<void> {
+    await this.presentReady(sink);
+  }
+
+  private async presentReady(sink: MessageSink, startup?: StartupTask): Promise<BackgroundRefreshOutcome | undefined> {
     const cachePerformance = createPerformanceSession('Packageawy cache', this.performanceEnabled());
     if (this.lastResult === undefined) {
       this.hydrateFromPersistedCache(cachePerformance);
@@ -669,9 +711,12 @@ export class DashboardController {
     const cached = this.lastResult;
     if (cached === undefined) {
       cachePerformance.finish({ hit: false });
+      if (startup?.outcome?.status === 'failed') {
+        sink.postMessage({ status: 'fatal-error', error: startup.outcome.error });
+        return startup.outcome;
+      }
       sink.postMessage({ status: 'loading' });
-      await this.run(sink);
-      return;
+      return startup?.running ? startup.promise : this.run(sink);
     }
 
     const endFreshness = cachePerformance.start('cache freshness');
@@ -710,11 +755,12 @@ export class DashboardController {
         )
       );
       this.enrichOfferedVersions(sink);
+      if (startup?.running) return startup.promise;
       if (freshness !== 'fresh') {
         // Age only affects network/cache freshness. The source fingerprint
         // already matched locally-authoritative input, so keep the snapshot
         // usable while its derived data is refreshed in the background.
-        await this.run(sink, 'time');
+        return this.run(sink, 'time');
       }
       return;
     }
@@ -723,7 +769,11 @@ export class DashboardController {
     // announces the stale replay (carrying `cached`) as its first
     // action via `beginRevalidation`'s call site there, then continues with
     // a real scan. Posting it again here would just be a redundant duplicate.
-    await this.run(sink);
+    if (startup?.running) {
+      this.announceRevalidating(sink);
+      return startup.promise;
+    }
+    return this.run(sink);
   }
 
   /**

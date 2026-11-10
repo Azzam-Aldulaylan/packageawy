@@ -226,8 +226,8 @@ test('a usable fixAvailable suppresses the self-computed-fix packument escalatio
   assert.deepEqual(client.urls, [
     `${REGISTRY}/clean-pkg/latest`,
     `${REGISTRY}/minimatch/latest`,
-    GITHUB_MINIMATCH,
     `${REGISTRY}/minimatch`,
+    GITHUB_MINIMATCH,
   ]);
 });
 
@@ -850,6 +850,6 @@ test('scan instrumentation reports request kinds and scan-local packument reuse 
   assert.ok(report.metadata['registry response wire bytes'] > 0);
   assert.equal(report.metadata['advisory packages'], 1);
   assert.equal(report.metadata['packument requests for patched version'], 1);
-  assert.equal(report.metadata['scan-local packument hits'], 1);
+  assert.equal(report.metadata['scan-local packument hits'], 2);
   assert.equal(Object.values(report.metadata).some((value) => String(value).includes(REGISTRY)), false);
 });

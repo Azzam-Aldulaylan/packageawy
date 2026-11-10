@@ -177,8 +177,7 @@ export async function fetchDistTags(
  * This is deliberately separate from `VersionInfo`: the dashboard's normal
  * version scan only needs a version number, while compatibility preflight
  * needs dependency relationships for exactly the version being considered.
- * Fetching this document is therefore an explicit, lazy operation and is
- * never part of `fetchAllVersions`.
+ * The dashboard also uses it to confirm eligible exact pins.
  */
 export interface PackageVersionMetadata {
   name: string;
@@ -361,6 +360,8 @@ export interface VersionRequest {
   range: string;
   /** Lockfile-resolved version, or null when unresolved. */
   installed: string | null;
+  /** Pipeline-verified public npm pin, with matching non-alias lockfile evidence. */
+  exactPinEligible?: boolean;
 }
 
 export interface FetchVersionOptions {
@@ -373,6 +374,8 @@ export interface FetchVersionOptions {
   signal?: AbortSignal;
   /** Optional scan-local loader used to share one packument across consumers. */
   packumentLoader?: (name: string, signal?: AbortSignal) => Promise<PackumentDoc>;
+  /** Read at escalation time, after the bulk advisory response may have arrived. */
+  isFlagged?: (name: string) => boolean;
 }
 
 /**
@@ -414,6 +417,23 @@ export async function fetchVersionInfo(
     if (latestDoc.deprecated !== undefined) info.deprecated = latestDoc.deprecated;
     if (latestDoc.license !== undefined) info.license = latestDoc.license;
     return info;
+  }
+
+  if (req.exactPinEligible === true && !options.isFlagged?.(req.name) &&
+    latestDoc.version !== null && semver.valid(latestDoc.version) !== null) {
+    try {
+      await fetchPackageVersionMetadata(client, store, registry, req.name, req.range, signal);
+      return {
+        name: req.name,
+        wanted: req.range,
+        latest: latestDoc.version,
+        ...(latestDoc.description === undefined ? {} : { description: latestDoc.description }),
+        ...(latestDoc.deprecated === undefined ? {} : { deprecated: latestDoc.deprecated }),
+        ...(latestDoc.license === undefined ? {} : { license: latestDoc.license }),
+      };
+    } catch {
+      // Unconfirmed pins keep the existing packument and TOO_LARGE paths.
+    }
   }
 
   let packument: PackumentDoc;
@@ -474,6 +494,7 @@ export async function fetchAllVersions(
           ...(options.registryFor === undefined ? {} : { registryFor: options.registryFor }),
           ...(signal === undefined ? {} : { signal }),
           ...(options.packumentLoader === undefined ? {} : { packumentLoader: options.packumentLoader }),
+          ...(options.isFlagged === undefined ? {} : { isFlagged: options.isFlagged }),
         },
         req
       ),

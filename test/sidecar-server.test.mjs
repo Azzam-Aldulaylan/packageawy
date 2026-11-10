@@ -38,6 +38,9 @@ function session() {
       input.write(encodeMessage({ jsonrpc: '2.0', id, method, params }));
       return waitFor((message) => message.id === id && message.method === undefined);
     },
+    respond(id, result) {
+      input.write(encodeMessage({ jsonrpc: '2.0', id, result }));
+    },
     notify(method, params) {
       input.write(encodeMessage({ jsonrpc: '2.0', method, params }));
     },
@@ -115,6 +118,19 @@ test('invalid webview messages are dropped', async (t) => {
 });
 
 const UNAVAILABLE = 'Choose a package.json in your workspace, outside node_modules.';
+
+test('the shared validator accepts rendered and the sidecar ignores it without a reply or error', async (t) => {
+  const { isWebviewToHostMessage } = await import('../out/host/webviewProtocol.js');
+  const ack = { type: 'rendered', generatedAt: 'warm-snapshot' };
+  assert.equal(isWebviewToHostMessage(ack), true);
+  const s = session();
+  t.after(() => s.close());
+  await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: true });
+  s.notify('webview/didReceiveMessage', { message: ack });
+  const ping = await s.request('unknown/method', {});
+  assert.equal(ping.error.code, ErrorCodes.MethodNotFound);
+  assert.equal(s.received.some((message) => message.method === 'webview/postMessage'), false);
+});
 const shown = (message) => message.method === 'window/showMessage' && message.params.message === UNAVAILABLE;
 
 test('dashboard/openManifest for a file outside every workspace folder shows a message', async (t) => {
@@ -146,3 +162,25 @@ test('closing stdin closes the connection', async () => {
   await closed;
   assert.equal(s.connection.isClosed, true);
 });
+
+for (const targeted of [true, false]) {
+  test(`sidecar discovers only after ready, ${targeted ? 'with' : 'without'} openManifest`, async t => {
+    const s = session();
+    t.after(() => s.close());
+    await s.request('initialize', {
+      workspaceFolders: [{ id: 'workspace', name: 'workspace', path: '/workspace' }],
+      isWorkspaceTrusted: true,
+    });
+    if (targeted) s.notify('dashboard/openManifest', { path: '/workspace/package.json' });
+    await s.request('unknown/method', {}); // Drain notifications before checking for speculative work.
+    assert.equal(s.received.some(m => m.method === 'files/find'), false);
+    assert.equal(s.received.some(m => m.method === 'webview/postMessage'), false);
+    assert.equal(s.received.some(m => m.method === 'window/showQuickPick'), false);
+    s.notify('webview/didReceiveMessage', { message: { type: 'ready' } });
+    const discovery = await s.waitFor(m => m.method === 'files/find');
+    assert.equal(discovery.params.include, '**/package.json');
+    s.respond(discovery.id, []);
+    const error = await s.waitFor(posted('fatal-error'));
+    assert.equal(error.params.message.error.code, 'NoProjectFoundError');
+  });
+}
