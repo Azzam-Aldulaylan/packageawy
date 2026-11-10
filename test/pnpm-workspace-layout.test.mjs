@@ -205,3 +205,19 @@ test('contained file symlinks, including a linked manifest, keep the layout avai
   assert.equal(layout.unavailableReason, undefined);
   assert.ok(paths(layout).includes('packages/linked/package.json'));
 });
+
+test('a bare CR in .npmrc separates lines, and protocols are matched in any case', async (t) => {
+  const root = await workspace(t);
+  await writeFile(path.join(root, '.npmrc'), 'auto-install-peers=true\rlockfile-dir=/outside\n');
+  assert.match((await read(root)).unavailableReason, /\.npmrc sets lockfile-dir/);
+
+  for (const spec of ['GIT+FILE:///private/external', 'File:/outside', 'LINK:../../../outside']) {
+    const sibling = await workspace(t);
+    await writeManifest(sibling, 'packages/shared', { name: 'shared', dependencies: { x: spec } });
+    assert.match((await read(sibling)).unavailableReason ?? '', /points at a local path outside/, spec);
+    const reviewed = JSON.stringify({ name: 'web', dependencies: { x: spec } });
+    assert.match((await read(await workspace(t), { manifestText: reviewed })).unavailableReason ?? '', /reviewed package.json/, spec);
+    const setting = await workspace(t, { yaml: `${YAML}overrides:\n  foo: '${spec}'\n` });
+    assert.match((await read(setting)).unavailableReason ?? '', /workspace setting points at a local path/, spec);
+  }
+});

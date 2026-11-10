@@ -67,10 +67,12 @@ function isInside(realRoot: string, realTarget: string): boolean {
 /** The local path a specifier names, as pnpm reads it, or undefined for anything that is not local. */
 function localTarget(spec: string): string | undefined {
   const value = spec.trim();
+  // pnpm reads protocols in any case.
+  const lower = value.toLowerCase();
   for (const protocol of ['portal:', 'link:', 'file:', 'git+file:']) {
-    if (value.startsWith(protocol)) return value.slice(protocol.length);
+    if (lower.startsWith(protocol)) return value.slice(protocol.length);
   }
-  if (value.startsWith('workspace:')) {
+  if (lower.startsWith('workspace:')) {
     const rest = value.slice('workspace:'.length);
     return rest.startsWith('.') || rest.includes('/') ? rest : undefined;
   }
@@ -197,7 +199,8 @@ async function collectManifestDirs(
 /** Keeps supported settings verbatim. Registry and credential lines are left out, since the host passes registries itself. */
 function stagedNpmrc(text: string, reasons: string[]): string | undefined {
   const kept: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
+  // pnpm's INI parser also ends a line at a bare CR.
+  for (const line of text.split(/[\r\n]+/)) {
     const key = line.trim().split('=')[0]?.trim() ?? '';
     if (key === '' || key.startsWith(';') || key.startsWith('#')) continue;
     if (key === 'registry' || key.endsWith(':registry') || key.startsWith('//')) continue;
