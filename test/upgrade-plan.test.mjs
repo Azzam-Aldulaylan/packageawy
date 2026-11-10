@@ -130,28 +130,31 @@ test('mixed classifications select manifest reconciliation while same-class plan
 });
 
 test('manifest reconciliation uses a bare structured install for npm and pnpm', () => {
-  assert.deepEqual(buildManifestReconciliationArgs('npm', { ignoreScripts: false }), ['install']);
+  assert.deepEqual(buildManifestReconciliationArgs('npm', { ignoreScripts: false }), ['install', '--save']);
   assert.deepEqual(buildManifestReconciliationArgs('pnpm', { ignoreScripts: false }), [
     'install', '--no-frozen-lockfile',
   ]);
   assert.deepEqual(buildManifestReconciliationArgs('npm', { ignoreScripts: true }), [
-    'install', '--ignore-scripts',
+    'install', '--save', '--ignore-scripts',
   ]);
   assert.deepEqual(buildManifestReconciliationArgs('pnpm', { ignoreScripts: true }), [
     'install', '--no-frozen-lockfile', '--ignore-scripts',
   ]);
 });
 
-test('manifest reconciliation argv never contains package, version, classification, or save arguments', () => {
+test('manifest reconciliation argv never contains package, version, classification, or save-style arguments', () => {
   for (const packageManager of ['npm', 'pnpm']) {
     const args = buildManifestReconciliationArgs(packageManager, { ignoreScripts: true });
     assert.equal(args.some((arg) => arg.includes('@')), false);
-    assert.equal(args.some((arg) => arg.startsWith('--save')), false);
+    // Only npm's plain `--save` (forcing the lockfile write) is allowed:
+    // no classification, exact, or prefix flag that would restyle package.json.
+    assert.equal(args.some((arg) => arg.startsWith('--save') && arg !== '--save'), false);
+    assert.equal(args.includes('--save'), packageManager === 'npm');
     assert.deepEqual(
       args,
       packageManager === 'pnpm'
         ? ['install', '--no-frozen-lockfile', '--ignore-scripts']
-        : ['install', '--ignore-scripts']
+        : ['install', '--save', '--ignore-scripts']
     );
   }
 });

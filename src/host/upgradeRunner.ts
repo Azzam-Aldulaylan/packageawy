@@ -61,6 +61,11 @@ export interface UpgradeManifestReconciliationParams {
   cwd: string;
   ignoreScripts: boolean;
   packageManager: 'npm' | 'pnpm';
+  /** Reconcile only the lockfile. See buildManifestReconciliationArgs. */
+  lockfileOnly?: boolean;
+  /** Task title and scope shown to the user. Default to the cleanup wording. */
+  taskTitle?: string;
+  taskScope?: string;
 }
 
 export type PreparedManifestReconciliation =
@@ -233,6 +238,7 @@ export class UpgradeExecutionSession {
 
     const reconcileArgs = buildManifestReconciliationArgs(packageManager, {
       ignoreScripts,
+      ...(params.lockfileOnly === true ? { lockfileOnly: true } : {}),
       workspace: {
         importerId: params.importerId ?? '.',
         hasWorkspaceManifest: existsSync(path.join(cwd, 'pnpm-workspace.yaml')),
@@ -260,9 +266,9 @@ export class UpgradeExecutionSession {
         return await this.executeTask(
           invocation,
           cwd,
-          'smart-cleanup',
+          params.taskScope ?? 'smart-cleanup',
           reconcileArgs,
-          'Packageawy: Reconcile cleanup changes',
+          params.taskTitle ?? 'Packageawy: Reconcile cleanup changes',
           `${packageManager} ${reconcileArgs[0]}`
         );
       },
