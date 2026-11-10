@@ -21,19 +21,28 @@ const SAVE_FLAG: Record<DependencyClassification, string> = {
   optional: '--save-optional',
 };
 
-export interface UpgradeArgsOptions {
+export interface WorkspaceArgsOptions {
+  workspace?: { importerId: string; hasWorkspaceManifest: boolean };
+}
+
+function workspaceArgs(packageManager: PackageManagerKind, options: WorkspaceArgsOptions): string[] {
+  return packageManager === 'pnpm' && options.workspace?.importerId === '.' && options.workspace.hasWorkspaceManifest
+    ? ['-w'] : [];
+}
+
+export interface UpgradeArgsOptions extends WorkspaceArgsOptions {
   packageName: string;
   target: string;
   classification: DependencyClassification;
   ignoreScripts: boolean;
 }
 
-export interface CoordinatedUpgradeArgsOptions {
+export interface CoordinatedUpgradeArgsOptions extends WorkspaceArgsOptions {
   changes: readonly Omit<UpgradeArgsOptions, 'ignoreScripts'>[];
   ignoreScripts: boolean;
 }
 
-export interface ManifestReconciliationArgsOptions {
+export interface ManifestReconciliationArgsOptions extends WorkspaceArgsOptions {
   ignoreScripts: boolean;
 }
 
@@ -41,7 +50,7 @@ export interface LockfileReconciliationArgsOptions {
   ignoreScripts: boolean;
 }
 
-export interface TransitiveRemediationArgsOptions {
+export interface TransitiveRemediationArgsOptions extends WorkspaceArgsOptions {
   ignoreScripts: boolean;
 }
 
@@ -74,7 +83,7 @@ export function buildNpmInstallArgs(options: UpgradeArgsOptions): string[] {
 /** pnpm's equivalent structured argv. The caller still owns host-side validation. */
 export function buildPnpmAddArgs(options: UpgradeArgsOptions): string[] {
   const { packageName, target, classification, ignoreScripts } = options;
-  const args = ['add', `${packageName}@${target}`, SAVE_FLAG[classification]];
+  const args = ['add', `${packageName}@${target}`, SAVE_FLAG[classification], ...workspaceArgs('pnpm', options)];
   if (ignoreScripts) args.push('--ignore-scripts');
   return args;
 }
@@ -102,6 +111,7 @@ export function buildCoordinatedInstallArgs(
     command,
     ...options.changes.map((change) => `${change.packageName}@${change.target}`),
     SAVE_FLAG[classification],
+    ...workspaceArgs(packageManager, options),
   ];
   if (options.ignoreScripts) args.push('--ignore-scripts');
   return args;
@@ -126,6 +136,7 @@ export function buildManifestReconciliationArgs(
   // host-staged manifest change, so the lockfile must be allowed to reconcile
   // even when the extension host itself is running in a CI-like environment.
   if (packageManager === 'pnpm') args.push('--no-frozen-lockfile');
+  args.push(...workspaceArgs(packageManager, options));
   if (options.ignoreScripts) args.push('--ignore-scripts');
   return args;
 }
@@ -163,6 +174,7 @@ export function buildTransitiveRemediationArgs(
     packageManager === 'pnpm'
       ? ['update', ...targets, '--no-save', '--lockfile-only']
       : ['update', ...targets, '--package-lock-only'];
+  args.push(...workspaceArgs(packageManager, options));
   if (options.ignoreScripts) args.push('--ignore-scripts');
   return args;
 }

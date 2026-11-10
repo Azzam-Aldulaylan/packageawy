@@ -79,7 +79,7 @@ import { PUBLIC_ADVISORY_CHECK_SETTING } from './dashboardController.js';
 import type { DashboardController, MessageSink } from './dashboardController.js';
 import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.js';
 import { createNodeUpgradeTransactionFileAdapter } from './nodeUpgradeTransactionFiles.js';
-import { resolveInstalledPnpmInvocation } from './pnpmResolver.js';
+import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
 import { combineSecurityOutcomes } from './securityOutcomeBatch.js';
 import { materializeUpgradeSecurityGraph } from './upgradeSecurityGraph.js';
 import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
@@ -1444,15 +1444,15 @@ export class UpgradeAssistantCoordinator {
       const endToolchain = performance.start('package-manager resolution');
       const npmResolution = resolveNpmInvocation(createNodeNpmResolverDeps(controller.root));
       const packageManagerInvocation =
-        !npmResolution.ok
-          ? null
-          : preflightProject.packageManager === 'npm'
+        preflightProject.packageManager === 'pnpm'
+          ? resolveInstalledPnpmInvocation(npmResolution.ok ? npmResolution.invocation : null, controller.root)
+          : npmResolution.ok
             ? {
                 executable: npmResolution.invocation.node,
                 prefixArgs: [npmResolution.invocation.npmCliJs],
                 version: npmResolution.invocation.version,
               }
-            : resolveInstalledPnpmInvocation(npmResolution.invocation, controller.root);
+            : null;
       endToolchain({ available: packageManagerInvocation !== null });
       const resolverVerifier = packageManagerInvocation !== null
         ? new IsolatedResolverVerifier({
@@ -2518,18 +2518,18 @@ export class UpgradeAssistantCoordinator {
     const endToolchain = performance?.start('remediation package-manager resolution') ?? (() => 0);
     const npmResolution = resolveNpmInvocation(createNodeNpmResolverDeps(controller.root));
     const packageManagerInvocation =
-      !npmResolution.ok
-        ? null
-        : preflightProject.packageManager === 'npm'
+      preflightProject.packageManager === 'pnpm'
+        ? resolveInstalledPnpmInvocation(npmResolution.ok ? npmResolution.invocation : null, controller.root)
+        : npmResolution.ok
           ? {
               executable: npmResolution.invocation.node,
               prefixArgs: [npmResolution.invocation.npmCliJs],
               version: npmResolution.invocation.version,
             }
-          : resolveInstalledPnpmInvocation(npmResolution.invocation, controller.root);
+          : null;
     endToolchain({ available: packageManagerInvocation !== null });
     if (packageManagerInvocation === null) {
-      throw Object.assign(new Error('The package manager could not be located to run this check.'), {
+      throw Object.assign(new Error(preflightProject.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : 'The package manager could not be located to run this check.'), {
         name: 'RESOLVER_UNAVAILABLE',
       });
     }
@@ -2669,11 +2669,9 @@ export class UpgradeAssistantCoordinator {
         return;
       }
       const currentNpm = resolveNpmInvocation(createNodeNpmResolverDeps(disk.root));
-      const currentInvocation = !currentNpm.ok
-        ? null
-        : disk.packageManager === 'npm'
-          ? { version: currentNpm.invocation.version }
-          : resolveInstalledPnpmInvocation(currentNpm.invocation, disk.root);
+      const currentInvocation = disk.packageManager === 'pnpm'
+        ? resolveInstalledPnpmInvocation(currentNpm.ok ? currentNpm.invocation : null, disk.root)
+        : currentNpm.ok ? { version: currentNpm.invocation.version } : null;
       if (
         currentInvocation === null ||
         (stored.packageManagerVersion !== null && currentInvocation.version !== stored.packageManagerVersion)
@@ -3202,6 +3200,7 @@ export class UpgradeAssistantCoordinator {
         target: stored.eligibility.target,
         classification: stored.eligibility.classification,
         cwd: controller.root,
+        importerId: source.importerId,
         ignoreScripts: stored.ignoreScripts,
         packageManager: source.packageManager,
         coordinatedChanges: proposal.changes.map((change) => ({
@@ -3215,6 +3214,7 @@ export class UpgradeAssistantCoordinator {
       if (usesStagedManifest) {
         const prepared = this.session.prepareManifestReconciliation({
           cwd: controller.root,
+          importerId: source.importerId,
           ignoreScripts: stored.ignoreScripts,
           packageManager: source.packageManager,
         });
@@ -3526,6 +3526,7 @@ export class UpgradeAssistantCoordinator {
 
       const prepared = this.session.prepareManifestReconciliation({
         cwd: controller.root,
+        importerId: source.importerId,
         ignoreScripts: stored.ignoreScripts,
         packageManager: source.packageManager,
       });
