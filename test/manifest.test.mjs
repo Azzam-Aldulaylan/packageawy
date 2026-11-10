@@ -28,6 +28,47 @@ test('file: and link: specifiers are tagged, not errored', () => {
   assert.equal(classifySpecifier('workspace:*').unresolvable, 'workspace-link');
 });
 
+test('bare local directory and tarball paths are tagged file, like npm reads them', () => {
+  for (const spec of [
+    '.', '..', '../local', './local', '/tmp/local', '~/x', '.\\win', '..\\win', 'C:\\pkg', 'c:/pkg',
+    './local.tgz', 'local.tgz', 'pkg.tar.gz', 'PKG.TAR', ' ../padded ',
+  ]) {
+    assert.equal(classifySpecifier(spec).unresolvable, 'file', `${JSON.stringify(spec)} should be file`);
+  }
+  // Tilde ranges and dotted versions are not paths.
+  for (const spec of ['~1.2.3', '~ 1.2.3', '1.2.3', '>=1.0.0']) {
+    assert.equal(classifySpecifier(spec).unresolvable, undefined, spec);
+  }
+  const manifest = parseManifest(JSON.stringify({ dependencies: { local: '../local', remote: '^1.0.0' } }));
+  assert.equal(manifest.dependencies.find((d) => d.name === 'local').unresolvable, 'file');
+  assert.equal(manifest.dependencies.find((d) => d.name === 'remote').unresolvable, undefined);
+});
+
+test('local paths come first, then SCP git and GitHub shorthand, then tarball names and other directories', () => {
+  const cases = [
+    ['.local', 'file'],
+    ['./user/repo', 'file'],
+    ['vendor/local/subdir', 'file'],
+    ['vendor\\local', 'file'],
+    ['git@github.com:user/repo.git', 'git'],
+    ['git@gitlab.example.com:group/repo', 'git'],
+    ['user/repo', 'git'],
+    ['user/repo#v1.2.3', 'git'],
+    ['user/repo.tgz', 'git'],
+    ['user/repo.tar', 'git'],
+    ['local.tgz', 'file'],
+    ['pkg.tar.gz', 'file'],
+  ];
+  for (const [spec, expected] of cases) {
+    assert.equal(classifySpecifier(spec).unresolvable, expected, spec);
+  }
+  for (const spec of ['~1.2.3', '^1', 'latest', 'next', '1.x', '1.2.x', '*', '>=1 <2', '1.0.0 - 2.0.0', '^1 || ^2']) {
+    assert.deepEqual(classifySpecifier(spec), {}, spec);
+  }
+  assert.deepEqual(classifySpecifier('npm:real@^1.0.0'), { unresolvable: 'alias', aliasTarget: 'real' });
+  assert.deepEqual(classifySpecifier('npm:@scope/real@1.0.0'), { unresolvable: 'alias', aliasTarget: '@scope/real' });
+});
+
 test('git specifiers in all their forms are tagged git', () => {
   for (const spec of [
     'git://github.com/u/r.git',
