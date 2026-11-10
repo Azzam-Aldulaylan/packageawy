@@ -115,6 +115,19 @@ test('invalid webview messages are dropped', async (t) => {
 });
 
 const UNAVAILABLE = 'Choose a package.json in your workspace, outside node_modules.';
+
+test('the shared validator accepts rendered and the sidecar ignores it without a reply or error', async (t) => {
+  const { isWebviewToHostMessage } = await import('../out/host/webviewProtocol.js');
+  const ack = { type: 'rendered', generatedAt: 'warm-snapshot' };
+  assert.equal(isWebviewToHostMessage(ack), true);
+  const s = session();
+  t.after(() => s.close());
+  await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: true });
+  s.notify('webview/didReceiveMessage', { message: ack });
+  const ping = await s.request('unknown/method', {});
+  assert.equal(ping.error.code, ErrorCodes.MethodNotFound);
+  assert.equal(s.received.some((message) => message.method === 'webview/postMessage'), false);
+});
 const shown = (message) => message.method === 'window/showMessage' && message.params.message === UNAVAILABLE;
 
 test('dashboard/openManifest for a file outside every workspace folder shows a message', async (t) => {

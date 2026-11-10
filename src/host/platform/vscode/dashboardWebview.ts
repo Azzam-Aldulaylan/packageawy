@@ -37,7 +37,7 @@ const DEV_RELOAD_DEBOUNCE_MS = 300;
  * UI is `buildInfo.builtAt` (`__BUILD_TIME__`, fixed for this extension host
  * process's whole lifetime. See that field's doc).
  */
-function buildHtml(webview: vscode.Webview, extensionUri: vscode.Uri, performanceEnabled: boolean, cacheBust: number): string {
+function buildHtml(webview: vscode.Webview, extensionUri: vscode.Uri, performanceEnabled: boolean, renderAcknowledgements: boolean, cacheBust: number): string {
   const nonce = randomBytes(16).toString('base64');
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview.js'));
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview.css'));
@@ -59,7 +59,7 @@ function buildHtml(webview: vscode.Webview, extensionUri: vscode.Uri, performanc
     <link rel="stylesheet" href="${styleUri.toString()}?v=${cacheBust}" />
     <title>${TITLE}</title>
   </head>
-  <body data-performance-debug="${performanceEnabled ? 'true' : 'false'}">
+  <body data-performance-debug="${performanceEnabled ? 'true' : 'false'}" data-render-acknowledgements="${renderAcknowledgements ? 'true' : 'false'}">
     <div id="root"></div>
     <script nonce="${nonce}" src="${scriptUri.toString()}?v=${cacheBust}"></script>
   </body>
@@ -90,7 +90,8 @@ function createChannel(panel: vscode.WebviewPanel, context: vscode.ExtensionCont
 function watchDevBuild(
   panel: vscode.WebviewPanel,
   context: vscode.ExtensionContext,
-  performanceEnabled: () => boolean
+  performanceEnabled: () => boolean,
+  integrationTestMode: boolean
 ): void {
   if (context.extensionMode !== vscode.ExtensionMode.Development) return;
   const watcher = vscode.workspace.createFileSystemWatcher(
@@ -103,7 +104,8 @@ function watchDevBuild(
     timer = setTimeout(() => {
       timer = undefined;
       if (disposed) return;
-      panel.webview.html = buildHtml(panel.webview, context.extensionUri, performanceEnabled(), Date.now());
+      const performanceDebug = performanceEnabled();
+      panel.webview.html = buildHtml(panel.webview, context.extensionUri, performanceDebug, performanceDebug || integrationTestMode, Date.now());
     }, DEV_RELOAD_DEBOUNCE_MS);
   };
   watcher.onDidChange(scheduleReload);
@@ -156,15 +158,18 @@ export function showDashboard(context: vscode.ExtensionContext, platform: HostPl
     localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')], // Rule 2.
     retainContextWhenHidden: true,
   });
+  const createdAt = Date.now();
+  const integrationTestMode = context.extensionMode === vscode.ExtensionMode.Test ||
+    process.env['PACKAGEAWY_EXTENSION_TEST'] === '1';
   const performanceEnabled = (): boolean => platform.getSetting<boolean>('debug.performance', false);
-  panel.webview.html = buildHtml(panel.webview, context.extensionUri, performanceEnabled(), Date.now());
-  watchDevBuild(panel, context, performanceEnabled);
+  const performanceDebug = performanceEnabled();
+  panel.webview.html = buildHtml(panel.webview, context.extensionUri, performanceDebug, performanceDebug || integrationTestMode, Date.now());
+  watchDevBuild(panel, context, performanceEnabled, integrationTestMode);
 
   DashboardPanel.create(platform, createChannel(panel, context), {
     extensionVersion: String(context.extension.packageJSON['version'] ?? 'unknown'),
-    integrationTestMode:
-      context.extensionMode === vscode.ExtensionMode.Test ||
-      process.env['PACKAGEAWY_EXTENSION_TEST'] === '1',
+    integrationTestMode,
+    createdAt,
     ...(initialManifestPath === undefined ? {} : { initialManifestPath }),
   });
 }

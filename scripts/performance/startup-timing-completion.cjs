@@ -4,7 +4,7 @@
 //
 // Inputs:
 //   messages  Dashboard messages from the integration test hook:
-//             [{ at, message: { status, data? } }]
+//             [{ at, direction, message: { status, data? } | { type, generatedAt } }]
 //   reports   Packageawy performance reports printed with
 //             packageawy.debug.performance on: [{ at, text }]
 //   openedAt  When the dashboard was opened (same clock as `at`).
@@ -23,6 +23,8 @@
 // message arrived, or its "Packageawy cleanup usage analysis" report was
 // printed (it is printed even when the analysis returns early without a
 // message). The completion time is the last such signal in that cycle.
+// Completion also waits for a rendered acknowledgement of a snapshot posted
+// after the command. generatedAt is an identity, including for warm replays.
 
 const DATA_STATUSES = new Set(['empty', 'ready', 'partial-error', 'stale']);
 const SCAN_BUSY_STATUSES = new Set(['loading', 'scan-progress', 'stale']);
@@ -46,13 +48,22 @@ function reportMetadata(report) {
 }
 
 function completionState({ messages, reports, openedAt }) {
+  messages = messages.filter((event) => event.at >= openedAt);
   const fatal = messages.find((event) => event.message.status === 'fatal-error');
-  const dataEvents = messages.filter((event) => DATA_STATUSES.has(event.message.status));
+  const dataEvents = messages.filter((event) => event.direction === 'outbound' && DATA_STATUSES.has(event.message.status));
   const firstRows = dataEvents.find((event) => (event.message.data?.rows?.length ?? 0) > 0);
   const lastData = dataEvents.at(-1);
+  const matchingPaint = (event, snapshots) => event.direction === 'inbound' && event.message.type === 'rendered' &&
+    snapshots.some((snapshot) => snapshot.at <= event.at &&
+      messages.indexOf(snapshot) < messages.indexOf(event) &&
+      snapshot.message.data?.generatedAt === event.message.generatedAt);
+  const firstPainted = messages.find((event) => matchingPaint(event, dataEvents));
+  const firstPaintedRows = messages.find((event) => matchingPaint(event,
+    dataEvents.filter((snapshot) => (snapshot.message.data?.rows?.length ?? 0) > 0)));
   const state = {
     fatal,
     firstRows,
+    firstPaintedRows,
     lastData,
     scanDone: false,
     usageDone: false,
@@ -105,8 +116,12 @@ function completionState({ messages, reports, openedAt }) {
   }
   const usageDoneAt = cycleMessages.length > 0 ? cycleMessages.at(-1).at : cycleReports.at(-1).at;
   state.usageDone = true;
+  if (firstPainted === undefined || (firstRows !== undefined && firstPaintedRows === undefined)) {
+    state.waitingFor = 'painted rows acknowledgement';
+    return state;
+  }
   state.complete = true;
-  state.completeAt = Math.max(lastData.at, usageDoneAt);
+  state.completeAt = Math.max(lastData.at, usageDoneAt, (firstPaintedRows ?? firstPainted).at);
   return state;
 }
 

@@ -2127,3 +2127,13 @@ test('the removed Smart Cleanup duplicate-check messages are rejected', () => {
   assert.equal(isHostToWebviewMessage({ status: 'smart-cleanup-duplicates-result', requestId: 'cleanup-1', assessments: [] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'smart-cleanup-duplicates', requestId: 'cleanup-1' }), false);
 });
+test('rendered accepts exactly a type and a non-empty generatedAt string', () => {
+  assert.equal(isWebviewToHostMessage({ type: 'rendered', generatedAt: '2026-01-01T00:00:00.000Z' }), true);
+  for (const value of [
+    { type: 'rendered' },
+    { type: 'rendered', generatedAt: '' },
+    { type: 'rendered', generatedAt: 123 },
+    { type: 'rendered', generatedAt: null },
+    { type: 'rendered', generatedAt: 'snapshot', extra: true },
+  ]) assert.equal(isWebviewToHostMessage(value), false, JSON.stringify(value));
+});

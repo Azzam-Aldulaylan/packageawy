@@ -64,16 +64,20 @@ const BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
 const FILE_EVENT_DEBOUNCE_MS = 300;
 const MAX_INTEGRATION_TEST_MESSAGES = 160;
 
-export interface DashboardPanelIntegrationTestEvent {
+export type DashboardPanelIntegrationTestEvent = {
   sequence: number;
   at: number;
-  message: HostToWebviewMessage;
-}
+} & (
+  | { direction: 'outbound'; message: HostToWebviewMessage }
+  | { direction: 'inbound'; message: Extract<WebviewToHostMessage, { type: 'rendered' }> }
+);
 
 export interface DashboardPanelOptions {
   extensionVersion: string;
   /** Enables the integration test seam below. Never true for a normal session. */
   integrationTestMode: boolean;
+  /** Timestamp captured when the platform creates the panel. */
+  createdAt?: number;
   /** Absolute path of a package.json to select on first load instead of asking. */
   initialManifestPath?: string;
 }
@@ -82,6 +86,7 @@ export interface DashboardPanelIntegrationTestSnapshot {
   open: boolean;
   disposed: boolean;
   panelId: string | null;
+  panelCreatedAt: number | null;
   selectedManifestPath: string | null;
   packageManager: 'npm' | 'pnpm' | null;
   messages: readonly DashboardPanelIntegrationTestEvent[];
@@ -105,6 +110,7 @@ export class DashboardPanel {
   private readonly channel: WebviewChannel;
   private readonly sink: MessageSink;
   private readonly integrationTestMode: boolean;
+  private readonly createdAt: number;
   private readonly integrationTestPanelId = randomBytes(8).toString('hex');
   private readonly integrationTestMessages: DashboardPanelIntegrationTestEvent[] = [];
   private integrationTestMessageSequence = 0;
@@ -201,6 +207,7 @@ export class DashboardPanel {
     this.platform = platform;
     this.channel = channel;
     this.integrationTestMode = options.integrationTestMode;
+    this.createdAt = options.createdAt ?? Date.now();
     this.requestedManifestPath = options.initialManifestPath;
     this.buildInfo = {
       extensionVersion: options.extensionVersion,
@@ -208,16 +215,7 @@ export class DashboardPanel {
     };
     this.sink = {
       postMessage: (message) => {
-        if (this.integrationTestMode) {
-          this.integrationTestMessageSequence += 1;
-          this.integrationTestMessages.push({ sequence: this.integrationTestMessageSequence, at: Date.now(), message });
-          if (this.integrationTestMessages.length > MAX_INTEGRATION_TEST_MESSAGES) {
-            this.integrationTestMessages.splice(
-              0,
-              this.integrationTestMessages.length - MAX_INTEGRATION_TEST_MESSAGES
-            );
-          }
-        }
+        this.recordIntegrationTestMessage({ direction: 'outbound', message });
         if (this.performanceEnabled()) {
           const performance = createPerformanceSession('Packageawy webview message', true);
           const endSerialization = performance.start('webview message serialization');
@@ -381,6 +379,7 @@ export class DashboardPanel {
         open: false,
         disposed: true,
         panelId: null,
+        panelCreatedAt: null,
         selectedManifestPath: null,
         packageManager: null,
         messages: [],
@@ -393,6 +392,7 @@ export class DashboardPanel {
       open: true,
       disposed: current.disposed,
       panelId: current.integrationTestPanelId,
+      panelCreatedAt: current.createdAt,
       selectedManifestPath: current.selectedProject?.manifestPath ?? null,
       packageManager: current.selectedPackageManager,
       messages: current.integrationTestMessages.map((event) => ({ ...event })),
@@ -419,11 +419,27 @@ export class DashboardPanel {
   }
 
   private async handle(message: WebviewToHostMessage): Promise<void> {
+    if (message.type === 'rendered') {
+      this.recordIntegrationTestMessage({ direction: 'inbound', message });
+      return;
+    }
     try {
       await this.handleMessage(message);
     } finally {
       // Setting changes retain one refresh until the active operation settles.
       await this.flushAdvisorySettingRefresh();
+    }
+  }
+
+  private recordIntegrationTestMessage(event:
+    | { direction: 'outbound'; message: HostToWebviewMessage }
+    | { direction: 'inbound'; message: Extract<WebviewToHostMessage, { type: 'rendered' }> }
+  ): void {
+    if (!this.integrationTestMode) return;
+    this.integrationTestMessageSequence += 1;
+    this.integrationTestMessages.push({ ...event, sequence: this.integrationTestMessageSequence, at: Date.now() });
+    if (this.integrationTestMessages.length > MAX_INTEGRATION_TEST_MESSAGES) {
+      this.integrationTestMessages.splice(0, this.integrationTestMessages.length - MAX_INTEGRATION_TEST_MESSAGES);
     }
   }
 

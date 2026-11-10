@@ -45,7 +45,7 @@ object WebviewHtml {
     <link rel="stylesheet" href="$ORIGIN/webview.css" />
     <title>Packageawy</title>
   </head>
-  <body class="$themeClass" data-performance-debug="$performanceDebug">
+  <body class="$themeClass" data-performance-debug="$performanceDebug" data-render-acknowledgements="$performanceDebug">
     <div id="root"></div>
     <script nonce="$nonce">${shim(sendToHost, initialState)}</script>
     <script nonce="$nonce" src="$ORIGIN/webview.js"></script>
