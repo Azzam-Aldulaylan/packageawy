@@ -60,7 +60,10 @@ import { isSourceFingerprint } from './sourceFingerprint.js';
 // 9: regenerate alias identities and coverage for packages without versions.
 // 10: availability names registries that ask for sign-in. Replaying a v9
 // snapshot would keep their packages on the generic unavailable label.
-export const CACHE_SCHEMA_VERSION = 10;
+// 11: rows carry the lockfile-backed registry identity of aliases. Older
+// snapshots cannot say which package an alias resolved to, so offered
+// versions could be checked against the wrong package.
+export const CACHE_SCHEMA_VERSION = 11;
 
 /**
  * The registry response cache did not change when project rows gained a

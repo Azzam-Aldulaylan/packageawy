@@ -90,3 +90,8 @@ for (const legacy of [false, true]) {
     }
   });
 }
+
+test('cache snapshots from before rows carried alias identities are rebuilt', async () => {
+  const { CACHE_SCHEMA_VERSION } = await import('../out/core/cache/schema.js');
+  assert.ok(CACHE_SCHEMA_VERSION >= 11, 'version 10 snapshots without registry identities are not replayed');
+});
