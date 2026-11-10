@@ -24,13 +24,15 @@ const bundle = await build({ entryPoints: ['src/host/upgradeAssistantCoordinator
   } }] });
 const { UpgradeAssistantCoordinator } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 
-async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false, cancelAt, disableAtAdvisory = false } = {}) {
+async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false, cancelAt, disableAtAdvisory = false, toggleAfterSecurity, toggleAtFinalRead = false, toggleDuringRecheck = false, toggleDuringSmartPlan = false, confirm = false } = {}) {
   const messages = [];
   const posts = [];
   const resolvedManifests = [];
   let phase;
   let cancelled;
   let advisorySettingChange;
+  let toggled = false;
+  let projectLoads = 0;
   const cancel = async signal => {
     cancelled = { signal, resolverStarts: resolvedManifests.length };
     coordinator.handleCancelUpgrade({ analysisId: null });
@@ -64,10 +66,24 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
     validateBulkUpgradeRequest: () => ({ ok: true, upgrades: changes }) };
   const coordinator = new UpgradeAssistantCoordinator({
     platform: { getSetting: (key, fallback) => key === 'security.publicAdvisoryCheck' ? !off : fallback, findFiles: async () => [] },
-    sink: { postMessage: message => { messages.push(message); if (message.phase) phase = message.phase; } },
+    sink: { postMessage: message => {
+      messages.push(message);
+      if (message.phase) phase = message.phase;
+      if (toggleAfterSecurity && !toggled && message.section?.kind === 'security') {
+        assert.equal(coordinator.isBusy(), true);
+        toggled = true;
+        off = !off;
+        coordinator.handleAdvisorySettingChanged();
+      }
+    } },
     httpClient: {
       get: async (url, options) => {
         const name = url.includes('/peer') ? 'peer' : 'app';
+        if (toggleDuringSmartPlan && !toggled && phase === 'smart-plan') {
+          toggled = true;
+          off = !off;
+          coordinator.handleAdvisorySettingChanged();
+        }
         const metadata = version => ({ name, version, exports: './index.js', dependencies: {},
           ...(name === 'peer' && coordinated ? { peerDependencies: { app: version === '1.0.0' ? '^1' : '>=2' } } : {}) });
         const exactVersion = new URL(url).pathname.split('/').at(-1);
@@ -82,6 +98,10 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
       },
       post: async (_, body, options) => {
         posts.push(JSON.parse(body));
+        if (toggleDuringRecheck && posts.length === 2) {
+          off = true;
+          coordinator.handleAdvisorySettingChanged();
+        }
         if (disableAtAdvisory) {
           off = true;
           advisorySettingChange = { busy: coordinator.isBusy(), signal: options.signal };
@@ -96,7 +116,13 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
     },
     etagStore: { get: () => undefined, set: () => {} }, ensureController: async () => controller,
     getSelectedProject: () => ({ id: 'fixture', dir: '', folder: { id: 'fixture', name: 'fixture', path: '/fixture' } }),
-    isDisposed: () => false, loadProject: async () => source,
+    isDisposed: () => false, loadProject: async () => {
+      if (toggleAtFinalRead && ++projectLoads === 2) {
+        off = !off;
+        coordinator.handleAdvisorySettingChanged();
+      }
+      return source;
+    },
     withCompatibilityProgress: async (_, run) => run(new AbortController().signal),
     flushDeferredChanges: async () => {}, reloadFinalState: async () => {},
   });
@@ -108,6 +134,7 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
   const result = messages.findLast(message => message.status === 'upgrade-analysis');
   assert.ok(result, `expected completed review, got ${JSON.stringify(messages.filter(message => message.status === 'upgrade-error'))}`);
   assert.equal(isHostToWebviewMessage(result), true);
+  if (confirm) await coordinator.handleConfirmUpgrade({ analysisId: result.analysis.analysisId });
   await coordinator.handleCancelUpgrade({ analysisId: result.analysis.analysisId });
   return { result: result.analysis, messages, posts, resolvedManifests, advisorySettingChange };
 }
@@ -168,3 +195,40 @@ for (const failure of ['resolverFails', 'advisoryFails', 'off']) {
     if (failure !== 'advisoryFails') assert.equal(posts.length, 0);
   });
 }
+
+for (const off of [false, true]) {
+  for (const toggleAtFinalRead of [false, true]) {
+    test(`an initially ${off ? 'disabled' : 'enabled'} security result is reconciled after a setting change during ${toggleAtFinalRead ? 'final source reads' : 'other review sections'}`, async () => {
+      const { result, messages, posts } = await analyze({ off, toggleAfterSecurity: !toggleAtFinalRead, toggleAtFinalRead, confirm: off });
+      const securitySections = messages.filter(message => message.section?.kind === 'security');
+      assert.equal(securitySections[0].section.security.checkState, off ? 'off' : 'complete', 'the first security render is unchanged');
+      assert.equal(result.security.checkState, off ? 'complete' : 'off');
+      assert.equal(posts.length, 1, 'only enabled checks submit an advisory request');
+      assert.equal(result.security.introduced.length, off ? 1 : 0);
+      assert.deepEqual(securitySections.at(-1).section.security, result.security);
+      assert.equal(result.compatibility.status, 'warning');
+      if (off) assert.equal(messages.at(-1).error?.code, 'SECURITY_ACKNOWLEDGEMENT_REQUIRED', 'confirmation uses the reconciled evidence');
+    });
+  }
+}
+
+test('reconciliation checks the executable coordinated proposal after enabling security', async () => {
+  const { result, posts } = await analyze({ coordinated: true, off: true, toggleAtFinalRead: true });
+  assert.equal(result.security.checkState, 'complete');
+  assert.equal(result.security.introduced[0].flaggedPackage, 'peer');
+  assert.deepEqual(posts[0].peer, ['1.0.0', '2.0.0']);
+});
+
+test('another setting event during reconciliation invalidates that security evidence too', async () => {
+  const { result, posts } = await analyze({ toggleAfterSecurity: true, toggleAtFinalRead: true, toggleDuringRecheck: true });
+  assert.equal(result.security.checkState, 'off');
+  assert.equal(result.security.introduced.length, 0);
+  assert.equal(posts.length, 2);
+});
+
+test('enabling security during smart-plan search gives the coordinated audit a fresh signal', async () => {
+  const { result, posts } = await analyze({ coordinated: true, off: true, toggleDuringSmartPlan: true });
+  assert.equal(result.security.checkState, 'complete');
+  assert.equal(result.security.introduced[0].flaggedPackage, 'peer');
+  assert.equal(posts.length, 1);
+});

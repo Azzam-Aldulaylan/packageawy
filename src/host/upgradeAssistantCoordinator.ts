@@ -620,6 +620,7 @@ export class UpgradeAssistantCoordinator {
   private readonly remediationPlanByPackage = new Map<string, string>();
   private activeUpgradeAnalysisAbort: AbortController | undefined;
   private activeUpgradeAdvisoryAbort: AbortController | undefined;
+  private advisorySettingsGeneration = 0;
   /** One exact deep inventory is enough to make immediate re-analysis/cache reuse cheap without retaining many large file lists. */
   private readonly targetPackageSurfaceCache = new TargetPackageSurfaceCache();
 
@@ -1250,11 +1251,19 @@ export class UpgradeAssistantCoordinator {
     this.pendingAnalyzePackage = eligibility.packageName;
     const analysisAbort = new AbortController();
     this.activeUpgradeAnalysisAbort = analysisAbort;
-    const advisoryAbort = new AbortController();
+    let advisoryAbort = new AbortController();
     this.activeUpgradeAdvisoryAbort = advisoryAbort;
     const abortAdvisories = (): void => advisoryAbort.abort();
     analysisAbort.signal.addEventListener('abort', abortAdvisories, { once: true });
     const pendingAnalysisWork: Promise<unknown>[] = [];
+    const startSecurityCheck = () => {
+      if (advisoryAbort.signal.aborted && !analysisAbort.signal.aborted) {
+        advisoryAbort = new AbortController();
+        this.activeUpgradeAdvisoryAbort = advisoryAbort;
+      }
+      return { generation: this.advisorySettingsGeneration,
+        enabled: this.publicAdvisoryCheckEnabled(controller.root) };
+    };
 
     // Tracks whether the full review completed for performance reporting;
     // the read-only reservation is released in `finally` on every path.
@@ -1473,6 +1482,7 @@ export class UpgradeAssistantCoordinator {
       // Chain directly from compatibility completion: its resolver verify
       // and temp-dir cleanup have settled before this callback runs, while
       // project evidence/metadata work below may still be in flight.
+      const initialSecuritySettings = startSecurityCheck();
       const securityGraphPromise = compatibilityResultPromise.then(async (compatibilityResult) => {
         if (
           !compatibilityResult.ok ||
@@ -1550,6 +1560,7 @@ export class UpgradeAssistantCoordinator {
       const securityResult = await securityResultPromise;
       if (!securityResult.ok) throw securityResult.cause;
       let security = securityResult.security;
+      let securitySettings = initialSecuritySettings;
       if (this.droppedByCancellation(eligibility.packageName)) return;
 
       let smartPlan: UpgradeAnalysisSmartPlan | null = null;
@@ -1598,7 +1609,8 @@ export class UpgradeAssistantCoordinator {
           smartPlanProposal = planned.plan.proposal;
           // The coordinated proposal includes planner-added dependencies and can
           // differ from the first reviewed graph. Audit its executable changes.
-          const coordinatedGraph = this.publicAdvisoryCheckEnabled(controller.root)
+          securitySettings = startSecurityCheck();
+          const coordinatedGraph = securitySettings.enabled
             ? await materializeUpgradeSecurityGraph({
                 compatibilityStatus: 'compatible', proposal: smartPlanProposal,
                 materializer: resolverVerifier, signal: analysisAbort.signal,
@@ -1680,6 +1692,31 @@ export class UpgradeAssistantCoordinator {
           },
         });
         return;
+      }
+
+      // A completed request can outlive its setting. Reconcile the executable
+      // proposal after the final reads, before retaining acknowledgement evidence.
+      while (securitySettings.generation !== this.advisorySettingsGeneration ||
+             securitySettings.enabled !== this.publicAdvisoryCheckEnabled(controller.root)) {
+        securitySettings = startSecurityCheck();
+        const currentProposal = smartPlanProposal ?? proposal;
+        const currentGraph = securitySettings.enabled ? await materializeUpgradeSecurityGraph({
+          compatibilityStatus: smartPlanProposal === null ? analysis.status : 'compatible',
+          proposal: currentProposal, materializer: resolverVerifier, signal: analysisAbort.signal,
+        }) : undefined;
+        if (analysisAbort.signal.aborted || this.droppedByCancellation(eligibility.packageName)) return;
+        security = await auditUpgradeReview({
+          before: graph, after: currentGraph, proposal: currentProposal, client: this.options.httpClient,
+          enabled: () => this.publicAdvisoryCheckEnabled(controller.root), signal: advisoryAbort.signal,
+        });
+        if (analysisAbort.signal.aborted || this.droppedByCancellation(eligibility.packageName)) return;
+        if (securitySettings.generation === this.advisorySettingsGeneration &&
+            securitySettings.enabled === this.publicAdvisoryCheckEnabled(controller.root)) {
+          this.options.sink.postMessage({
+            status: 'upgrade-analysis-partial', requestId, package: eligibility.packageName,
+            section: { kind: 'security', security },
+          });
+        }
       }
 
       const analysisId = randomBytes(16).toString('hex');
@@ -1861,7 +1898,17 @@ export class UpgradeAssistantCoordinator {
 
   /** Setting events must stop advisory work even while the panel defers refresh. */
   handleAdvisorySettingChanged(): void {
+    this.advisorySettingsGeneration += 1;
     this.activeUpgradeAdvisoryAbort?.abort();
+    if (this.activeRemediationAnalysisId === undefined &&
+        this.activeRemediationPackage !== undefined && !this.activeRemediationAbort?.signal.aborted) {
+      const packageName = this.activeRemediationPackage;
+      this.activeRemediationPackage = undefined;
+      this.options.sink.postMessage({
+        status: 'remediation-error', package: packageName,
+        error: { code: 'ADVISORY_CHECK_CHANGED', message: 'Security checks changed. Review the fix again.' },
+      });
+    }
     this.activeRemediationAbort?.abort();
   }
 

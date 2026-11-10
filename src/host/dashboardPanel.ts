@@ -138,6 +138,7 @@ export class DashboardPanel {
   private readonly buildInfo: BuildInfo;
   /** Set once onDidDispose fires, so an async continuation mid-flight can bail before posting into a gone webview. */
   private disposed = false;
+  private advisorySettingRefreshPending = false;
   /** The candidate a plain refresh (or a post-upgrade reload) re-reads: set on selection, untouched by refresh itself. */
   private selectedProject: DiscoveredProject | undefined;
   /**
@@ -294,7 +295,8 @@ export class DashboardPanel {
       if (this.disposed) return;
       this.upgradeCoordinator.handleAdvisorySettingChanged();
       this.controller?.handleAdvisorySettingChanged();
-      void this.handle({ type: 'refresh' });
+      this.advisorySettingRefreshPending = true;
+      void this.flushAdvisorySettingRefresh();
     });
 
     this.channel.onDidReceiveMessage((raw: unknown) => {
@@ -406,7 +408,23 @@ export class DashboardPanel {
     await current.handle(raw);
   }
 
+  private async flushAdvisorySettingRefresh(): Promise<void> {
+    if (!this.advisorySettingRefreshPending || this.disposed ||
+        this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
+    this.advisorySettingRefreshPending = false;
+    await this.handle({ type: 'refresh' });
+  }
+
   private async handle(message: WebviewToHostMessage): Promise<void> {
+    try {
+      await this.handleMessage(message);
+    } finally {
+      // Setting changes retain one refresh until the active operation settles.
+      await this.flushAdvisorySettingRefresh();
+    }
+  }
+
+  private async handleMessage(message: WebviewToHostMessage): Promise<void> {
     if (message.type === 'ready') {
       this.webviewReady = true;
       await this.upgradeCoordinator.handleWebviewReady();
