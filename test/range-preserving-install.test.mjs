@@ -40,7 +40,6 @@ test('a package.json edit during pass one is kept as a rollback conflict, not ov
     files,
     manifestStage: { path: '/p/package.json', expectedContents: Buffer.from(original), contents: Buffer.from(staged) },
     install: createRangePreservingInstall({
-      files,
       manifestPath: '/p/package.json',
       stagedManifest: staged,
       styledManifest: styled,
@@ -72,7 +71,6 @@ test('without a concurrent edit both passes run and the styled manifest is kept'
     files,
     manifestStage: { path: '/p/package.json', expectedContents: Buffer.from(original), contents: Buffer.from(staged) },
     install: createRangePreservingInstall({
-      files,
       manifestPath: '/p/package.json',
       stagedManifest: staged,
       styledManifest: styled,
@@ -94,7 +92,6 @@ test('a failed pass one rolls back to the original manifest', async () => {
     files,
     manifestStage: { path: '/p/package.json', expectedContents: Buffer.from(original), contents: Buffer.from(staged) },
     install: createRangePreservingInstall({
-      files,
       manifestPath: '/p/package.json',
       stagedManifest: staged,
       styledManifest: styled,
@@ -104,4 +101,84 @@ test('a failed pass one rolls back to the original manifest', async () => {
   });
   assert.equal(result.completion, 'rolled-back');
   assert.equal(text(await files.read('/p/package.json')), original);
+});
+
+function runWithEdit({ resolve, restyle, verifier }) {
+  const files = memoryFiles({ '/p/package.json': original, '/p/package-lock.json': 'old-lock' });
+  const edit = () => files.states.set('/p/package.json', Buffer.from(userEdit));
+  const result = runUpgradeTransaction({
+    allowlistedPaths: ['/p/package.json', '/p/package-lock.json'],
+    files,
+    manifestStage: { path: '/p/package.json', expectedContents: Buffer.from(original), contents: Buffer.from(staged) },
+    install: createRangePreservingInstall({
+      manifestPath: '/p/package.json',
+      stagedManifest: staged,
+      styledManifest: styled,
+      resolve: () => resolve(files, edit),
+      restyle: () => restyle(files, edit),
+    }),
+    ...(verifier === undefined
+      ? {}
+      : { verifier: { verify: () => verifier(files, edit) }, verificationFailureDecider: { decide: async () => 'rollback' } }),
+  });
+  return { files, result };
+}
+
+async function assertEditKept({ files, result }) {
+  const outcome = await result;
+  assert.equal(text(await files.read('/p/package.json')), userEdit, 'the user edit survives rollback');
+  assert.equal(outcome.rollback.files.find((file) => file.path === '/p/package.json').status, 'conflict');
+  assert.equal(outcome.completion, 'incomplete');
+  assert.equal(text(await files.read('/p/package-lock.json')), 'old-lock');
+}
+
+const lockWrite = (files) => files.states.set('/p/package-lock.json', Buffer.from('new-lock'));
+
+test('(a) an edit made while pass one fails is kept', async () => {
+  await assertEditKept(runWithEdit({
+    resolve: async (files, edit) => { lockWrite(files); edit(); return { ok: false, code: 'X', message: 'pass one failed' }; },
+    restyle: async () => ({ ok: true }),
+  }));
+});
+
+test('(b) an edit made while pass two fails is kept', async () => {
+  await assertEditKept(runWithEdit({
+    resolve: async (files) => { lockWrite(files); return { ok: true }; },
+    restyle: async (_files, edit) => { edit(); return { ok: false, code: 'X', message: 'pass two failed' }; },
+  }));
+});
+
+test('(c) an edit made before pass one throws is kept', async () => {
+  await assertEditKept(runWithEdit({
+    resolve: async (files, edit) => { lockWrite(files); edit(); throw new Error('spawn failed'); },
+    restyle: async () => ({ ok: true }),
+  }));
+});
+
+test('(d) an edit made during successful passes is kept when verification then rolls back', async () => {
+  await assertEditKept(runWithEdit({
+    resolve: async (files) => { lockWrite(files); return { ok: true }; },
+    restyle: async (_files, edit) => { edit(); return { ok: true }; },
+    verifier: async () => ({ status: 'failed', checks: [{ id: 'test', status: 'failed' }] }),
+  }));
+});
+
+test('an edit made during verification itself is kept too', async () => {
+  await assertEditKept(runWithEdit({
+    resolve: async (files) => { lockWrite(files); return { ok: true }; },
+    restyle: async () => ({ ok: true }),
+    verifier: async (_files, edit) => { edit(); return { status: 'failed', checks: [{ id: 'test', status: 'failed' }] }; },
+  }));
+});
+
+test('without an edit, a failed verification restores the original manifest and lockfile', async () => {
+  const { files, result } = runWithEdit({
+    resolve: async (files) => { lockWrite(files); return { ok: true }; },
+    restyle: async () => ({ ok: true }),
+    verifier: async () => ({ status: 'failed', checks: [{ id: 'test', status: 'failed' }] }),
+  });
+  const outcome = await result;
+  assert.equal(outcome.completion, 'rolled-back');
+  assert.equal(text(await files.read('/p/package.json')), original);
+  assert.equal(text(await files.read('/p/package-lock.json')), 'old-lock');
 });

@@ -72,6 +72,9 @@ export function isCatalogSpecifier(spec: string): boolean {
   return spec.trim().startsWith('catalog:');
 }
 
+const LOCAL_PATH = /^(?:\.\.?(?:[\\/]|$)|~[\\/]|[\\/]|[a-zA-Z]:(?:[\\/]|$))/;
+const LOCAL_TARBALL = /\.(?:tgz|tar\.gz|tar)$/i;
+
 /** Shorthand GitHub form, e.g. "user/repo" or "user/repo#semver:^1.0.0". */
 const GITHUB_SHORTHAND = /^[\w.-]+\/[\w.-]+(?:#.*)?$/;
 
@@ -126,6 +129,11 @@ export function classifySpecifier(spec: string): {
   if (value.startsWith('http://') || value.startsWith('https://')) {
     return { unresolvable: 'tarball' };
   }
+
+  // npm also reads bare paths as local directories or tarballs, without a
+  // file: prefix: "../pkg", "./pkg", "/abs/pkg", "~/pkg", "C:\\pkg", ".\\pkg",
+  // or any "*.tgz" / "*.tar.gz" / "*.tar" name.
+  if (LOCAL_PATH.test(value) || LOCAL_TARBALL.test(value)) return { unresolvable: 'file' };
 
   // Bare "user/repo" is GitHub shorthand. Guard against swallowing scoped
   // package names (@scope/name is not a specifier) and path-like values.

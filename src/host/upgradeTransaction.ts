@@ -43,16 +43,19 @@ export type InstallExecutionResult =
       code: string;
       message: string;
       exitCode?: number | null;
-      /**
-       * Bytes this transaction itself last wrote to an allowlisted path,
-       * reported when the executor saw that a later write was not its own
-       * (a compare-and-swap conflict). Rollback uses these instead of the
-       * post-install disk contents as its expectation, so a concurrent user
-       * edit becomes a rollback conflict and is kept.
-       */
-      ownedStates?: readonly { path: string; state: FileState }[];
     }
   | { status: 'cancelled'; message: string; exitCode?: number | null };
+
+/**
+ * Writes an install step makes to a host-staged file go through this, so the
+ * transaction always knows the last bytes it wrote. Every rollback compares
+ * a staged manifest against those owned bytes, not whatever is on disk after
+ * install, so an edit someone else made in the meantime becomes a rollback
+ * conflict and is kept.
+ */
+export interface InstallExecutionContext {
+  compareAndSwap(path: string, expected: FileState, replacement: FileState): Promise<CompareAndSwapResult>;
+}
 
 export interface UpgradeInstallExecutor {
   /**
@@ -60,7 +63,7 @@ export interface UpgradeInstallExecutor {
    * AbortSignal: killing a package manager while it writes the manifest or
    * lockfile is less safe than waiting for it to reach a stable boundary.
    */
-  execute(): Promise<InstallExecutionResult>;
+  execute(context: InstallExecutionContext): Promise<InstallExecutionResult>;
 }
 
 export interface VerificationCheckResult {
@@ -494,14 +497,19 @@ async function captureExpectedStates(
   return expected;
 }
 
+/**
+ * A host-staged manifest is never rewritten by the bare reconciliation
+ * install, so its rollback expectation is the last bytes the transaction
+ * wrote there, whatever is on disk now. Other files (the lockfile) are
+ * legitimately written by the package manager and keep the post-install read.
+ */
 function withOwnedStates(
   entries: readonly ExpectedEntry[],
-  owned: readonly { path: string; state: FileState }[] | undefined
+  owned: ReadonlyMap<string, FileState>
 ): ExpectedEntry[] {
-  if (owned === undefined || owned.length === 0) return [...entries];
   return entries.map((entry) => {
-    const claim = owned.find((item) => item.path === entry.snapshot.path);
-    return claim === undefined ? entry : { snapshot: entry.snapshot, expected: cloneState(claim.state) };
+    const claim = owned.get(entry.snapshot.path);
+    return claim === undefined ? entry : { snapshot: entry.snapshot, expected: cloneState(claim) };
   });
 }
 
@@ -550,9 +558,12 @@ function completionAfterRollback(result: RollbackResult): TransactionCompletion 
   return result.status === 'succeeded' ? 'rolled-back' : 'incomplete';
 }
 
-async function executeInstall(executor: UpgradeInstallExecutor): Promise<InstallExecutionResult> {
+async function executeInstall(
+  executor: UpgradeInstallExecutor,
+  context: InstallExecutionContext
+): Promise<InstallExecutionResult> {
   try {
-    return await executor.execute();
+    return await executor.execute(context);
   } catch (cause) {
     return { status: 'failed', code: 'INSTALL_EXECUTOR_ERROR', message: errorMessage(cause) };
   }
@@ -660,6 +671,8 @@ export async function runUpgradeTransaction(
   }
 
   let manifestStage: ManifestStageResult = { status: 'not-run' };
+  // Last bytes this transaction wrote to each host-staged manifest.
+  const owned = new Map<string, FileState>();
   const fileStages: ExactFileStageResult[] = [];
   const expectedAfterStage: ExpectedEntry[] = [];
   if (options.manifestStage !== undefined) {
@@ -679,6 +692,9 @@ export async function runUpgradeTransaction(
       };
     }
     expectedAfterStage.push(...staged.expected);
+    for (const entry of staged.expected) {
+      if ('expected' in entry) owned.set(entry.snapshot.path, cloneState(entry.expected));
+    }
   }
 
   for (const fileStage of options.fileStages ?? []) {
@@ -745,11 +761,17 @@ export async function runUpgradeTransaction(
 
   // Once install starts it is always awaited. Cancellation is observed only
   // after it reaches this stable boundary, then handled by rollback.
-  const install = await executeInstall(options.install);
-  const expected = withOwnedStates(
-    await captureExpectedStates(snapshot.entries, options.files),
-    install.status === 'failed' ? install.ownedStates : undefined
-  );
+  const install = await executeInstall(options.install, {
+    compareAndSwap: async (path, expectedState, replacement) => {
+      if (!owned.has(path)) {
+        throw new Error('Install steps may only write a file this transaction staged.');
+      }
+      const result = await options.files.compareAndSwap(path, cloneState(expectedState), cloneState(replacement));
+      if (result === 'restored') owned.set(path, cloneState(replacement));
+      return result;
+    },
+  });
+  const expected = withOwnedStates(await captureExpectedStates(snapshot.entries, options.files), owned);
 
   if (install.status !== 'succeeded') {
     const rolledBack = await rollback(expected, options.files);

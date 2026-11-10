@@ -97,13 +97,25 @@ test('each shadowed copy keeps its own style, and a non-registry copy is rejecte
     buildStagedManifest(source, [{ packageName: 'shared', target: '1.4.0', classification: 'prod' }], { rangeStyle: 'preserve' }),
     source.replace('"shared": "1.0.0"', '"shared": "1.4.0"').replace('"shared": "~1.0.0"', '"shared": "~1.4.0"')
   );
-  for (const shadow of ['file:../shared', 'workspace:*', 'catalog:', 'npm:other@^1.0.0']) {
+  for (const shadow of [
+    'file:../shared', 'workspace:*', 'catalog:', 'npm:other@^1.0.0', 'link:../shared',
+    '../local', './local', '/tmp/local', './local.tgz', 'local.tgz', 'pkg.tar.gz', '~/x', '.\\win', 'C:\\pkg', '.',
+    'git+https://example.com/x.git', 'github:user/repo', 'user/repo', 'https://example.com/x.tgz',
+  ]) {
     assert.throws(
       () => buildStagedManifest(JSON.stringify({ dependencies: { shared: '1.0.0' }, devDependencies: { shared: shadow } }), [
         { packageName: 'shared', target: '1.4.0', classification: 'prod' },
       ]),
-      (error) => error instanceof StagedManifestError && error.code === 'SHADOWED_DECLARATION' && /also declared in devDependencies/.test(error.message)
+      (error) => error instanceof StagedManifestError && error.code === 'SHADOWED_DECLARATION' && /also declared in devDependencies/.test(error.message),
+      shadow
     );
+  }
+  // Registry ranges and tags in the shadow copy still move to the target.
+  for (const shadow of ['^1.0.0', '~1.0.0', '>=1.0.0', '1.x', '*', 'latest', '']) {
+    const staged = JSON.parse(buildStagedManifest(JSON.stringify({ dependencies: { shared: '1.0.0' }, devDependencies: { shared: shadow } }), [
+      { packageName: 'shared', target: '1.4.0', classification: 'prod' },
+    ]));
+    assert.equal(staged.devDependencies.shared, '1.4.0', shadow);
   }
 });
 

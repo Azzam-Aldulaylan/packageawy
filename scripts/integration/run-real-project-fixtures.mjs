@@ -179,10 +179,10 @@ async function runManager(packageManager) {
         contents: Buffer.from(rangeExact),
       },
       install: {
-        execute: async () => {
+        execute: async (context) => {
           const first = await installExecutor(packageManager, fixture.root);
           if (first.status !== 'succeeded') return first;
-          const swapped = await files.compareAndSwap(
+          const swapped = await context.compareAndSwap(
             fixture.manifestPath,
             { exists: true, contents: Buffer.from(rangeExact) },
             { exists: true, contents: Buffer.from(rangeStyled) }

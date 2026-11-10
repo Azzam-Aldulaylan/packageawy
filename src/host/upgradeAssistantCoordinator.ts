@@ -3229,7 +3229,6 @@ export class UpgradeAssistantCoordinator {
       }
       if (!prepared.ok || (preparedRestyle !== null && !preparedRestyle.ok)) return;
       const install = createRangePreservingInstall({
-        files,
         manifestPath,
         stagedManifest,
         styledManifest,
