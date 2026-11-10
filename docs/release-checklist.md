@@ -12,8 +12,8 @@ npm run package -- --out packageawy-<version>.vsix
 
 For a pre-release, add `--pre-release` to the package command. Use an odd minor version for pre-releases (for example `0.9.0`) and an even one for stable releases, as the Marketplace recommends.
 
-- [ ] CI passes on Ubuntu and Windows for both the current and the minimum supported VS Code version.
-- [ ] `npx vsce ls` lists only the runtime bundles, `package.json`, README, changelog, license, and icon.
+- [ ] CI passes on Ubuntu and Windows for both the current and the minimum supported VS Code version, and the packaged VSIX smoke test passes on Ubuntu, Windows and macOS.
+- [ ] `npx vsce ls` lists only the runtime bundles, `package.json`, README, changelog, license, `ThirdPartyNotices.txt`, and the icons.
 - [ ] The VSIX installs into a clean VS Code profile and the dashboard opens against a throwaway npm project.
 
 ## Listing

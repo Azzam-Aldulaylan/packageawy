@@ -5,14 +5,26 @@
 <h1 align="center">Packageawy (بكجاوي)</h1>
 
 <p align="center">
-  Review, upgrade, and clean up npm and pnpm dependencies without leaving VS Code.<br>
+  Review, upgrade, and clean up npm and pnpm dependencies without leaving VS Code or your JetBrains IDE.<br>
   Packageawy checks every change before it happens and can roll it back if something goes wrong.
 </p>
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=Azzam.packageawy">VS Code Marketplace</a> ·
   <a href="https://open-vsx.org/extension/Azzam/packageawy">Open VSX</a> ·
+  <a href="https://plugins.jetbrains.com/plugin/35704-packageawy">JetBrains Marketplace</a> ·
   <a href="https://github.com/Azzam-Aldulaylan/packageawy/releases">Releases</a>
+</p>
+
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=Azzam.packageawy"><img src="https://img.shields.io/visual-studio-marketplace/v/Azzam.packageawy?label=VS%20Code%20Marketplace" alt="VS Code Marketplace version"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=Azzam.packageawy"><img src="https://img.shields.io/visual-studio-marketplace/i/Azzam.packageawy?label=installs" alt="VS Code Marketplace installs"></a>
+  <a href="https://open-vsx.org/extension/Azzam/packageawy"><img src="https://img.shields.io/open-vsx/v/Azzam/packageawy?label=Open%20VSX" alt="Open VSX version"></a>
+  <a href="https://open-vsx.org/extension/Azzam/packageawy"><img src="https://img.shields.io/open-vsx/dt/Azzam/packageawy?label=downloads" alt="Open VSX downloads"></a>
+  <a href="https://plugins.jetbrains.com/plugin/35704-packageawy"><img src="https://img.shields.io/jetbrains/plugin/v/35704?label=JetBrains%20Marketplace" alt="JetBrains Marketplace version"></a>
+  <a href="https://plugins.jetbrains.com/plugin/35704-packageawy"><img src="https://img.shields.io/jetbrains/plugin/d/35704?label=downloads" alt="JetBrains Marketplace downloads"></a>
+  <a href="https://github.com/Azzam-Aldulaylan/packageawy/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/Azzam-Aldulaylan/packageawy/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Azzam-Aldulaylan/packageawy" alt="MIT license"></a>
 </p>
 
 ![A short tour of Packageawy: the dashboard, a package's details and vulnerabilities, and an upgrade review](media/screenshots/store/demo.gif)
@@ -20,16 +32,21 @@
 ## Features
 
 - **One table for every direct dependency.** See the installed version, what your range allows, the latest release, and the worst known vulnerability for each package.
-- **Vulnerabilities with their full path.** Expand a row to see which transitive package is affected, how it got there, and which version fixes it.
-- **Upgrade Review.** Before an upgrade, Packageawy checks peer dependencies, Node engine ranges, package exports, and your own imports. When peers conflict, it looks for a set of upgrades that works together.
+- **Vulnerabilities with their full path.** Expand a row to see which transitive package is affected, how it got there, and which version fixes it. Aliased packages such as `npm:lodash@4.17.20` are checked under their real name.
+- **Upgrade Review.** Before an upgrade, Packageawy checks peer dependencies, Node engine ranges, package exports, and your own imports. When peers conflict, it looks for a set of upgrades that works together. The version list marks Security fix, Publisher LTS, and Latest stable versions.
+- **Upgrades that keep your style.** `^` and `~` ranges stay `^` and `~`, and `package.json` keeps its key order, indentation, and line endings.
 - **Transitive fixes.** When a vulnerable package sits deep in the tree, Packageawy can often move just that package to a patched version without touching its parent.
-- **Removal Review and Smart Cleanup.** Find packages that look unused and deprecated versions, with the evidence for each one. Nothing is removed until you confirm.
-- **Safe by default.** Install scripts are off, changes run as a visible VS Code task, and `package.json` and the lockfile are restored if the install or your verification scripts fail.
-- **Monorepos.** Pick any `package.json` in the workspace. npm workspaces and pnpm importers are supported.
+- **Removal Review and Smart Cleanup.** Find packages that look unused and deprecated versions, with the evidence for each one. Nothing is removed until you confirm. A removal shows its progress and result in the dialog, and after a kept Smart Cleanup, **Restore dependency files** puts `package.json` and the lockfile back.
+- **Safe by default.** Install scripts are off, changes run as a visible task, and `package.json` and the lockfile are restored if the install or your verification scripts fail. When no verification scripts are set, reviews suggest the project's `typecheck`, `build`, `test`, and `lint` scripts.
+- **Monorepos.** Pick any `package.json` in the workspace, or right-click one and choose **Open in Packageawy**. npm workspaces and pnpm importers are supported, and each npm workspace member shows its own installed versions.
+- **Private registries.** Scoped registries from `.npmrc` are used for lookups. When a registry asks for sign-in, Packageawy says which one and keeps upgrades available for every other package.
+- **Yarn and Bun projects.** Their dependencies are shown in the same table. Changes are available for npm and pnpm projects.
 
 ## Getting started
 
-1. Install Packageawy from the VS Code Marketplace. It is a pre-release for now, so please [report anything that feels off](https://github.com/Azzam-Aldulaylan/packageawy/issues).
+### VS Code
+
+1. Install Packageawy from the VS Code Marketplace or Open VSX. It is a pre-release for now, so please [report anything that feels off](https://github.com/Azzam-Aldulaylan/packageawy/issues).
 2. Open a folder that contains a `package.json`.
 3. Click the Packageawy icon in the Activity Bar, or run **Packageawy: Open** from the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows and Linux).
 4. If the workspace has more than one `package.json`, pick the project you want to see. You can switch later with **Change Project**.
@@ -37,6 +54,14 @@
 You can also right-click any `package.json` and choose **Open in Packageawy** to open that project directly.
 
 Run **Packageawy: Refresh** to rescan at any time.
+
+### JetBrains IDEs
+
+1. In IntelliJ IDEA, WebStorm, PyCharm, PhpStorm, GoLand, Rider, or RubyMine (2026.1 or newer), open **Settings**, **Plugins**, **Marketplace**, search for **Packageawy**, and install it.
+2. Open a project that contains a `package.json`.
+3. Open the **Packageawy** tool window, or right-click a `package.json` and choose **Open in Packageawy**.
+
+Settings are under **Settings**, **Tools**, **Packageawy**, with per-project options under **Project**.
 
 ## Reading the table
 
@@ -77,11 +102,14 @@ Only one change runs at a time.
 
 ## Settings
 
+These are the VS Code settings. JetBrains IDEs have the same options under **Settings**, **Tools**, **Packageawy**.
+
 | Setting | Default | Description |
 |---|---|---|
 | `packageawy.registry.useProjectNpmrc` | `true` | Read the registry from the project's `.npmrc`. Values containing `${` are always rejected. Turn this off to use only your user-level `.npmrc`. |
-| `packageawy.upgrade.ignoreScripts` | `true` | Pass `--ignore-scripts` when installing, so package lifecycle scripts don't run. |
+| `packageawy.upgrade.ignoreScripts` | `true` | Pass `--ignore-scripts` when upgrading, so package lifecycle scripts don't run. |
 | `packageawy.upgrade.verificationScripts` | `[]` | Script names from `package.json` to run after an install, for example `["test", "build"]`. |
+| `packageawy.security.publicAdvisoryCheck` | `true` | Check dependencies for known vulnerabilities through npm's public advisory service, GitHub's advisory API, and npm audit. Can be set per project or folder. When it is off, the Vulnerabilities column reads Off. |
 | `packageawy.cacheTtlMinutes` | `30` | How long cached results count as fresh, in minutes. `0` always rechecks on open. |
 | `packageawy.debug.performance` | `false` | Log local timing measurements to the developer consoles. Nothing is sent anywhere. |
 
@@ -90,11 +118,11 @@ Only one change runs at a time.
 - With a fresh cache the dashboard opens instantly with no network calls. With a stale cache it shows the cached results and rechecks in the background.
 - While the panel is open, a timer checks every 30 minutes whether a refresh is due.
 - Changes to `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, or `pnpm-lock.yaml` are picked up automatically.
-- Caches live in VS Code's extension storage. Project results are stored per workspace. Registry and advisory caches are shared between workspaces.
+- In VS Code, caches live in the extension's storage. Project results are stored per workspace. Registry and advisory caches are shared between workspaces.
 
 ## Workspace Trust
 
-Packageawy reads the project's `.npmrc` and can run your package manager, so it only activates in trusted workspaces. It checks trust again before reading `.npmrc` and before every install.
+In VS Code, Packageawy reads the project's `.npmrc` and can run your package manager, so it only activates in trusted workspaces. It checks trust again before reading `.npmrc` and before every install.
 
 ## Privacy and network access
 
@@ -113,7 +141,8 @@ Package names and versions are still information about your project, so check yo
 
 ## Requirements
 
-- VS Code 1.90 or newer, on desktop.
+- VS Code 1.90 or newer, on desktop, or a JetBrains IDE 2026.1 or newer.
+- In JetBrains IDEs, Node.js. Packageawy uses the Node.js interpreter configured in the IDE, or `node` on PATH.
 - An npm or pnpm project. For pnpm, a lockfile from pnpm 9 or newer.
 - Registry sign-in stays with your package manager. Packageawy never reads or stores auth tokens.
 
