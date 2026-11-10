@@ -25,15 +25,21 @@
 //                       message with rows (ready, partial-error, stale, empty).
 //   open to scan result To the last scan result (a warm start with an
 //                       expired cache posts the cached rows, then fresh ones).
-//   open to complete    To the last dashboard message, including background
-//                       analyses that follow the scan (likely-unused
-//                       packages), once nothing has been busy for
-//                       PACKAGEAWY_TIMING_QUIET_MS (3000 by default). The quiet
-//                       wait itself is not counted.
+//   open to complete    Until both the scan and the likely-unused analysis
+//                       that follows it have signalled that they finished
+//                       (see startup-timing-completion.cjs). A run that does
+//                       not finish within 180 s fails instead of guessing.
 // Modes:
 //   cold   A fresh user-data-dir per run: no cached scan, no ETags.
 //   warm   One user-data-dir per project, primed by one unrecorded run, so the
-//          scan cache and ETags from earlier runs are in place.
+//          scan cache and ETags from earlier runs are in place. A failed
+//          priming run is retried twice; if it never works, the warm group
+//          for that project is skipped and listed under "skipped".
+//
+// VS Code runs with a cleaned environment: VSCODE_* and ELECTRON_* variables
+// (VSCODE_PORTABLE, VSCODE_APPDATA, VSCODE_IPC_HOOK_CLI and others) would
+// otherwise send it to your own profile or running window. Ctrl+C stops the
+// VS Code processes this script started and removes its temporary folders.
 //
 // The scan talks to the real npm registry and advisory services, as it does
 // for users, so network latency shows up in the scan numbers. Compare medians
@@ -59,9 +65,18 @@ import { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath } from '
 
 import { readVsix } from '../integration/check-vsix-contents.mjs';
 import { aggregate, formatTable, median, parsePerformanceReport } from './startup-timing-stats.mjs';
+import {
+  assertInsideTempRoot,
+  killProcessTree,
+  sanitizedEnvironment,
+  withRetries,
+} from './startup-timing-support.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const suitePath = path.join(repositoryRoot, 'scripts', 'performance', 'startup-timing-suite.cjs');
+const completionPath = path.join(repositoryRoot, 'scripts', 'performance', 'startup-timing-completion.cjs');
+// A failed priming run is retried this many times, each with a fresh profile.
+const PRIMING_RETRIES = 2;
 
 const { values: options } = parseArgs({
   options: {
@@ -104,17 +119,22 @@ for (const project of projects) {
   if (!existsSync(project.manifest)) throw new Error(`${project.manifest} does not exist.`);
 }
 
-const tempRoots = [];
+// Every folder this script creates lives under one session folder, which is
+// removed at the end, on failure, and on Ctrl+C.
+let sessionRoot;
 async function tempDir(prefix) {
-  const dir = await mkdtemp(path.join(options.tmp, prefix));
-  tempRoots.push(dir);
-  return dir;
+  sessionRoot ??= await mkdtemp(path.join(path.resolve(options.tmp), 'pkt-'));
+  return mkdtemp(path.join(sessionRoot, prefix));
+}
+async function removeSessionRoot() {
+  if (sessionRoot !== undefined) await rm(sessionRoot, { recursive: true, force: true }).catch(() => {});
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, env = process.env) {
   const shell = process.platform === 'win32';
   const result = spawnSync(shell ? `"${command}"` : command, shell ? args.map((arg) => `"${arg}"`) : args, {
     cwd,
+    env,
     encoding: 'utf8',
     shell,
     windowsHide: true,
@@ -127,7 +147,7 @@ function run(command, args, cwd) {
 }
 
 async function packageVsix() {
-  const out = path.join(await tempDir('pkt-v-'), 'packageawy.vsix');
+  const out = path.join(await tempDir('v-'), 'packageawy.vsix');
   console.log('[timing] packaging the extension (npm run package)');
   run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'package', '--', '--out', out], repositoryRoot);
   return out;
@@ -158,8 +178,9 @@ exports.deactivate = () => {};
 `;
   await writeFile(path.join(root, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   await writeFile(path.join(root, 'extension.js'), source, 'utf8');
-  // A copy inside the runner, so require('vscode') resolves for it.
+  // Copies inside the runner, so require('vscode') resolves for them.
   await copyFile(suitePath, path.join(root, 'suite.js'));
+  await copyFile(completionPath, path.join(root, 'completion.js'));
 }
 
 async function writeProfileSettings(userDataDir) {
@@ -186,47 +207,70 @@ function hostOutput(chunk) {
 
 const LAUNCH_TIMEOUT_MS = 300_000;
 
-// Starts VS Code, waits for it to quit, and kills the process group it
-// started if it hangs. Only processes started here are ever killed.
+// VS Code processes started by this script and still running. Only these are
+// ever stopped.
+const running = new Set();
+let stopping = false;
+
+// Starts VS Code in its own process group, waits for it to quit, and stops
+// that group if it hangs.
 function startVsCode(executable, args, env) {
   return new Promise((resolve) => {
-    const child = spawn(executable, args, { env, detached: process.platform !== 'win32', windowsHide: true });
+    let child;
+    try {
+      child = spawn(executable, args, { env, detached: process.platform !== 'win32', windowsHide: true });
+    } catch (error) {
+      resolve({ code: undefined, error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    running.add(child);
     child.stdout.on('data', hostOutput);
     child.stderr.on('data', hostOutput);
     const timer = setTimeout(() => {
-      hostOutput(`[timing] VS Code did not quit within ${LAUNCH_TIMEOUT_MS} ms, killing it\n`);
-      try {
-        if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F']);
-        else process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        // Already gone.
-      }
+      hostOutput(`[timing] VS Code did not quit within ${LAUNCH_TIMEOUT_MS} ms, stopping it\n`);
+      void killProcessTree(child);
     }, LAUNCH_TIMEOUT_MS);
+    const done = (outcome) => {
+      clearTimeout(timer);
+      running.delete(child);
+      resolve(outcome);
+    };
     child.on('error', (error) => {
-      clearTimeout(timer);
-      resolve({ code: undefined, error: error.message });
+      // A failed spawn has no process to wait for. One that started and then
+      // failed is stopped before the result is reported.
+      void killProcessTree(child).then(() => done({ code: undefined, error: error.message }));
     });
-    child.on('exit', (code, signal) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? signal });
-    });
+    child.on('exit', (code, signal) => done({ code: code ?? signal }));
   });
 }
 
+// Ctrl+C or SIGTERM: start no further runs, stop the VS Code process trees
+// this script started and wait for them, remove the temporary folders, and
+// exit non-zero. The VS Code children run in their own process groups, so
+// the terminal's Ctrl+C does not reach them on its own.
+async function stopOnSignal(signal) {
+  if (stopping) return;
+  stopping = true;
+  console.error(`\n[timing] ${signal}: stopping ${running.size} VS Code process tree(s) and removing temporary folders`);
+  await Promise.all([...running].map((child) => killProcessTree(child)));
+  await removeSessionRoot();
+  process.exit(signal === 'SIGINT' ? 130 : 143);
+}
+process.on('SIGINT', () => void stopOnSignal('SIGINT'));
+process.on('SIGTERM', () => void stopOnSignal('SIGTERM'));
+
 async function launchOnce({ vscodeExecutablePath, runnerDir, extensionsDir, userDataDir, extensionId, project }) {
-  const reportPath = path.join(await tempDir('pkt-s-'), 'report.json');
+  const reportPath = path.join(await tempDir('s-'), 'report.json');
   logLines.push(`\n===== ${project.name} ${new Date().toISOString()} =====\n`);
-  const env = {
-    ...process.env,
-    // Electron rejects several Node-only flags inherited from developer shells.
-    NODE_OPTIONS: '',
+  assertInsideTempRoot(sessionRoot, { 'user data folder': userDataDir, 'extensions folder': extensionsDir });
+  const env = sanitizedEnvironment(process.env, {
     // Turns on the dashboard test hooks that ship in the bundle, as in the
     // VSIX smoke test. They are off for users because nothing else sets it.
     PACKAGEAWY_EXTENSION_TEST: '1',
     PACKAGEAWY_TIMING_EXTENSION_ID: extensionId,
     PACKAGEAWY_TIMING_REPORT: reportPath,
     PACKAGEAWY_TIMING_MANIFEST: project.manifest,
-  };
+  });
   const args = [
     project.root,
     `--extensions-dir=${extensionsDir}`,
@@ -310,7 +354,7 @@ const result = {
   vscodeVersion: options['vscode-version'],
   runsPerMode: runs,
   modes,
-  quietMs: Number(process.env['PACKAGEAWY_TIMING_QUIET_MS'] ?? 3000),
+  skipped: [],
   network: 'real registry and advisory services; expect run-to-run variance in scan times',
   projects,
   samples: [],
@@ -328,15 +372,21 @@ try {
     version: options['vscode-version'],
     cachePath: options['vscode-cache'],
   });
-  const extensionsDir = await tempDir('pkt-e-');
-  const installProfile = await tempDir('pkt-i-');
+  const extensionsDir = await tempDir('e-');
+  const installProfile = await tempDir('i-');
   const [cli] = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath, { reuseMachineInstall: true });
-  run(cli, [`--extensions-dir=${extensionsDir}`, `--user-data-dir=${installProfile}`, '--install-extension', vsixPath, '--force']);
+  assertInsideTempRoot(sessionRoot, { 'user data folder': installProfile, 'extensions folder': extensionsDir });
+  run(
+    cli,
+    [`--extensions-dir=${extensionsDir}`, `--user-data-dir=${installProfile}`, '--install-extension', vsixPath, '--force'],
+    undefined,
+    sanitizedEnvironment(process.env)
+  );
   const installed = (await readdir(extensionsDir)).filter((name) => name.toLowerCase().startsWith(extensionId.toLowerCase()));
   if (installed.length !== 1) throw new Error(`Expected one installed ${extensionId} folder, found ${installed.length}.`);
   console.log(`[timing] installed ${extensionId}@${manifest.version} from ${path.basename(vsixPath)}`);
 
-  const runnerDir = path.join(await tempDir('pkt-r-'), 'runner');
+  const runnerDir = path.join(await tempDir('r-'), 'runner');
   await createRunnerExtension(runnerDir);
   const launch = (project, userDataDir) =>
     launchOnce({ vscodeExecutablePath, runnerDir, extensionsDir, userDataDir, extensionId, project });
@@ -344,7 +394,7 @@ try {
   // One unrecorded start so the first recorded run does not also pay for
   // loading VS Code itself from disk.
   {
-    const userDataDir = await tempDir('pkt-u');
+    const userDataDir = await tempDir('u-');
     await writeProfileSettings(userDataDir);
     console.log('[timing] warm-up start (not recorded)');
     await launch(projects[0], userDataDir);
@@ -353,18 +403,32 @@ try {
 
   for (const project of projects) {
     for (const mode of modes) {
+      if (stopping) break;
       let warmProfile;
       if (mode === 'warm') {
-        warmProfile = await tempDir('pkt-u');
-        await writeProfileSettings(warmProfile);
-        console.log(`[timing] ${project.name} warm: priming the cache (not recorded)`);
-        const primed = await launch(project, warmProfile);
-        if (!primed.ok) console.log(`[timing] priming run failed: ${primed.error}`);
+        // A failed priming run leaves no cache, so its "warm" runs would
+        // really be cold. Retry with a fresh profile, and skip the warm
+        // group if priming never works.
+        const priming = await withRetries(async (attempt) => {
+          if (warmProfile) await rm(warmProfile, { recursive: true, force: true });
+          warmProfile = await tempDir('u-');
+          await writeProfileSettings(warmProfile);
+          console.log(`[timing] ${project.name} warm: priming the cache, attempt ${attempt} (not recorded)`);
+          const primed = await launch(project, warmProfile);
+          if (!primed.ok) console.log(`[timing] priming run failed: ${primed.error}`);
+          return primed;
+        }, PRIMING_RETRIES);
+        if (!priming.ok) {
+          await rm(warmProfile, { recursive: true, force: true });
+          result.skipped.push({ project: project.name, mode, reason: 'priming failed', attempts: priming.attempts, errors: priming.errors });
+          console.log(`[timing] ${project.name} warm: skipped, priming failed ${priming.attempts} times`);
+          continue;
+        }
       }
-      for (let index = 1; index <= runs; index += 1) {
+      for (let index = 1; index <= runs && !stopping; index += 1) {
         let userDataDir = warmProfile;
         if (mode === 'cold') {
-          userDataDir = await tempDir('pkt-u');
+          userDataDir = await tempDir('u-');
           await writeProfileSettings(userDataDir);
         }
         const sample = { project: project.name, mode, run: index, ...(await launch(project, userDataDir)) };
@@ -387,7 +451,7 @@ try {
 } finally {
   result.summaries = aggregate(result.samples);
   result.slowestSteps = slowestSteps(result.samples.filter((sample) => sample.ok));
-  for (const dir of tempRoots) await rm(dir, { recursive: true, force: true }).catch(() => {});
+  await removeSessionRoot();
   await mkdir(path.dirname(path.resolve(options.out)), { recursive: true });
   await writeFile(path.resolve(options.out), `${JSON.stringify(result, null, 2)}\n`, 'utf8');
   if (logLines.length > 0) await writeFile(`${path.resolve(options.out)}.log`, logLines.join(''), 'utf8');

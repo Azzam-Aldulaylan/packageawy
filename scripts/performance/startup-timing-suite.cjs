@@ -7,21 +7,13 @@ const { writeFile } = require('node:fs/promises');
 
 const vscode = require('vscode');
 
-const DATA_STATUSES = new Set(['empty', 'ready', 'partial-error', 'stale']);
-// Messages that mean more work is still on its way: the scan itself and the
-// background analyses that start after it (likely-unused packages, Smart
-// Cleanup metadata).
-function isBusy(status) {
-  return status === 'loading' || status.endsWith('-progress') || status.endsWith('-analyzing') || status.endsWith('-loading');
-}
+const { completionState } = require('./completion.js');
+
 const POLL_MS = 10;
 const TIMEOUT_MS = 180_000;
-// The dashboard is complete once the last message is a result (not a busy
-// message) and nothing else has arrived for this long. A warm start that
-// finds an age-expired cache posts a cached result first and a revalidated
-// one later, so the first result alone is not enough. The quiet time itself
-// is not counted.
-const QUIET_MS = Number(process.env['PACKAGEAWY_TIMING_QUIET_MS'] ?? 3000);
+// The run fails if the scan and the likely-unused analysis have not both
+// signalled completion by then (see startup-timing-completion.cjs).
+const COMPLETE_TIMEOUT_MS = Number(process.env['PACKAGEAWY_TIMING_COMPLETE_TIMEOUT_MS'] ?? 180_000);
 
 // Captured as early as possible, before anything else in this file waits.
 const suiteLoadedAt = Date.now();
@@ -61,14 +53,14 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitFor(predicate, message) {
-  const deadline = Date.now() + TIMEOUT_MS;
+async function waitFor(predicate, message, timeoutMs = TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await predicate();
     if (value) return value;
     await wait(POLL_MS);
   }
-  throw new Error(message);
+  throw new Error(typeof message === 'function' ? message() : message);
 }
 
 // "Developer: Startup Performance" is a text document the workbench serves on
@@ -164,33 +156,32 @@ async function run() {
     else await vscode.commands.executeCommand('packageawy.open');
     lastSnapshot = () => api.dashboard.snapshot();
 
-    let firstData;
-    const settled = await waitFor(() => {
-      const { messages } = api.dashboard.snapshot();
-      const fatal = messages.find((event) => event.message.status === 'fatal-error');
-      if (fatal) throw new Error(`Dashboard reported a fatal error: ${JSON.stringify(fatal.message.error ?? fatal.message)}`);
-      const dataEvents = messages.filter((event) => DATA_STATUSES.has(event.message.status));
-      if (firstData === undefined) {
-        firstData = dataEvents.find((event) => (event.message.data?.rows?.length ?? 0) > 0) ?? undefined;
-      }
-      const lastEvent = messages.at(-1);
-      const lastData = dataEvents.at(-1);
-      if (lastEvent === undefined || lastData === undefined || isBusy(lastEvent.message.status)) return undefined;
-      if (Date.now() - lastEvent.at < QUIET_MS) return undefined;
-      return { lastEvent, lastData, messages };
-    }, 'Dashboard did not settle on a scan result');
+    if (!consoleCaptured) {
+      throw new Error('Packageawy performance reports could not be captured, so completion cannot be detected.');
+    }
+    let state;
+    await waitFor(
+      () => {
+        const { messages } = api.dashboard.snapshot();
+        state = completionState({ messages, reports: performanceReports, openedAt });
+        if (state.fatal) {
+          throw new Error(`Dashboard reported a fatal error: ${JSON.stringify(state.fatal.message.error ?? state.fatal.message)}`);
+        }
+        return state.complete;
+      },
+      () => `Dashboard did not finish within ${COMPLETE_TIMEOUT_MS} ms (waiting for ${state?.waitingFor ?? 'the first message'})`,
+      COMPLETE_TIMEOUT_MS
+    );
 
-    const statuses = settled.messages
-      .map((event) => event.message.status)
-      .filter((status) => status !== 'scan-progress');
-    report.scan.statuses = statuses;
-    report.scan.progressMessages = settled.messages.filter((event) => event.message.status === 'scan-progress').length;
-    report.scan.finalStatus = settled.lastData.message.status;
-    report.scan.rows = settled.lastData.message.data?.rows?.length ?? 0;
-    report.scan.openToFirstRowsMs = firstData === undefined ? undefined : firstData.at - openedAt;
-    report.scan.firstRowsStatus = firstData?.message.status;
-    report.scan.openToScanResultMs = settled.lastData.at - openedAt;
-    report.scan.openToCompleteMs = settled.lastEvent.at - openedAt;
+    const { messages } = api.dashboard.snapshot();
+    report.scan.statuses = messages.map((event) => event.message.status).filter((status) => status !== 'scan-progress');
+    report.scan.progressMessages = messages.filter((event) => event.message.status === 'scan-progress').length;
+    report.scan.finalStatus = state.lastData.message.status;
+    report.scan.rows = state.lastData.message.data?.rows?.length ?? 0;
+    report.scan.openToFirstRowsMs = state.firstRows === undefined ? undefined : state.firstRows.at - openedAt;
+    report.scan.firstRowsStatus = state.firstRows?.message.status;
+    report.scan.openToScanResultMs = state.lastData.at - openedAt;
+    report.scan.openToCompleteMs = state.completeAt - openedAt;
 
     await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
     report.ok = true;
@@ -206,7 +197,6 @@ async function run() {
   } finally {
     if (reportPath) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   }
-
 }
 
 module.exports = { run };
