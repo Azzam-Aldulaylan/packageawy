@@ -33,6 +33,7 @@ import {
   TYPE_LABELS,
   UPDATE_LABELS,
 } from '../../../src/host/dependencyCriteria.js';
+import { trapFocus } from '../focusTrap.js';
 import {
   IconBroom,
   IconFilter,
@@ -58,9 +59,6 @@ type Step = 'select' | 'review';
 
 /** A restrained, reused-elsewhere semantic accent per criterion, never a one-off color (see styles.css on these tokens). */
 type Tone = 'amber' | 'danger' | 'warning' | 'info' | 'purple' | 'blue';
-
-const FOCUSABLE_SELECTOR =
-  'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function toggleIn<T>(set: ReadonlySet<T>, value: T): Set<T> {
   const next = new Set(set);
@@ -232,6 +230,11 @@ export function ManageDependenciesModal({
 
   useEffect(() => {
     const node = dialogRef.current;
+    return node === null ? undefined : trapFocus(node);
+  }, []);
+
+  useEffect(() => {
+    const node = dialogRef.current;
     if (node === null) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       // Escape always closes the whole modal, on either step: "closing and
@@ -241,20 +244,6 @@ export function ManageDependenciesModal({
         event.preventDefault();
         onClose();
         return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-        (element) => element.offsetParent !== null
-      );
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (first === undefined || last === undefined) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
       }
     };
     node.addEventListener('keydown', onKeyDown);
