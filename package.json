@@ -26,7 +26,15 @@
     "audit",
     "dependency dashboard",
     "package management",
-    "monorepo"
+    "monorepo",
+    "pnpm",
+    "package.json",
+    "upgrade",
+    "update",
+    "unused dependencies",
+    "cleanup",
+    "cve",
+    "workspaces"
   ],
   "engines": {
     "vscode": "^1.90.0"
@@ -47,6 +55,10 @@
     "untrustedWorkspaces": {
       "supported": false,
       "description": "This extension reads .npmrc and can run npm install, which executes code from the workspace. It stays disabled until the workspace is trusted."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Packageawy reads lockfiles and runs npm or pnpm on the local file system, so it needs a folder on disk."
     }
   },
   "contributes": {
@@ -177,7 +189,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@types/semver": "^7.5.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "1.90.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "esbuild": "^0.28.0",
