@@ -1,7 +1,6 @@
 /** pnpm-lock.yaml v9 parsing into the shared normalized dependency graph. */
 
 import { load as loadYaml } from 'js-yaml';
-import semver from 'semver';
 
 import type { DependencyEdge, DependencyGraph, DependencyNode } from '../types.js';
 import type { DeclaredDependency, Manifest } from '../manifest/parse.js';
@@ -188,32 +187,23 @@ function resolveReference(
   return null;
 }
 
-function resolvePeerTarget(
-  graph: DependencyGraph,
-  node: DependencyNode,
-  edge: DependencyEdge,
-  directTargets: ReadonlyMap<string, string>
-): string | null {
-  const direct = directTargets.get(edge.name);
-  if (direct !== undefined) {
-    const target = graph.nodes.get(direct);
-    if (
-      target !== undefined &&
-      target.version !== null &&
-      (edge.requestedRange === '' || semver.satisfies(target.version, edge.requestedRange, { includePrerelease: true }))
-    ) {
-      return direct;
+/** Only top-level suffixes describe this snapshot's peers. Nested suffixes belong to those peers. */
+function peerReference(key: string, name: string): string {
+  let start = -1;
+  let depth = 0;
+  for (let i = key.indexOf('('); i >= 0 && i < key.length; i += 1) {
+    if (key[i] === '(') {
+      if (depth === 0) start = i + 1;
+      depth += 1;
+    } else if (key[i] === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        const reference = key.slice(start, i);
+        if (packageIdentity(reference, null)?.name === name) return reference;
+      }
     }
   }
-
-  const candidates = [...graph.nodes.values()].filter((candidate) => {
-    if (candidate.name !== edge.name || candidate.version === null) return false;
-    if (edge.requestedRange !== '' && !semver.satisfies(candidate.version, edge.requestedRange, { includePrerelease: true })) {
-      return false;
-    }
-    return node.path.includes(`${candidate.name}@${candidate.version}`);
-  });
-  return candidates.length === 1 ? candidates[0]?.path ?? null : null;
+  return '';
 }
 
 export function buildPnpmGraph(options: BuildPnpmGraphOptions): DependencyGraph {
@@ -289,11 +279,10 @@ export function buildPnpmGraph(options: BuildPnpmGraphOptions): DependencyGraph 
         if (typeof raw === 'string') references.set(name, raw);
       }
     }
-    node.edges = node.edges.map((edge) =>
-      edge.kind === 'peer'
-        ? edge
-        : { ...edge, targetNodeId: resolveReference(idsByLockKey, edge.name, references.get(edge.name) ?? '') }
-    );
+    node.edges = node.edges.map((edge) => ({ ...edge, targetNodeId: resolveReference(
+      idsByLockKey, edge.name,
+      references.get(edge.name) ?? (edge.kind === 'peer' ? peerReference(key, edge.name) : '')
+    ) }));
   }
 
   // An alias has its own installed name and path, but shares the resolved
@@ -330,7 +319,6 @@ export function buildPnpmGraph(options: BuildPnpmGraphOptions): DependencyGraph 
   }
 
   const importer = asRecord(asRecord(lock['importers'])?.[importerId]);
-  const directTargets = new Map<string, string>();
   const directNames = new Set<string>();
   const manifestByName = new Map(options.manifest.dependencies.map((dep) => [dep.name, dep]));
   const importerBlocks = [
@@ -363,7 +351,6 @@ export function buildPnpmGraph(options: BuildPnpmGraphOptions): DependencyGraph 
           target.dev = declared.dev;
           target.range = declared.range;
           if (declared.unresolvable !== undefined) target.unresolvable = declared.unresolvable;
-          directTargets.set(name, targetId);
           directNames.add(name);
           continue;
         }
@@ -385,14 +372,6 @@ export function buildPnpmGraph(options: BuildPnpmGraphOptions): DependencyGraph 
     const synthetic = emptyDirectNode(declared, importerId);
     nodes.set(synthetic.path, synthetic);
     directNames.add(declared.name);
-  }
-
-  for (const node of nodes.values()) {
-    node.edges = node.edges.map((edge) =>
-      edge.kind === 'peer'
-        ? { ...edge, targetNodeId: resolvePeerTarget(graph, node, edge, directTargets) }
-        : edge
-    );
   }
 
   endGraph({ 'graph nodes': nodes.size });

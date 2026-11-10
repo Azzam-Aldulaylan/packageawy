@@ -138,6 +138,7 @@ export class DashboardPanel {
   private readonly buildInfo: BuildInfo;
   /** Set once onDidDispose fires, so an async continuation mid-flight can bail before posting into a gone webview. */
   private disposed = false;
+  private advisorySettingRefreshPending = false;
   /** The candidate a plain refresh (or a post-upgrade reload) re-reads: set on selection, untouched by refresh itself. */
   private selectedProject: DiscoveredProject | undefined;
   /**
@@ -255,6 +256,9 @@ export class DashboardPanel {
         await this.fileChangeCoordinator.flushAll();
       },
       onMutationLockReleased: () => {
+        // A setting change queued while this or another panel's change held
+        // the project lock runs now that the lock is free.
+        void this.flushAdvisorySettingRefresh();
         if (this.branchChangeCoordinator.hasPending) {
           this.branchChangeCoordinator.mutationReleased();
           return;
@@ -291,7 +295,11 @@ export class DashboardPanel {
     // Turning the advisory check on or off changes what a scan sends and
     // shows, so the open project is scanned again, like a manual Refresh.
     this.advisorySettingSubscription = platform.onDidChangeSetting(PUBLIC_ADVISORY_CHECK_SETTING, () => {
-      if (!this.disposed) void this.handle({ type: 'refresh' });
+      if (this.disposed) return;
+      this.upgradeCoordinator.handleAdvisorySettingChanged();
+      this.controller?.handleAdvisorySettingChanged();
+      this.advisorySettingRefreshPending = true;
+      void this.flushAdvisorySettingRefresh();
     });
 
     this.channel.onDidReceiveMessage((raw: unknown) => {
@@ -403,7 +411,23 @@ export class DashboardPanel {
     await current.handle(raw);
   }
 
+  private async flushAdvisorySettingRefresh(): Promise<void> {
+    if (!this.advisorySettingRefreshPending || this.disposed ||
+        this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
+    this.advisorySettingRefreshPending = false;
+    await this.handle({ type: 'refresh' });
+  }
+
   private async handle(message: WebviewToHostMessage): Promise<void> {
+    try {
+      await this.handleMessage(message);
+    } finally {
+      // Setting changes retain one refresh until the active operation settles.
+      await this.flushAdvisorySettingRefresh();
+    }
+  }
+
+  private async handleMessage(message: WebviewToHostMessage): Promise<void> {
     if (message.type === 'ready') {
       this.webviewReady = true;
       await this.upgradeCoordinator.handleWebviewReady();
@@ -651,7 +675,7 @@ export class DashboardPanel {
    * is nothing worth surfacing as an error either.
    */
   private openAdvisory(message: { package: string; advisoryId: string | number; path: string[]; reference?: string }): void {
-    const url = this.controller?.resolveAdvisoryUrl(message);
+    const url = this.upgradeCoordinator.resolveReviewAdvisoryUrl(message) ?? this.controller?.resolveAdvisoryUrl(message);
     if (url === null || url === undefined) return;
     this.platform.openExternal(url);
   }

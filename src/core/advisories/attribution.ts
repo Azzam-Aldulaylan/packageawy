@@ -9,7 +9,7 @@
  * walking it ourselves is strictly better and doesn't depend on audit being
  * reachable at all.
  *
- * For each direct dependency we BFS over resolved `deps` edges (npm's own
+ * For each direct dependency we BFS over resolved dependency edges (npm's own
  * node_modules lookup rule, via `resolveFrom`) and record the shortest path
  * to every package version that the bulk endpoint flagged.
  */
@@ -38,6 +38,12 @@ function applicableAdvisories(node: DependencyNode, byName: AdvisoriesByName): A
       return false;
     }
   });
+}
+
+/** Installed peers and their descendants need the same security coverage as runtime dependencies. */
+function dependencyNames(node: DependencyNode): Set<string> {
+  return new Set([...node.deps, ...node.edges.filter((edge) => edge.kind === 'peer' &&
+    edge.targetNodeId !== null).map((edge) => edge.name)]);
 }
 
 /**
@@ -79,8 +85,8 @@ function attributeFromRoot(
       });
     }
 
-    for (const depName of node.deps) {
-      const depNode = resolveDependency(graph, node.path, depName, ['runtime', 'optional']);
+    for (const depName of dependencyNames(node)) {
+      const depNode = resolveDependency(graph, node.path, depName);
       if (depNode === null || visited.has(depNode.path)) continue;
       visited.add(depNode.path);
       queue.push({ node: depNode, chain: [...chain, depName] });
@@ -125,8 +131,8 @@ export function advisoryCoverageByRoot(graph: DependencyGraph): Map<string, 'com
       // is not (no lockfile, nothing installed) leaves coverage partial.
       const outsideRegistry = node.unresolvable !== undefined && NOT_REGISTRY.has(node.unresolvable);
       if (!outsideRegistry && (node.version === null || semver.valid(node.version) === null)) complete = false;
-      for (const name of node.deps) {
-        const target = resolveDependency(graph, node.path, name, ['runtime', 'optional']);
+      for (const name of dependencyNames(node)) {
+        const target = resolveDependency(graph, node.path, name);
         if (target !== null) {
           if (!visited.has(target.path)) queue.push(target);
         } else if (node.edges.some((edge) => edge.name === name && edge.kind === 'runtime')) {

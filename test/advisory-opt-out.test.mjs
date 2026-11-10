@@ -284,7 +284,7 @@ const TRANSITIVE_ROW = {
   upgradeReason: null,
 };
 
-function remediationCoordinator(enabled) {
+function remediationCoordinator(enabled, duringLoad = () => {}) {
   const messages = [];
   const posts = [];
   const settingReads = [];
@@ -314,6 +314,7 @@ function remediationCoordinator(enabled) {
     reloadFinalState: async () => {},
     flushDeferredChanges: async () => {},
     loadProject: async () => {
+      await duringLoad(coordinator);
       throw Object.assign(new Error('project read stopped here by the test'), { name: 'TEST_STOP' });
     },
   });
@@ -340,6 +341,25 @@ test('with the check on, a transitive fix review proceeds as before', async () =
   assert.equal(messages[0].status, 'remediation-analyzing');
   assert.notEqual(messages.at(-1).error?.code, 'ADVISORY_CHECK_OFF');
 });
+
+for (const bulk of [false, true]) {
+  test(`a setting change ends ${bulk ? 'bulk' : 'single'} transitive fix analysis with a retry message`, async () => {
+    const { coordinator, messages } = remediationCoordinator(true, async coordinator => {
+      assert.equal(coordinator.isRemediationBusy(), true);
+      coordinator.handleAdvisorySettingChanged();
+      coordinator.handleAdvisorySettingChanged(); // A burst produces one terminal state per active package.
+    });
+    await (bulk ? coordinator.handleAnalyzeRemediations({ packages: ['parent', 'other'] })
+      : coordinator.handleAnalyzeRemediation({ package: 'parent' }));
+    assert.equal(coordinator.isRemediationBusy(), false);
+    assert.deepEqual(messages.filter(message => message.status === 'remediation-error'), [{
+      status: 'remediation-error', package: 'parent',
+      error: { code: 'ADVISORY_CHECK_CHANGED', message: 'Security checks changed. Review the fix again.' },
+    }]);
+    assert.equal(messages.some(message => message.status === 'remediation-plan'), false);
+    if (bulk) assert.equal(messages.at(-1).status, 'remediation-batch-complete');
+  });
+}
 
 // -------------------------------------------------------- settings change
 

@@ -22,7 +22,9 @@ export function upgradeConfirmationAction(
 ): UpgradeConfirmationAction | null {
   const decision = deriveUpgradeReviewDecision(analysis);
   if (analysis.compatibility.status === 'conflict') {
-    const coordinatedCaution = decision.projectState !== 'checked' || analysis.compatibility.completeness !== 'complete';
+    const coordinatedCaution = decision.projectState !== 'checked' || analysis.compatibility.completeness !== 'complete' ||
+      analysis.security?.status === 'remains' || analysis.security?.status === 'unknown' ||
+      analysis.security?.checkState === 'unavailable';
     return analysis.smartPlan !== null
       ? { label: 'Use coordinated upgrade', onClick: 'use-smart-plan', variant: coordinatedCaution ? 'caution' : 'primary' }
       : null;

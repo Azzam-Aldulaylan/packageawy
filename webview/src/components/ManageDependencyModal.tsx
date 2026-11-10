@@ -57,8 +57,8 @@ interface UpgradeReviewState {
   error: string | null;
   onAnalyze: (target: string) => void;
   onTargetChange: (target: string) => void;
-  onConfirm: () => void;
-  onUseSmartPlan: () => void;
+  onConfirm: (securityAcknowledged?: boolean) => void;
+  onUseSmartPlan: (securityAcknowledged?: boolean) => void;
   onCancel: () => void;
   onConfigureVerification: () => void;
   /** Re-runs analysis for the same row/target: Cancel followed immediately by a fresh Analyze, not a new mechanism. */

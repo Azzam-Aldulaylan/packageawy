@@ -25,6 +25,7 @@ test('unknown outcomes are surfaced instead of displayed as zero vulnerabilities
 
   assert.deepEqual(summary, {
     beforeCount: 1,
+    introducedCount: 0,
     confirmedRemainingCount: 0,
     unknownCount: 1,
     afterLabel: '1 undetermined',

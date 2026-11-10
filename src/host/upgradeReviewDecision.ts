@@ -40,11 +40,14 @@ function projectReviewState(project: ProjectCompatibilityAnalysis | undefined, c
 }
 
 function securityRecommendation(security: SecurityOutcome | null | undefined): string {
-  if (security == null) return 'Security impact was not assessed.';
+  if (security?.checkState === 'off') return 'Security checks are Off.';
+  if (security == null || security.checkState === 'unavailable') return 'Security check unavailable. Review the dependency changes before continuing.';
   const resolved = security.resolvedAdvisories.length;
   const remaining = security.remaining.filter((entry) => entry.status === 'remains').length;
   const unknown = security.remaining.some((entry) => entry.status === 'unknown') || security.status === 'unknown';
   const parts: string[] = [];
+  const introduced = security.introduced?.length ?? 0;
+  if (introduced > 0) parts.push(`${introduced} known vulnerabilit${introduced === 1 ? 'y is' : 'ies are'} added by this upgrade. Review Security outcome.`);
   if (resolved > 0) parts.push(`${resolved} known vulnerabilit${resolved === 1 ? 'y is' : 'ies are'} confirmed resolved by this plan.`);
   if (remaining > 0) parts.push(`${remaining} known vulnerabilit${remaining === 1 ? 'y remains' : 'ies remain'}. Review Security outcome.`);
   if (unknown) parts.push('Some security outcomes could not be verified. Review Security outcome.');
@@ -69,7 +72,9 @@ export function deriveUpgradeReviewDecision(
   const projectState = projectReviewState(analysis.projectCompatibility, coverage);
   const dependencyIncomplete = analysis.compatibility.status === 'unknown' || analysis.compatibility.completeness !== 'complete';
   const conflict = analysis.compatibility.status === 'conflict';
-  const caution = analysis.compatibility.status !== 'compatible' || dependencyIncomplete || projectState !== 'checked';
+  const securityWarning = analysis.security?.checkState === 'unavailable' || analysis.security?.status === 'unknown' ||
+    (analysis.security?.remaining.length ?? 0) > 0 || (analysis.security?.introduced?.length ?? 0) > 0;
+  const caution = analysis.compatibility.status !== 'compatible' || dependencyIncomplete || projectState !== 'checked' || securityWarning;
   let headline: OutcomeDisplay;
   let dependencyMessage: string;
   if (conflict) {
@@ -108,6 +113,9 @@ export function deriveUpgradeReviewDecision(
   // conceal that other source files or checks could not be inspected.
   if ((projectState === 'confirmed' || projectState === 'review') && coverage !== 'checked') {
     projectMessage += ' Some project checks could not be completed. Review their reasons and verify your build and runtime before upgrading.';
+  }
+  if ((analysis.security?.introduced?.length ?? 0) > 0) {
+    headline = { label: 'Upgrade adds known vulnerabilities', className: 'warning' };
   }
   return { headline, caution, projectState, recommendation: [dependencyMessage, projectMessage, securityRecommendation(analysis.security)].join(' ') };
 }

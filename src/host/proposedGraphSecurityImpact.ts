@@ -131,7 +131,7 @@ function collectOccurrences(
   snapshot: CompleteGraphAdvisorySnapshot,
   state: RawOccurrence['state']
 ): CollectedOccurrences {
-  const index = buildInstallPathIndex(snapshot.graph);
+  const index = buildInstallPathIndex(snapshot.graph, { includeInstalledPeers: true });
   const occurrences: RawOccurrence[] = [];
   let invalidAdvisoryRange = false;
 

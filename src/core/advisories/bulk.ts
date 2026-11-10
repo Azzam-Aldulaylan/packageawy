@@ -20,6 +20,8 @@
 import type { HttpClient } from '../registry/http.js';
 import semver from 'semver';
 import { FetchError, errorForStatus } from '../registry/http.js';
+import { runPool } from '../registry/pool.js';
+import { splitBulkRequestBody } from './bulkRequestChunks.js';
 import type { Advisory, DependencyGraph, Severity } from '../types.js';
 
 export const ADVISORIES_HOST = 'https://registry.npmjs.org';
@@ -93,10 +95,31 @@ export function buildBulkRequestBody(graph: DependencyGraph): Record<string, str
 export async function fetchBulkAdvisories(
   client: HttpClient,
   requestBody: Record<string, string[]>,
+  signal?: AbortSignal,
+  enabled: () => boolean = () => true
+): Promise<Map<string, Advisory[]>> {
+  const chunks = splitBulkRequestBody(requestBody);
+  const settled = await runPool(chunks, (chunk, chunkSignal) => {
+    if (!enabled()) throw new FetchError('CANCELLED', 'Security checks are turned off for this project.');
+    return fetchBulkAdvisoryChunk(client, chunk, chunkSignal);
+  }, {
+    limit: 2, ...(signal === undefined ? {} : { signal }),
+  });
+  if (signal?.aborted === true) throw new FetchError('CANCELLED', 'Advisory check was cancelled.');
+  const result = new Map<string, Advisory[]>();
+  for (const chunk of settled) {
+    // A partial response cannot establish that the dependency tree is clean.
+    if (!chunk.ok) throw chunk.error;
+    for (const [name, advisories] of chunk.value) result.set(name, advisories);
+  }
+  return result;
+}
+
+async function fetchBulkAdvisoryChunk(
+  client: HttpClient,
+  requestBody: Record<string, string[]>,
   signal?: AbortSignal
 ): Promise<Map<string, Advisory[]>> {
-  if (Object.keys(requestBody).length === 0) return new Map();
-
   const url = `${ADVISORIES_HOST}${ADVISORIES_PATH}`;
   const body = JSON.stringify(requestBody);
   const options = {

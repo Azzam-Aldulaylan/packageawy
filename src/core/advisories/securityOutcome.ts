@@ -35,6 +35,8 @@ export interface SecurityOutcome {
   status: SecurityOutcomeStatus;
   resolvedAdvisories: AttributedAdvisory[];
   remaining: RemainingVulnerability[];
+  introduced?: RemainingVulnerability[];
+  checkState?: 'complete' | 'unavailable' | 'off';
 }
 
 function advisoryKey(advisory: Advisory, flaggedPackage: string): string {
@@ -48,13 +50,13 @@ function advisoryKey(advisory: Advisory, flaggedPackage: string): string {
  * names a route, not a graph-specific node id, so this must be re-derived
  * rather than looked up directly: the same rule attribution.ts follows.
  */
-function resolveNodeAlongPath(graph: DependencyGraph, path: readonly string[]): DependencyNode | null {
+export function resolveNodeAlongPath(graph: DependencyGraph, path: readonly string[]): DependencyNode | null {
   const [rootName, ...rest] = path;
   if (rootName === undefined) return null;
   let current = directNodes(graph).find((node) => node.name === rootName) ?? null;
   if (current === null) return null;
   for (const name of rest) {
-    current = resolveDependency(graph, current.path, name, ['runtime', 'optional']);
+    current = resolveDependency(graph, current.path, name);
     if (current === null) return null;
   }
   return current;

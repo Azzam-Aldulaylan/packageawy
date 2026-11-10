@@ -1435,21 +1435,23 @@ export function App(): ReactElement {
     });
   }, []);
 
-  const requestConfirmUpgrade = useCallback(() => {
+  const requestConfirmUpgrade = useCallback((securityAcknowledged = false) => {
     if (analysis === null) return;
     setConfirmBusy(true);
     vscode.postMessage({
       type: 'confirm-upgrade',
+      securityAcknowledged,
       analysisId: analysis.analysisId,
       ...confirmVerificationFields(analysis.verification, optInFor(analysis.analysisId)),
     });
   }, [analysis, optInFor]);
 
-  const requestUseSmartPlan = useCallback(() => {
+  const requestUseSmartPlan = useCallback((securityAcknowledged = false) => {
     if (analysis === null) return;
     setConfirmBusy(true);
     vscode.postMessage({
       type: 'use-smart-plan',
+      securityAcknowledged,
       analysisId: analysis.analysisId,
       ...confirmVerificationFields(analysis.verification, optInFor(analysis.analysisId)),
     });

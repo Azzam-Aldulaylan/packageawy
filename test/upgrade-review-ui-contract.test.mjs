@@ -25,12 +25,12 @@ test('remaining and unknown vulnerabilities are inspectable in context with host
   assert.match(cards, /patchedVersionText\(entry\.patchedVersion\)/);
   assert.match(cards, /remainingVulnerabilityPatchedVersionLabel\(entry\.flaggedPackage\)/);
   assert.match(cards, /Proposed resolved version/);
-  assert.match(cards, /onOpenAdvisory\(row\.name, entry\.advisory\.id, \[\.\.\.entry\.path\]\)/);
+  assert.match(cards, /onOpenAdvisory\(entry\.path\[0\] \?\? row\.name, entry\.advisory\.id, \[\.\.\.entry\.path\]\)/);
   assert.match(styles, /\.security-remaining__summary/);
 });
 
 test('security before and after copy does not treat undetermined advisories as resolved', () => {
-  assert.match(cards, /security\.resolvedAdvisories\.length \+ security\.remaining\.length/);
+  assert.match(cards, /const beforeCount = summary\.beforeCount/);
   assert.match(cards, /unknownCount > 0 \? `, \$\{unknownCount\} undetermined`/);
   assert.match(cards, /security\.remaining\.length > 0/);
 });
@@ -52,7 +52,7 @@ test('simple and coordinated plans use distinct truthful presentation', () => {
 test('hard analysis expiry is visible and disables the footer action', () => {
   assert.match(review, /upgradeAnalysisFreshness\(analysis\.analyzedAt, analysis\.expiresAt, now\)/);
   assert.match(review, /This analysis expired and can no longer authorize an upgrade/);
-  assert.match(review, /disabled=\{busy \|\| executionBlocked\}/);
+  assert.match(review, /disabled=\{busy \|\| executionBlocked \|\| consent\.blocked\}/);
 });
 
 test('completed reviews use one decision brief with explicit review counts and four status rows', () => {

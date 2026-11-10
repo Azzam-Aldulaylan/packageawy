@@ -78,6 +78,8 @@ export interface IsolatedResolverVerifierOptions {
   resolvedRegistry?: ResolvedRegistry;
   policy: PeerResolutionPolicy;
   runner?: ResolverProcessRunner;
+  /** Upgrade Review shares this materialization with its deferred security check. */
+  retainResolvedGraph?: boolean;
 }
 
 const SCOPE_PATTERN = /^@[a-z0-9][a-z0-9._-]*$/i;
@@ -245,12 +247,30 @@ function verificationForResult(
 
 export class IsolatedResolverVerifier implements ResolverVerifier {
   private readonly runner: ResolverProcessRunner;
+  private readonly reviewResolutions = new Map<string, Promise<ResolverVerification>>();
+  private readonly reviewGraphs = new Map<string, DependencyGraph>();
+
+  private proposalKey(proposal: UpgradeProposal): string {
+    return JSON.stringify(proposal.changes.map(({ packageName, targetVersion, classification }) =>
+      [packageName, targetVersion, classification]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+  }
 
   constructor(private readonly options: IsolatedResolverVerifierOptions) {
     this.runner = options.runner ?? new NodeResolverProcessRunner();
   }
 
   async verify(proposal: UpgradeProposal, signal?: AbortSignal): Promise<ResolverVerification> {
+    if (!this.options.retainResolvedGraph) return this.verifyProposal(proposal, signal);
+    const key = this.proposalKey(proposal);
+    let pending = this.reviewResolutions.get(key);
+    if (pending === undefined) {
+      pending = this.verifyProposal(proposal, signal);
+      this.reviewResolutions.set(key, pending);
+    }
+    return pending;
+  }
+
+  private async verifyProposal(proposal: UpgradeProposal, signal?: AbortSignal): Promise<ResolverVerification> {
     const stagedManifest = buildStagedManifest(
       this.options.manifestText,
       proposal.changes.map((change) => ({
@@ -267,7 +287,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
       }
       const result = await this.runner.run(
         this.options.invocation,
-        buildResolverArgs(
+        (this.options.retainResolvedGraph ? buildLockfileMaterializationArgs : buildResolverArgs)(
           this.options.packageManager,
           this.options.registry,
           this.options.policy,
@@ -276,6 +296,19 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
         tempRoot,
         signal
       );
+      if (this.options.retainResolvedGraph && result.exitCode === 0) {
+        try {
+          const lockfileName = this.options.packageManager === 'pnpm' ? 'pnpm-lock.yaml'
+            : this.options.lockfile?.name ?? 'package-lock.json';
+          const lockfileText = await readFile(path.join(tempRoot, lockfileName), 'utf8');
+          this.reviewGraphs.set(this.proposalKey(proposal), buildDependencyGraph({
+            root: tempRoot, manifest: parseManifest(stagedManifest), lockfileText,
+            packageManager: this.options.packageManager,
+          }));
+        } catch {
+          // Resolution can succeed without a parseable graph. Security stays unavailable.
+        }
+      }
       return verificationForResult(
         this.options.packageManager,
         this.options.packageManagerVersion,
@@ -310,6 +343,11 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     proposal: UpgradeProposal,
     signal?: AbortSignal
   ): Promise<{ ok: true; graph: DependencyGraph } | { ok: false }> {
+    if (this.options.retainResolvedGraph && proposal.changes.length > 0) {
+      await this.verify(proposal, signal);
+      const graph = this.reviewGraphs.get(this.proposalKey(proposal));
+      return graph === undefined ? { ok: false } : { ok: true, graph };
+    }
     const stagedManifest =
       proposal.changes.length === 0
         ? this.options.manifestText

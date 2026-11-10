@@ -143,26 +143,27 @@ function securityReviewSignal(
   advisoriesAvailable: boolean,
   advisoriesOff = false
 ): UpgradeReviewSignal {
-  if (advisoriesOff) {
-    return { area: 'security', label: 'Security impact', value: 'Security checks are off', tone: 'neutral', needsReview: false };
+  if (advisoriesOff || security?.checkState === 'off') {
+    return { area: 'security', label: 'Security impact', value: 'Off', tone: 'neutral', needsReview: false };
   }
   const summary = security === null ? null : summarizeUpgradeSecurity(security);
+  const unavailable = security === null || security.checkState === 'unavailable' ||
+    (security.checkState === undefined && !advisoriesAvailable);
   const resolved = security?.resolvedAdvisories.length ?? 0;
-  const value = !advisoriesAvailable ? 'Advisory data unavailable'
-    : summary === null ? 'Not assessed'
-      : summary.beforeCount === 0 ? 'No known vulnerabilities reported'
+  const value = unavailable ? 'Security check unavailable'
+    : summary === null ? 'Security check unavailable'
+      : summary.beforeCount === 0 && summary.introducedCount === 0 ? 'No known vulnerabilities reported'
         : [
             resolved > 0 ? `${resolved} resolved` : null,
-            summary.confirmedRemainingCount > 0 ? `${summary.confirmedRemainingCount} ${summary.confirmedRemainingCount === 1 ? 'remains' : 'remain'}` : null,
+            summary.introducedCount > 0 ? `${summary.introducedCount} introduced` : null,
+            summary.confirmedRemainingCount > 0 ? `${summary.confirmedRemainingCount} remain` : null,
             summary.unknownCount > 0 ? `${summary.unknownCount} undetermined` : null,
-          ].filter((entry): entry is string => entry !== null).join(' · ');
+          ].filter((entry): entry is string => entry !== null).join(', ');
+  const findings = summary !== null && summary.confirmedRemainingCount + summary.introducedCount > 0;
   return {
-    area: 'security',
-    label: 'Security impact',
-    value,
-    tone: summary !== null && summary.confirmedRemainingCount > 0 ? 'error'
-      : !advisoriesAvailable || summary === null || summary.unknownCount > 0 ? 'unknown' : 'ok',
-    needsReview: !advisoriesAvailable || summary === null || summary.confirmedRemainingCount > 0 || summary.unknownCount > 0,
+    area: 'security', label: 'Security impact', value,
+    tone: findings ? 'error' : unavailable || summary === null || summary.unknownCount > 0 ? 'unknown' : 'ok',
+    needsReview: unavailable || summary === null || findings || summary.unknownCount > 0,
   };
 }
 
@@ -283,7 +284,7 @@ export function UpgradeAnalysisSections({
         <UpgradeReviewDisclosure label="Security impact" value={securitySummary.value} tone={securitySummary.tone} expanded={security.status === 'complete'}>
           {security.status === 'complete' ? (
             security.value === null
-              ? <p className="usage-card__subtitle">Security impact was not assessed for this review. Check the Vulnerabilities tab before upgrading.</p>
+              ? <p className="usage-card__subtitle">{advisoriesOff ? 'Off' : 'Security check unavailable'}</p>
               : <SecurityOutcomeCard row={row} security={security.value} onChangeTab={onChangeTab} onOpenAdvisory={onOpenAdvisory} />
           ) : <SectionPlaceholder label="Checking known vulnerabilities…" />}
         </UpgradeReviewDisclosure>

@@ -146,6 +146,8 @@ export interface SecurityOutcome {
   status: SecurityOutcomeStatus;
   resolvedAdvisories: AttributedAdvisory[];
   remaining: RemainingVulnerability[];
+  introduced?: RemainingVulnerability[];
+  checkState?: 'complete' | 'unavailable' | 'off';
   /** Optional richer graph context. Older/remediation outcomes remain protocol-compatible without it. */
   contexts?: VulnerabilityContext[];
 }
@@ -825,7 +827,7 @@ export type WebviewToHostMessage =
       removalRequestId: string;
     }
   | { type: 'open-advisory'; package: string; advisoryId: string | number; path: string[]; reference?: string }
-  | ({ type: 'confirm-upgrade'; analysisId: string } & ConfirmVerificationOptIn)
+  | ({ type: 'confirm-upgrade'; analysisId: string; securityAcknowledged?: boolean } & ConfirmVerificationOptIn)
   /**
    * `analysisId: null` cancels a still-loading analysis (no id has been
    * issued yet): the host drops its result instead of storing/posting it
@@ -834,7 +836,7 @@ export type WebviewToHostMessage =
    * analysis the same way confirm-upgrade/use-smart-plan target one.
    */
   | { type: 'cancel-upgrade'; analysisId: string | null }
-  | ({ type: 'use-smart-plan'; analysisId: string } & ConfirmVerificationOptIn)
+  | ({ type: 'use-smart-plan'; analysisId: string; securityAcknowledged?: boolean } & ConfirmVerificationOptIn)
   /** Retries only the most recent matching failed/cancelled targeted enrichment. The id is host-issued by `upgrade-result`. */
   | { type: 'retry-upgrade-enrichment'; refreshId: string }
   /** Same analysisId-lookup discipline as confirm-upgrade/cancel-upgrade, targeting a stored removal analysis instead. */
@@ -976,7 +978,7 @@ function isScriptNameList(value: unknown, max: number): value is string[] {
   );
 }
 
-const CONFIRM_KEYS = ['type', 'analysisId', 'verificationScripts', 'rememberVerificationScripts'] as const;
+const CONFIRM_KEYS = ['type', 'analysisId', 'verificationScripts', 'rememberVerificationScripts', 'securityAcknowledged'] as const;
 
 /** A confirm envelope: a host-issued analysis id plus the optional verification opt-in. */
 function isConfirmMessage(value: Record<string, unknown>): boolean {
@@ -984,6 +986,8 @@ function isConfirmMessage(value: Record<string, unknown>): boolean {
   const remember = value['rememberVerificationScripts'];
   return (
     hasOnlyKeys(value, CONFIRM_KEYS) &&
+    (value['securityAcknowledged'] === undefined ||
+      ((value['type'] === 'confirm-upgrade' || value['type'] === 'use-smart-plan') && typeof value['securityAcknowledged'] === 'boolean')) &&
     isNonEmptyString(value['analysisId']) &&
     (scripts === undefined || isScriptNameList(scripts, MAX_CONFIRM_VERIFICATION_SCRIPTS)) &&
     (remember === undefined || typeof remember === 'boolean')
@@ -1376,7 +1380,7 @@ function isVulnerabilityContext(value: unknown): value is VulnerabilityContext {
 }
 
 function isSecurityOutcome(value: unknown): value is SecurityOutcome {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['status', 'resolvedAdvisories', 'remaining', 'contexts'])) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['status', 'resolvedAdvisories', 'remaining', 'contexts', 'introduced', 'checkState'])) return false;
   const status = value['status'];
   const resolvedAdvisories = value['resolvedAdvisories'];
   const remaining = value['remaining'];
@@ -1387,6 +1391,8 @@ function isSecurityOutcome(value: unknown): value is SecurityOutcome {
     resolvedAdvisories.every(isAttributedAdvisory) &&
     Array.isArray(remaining) &&
     remaining.every(isRemainingVulnerability) &&
+    isAbsentOr(value['introduced'], (entries) => Array.isArray(entries) && entries.every(isRemainingVulnerability)) &&
+    isAbsentOr(value['checkState'], (state) => state === 'complete' || state === 'unavailable' || state === 'off') &&
     isAbsentOr(value['contexts'], (contexts) => Array.isArray(contexts) && contexts.length <= 500 && contexts.every(isVulnerabilityContext))
   );
 }
