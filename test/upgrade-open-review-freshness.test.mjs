@@ -183,3 +183,37 @@ test('confirm without a watcher notification still rejects changed source eviden
   assert.equal(f.messages.find(message => message.status === 'upgrade-error')?.error.code, 'STALE_SOURCE');
   assert.equal(f.coordinator.isBusy(), false);
 });
+
+test('editing a staged pnpm workspace file stales the review like the manifest or lockfile', async (t) => {
+  const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const { readPnpmWorkspaceLayout } = await import('../out/host/pnpmWorkspaceLayout.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'packageawy-workspace-freshness-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n  - 'packages/*'\n");
+  await writeFile(path.join(root, 'package.json'), '{"name":"root"}');
+  for (const dir of ['apps/web', 'packages/shared']) {
+    await mkdir(path.join(root, dir), { recursive: true });
+    await writeFile(path.join(root, dir, 'package.json'), JSON.stringify({ name: dir }));
+  }
+  const f = await fixture();
+  const snapshot = {
+    ...f.snapshot, root: path.join(root, 'apps/web'), packageManager: 'pnpm', importerId: 'apps/web',
+    lockfileRoot: root, lockfilePath: path.join(root, 'pnpm-lock.yaml'), lockfileText: "lockfileVersion: '9.0'\n",
+  };
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  f.stored.snapshot = structuredClone(snapshot);
+  f.stored.projectCompatibilityEvidenceFingerprint = null;
+  f.stored.workspaceLayoutFingerprint = layout.fingerprint;
+  f.setRead(async () => structuredClone(snapshot));
+
+  await f.coordinator.checkOpenAnalysisFreshness();
+  assert.deepEqual(f.messages, []);
+  assert.equal(f.coordinator.analysis, f.stored);
+
+  await writeFile(path.join(root, 'packages/shared/package.json'), JSON.stringify({ name: 'shared', version: '2.0.0' }));
+  await f.coordinator.checkOpenAnalysisFreshness();
+  assert.deepEqual(f.messages, [{ status: 'upgrade-analysis-stale', analysisId: 'review-1' }]);
+  assert.equal(f.coordinator.analysis, undefined);
+});

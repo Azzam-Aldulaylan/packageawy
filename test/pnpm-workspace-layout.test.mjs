@@ -6,125 +6,135 @@ import test from 'node:test';
 
 import { readPnpmWorkspaceLayout } from '../out/host/pnpmWorkspaceLayout.js';
 
-const lockfileText = [
-  "lockfileVersion: '9.0'",
-  'importers:',
-  '  .: {}',
-  '  apps/api: {}',
-  '  apps/web: {}',
-  '  packages/shared: {}',
-  '  ../outside: {}',
-  '',
-].join('\n');
-
-async function fixture(t, { workspaceYaml = true } = {}) {
+async function workspace(t, { yaml = "packages:\n  - 'apps/*'\n  - 'packages/*'\n", dirs = ['apps/api', 'apps/web', 'packages/shared'] } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'packageawy-workspace-layout-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  if (workspaceYaml) await writeFile(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n  - 'packages/*'\n");
+  if (yaml !== null) await writeFile(path.join(root, 'pnpm-workspace.yaml'), yaml);
   await writeFile(path.join(root, 'package.json'), '{"name":"root"}');
-  for (const dir of ['apps/api', 'apps/web', 'packages/shared']) {
+  for (const dir of dirs) {
     await mkdir(path.join(root, dir), { recursive: true });
     await writeFile(path.join(root, dir, 'package.json'), JSON.stringify({ name: dir }));
   }
-  await writeFile(path.join(root, '.npmrc'), '//registry.npmjs.org/:_authToken=secret\n');
   await writeFile(path.join(root, '.pnpmfile.cjs'), 'module.exports = {};\n');
   return root;
 }
 
-test('a workspace member gets pnpm-workspace.yaml and every other workspace manifest', async (t) => {
-  const root = await fixture(t);
-  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web', lockfileText });
+const paths = (layout) => layout.files.map((file) => file.path).sort();
+const workspaceFile = (layout) => JSON.parse(layout.files.find((file) => file.path === 'pnpm-workspace.yaml').text);
+
+test('a workspace member gets the workspace file, the root manifest and the other members', async (t) => {
+  const root = await workspace(t);
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
   assert.equal(layout.importerId, 'apps/web');
-  assert.deepEqual(layout.files.map((file) => file.path).sort(), [
-    'apps/api/package.json', 'package.json', 'packages/shared/package.json', 'pnpm-workspace.yaml',
-  ]);
-  assert.equal(layout.files.find((file) => file.path === 'package.json').text, '{"name":"root"}');
-  assert.ok(!layout.files.some((file) => /npmrc|pnpmfile|outside/.test(file.path)));
+  assert.deepEqual(paths(layout), ['apps/api/package.json', 'package.json', 'packages/shared/package.json', 'pnpm-workspace.yaml']);
+  assert.match(layout.fingerprint, /^[0-9a-f]{64}$/);
 });
 
 test('the workspace root importer gets every member manifest but not its own', async (t) => {
-  const root = await fixture(t);
-  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: '.', lockfileText });
-  assert.deepEqual(layout.files.map((file) => file.path).sort(), [
-    'apps/api/package.json', 'apps/web/package.json', 'packages/shared/package.json', 'pnpm-workspace.yaml',
-  ]);
+  const root = await workspace(t);
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: '.' });
+  assert.deepEqual(paths(layout), ['apps/api/package.json', 'apps/web/package.json', 'packages/shared/package.json', 'pnpm-workspace.yaml']);
 });
 
 test('a single pnpm project without pnpm-workspace.yaml keeps the single-project layout', async (t) => {
-  const root = await fixture(t, { workspaceYaml: false });
-  assert.equal(await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: '.', lockfileText }), undefined);
+  const root = await workspace(t, { yaml: null });
+  assert.equal(await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: '.' }), undefined);
 });
 
-test('only resolution settings from pnpm-workspace.yaml reach the temporary project', async (t) => {
-  const root = await fixture(t);
-  await writeFile(path.join(root, 'pnpm-workspace.yaml'), [
-    'packages:',
-    "  - 'apps/*'",
-    "  - '../outside/*'",
-    "  - '/abs/*'",
-    "  - '!apps/api'",
-    'lockfileDir: /somewhere/else',
-    'storeDir: /somewhere/store',
-    'pnpmfile: ./hooks.cjs',
-    'patchedDependencies:',
-    '  jose: patches/jose.patch',
-    'catalog:',
-    '  react: 18.3.1',
-    'overrides:',
-    '  semver: 7.6.0',
+test('package patterns are copied as written, except ones that leave the workspace', async (t) => {
+  const patterns = ['./apps/*/', 'packages/!(excluded)', 'packages/p{1..2}', 'libs/[ab]', '!apps/api', '../outside/*', '/abs/*', '!../x'];
+  const root = await workspace(t, { yaml: `packages:\n${patterns.map((p) => `  - '${p}'`).join('\n')}\n` });
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.deepEqual(workspaceFile(layout).packages, patterns.slice(0, 5));
+});
+
+test('only resolution settings without paths reach the temporary project', async (t) => {
+  const root = await workspace(t, {
+    yaml: [
+      'packages:',
+      "  - 'apps/*'",
+      'linkWorkspacePackages: true',
+      'preferWorkspacePackages: true',
+      'autoInstallPeers: false',
+      'resolutionMode: time-based',
+      'catalog:',
+      '  react: 18.3.1',
+      'overrides:',
+      '  semver: 7.6.0',
+      'lockfileDir: /somewhere/else',
+      'storeDir: /somewhere/store',
+      'virtualStoreDir: ../vstore',
+      'modulesDir: ../mods',
+      'pnpmfile: ./hooks.cjs',
+      'globalPnpmfile: /g.cjs',
+      'patchedDependencies:',
+      '  jose: patches/jose.patch',
+      '',
+    ].join('\n'),
+  });
+  await writeFile(path.join(root, '.npmrc'), [
+    'link-workspace-packages=true',
+    'auto-install-peers=true',
+    '//registry.npmjs.org/:_authToken=secret',
+    'registry=https://private.example/',
+    'store-dir=/somewhere/store',
+    'lockfile-dir=/somewhere/else',
+    'resolution-mode=${MODE}',
     '',
   ].join('\n'));
   await writeFile(path.join(root, 'package.json'), JSON.stringify({
     name: 'root', pnpm: { overrides: { a: '1.0.0' }, patchedDependencies: { b: 'p.patch' } },
   }));
-  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web', lockfileText });
-  const workspace = JSON.parse(layout.files.find((file) => file.path === 'pnpm-workspace.yaml').text);
-  assert.deepEqual(workspace, {
-    packages: ['apps/web', 'packages/shared'],
-    catalog: { react: '18.3.1' },
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.deepEqual(workspaceFile(layout), {
+    packages: ['apps/*'],
     overrides: { semver: '7.6.0' },
+    catalog: { react: '18.3.1' },
+    linkWorkspacePackages: true,
+    preferWorkspacePackages: true,
+    resolutionMode: 'time-based',
+    autoInstallPeers: false,
   });
-  const rootManifest = JSON.parse(layout.files.find((file) => file.path === 'package.json').text);
-  assert.deepEqual(rootManifest.pnpm, { overrides: { a: '1.0.0' } });
+  assert.equal(layout.files.find((file) => file.path === '.npmrc').text, 'link-workspace-packages=true\nauto-install-peers=true\n');
+  assert.deepEqual(JSON.parse(layout.files.find((file) => file.path === 'package.json').text).pnpm, { overrides: { a: '1.0.0' } });
+  assert.ok(!layout.files.some((file) => /pnpmfile/.test(file.path)));
 });
 
-test('workspace members missing from the lockfile are found from the workspace patterns', async (t) => {
-  const root = await fixture(t);
-  await writeFile(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n  - 'packages/**'\n");
-  for (const dir of ['packages/new', 'packages/nested/deep', 'packages/node_modules/skip', 'tools/other']) {
-    await mkdir(path.join(root, dir), { recursive: true });
-    await writeFile(path.join(root, dir, 'package.json'), JSON.stringify({ name: dir }));
-  }
-  const layout = await readPnpmWorkspaceLayout({
-    lockfileRoot: root, importerId: 'apps/web', lockfileText: "lockfileVersion: '9.0'\nimporters:\n  .: {}\n  apps/web: {}\n",
+test('every manifest a pattern could match is staged, and pnpm decides membership', async (t) => {
+  const root = await workspace(t, {
+    yaml: "packages:\n  - 'packages/!(excluded)'\n  - 'packages/p{1..2}'\n  - 'libs/[ab]'\n  - 'apps/web'\n  - 'tools/**'\n",
+    dirs: ['apps/web', 'apps/old', 'packages/excluded', 'packages/p1', 'packages/p2', 'libs/a', 'libs/b',
+      'tools/one/two', 'packages/node_modules/skip', 'packages/.hidden', 'assets/icon'],
   });
-  assert.deepEqual(layout.files.map((file) => file.path).filter((file) => file !== 'pnpm-workspace.yaml').sort(), [
-    'apps/api/package.json', 'package.json', 'packages/nested/deep/package.json',
-    'packages/new/package.json', 'packages/shared/package.json',
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.deepEqual(paths(layout), [
+    'libs/a/package.json', 'libs/b/package.json', 'package.json',
+    'packages/excluded/package.json', 'packages/p1/package.json', 'packages/p2/package.json',
+    'pnpm-workspace.yaml', 'tools/one/two/package.json',
   ]);
 });
 
-test('./ prefixes, trailing slashes and brace patterns still find members, and members are listed by path', async (t) => {
-  const root = await fixture(t);
-  await writeFile(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - './apps/*/'\n  - '{packages,tools}/*'\n");
-  await mkdir(path.join(root, 'tools/cli'), { recursive: true });
-  await writeFile(path.join(root, 'tools/cli/package.json'), '{"name":"cli"}');
-  const layout = await readPnpmWorkspaceLayout({
-    lockfileRoot: root, importerId: 'apps/web', lockfileText: "lockfileVersion: '9.0'\nimporters:\n  .: {}\n",
-  });
-  const workspace = JSON.parse(layout.files.find((file) => file.path === 'pnpm-workspace.yaml').text);
-  assert.deepEqual([...workspace.packages].sort(), ['apps/api', 'apps/web', 'packages/shared', 'tools/cli']);
+test('the candidate walk follows each pattern prefix and stops at its depth', async (t) => {
+  const assets = Array.from({ length: 50 }, (_, index) => `assets/a${index}/deep`);
+  const root = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n", dirs: ['apps/web', 'apps/api/nested', ...assets] });
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.deepEqual(paths(layout), ['package.json', 'pnpm-workspace.yaml']);
 });
 
-test('character classes find unlocked members and exclusions drop stale importers', async (t) => {
-  const root = await fixture(t);
-  await writeFile(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n  - 'packages/[ab]'\n  - '!apps/api'\n");
-  for (const dir of ['packages/a', 'packages/b', 'packages/c']) {
-    await mkdir(path.join(root, dir), { recursive: true });
-    await writeFile(path.join(root, dir, 'package.json'), JSON.stringify({ name: dir }));
-  }
-  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web', lockfileText });
-  const workspace = JSON.parse(layout.files.find((file) => file.path === 'pnpm-workspace.yaml').text);
-  assert.deepEqual([...workspace.packages].sort(), ['apps/web', 'packages/a', 'packages/b', 'packages/shared']);
-  assert.ok(!layout.files.some((file) => file.path === 'apps/api/package.json'));
+test('a cancelled discovery returns no layout', async (t) => {
+  const root = await workspace(t);
+  const abort = new AbortController();
+  abort.abort();
+  assert.equal(await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web', signal: abort.signal }), undefined);
+});
+
+test('the fingerprint changes when a staged file changes', async (t) => {
+  const root = await workspace(t);
+  const before = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.equal((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).fingerprint, before.fingerprint);
+  await writeFile(path.join(root, 'packages/shared/package.json'), '{"name":"shared","version":"2.0.0"}');
+  const sibling = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.notEqual(sibling.fingerprint, before.fingerprint);
+  await writeFile(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n");
+  assert.notEqual((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).fingerprint, sibling.fingerprint);
 });

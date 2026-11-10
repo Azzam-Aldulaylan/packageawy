@@ -1,15 +1,19 @@
 /**
  * Reads the pnpm workspace files that Upgrade Review's isolated resolver
- * needs: pnpm-workspace.yaml and every other workspace manifest. Without
- * them pnpm cannot resolve `workspace:` or `catalog:` specifiers in the
- * temporary project.
+ * needs, so `workspace:` and `catalog:` specifiers resolve in the temporary
+ * project exactly as they do in the real workspace.
  *
- * Only resolution data is copied. pnpm-workspace.yaml and the `pnpm` field
- * of each copied manifest keep an allowlist of keys, so settings that name
- * directories or files (lockfileDir, storeDir, patchedDependencies and the
- * like) never reach the temporary project.
+ * pnpm itself decides workspace membership. The `packages` patterns are
+ * copied as written, and every package.json that a pattern could match is
+ * staged. pnpm ignores the ones that are not members.
+ *
+ * Only settings that shape resolution and name no paths are copied, from
+ * pnpm-workspace.yaml, the lock-root .npmrc and each manifest's `pnpm`
+ * field. Paths, credentials, stores and pnpmfiles never reach the temporary
+ * project.
  */
 
+import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -17,17 +21,69 @@ import { load as loadYaml } from 'js-yaml';
 
 import type { IsolatedWorkspaceLayout } from './resolverVerifier.js';
 
+/** A staged workspace plus a hash of every file in it. */
+export interface PnpmWorkspaceLayout extends IsolatedWorkspaceLayout {
+  fingerprint: string;
+}
+
 const WORKSPACE_MANIFEST = 'pnpm-workspace.yaml';
-const RESOLUTION_KEYS = [
+const NPMRC = '.npmrc';
+
+/** Manifest `pnpm` field keys that change resolution without naming files. */
+const MANIFEST_RESOLUTION_KEYS = [
   'overrides',
   'packageExtensions',
   'peerDependencyRules',
   'allowedDeprecatedVersions',
+  'supportedArchitectures',
+  'ignoredOptionalDependencies',
 ] as const;
-const WORKSPACE_KEYS = ['packages', 'catalog', 'catalogs', ...RESOLUTION_KEYS] as const;
+
+/** Workspace settings that change resolution without naming files. */
+const SETTING_KEYS = [
+  ...MANIFEST_RESOLUTION_KEYS,
+  'catalog',
+  'catalogs',
+  'catalogMode',
+  'linkWorkspacePackages',
+  'preferWorkspacePackages',
+  'injectWorkspacePackages',
+  'saveWorkspaceProtocol',
+  'dedupePeerDependents',
+  'dedupeDirectDeps',
+  'dedupeInjectedDeps',
+  'resolutionMode',
+  'resolvePeersFromWorkspaceRoot',
+  'autoInstallPeers',
+  'strictPeerDependencies',
+  'excludeLinksFromLockfile',
+  'peersSuffixMaxLength',
+  'minimumReleaseAge',
+  'minimumReleaseAgeExclude',
+] as const;
+
+/** The same scalar settings as .npmrc keys, which pnpm 9 reads instead of the workspace file. */
+const NPMRC_KEYS = new Set([
+  'link-workspace-packages',
+  'prefer-workspace-packages',
+  'inject-workspace-packages',
+  'save-workspace-protocol',
+  'dedupe-peer-dependents',
+  'dedupe-direct-deps',
+  'dedupe-injected-deps',
+  'resolution-mode',
+  'resolve-peers-from-workspace-root',
+  'auto-install-peers',
+  'strict-peer-dependencies',
+  'exclude-links-from-lockfile',
+  'peers-suffix-max-length',
+  'minimum-release-age',
+]);
+
+const GLOB_CHARS = /[*?[\]{}()!+@]/;
 const MAX_DISCOVERY_DEPTH = 6;
-const MAX_MEMBERS = 500;
-const SKIPPED_DIRS = new Set(['node_modules']);
+const MAX_DIRECTORY_READS = 2000;
+const MAX_CANDIDATES = 500;
 
 async function readIfExists(absolutePath: string): Promise<string | undefined> {
   try {
@@ -47,93 +103,67 @@ function pick(record: Record<string, unknown>, keys: readonly string[]): Record<
   return picked;
 }
 
-function isSafeRelativePath(id: string, allowGlobs = false): boolean {
+function isSafeRelativePath(id: string): boolean {
   if (id.includes('\\') || path.posix.isAbsolute(id) || /^[a-z]:/i.test(id)) return false;
-  return id.split('/').every((segment) =>
-    segment !== '' && segment !== '.' && segment !== '..' && (allowGlobs || !/[*?[\]{}!]/.test(segment)));
+  return id.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
-/** Supports `*`, `**`, `?` and `[...]` classes (`[!...]` negates). Other characters match literally. */
-function globToRegExp(pattern: string): RegExp {
-  const segmentSource = (segment: string): string => {
-    let source = '';
-    for (let index = 0; index < segment.length; index += 1) {
-      const char = segment[index] ?? '';
-      const close = char === '[' ? segment.indexOf(']', index + 2) : -1;
-      if (close > index) {
-        const body = segment.slice(index + 1, close).replace(/^!/, '^').replace(/\\/g, '\\\\');
-        source += `[${body}]`;
-        index = close;
-      } else if (char === '*') source += '[^/]*';
-      else if (char === '?') source += '[^/]';
-      else source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-    }
-    return source;
-  };
-  const parts = pattern.split('/');
-  let source = '';
-  parts.forEach((segment, index) => {
-    const last = index === parts.length - 1;
-    if (segment === '**') source += last ? '.+' : '(?:[^/]+/)*';
-    else source += segmentSource(segment) + (last ? '' : '/');
-  });
-  return new RegExp(`^${source}$`);
+/** A pattern stays inside the workspace when it is relative and never steps up with `..`. */
+function isContainedPattern(pattern: string): boolean {
+  const body = pattern.startsWith('!') ? pattern.slice(1) : pattern;
+  if (body === '' || body.includes('\\') || path.posix.isAbsolute(body) || /^[a-z]:/i.test(body)) return false;
+  return body.split('/').every((segment) => segment !== '..');
 }
 
-/** Drops a leading `./` and a trailing `/`, which pnpm accepts in package patterns. */
-function normalizePattern(pattern: string): string {
-  const negated = pattern.startsWith('!');
-  let body = negated ? pattern.slice(1) : pattern;
-  while (body.startsWith('./')) body = body.slice(2);
-  while (body.endsWith('/')) body = body.slice(0, -1);
-  return negated ? `!${body}` : body;
+/**
+ * The literal leading directories of a positive pattern and how deep its
+ * glob part may reach. `apps/*` walks only `apps/`, one level deep.
+ */
+function walkPlan(pattern: string): { prefix: string[]; depth: number } {
+  const segments = pattern.split('/').filter((segment) => segment !== '' && segment !== '.');
+  const globIndex = segments.findIndex((segment) => GLOB_CHARS.test(segment));
+  if (globIndex === -1) return { prefix: segments, depth: 0 };
+  const rest = segments.slice(globIndex);
+  const unbounded = rest.some((segment) => segment.includes('**') || segment.includes('{'));
+  return { prefix: segments.slice(0, globIndex), depth: unbounded ? MAX_DISCOVERY_DEPTH : rest.length };
 }
 
-/** Expands one level of `{a,b}` alternatives, the common form in workspace patterns. */
-function expandBraces(pattern: string): string[] {
-  const match = /\{([^{}]*)\}/.exec(pattern);
-  if (match === null) return [pattern];
-  return (match[1] ?? '').split(',').flatMap((option) =>
-    expandBraces(pattern.slice(0, match.index) + option + pattern.slice(match.index + match[0].length)));
-}
-
-/** Keeps package patterns that stay inside the workspace. */
-function safePackagePatterns(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === 'string')
-    .map(normalizePattern)
-    .flatMap(expandBraces)
-    .filter((entry) => isSafeRelativePath(entry.startsWith('!') ? entry.slice(1) : entry, true));
-}
-
-/** Directories under the lock root whose relative path matches the workspace patterns. */
-async function discoverMembers(lockfileRoot: string, patterns: readonly string[]): Promise<string[]> {
-  const include = patterns.filter((pattern) => !pattern.startsWith('!')).map(globToRegExp);
-  const exclude = patterns.filter((pattern) => pattern.startsWith('!')).map((pattern) => globToRegExp(pattern.slice(1)));
-  if (include.length === 0) return [];
-  const members: string[] = [];
-  const walk = async (relative: string, depth: number): Promise<void> => {
-    if (depth > MAX_DISCOVERY_DEPTH || members.length >= MAX_MEMBERS) return;
+/**
+ * Directories with a package.json that some positive pattern could match,
+ * as lock-root-relative POSIX paths. Bounded by depth, directory reads and
+ * candidates. node_modules and dot directories are skipped.
+ */
+async function collectCandidates(lockfileRoot: string, patterns: readonly string[], signal?: AbortSignal): Promise<string[]> {
+  const candidates = new Set<string>();
+  const visited = new Set<string>();
+  let reads = 0;
+  const visit = async (relative: string, depthLeft: number): Promise<void> => {
+    if (signal?.aborted) throw new Error('Workspace discovery was cancelled.');
+    if (reads >= MAX_DIRECTORY_READS || candidates.size >= MAX_CANDIDATES) return;
+    const key = `${relative}\u0000${depthLeft}`;
+    if (visited.has(key)) return;
+    visited.add(key);
+    reads += 1;
     let entries;
     try {
       entries = await readdir(path.join(lockfileRoot, ...relative.split('/').filter(Boolean)), { withFileTypes: true });
     } catch {
       return;
     }
+    if (relative !== '' && entries.some((entry) => entry.isFile() && entry.name === 'package.json')) candidates.add(relative);
+    if (depthLeft === 0) return;
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || SKIPPED_DIRS.has(entry.name)) continue;
-      const child = relative === '' ? entry.name : `${relative}/${entry.name}`;
-      if (include.some((re) => re.test(child)) && !exclude.some((re) => re.test(child))) members.push(child);
-      await walk(child, depth + 1);
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      await visit(relative === '' ? entry.name : `${relative}/${entry.name}`, depthLeft - 1);
     }
   };
-  await walk('', 1);
-  return members;
-}
-
-function lockfileImporterIds(lockfileText: string): string[] {
-  const importers = asRecord(asRecord(loadYaml(lockfileText))?.['importers']);
-  return importers === null ? [] : Object.keys(importers);
+  for (const pattern of patterns) {
+    if (pattern.startsWith('!')) continue;
+    const plan = walkPlan(pattern);
+    if (plan.prefix.some((segment) => segment.startsWith('.') || segment === 'node_modules')) continue;
+    await visit(plan.prefix.join('/'), plan.depth);
+  }
+  return [...candidates];
 }
 
 /** A copied manifest keeps only resolution keys in its `pnpm` field. */
@@ -141,50 +171,68 @@ function sanitizedManifest(text: string): string | undefined {
   try {
     const manifest = asRecord(JSON.parse(text));
     if (manifest === null) return undefined;
-    const pnpm = asRecord(manifest['pnpm']);
     if (manifest['pnpm'] === undefined) return text;
+    const pnpm = asRecord(manifest['pnpm']);
     const { pnpm: _dropped, ...rest } = manifest;
-    return JSON.stringify(pnpm === null ? rest : { ...rest, pnpm: pick(pnpm, RESOLUTION_KEYS) }, null, 2);
+    return JSON.stringify(pnpm === null ? rest : { ...rest, pnpm: pick(pnpm, MANIFEST_RESOLUTION_KEYS) }, null, 2);
   } catch {
     return undefined;
   }
 }
 
+/** Allowlisted scalar settings only. Credentials, registries and paths are left out. */
+function sanitizedNpmrc(text: string): string | undefined {
+  const lines: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const match = /^\s*([a-z-]+)\s*=\s*([\w.-]+)\s*$/.exec(raw);
+    if (match !== null && NPMRC_KEYS.has(match[1] ?? '')) lines.push(`${match[1]}=${match[2]}`);
+  }
+  return lines.length === 0 ? undefined : `${lines.join('\n')}\n`;
+}
+
+function fingerprintFiles(files: readonly { path: string; text: string }[]): string {
+  const hash = createHash('sha256');
+  for (const file of [...files].sort((left, right) => left.path.localeCompare(right.path))) {
+    hash.update(file.path).update('\u0000').update(file.text).update('\u0000');
+  }
+  return hash.digest('hex');
+}
+
 /**
  * Returns undefined when the lock root has no pnpm-workspace.yaml or the
  * files cannot be read, so the resolver keeps its single-project layout.
+ * The fingerprint covers every staged file, so editing any of them makes a
+ * review stale.
  */
 export async function readPnpmWorkspaceLayout(input: {
   lockfileRoot: string;
   importerId: string;
-  lockfileText: string;
-}): Promise<IsolatedWorkspaceLayout | undefined> {
+  signal?: AbortSignal;
+}): Promise<PnpmWorkspaceLayout | undefined> {
   try {
     const workspaceText = await readIfExists(path.join(input.lockfileRoot, WORKSPACE_MANIFEST));
     if (workspaceText === undefined) return undefined;
     if (input.importerId !== '.' && !isSafeRelativePath(input.importerId)) return undefined;
-    const workspace = pick(asRecord(loadYaml(workspaceText)) ?? {}, WORKSPACE_KEYS);
-    const patterns = safePackagePatterns(workspace['packages']);
-    const files: { path: string; text: string }[] = [];
-    const members: string[] = input.importerId === '.' ? [] : [input.importerId];
-    const excluded = patterns.filter((pattern) => pattern.startsWith('!')).map((pattern) => globToRegExp(pattern.slice(1)));
-    const ids = new Set(['.', ...lockfileImporterIds(input.lockfileText), ...await discoverMembers(input.lockfileRoot, patterns)]);
+    const source = asRecord(loadYaml(workspaceText)) ?? {};
+    const rawPatterns = Array.isArray(source['packages']) ? source['packages'] : [];
+    const patterns = rawPatterns.filter((entry): entry is string => typeof entry === 'string' && isContainedPattern(entry));
+    // JSON is valid YAML and needs no serializer.
+    const workspace = { packages: patterns, ...pick(source, SETTING_KEYS) };
+    const files: { path: string; text: string }[] = [
+      { path: WORKSPACE_MANIFEST, text: `${JSON.stringify(workspace, null, 2)}\n` },
+    ];
+    const npmrc = await readIfExists(path.join(input.lockfileRoot, NPMRC));
+    const sanitizedRc = npmrc === undefined ? undefined : sanitizedNpmrc(npmrc);
+    if (sanitizedRc !== undefined) files.push({ path: NPMRC, text: sanitizedRc });
+    const ids = ['.', ...await collectCandidates(input.lockfileRoot, patterns, input.signal)];
     for (const id of ids) {
       if (id === input.importerId || (id !== '.' && !isSafeRelativePath(id))) continue;
-      // A stale importer the workspace now excludes stays out, as it does in the real workspace.
-      if (id !== '.' && excluded.some((re) => re.test(id))) continue;
       const relative = id === '.' ? 'package.json' : `${id}/package.json`;
       const raw = await readIfExists(path.join(input.lockfileRoot, ...relative.split('/')));
       const text = raw === undefined ? undefined : sanitizedManifest(raw);
-      if (text === undefined) continue;
-      files.push({ path: relative, text });
-      if (id !== '.') members.push(id);
+      if (text !== undefined) files.push({ path: relative, text });
     }
-    // Every copied member is listed by path, so pnpm includes it whatever pattern syntax the original used.
-    workspace['packages'] = members;
-    // JSON is valid YAML and needs no serializer.
-    files.unshift({ path: WORKSPACE_MANIFEST, text: `${JSON.stringify(workspace, null, 2)}\n` });
-    return { importerId: input.importerId, files };
+    return { importerId: input.importerId, files, fingerprint: fingerprintFiles(files) };
   } catch {
     return undefined;
   }
