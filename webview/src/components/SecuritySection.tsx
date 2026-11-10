@@ -2,6 +2,7 @@ import type { ReactElement } from 'react';
 
 import { IntroducedSecurityFindings } from './IntroducedSecurityFindings.js';
 import { securityOutcomeDisplay } from '../../../src/host/outcomeCopy.js';
+import { unaffectedElsewhereText } from '../../../src/host/upgradeSecuritySummary.js';
 import type { SecurityOutcome } from '../../../src/host/webviewProtocol.js';
 import { IconShield } from '../icons.js';
 import { OutcomeStatus } from './OutcomeStatus.js';
@@ -82,6 +83,9 @@ export function SecuritySection({
           ))}
         </ul>
       ) : null}
+      {security === null || unaffectedElsewhereText(security) === null ? null : (
+        <p className="security-outcome__elsewhere">{unaffectedElsewhereText(security)}</p>
+      )}
     </section>
   );
 }

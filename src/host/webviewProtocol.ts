@@ -148,6 +148,8 @@ export interface SecurityOutcome {
   remaining: RemainingVulnerability[];
   introduced?: RemainingVulnerability[];
   checkState?: 'complete' | 'unavailable' | 'off';
+  /** Upgrade review only: known vulnerabilities elsewhere in the project that this upgrade does not touch. Never counted as remaining. */
+  unaffectedElsewhereCount?: number;
   /** Optional richer graph context. Older/remediation outcomes remain protocol-compatible without it. */
   contexts?: VulnerabilityContext[];
 }
@@ -1398,7 +1400,7 @@ function isVulnerabilityContext(value: unknown): value is VulnerabilityContext {
 }
 
 function isSecurityOutcome(value: unknown): value is SecurityOutcome {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['status', 'resolvedAdvisories', 'remaining', 'contexts', 'introduced', 'checkState'])) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['status', 'resolvedAdvisories', 'remaining', 'contexts', 'introduced', 'checkState', 'unaffectedElsewhereCount'])) return false;
   const status = value['status'];
   const resolvedAdvisories = value['resolvedAdvisories'];
   const remaining = value['remaining'];
@@ -1411,6 +1413,7 @@ function isSecurityOutcome(value: unknown): value is SecurityOutcome {
     remaining.every(isRemainingVulnerability) &&
     isAbsentOr(value['introduced'], (entries) => Array.isArray(entries) && entries.every(isRemainingVulnerability)) &&
     isAbsentOr(value['checkState'], (state) => state === 'complete' || state === 'unavailable' || state === 'off') &&
+    isAbsentOr(value['unaffectedElsewhereCount'], (count) => typeof count === 'number' && Number.isInteger(count) && count > 0) &&
     isAbsentOr(value['contexts'], (contexts) => Array.isArray(contexts) && contexts.length <= 500 && contexts.every(isVulnerabilityContext))
   );
 }

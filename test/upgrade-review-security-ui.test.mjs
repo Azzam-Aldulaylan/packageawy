@@ -116,6 +116,15 @@ for (const [name, Component] of [['embedded', UpgradeReviewPanel], ['standalone'
       assert.equal(result.consent.required, severity === 'critical');
     });
   }
+  test(`${name} vulnerabilities elsewhere in the project are mentioned once and not counted for this upgrade`, () => {
+    state.values = [];
+    const security = { status: 'not-applicable', checkState: 'complete', resolvedAdvisories: [], remaining: [], introduced: [], unaffectedElsewhereCount: 12 };
+    const result = inspect(Component, review(false, security));
+    assert.equal(result.html.match(/12 known vulnerabilities elsewhere in the project are not affected by this upgrade\./g)?.length, 1);
+    assert.doesNotMatch(result.html, /remain/i);
+    assert.doesNotMatch(result.html, /[1-9]\d* known vulnerabilit(y|ies)(?! elsewhere)/);
+    assert.equal(result.action.disabled, false);
+  });
   test(`${name} unchanged findings, unavailable checks and Off stay visible without acknowledgement`, () => {
     for (const checkState of ['complete', 'unavailable', 'off']) {
       state.values = [];

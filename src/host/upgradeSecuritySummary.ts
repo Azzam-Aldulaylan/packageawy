@@ -34,6 +34,13 @@ export function summarizeUpgradeSecurity(security: SecurityOutcome): UpgradeSecu
   return { beforeCount, introducedCount, confirmedRemainingCount, unknownCount, afterLabel };
 }
 
+/** One neutral line for project vulnerabilities this upgrade does not touch. They are never counted as remaining. */
+export function unaffectedElsewhereText(security: SecurityOutcome | null | undefined): string | null {
+  const count = security?.checkState === 'complete' ? security.unaffectedElsewhereCount ?? 0 : 0;
+  if (count <= 0) return null;
+  return `${count} known vulnerabilit${count === 1 ? 'y' : 'ies'} elsewhere in the project ${count === 1 ? 'is' : 'are'} not affected by this upgrade.`;
+}
+
 export function requiresSecurityAcknowledgement(security: SecurityOutcome | null | undefined): boolean {
   return security?.introduced?.some((entry) => entry.advisory.severity === 'high' || entry.advisory.severity === 'critical') ?? false;
 }
