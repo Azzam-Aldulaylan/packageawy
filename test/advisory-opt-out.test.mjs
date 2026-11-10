@@ -175,7 +175,7 @@ test('availability accepts off, and an off scan is a ready dashboard, not a part
   const message = toHostToWebviewMessage(
     { rows: [], availability, hygieneFindings: [] },
     { isEmpty: false, isStale: false },
-    { label: 'app', manifestPath: 'package.json' },
+    { id: 'id:app', label: 'app', manifestPath: 'package.json' },
     false,
     { extensionVersion: '0.0.1', builtAt: '2026-08-01T09:00:00.000Z' }
   );
@@ -205,7 +205,7 @@ function controllerFor(client, enabled, extra = {}) {
     httpClient: client,
     etagStore: new MemoryEtagStore(),
     auditRunner: recordingAuditRunner(),
-    projectInfo: { label: 'app', manifestPath: 'package.json' },
+    projectInfo: { id: 'id:app', label: 'app', manifestPath: 'package.json' },
     canChangeProject: false,
     buildInfo: { extensionVersion: '0.0.1', builtAt: '2026-08-01T09:00:00.000Z' },
     projectCacheStore: new PersistentProjectCacheStore(memoryStore()),

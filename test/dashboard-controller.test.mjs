@@ -136,7 +136,7 @@ const COMPLETE_AVAILABILITY = { updates: 'complete', advisories: 'complete', una
  */
 const SOURCE_FINGERPRINT = computeSourceFingerprint({ manifestText: MANIFEST, lockfileText: LOCKFILE, lockfilePath: null });
 
-const PROJECT_INFO = { label: 'app', manifestPath: 'package.json' };
+const PROJECT_INFO = { id: 'id:app', label: 'app', manifestPath: 'package.json' };
 
 /**
  * `ttlMinutesProvider` defaults to `() => 0`: "always revalidate" per the
@@ -596,12 +596,12 @@ test('updateProjectSnapshot changes root, read via the root getter', () => {
 
 test('switching project updates root, manifest, lockfile, registry, dependency classification, and the outgoing project info', async () => {
   const controller = makeController(staticClient('1.0.1'), {
-    projectInfo: { label: 'frontend', manifestPath: 'package.json' },
+    projectInfo: { id: 'id:frontend', label: 'frontend', manifestPath: 'package.json' },
     canChangeProject: true,
   });
   const first = recordingSink();
   await controller.handleReady(first);
-  assert.deepEqual(first.posted[1].data.project, { label: 'frontend', manifestPath: 'package.json' });
+  assert.deepEqual(first.posted[1].data.project, { id: 'id:frontend', label: 'frontend', manifestPath: 'package.json' });
   assert.equal(first.posted[1].data.canChangeProject, true);
 
   const otherManifest = JSON.stringify({
@@ -617,7 +617,7 @@ test('switching project updates root, manifest, lockfile, registry, dependency c
       'node_modules/clean-pkg': { version: '1.0.0', dev: true },
     },
   });
-  const otherProjectInfo = { label: 'api: packages/api', manifestPath: 'packages/api/package.json' };
+  const otherProjectInfo = { id: 'id:api: packages/api', label: 'api: packages/api', manifestPath: 'packages/api/package.json' };
 
   updateProjectSnapshot(controller, {
     root: '/tmp/other-project',
@@ -659,7 +659,7 @@ test('a project switch while a scan is in flight is not overwritten by the super
     lockfileText: LOCKFILE,
     lockfilePath: null,
     registry: REGISTRY,
-    projectInfo: { label: 'other', manifestPath: 'package.json' },
+    projectInfo: { id: 'id:other', label: 'other', manifestPath: 'package.json' },
     canChangeProject: true,
     cacheKey: 'test-other-project',
   });
@@ -1315,7 +1315,7 @@ test('switching project never replays the previous project’s cached rows under
   const controller = makeController(staticClient('1.0.1'), {
     projectCacheStore,
     cacheKey: 'project-old',
-    projectInfo: { label: 'old-project', manifestPath: 'package.json' },
+    projectInfo: { id: 'id:old-project', label: 'old-project', manifestPath: 'package.json' },
     ttlMinutesProvider: () => 30,
   });
 
@@ -1334,7 +1334,7 @@ test('switching project never replays the previous project’s cached rows under
     lockfileText: LOCKFILE,
     lockfilePath: null,
     registry: REGISTRY,
-    projectInfo: { label: 'new-project', manifestPath: 'package.json' },
+    projectInfo: { id: 'id:new-project', label: 'new-project', manifestPath: 'package.json' },
     canChangeProject: false,
     cacheKey: 'project-new',
   });
