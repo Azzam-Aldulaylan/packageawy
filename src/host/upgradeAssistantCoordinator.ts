@@ -82,6 +82,7 @@ import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.j
 import { createNodeUpgradeTransactionFileAdapter } from './nodeUpgradeTransactionFiles.js';
 import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
 import { materializeUpgradeSecurityGraph } from './upgradeSecurityGraph.js';
+import { readPnpmWorkspaceLayout } from './pnpmWorkspaceLayout.js';
 import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
 import { loadProject } from './projectResolution.js';
@@ -1409,6 +1410,14 @@ export class UpgradeAssistantCoordinator {
               }
             : null;
       endToolchain({ available: packageManagerInvocation !== null });
+      const workspaceLayout = packageManagerInvocation !== null && preflightProject.packageManager === 'pnpm' &&
+        preflightProject.lockfileText !== null
+        ? await readPnpmWorkspaceLayout({
+            lockfileRoot: preflightProject.lockfileRoot,
+            importerId: preflightProject.importerId,
+            lockfileText: preflightProject.lockfileText,
+          })
+        : undefined;
       const resolverVerifier = packageManagerInvocation !== null
         ? new IsolatedResolverVerifier({
             // Bound each isolated Upgrade Review resolver step, not the user's
@@ -1430,6 +1439,7 @@ export class UpgradeAssistantCoordinator {
             registry: preflightProject.registry,
             resolvedRegistry: preflightProject.resolvedRegistry,
             policy: preflightProject.peerPolicy,
+            ...(workspaceLayout === undefined ? {} : { workspace: workspaceLayout }),
           })
         : undefined;
       const metadataProvider = new RegistryPackageMetadataProvider(

@@ -3,13 +3,18 @@
  *
  * The safety boundary is the temporary directory, not a package manager's
  * interpretation of "dry run": only a host-owned manifest and active
- * lockfile are copied, workspace configuration is deliberately not copied,
- * lifecycle scripts are disabled, and the real project is never the cwd.
+ * lockfile are copied, lifecycle scripts are disabled, and the real project
+ * is never the cwd. A pnpm workspace member also gets the workspace's own
+ * manifests and pnpm-workspace.yaml, so `workspace:` and `catalog:`
+ * specifiers resolve. .npmrc files and pnpmfiles are never copied, and pnpm
+ * runs with --ignore-pnpmfile.
  */
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+
+import { load as loadYaml } from 'js-yaml';
 
 import type {
   ResolverVerification,
@@ -67,6 +72,18 @@ export class NodeResolverProcessRunner implements ResolverProcessRunner {
   }
 }
 
+/** The pnpm workspace around the reviewed project, rebuilt inside the temporary directory. */
+export interface IsolatedWorkspaceLayout {
+  /** pnpm importer id of the reviewed project: `.` or a lock-root-relative POSIX path. */
+  importerId: string;
+  /**
+   * Lock-root-relative POSIX paths with their contents: pnpm-workspace.yaml
+   * and the other workspace manifests. The reviewed manifest is written from
+   * `manifestText` instead.
+   */
+  files: readonly { path: string; text: string }[];
+}
+
 export interface IsolatedResolverVerifierOptions {
   packageManager: SupportedPackageManager;
   packageManagerVersion: string | null;
@@ -80,6 +97,22 @@ export interface IsolatedResolverVerifierOptions {
   runner?: ResolverProcessRunner;
   /** Upgrade Review shares this materialization with its deferred security check. */
   retainResolvedGraph?: boolean;
+  /** Set for a pnpm workspace. The lockfile then belongs to the workspace root. */
+  workspace?: IsolatedWorkspaceLayout;
+}
+
+/**
+ * Maps a lock-root-relative POSIX path into the temporary directory. Paths
+ * come from lockfile importer ids, so anything absolute or with a `.` or
+ * `..` segment is refused.
+ */
+export function isolatedRelativePath(tempRoot: string, relative: string): string {
+  const segments = relative.split('/');
+  if (relative.includes('\\') || path.isAbsolute(relative) || /^[a-z]:/i.test(relative) ||
+      segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    throw new Error(`Refusing an unsafe workspace path: ${relative}`);
+  }
+  return path.join(tempRoot, ...segments);
 }
 
 const SCOPE_PATTERN = /^@[a-z0-9][a-z0-9._-]*$/i;
@@ -135,8 +168,9 @@ export function buildResolverArgs(
   return [
     'install',
     '--ignore-scripts',
+    '--ignore-pnpmfile',
     '--lockfile=false',
-    '--reporter=silent',
+    '--loglevel=error',
     `--registry=${registry}`,
     ...buildScopedRegistryArgs(scoped),
     ...policyArgs,
@@ -180,7 +214,8 @@ export function buildLockfileMaterializationArgs(
     'install',
     '--lockfile-only',
     '--ignore-scripts',
-    '--reporter=silent',
+    '--ignore-pnpmfile',
+    '--loglevel=error',
     `--registry=${registry}`,
     ...buildScopedRegistryArgs(scoped),
     ...policyArgs,
@@ -259,6 +294,49 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     this.runner = options.runner ?? new NodeResolverProcessRunner();
   }
 
+  /** pnpm can succeed while leaving a member out of the workspace, so its importer must be in the written lockfile. */
+  private async resolvedWorkspaceImporter(tempRoot: string): Promise<boolean> {
+    try {
+      const lock = loadYaml(await readFile(path.join(tempRoot, 'pnpm-lock.yaml'), 'utf8'));
+      const importers = typeof lock === 'object' && lock !== null ? (lock as Record<string, unknown>)['importers'] : undefined;
+      return typeof importers === 'object' && importers !== null &&
+        Object.prototype.hasOwnProperty.call(importers, this.options.workspace?.importerId ?? '.');
+    } catch {
+      return false;
+    }
+  }
+
+  private importerOption(): { importerId?: string } {
+    return this.options.workspace === undefined ? {} : { importerId: this.options.workspace.importerId };
+  }
+
+  /**
+   * Writes the manifest and active lockfile into the temporary directory and
+   * returns the directory holding the reviewed manifest. For a workspace, the
+   * lockfile stays at the temporary root and the manifest goes to its
+   * importer path, beside the other workspace manifests.
+   */
+  private async stageProject(tempRoot: string, manifestText: string): Promise<string> {
+    const workspace = this.options.workspace;
+    let projectDir = tempRoot;
+    if (workspace !== undefined) {
+      for (const file of workspace.files) {
+        const target = isolatedRelativePath(tempRoot, file.path);
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, file.text, 'utf8');
+      }
+      if (workspace.importerId !== '.') {
+        projectDir = isolatedRelativePath(tempRoot, workspace.importerId);
+        await mkdir(projectDir, { recursive: true });
+      }
+    }
+    await writeFile(path.join(projectDir, 'package.json'), manifestText, 'utf8');
+    if (this.options.lockfile !== undefined) {
+      await writeFile(path.join(tempRoot, this.options.lockfile.name), this.options.lockfile.text, 'utf8');
+    }
+    return projectDir;
+  }
+
   async verify(proposal: UpgradeProposal, signal?: AbortSignal): Promise<ResolverVerification> {
     if (!this.options.retainResolvedGraph) return this.verifyProposal(proposal, signal);
     const key = this.proposalKey(proposal);
@@ -281,13 +359,12 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     );
     const tempRoot = await mkdtemp(path.join(tmpdir(), 'packageawy-preflight-'));
     try {
-      await writeFile(path.join(tempRoot, 'package.json'), stagedManifest, 'utf8');
-      if (this.options.lockfile !== undefined) {
-        await writeFile(path.join(tempRoot, this.options.lockfile.name), this.options.lockfile.text, 'utf8');
-      }
+      const projectDir = await this.stageProject(tempRoot, stagedManifest);
+      // A workspace resolves every member, so it keeps the lockfile and skips a full fresh install.
+      const writesLockfile = this.options.retainResolvedGraph === true || this.options.workspace !== undefined;
       const result = await this.runner.run(
         this.options.invocation,
-        (this.options.retainResolvedGraph ? buildLockfileMaterializationArgs : buildResolverArgs)(
+        (writesLockfile ? buildLockfileMaterializationArgs : buildResolverArgs)(
           this.options.packageManager,
           this.options.registry,
           this.options.policy,
@@ -296,14 +373,25 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
         tempRoot,
         signal
       );
+      if (result.exitCode === 0 && this.options.workspace !== undefined &&
+          !await this.resolvedWorkspaceImporter(tempRoot)) {
+        return {
+          status: 'unknown',
+          packageManager: this.options.packageManager,
+          packageManagerVersion: this.options.packageManagerVersion,
+          code: 'RESOLVER_FAILED',
+          explanation: 'Isolated resolver verification finished without resolving this workspace project.',
+        };
+      }
       if (this.options.retainResolvedGraph && result.exitCode === 0) {
         try {
           const lockfileName = this.options.packageManager === 'pnpm' ? 'pnpm-lock.yaml'
             : this.options.lockfile?.name ?? 'package-lock.json';
           const lockfileText = await readFile(path.join(tempRoot, lockfileName), 'utf8');
           this.reviewGraphs.set(this.proposalKey(proposal), buildDependencyGraph({
-            root: tempRoot, manifest: parseManifest(stagedManifest), lockfileText,
+            root: projectDir, manifest: parseManifest(stagedManifest), lockfileText,
             packageManager: this.options.packageManager,
+            ...this.importerOption(),
           }));
         } catch {
           // Resolution can succeed without a parseable graph. Security stays unavailable.
@@ -362,10 +450,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     const lockfileName = this.options.packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json';
     const tempRoot = await mkdtemp(path.join(tmpdir(), 'packageawy-security-outcome-'));
     try {
-      await writeFile(path.join(tempRoot, 'package.json'), stagedManifest, 'utf8');
-      if (this.options.lockfile !== undefined) {
-        await writeFile(path.join(tempRoot, this.options.lockfile.name), this.options.lockfile.text, 'utf8');
-      }
+      const projectDir = await this.stageProject(tempRoot, stagedManifest);
       const result = await this.runner.run(
         this.options.invocation,
         buildLockfileMaterializationArgs(
@@ -378,14 +463,16 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
         signal
       );
       if (result.exitCode !== 0) return { ok: false };
+      if (this.options.workspace !== undefined && !await this.resolvedWorkspaceImporter(tempRoot)) return { ok: false };
 
       const lockfileText = await readFile(path.join(tempRoot, lockfileName), 'utf8');
       const manifest = parseManifest(stagedManifest);
       const graph = buildDependencyGraph({
-        root: tempRoot,
+        root: projectDir,
         manifest,
         lockfileText,
         packageManager: this.options.packageManager,
+        ...this.importerOption(),
       });
       return { ok: true, graph };
     } catch {
