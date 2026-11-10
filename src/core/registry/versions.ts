@@ -25,7 +25,7 @@ import type { VersionInfo } from '../types.js';
 import { resolveWanted, resolveLatest, isPrerelease } from '../version/resolve.js';
 import { isSafeNpmPackageName, isSafeSemverVersion } from '../upgrade/plan.js';
 import type { HttpClient } from './http.js';
-import { FetchError, errorForStatus } from './http.js';
+import { FetchError, registryErrorForStatus } from './http.js';
 import { runPool, DEFAULT_CONCURRENCY } from './pool.js';
 import type { Settled } from './pool.js';
 
@@ -91,7 +91,7 @@ async function getConditional(
     return { body: cached.body, wireBytes: response.wireBytes, notModified: true };
   }
 
-  if (response.status !== 200) throw errorForStatus(response.status, url);
+  if (response.status !== 200) throw registryErrorForStatus(response.status, url);
 
   const etag = response.headers['etag'];
   if (etag !== undefined) store.set(url, { etag, body: response.body });

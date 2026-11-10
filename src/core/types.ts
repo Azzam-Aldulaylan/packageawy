@@ -96,6 +96,17 @@ export interface ScanDataAvailability {
   updates: 'complete' | 'partial';
   advisories: 'complete' | 'partial' | 'unavailable' | 'off';
   unavailableUpdatePackages: string[];
+  /**
+   * The subset of unavailable packages whose registry asked for sign-in
+   * (401/403), grouped by registry host. Absent when there are none.
+   */
+  signInRequired?: RegistrySignInGroup[];
+}
+
+export interface RegistrySignInGroup {
+  /** Registry host only: no credentials, no path. */
+  registryHost: string;
+  packages: string[];
 }
 
 export interface Advisory {

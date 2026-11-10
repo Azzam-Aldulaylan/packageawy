@@ -299,12 +299,22 @@ export async function buildPackageRows(
   endVersions({ requests: requests.length });
   const versionsByName = new Map<string, VersionInfo>();
   const unavailableUpdatePackages: string[] = [];
+  const signInPackagesByHost = new Map<string, string[]>();
   versionNodes.forEach((node, i) => {
     const result = settled[i];
     // A per-package failure is simply an absent entry: that row renders with
     // null wanted/latest and doesn't disturb any other row.
-    if (result?.ok === true) versionsByName.set(node.name, result.value);
-    else unavailableUpdatePackages.push(node.name);
+    if (result?.ok === true) {
+      versionsByName.set(node.name, result.value);
+      return;
+    }
+    unavailableUpdatePackages.push(node.name);
+    const host = result?.error.code === 'REGISTRY_AUTH_REQUIRED' ? result.error.registryHost : undefined;
+    if (host !== undefined) {
+      const packages = signInPackagesByHost.get(host) ?? [];
+      packages.push(node.name);
+      signInPackagesByHost.set(host, packages);
+    }
   });
   throwIfAborted(signal);
 
@@ -449,6 +459,10 @@ export async function buildPackageRows(
       : [...advisoryCoverage.values()].includes('partial') ? 'partial' : 'complete',
     unavailableUpdatePackages,
   };
+  if (signInPackagesByHost.size > 0) {
+    availability.signInRequired = [...signInPackagesByHost]
+      .map(([registryHost, packages]) => ({ registryHost, packages }));
+  }
   const result: BuildPackageRowsResult = { rows, availability, hygieneFindings };
   if (advisoriesError !== undefined) result.advisoriesError = advisoriesError;
   if (auditUnavailable) result.auditUnavailable = true;
