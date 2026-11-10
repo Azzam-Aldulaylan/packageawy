@@ -78,8 +78,9 @@ jobs:
 
       # The test scripts download VS Code into .vscode-test. Cache it per OS,
       # architecture and VS Code version so a new download happens only when
-      # VS Code ships a release. For stable, ask the update service which
-      # version that is; if it does not answer, key on the ISO week instead.
+      # VS Code ships a release. stable is resolved to its version number
+      # first, and every later step uses that number. Bump the v1 in the key
+      # to throw away a bad cache entry.
       - name: Resolve VS Code version
         id: vscode
         shell: bash
@@ -88,43 +89,99 @@ jobs:
         run: |
           version="$VSCODE_TEST_VERSION"
           if [ "$version" = stable ]; then
-            version=$(curl -fsSL --retry 2 --max-time 30 https://update.code.visualstudio.com/api/releases/stable \
-              | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { const v = JSON.parse(s)[0]; if (!/^\d+\.\d+\.\d+$/.test(v)) process.exit(1); console.log(v); });') \
-              || version=""
+            for attempt in 1 2 3; do
+              version=$(curl -fsSL --max-time 30 https://update.code.visualstudio.com/api/releases/stable \
+                | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s)[0]));') \
+                && [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && break
+              version=""
+              echo "Could not read the current stable VS Code version (attempt $attempt of 3)"
+              [ "$attempt" = 3 ] || sleep 10
+            done
           fi
-          if [ -n "$version" ]; then
-            key="$version"
-          else
-            version=stable
-            key="stable-$(date -u +%G-W%V)"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::No VS Code version number for '$VSCODE_TEST_VERSION'"
+            exit 1
           fi
-          echo "Using VS Code $version, cache key $key"
+          echo "Using VS Code $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "key=$key" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         with:
           path: .vscode-test/vscode-*
-          key: vscode-${{ runner.os }}-${{ runner.arch }}-${{ steps.vscode.outputs.key }}
+          key: vscode-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.vscode.outputs.version }}
 
-      # Its own step so a network error gets one retry while a failing test
-      # below still fails the job. When the cached folder already holds this
-      # version, test-electron uses it and does not go online.
+      # Its own step so a network error or a broken install gets one retry
+      # while a failing test below still fails the job. A cached install is
+      # used without going online, so it is checked by running the VS Code
+      # CLI with --version; if that fails the folder is deleted and VS Code is
+      # downloaded again.
       - name: Download VS Code
         shell: bash
         env:
           VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
         run: |
-          for attempt in 1 2; do
-            if node -e 'require("@vscode/test-electron").downloadAndUnzipVSCode(process.env.VSCODE_TEST_VERSION).then((p) => console.log(p), (e) => { console.error(e); process.exit(1); })'; then
-              exit 0
-            fi
-            if [ "$attempt" = 1 ]; then
-              echo "VS Code download failed, retrying in 20 seconds"
-              sleep 20
-            fi
-          done
-          exit 1
+          node <<'EOF'
+          const { spawnSync } = require('node:child_process');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath } = require('@vscode/test-electron');
+
+          const version = process.env.VSCODE_TEST_VERSION;
+          const cacheDir = path.resolve('.vscode-test');
+
+          // On Windows the CLI is a .cmd file, which cannot run without a shell, so
+          // run what it runs: the VS Code executable as Node on the cli.js it names.
+          function versionCommand(executable) {
+            const [cli] = resolveCliArgsFromVSCodeExecutablePath(executable, { reuseMachineInstall: true });
+            if (process.platform !== 'win32') return [cli, ['--version']];
+            const script = /"%~dp0([^"]+\.js)"/.exec(fs.readFileSync(cli, 'utf8'))?.[1];
+            if (!script) throw new Error(`No cli.js reference in ${cli}`);
+            return [executable, [path.join(path.dirname(cli), script), '--version']];
+          }
+
+          function check(executable) {
+            if (!fs.existsSync(executable)) throw new Error(`Missing ${executable}`);
+            const [command, args] = versionCommand(executable);
+            const result = spawnSync(command, args, {
+              encoding: 'utf8',
+              timeout: 120_000,
+              windowsHide: true,
+              env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+            });
+            const reported = (result.stdout ?? '').split(/\r?\n/)[0].trim();
+            if (result.error || result.status !== 0 || reported !== version) {
+              throw new Error(
+                `VS Code --version printed "${reported}" (exit ${result.status}), expected ${version}. ${result.error ?? ''}${result.stderr ?? ''}`
+              );
+            }
+          }
+
+          function removeInstall() {
+            const entries = fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir) : [];
+            for (const entry of entries) {
+              if (entry.startsWith('vscode-') && entry.endsWith(`-${version}`)) {
+                fs.rmSync(path.join(cacheDir, entry), { recursive: true, force: true });
+              }
+            }
+          }
+
+          (async () => {
+            for (let attempt = 1; ; attempt++) {
+              try {
+                const executable = await downloadAndUnzipVSCode(version);
+                check(executable);
+                console.log(`VS Code ${version} is ready at ${executable}`);
+                return;
+              } catch (error) {
+                console.error(error);
+                removeInstall();
+                if (attempt === 2) process.exit(1);
+                console.log('Removed the VS Code install, downloading it again in 20 seconds');
+                await new Promise((resolve) => setTimeout(resolve, 20_000));
+              }
+            }
+          })();
+          EOF
 
       # VS Code is an Electron application even though the assertions use its
       # Extension Host API, so Linux needs a virtual display.
@@ -207,8 +264,9 @@ jobs:
 
       # The test scripts download VS Code into .vscode-test. Cache it per OS,
       # architecture and VS Code version so a new download happens only when
-      # VS Code ships a release. For stable, ask the update service which
-      # version that is; if it does not answer, key on the ISO week instead.
+      # VS Code ships a release. stable is resolved to its version number
+      # first, and every later step uses that number. Bump the v1 in the key
+      # to throw away a bad cache entry.
       - name: Resolve VS Code version
         id: vscode
         shell: bash
@@ -217,43 +275,99 @@ jobs:
         run: |
           version="$VSCODE_TEST_VERSION"
           if [ "$version" = stable ]; then
-            version=$(curl -fsSL --retry 2 --max-time 30 https://update.code.visualstudio.com/api/releases/stable \
-              | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { const v = JSON.parse(s)[0]; if (!/^\d+\.\d+\.\d+$/.test(v)) process.exit(1); console.log(v); });') \
-              || version=""
+            for attempt in 1 2 3; do
+              version=$(curl -fsSL --max-time 30 https://update.code.visualstudio.com/api/releases/stable \
+                | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s)[0]));') \
+                && [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && break
+              version=""
+              echo "Could not read the current stable VS Code version (attempt $attempt of 3)"
+              [ "$attempt" = 3 ] || sleep 10
+            done
           fi
-          if [ -n "$version" ]; then
-            key="$version"
-          else
-            version=stable
-            key="stable-$(date -u +%G-W%V)"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::No VS Code version number for '$VSCODE_TEST_VERSION'"
+            exit 1
           fi
-          echo "Using VS Code $version, cache key $key"
+          echo "Using VS Code $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "key=$key" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
         with:
           path: .vscode-test/vscode-*
-          key: vscode-${{ runner.os }}-${{ runner.arch }}-${{ steps.vscode.outputs.key }}
+          key: vscode-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.vscode.outputs.version }}
 
-      # Its own step so a network error gets one retry while a failing test
-      # below still fails the job. When the cached folder already holds this
-      # version, test-electron uses it and does not go online.
+      # Its own step so a network error or a broken install gets one retry
+      # while a failing test below still fails the job. A cached install is
+      # used without going online, so it is checked by running the VS Code
+      # CLI with --version; if that fails the folder is deleted and VS Code is
+      # downloaded again.
       - name: Download VS Code
         shell: bash
         env:
           VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
         run: |
-          for attempt in 1 2; do
-            if node -e 'require("@vscode/test-electron").downloadAndUnzipVSCode(process.env.VSCODE_TEST_VERSION).then((p) => console.log(p), (e) => { console.error(e); process.exit(1); })'; then
-              exit 0
-            fi
-            if [ "$attempt" = 1 ]; then
-              echo "VS Code download failed, retrying in 20 seconds"
-              sleep 20
-            fi
-          done
-          exit 1
+          node <<'EOF'
+          const { spawnSync } = require('node:child_process');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath } = require('@vscode/test-electron');
+
+          const version = process.env.VSCODE_TEST_VERSION;
+          const cacheDir = path.resolve('.vscode-test');
+
+          // On Windows the CLI is a .cmd file, which cannot run without a shell, so
+          // run what it runs: the VS Code executable as Node on the cli.js it names.
+          function versionCommand(executable) {
+            const [cli] = resolveCliArgsFromVSCodeExecutablePath(executable, { reuseMachineInstall: true });
+            if (process.platform !== 'win32') return [cli, ['--version']];
+            const script = /"%~dp0([^"]+\.js)"/.exec(fs.readFileSync(cli, 'utf8'))?.[1];
+            if (!script) throw new Error(`No cli.js reference in ${cli}`);
+            return [executable, [path.join(path.dirname(cli), script), '--version']];
+          }
+
+          function check(executable) {
+            if (!fs.existsSync(executable)) throw new Error(`Missing ${executable}`);
+            const [command, args] = versionCommand(executable);
+            const result = spawnSync(command, args, {
+              encoding: 'utf8',
+              timeout: 120_000,
+              windowsHide: true,
+              env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+            });
+            const reported = (result.stdout ?? '').split(/\r?\n/)[0].trim();
+            if (result.error || result.status !== 0 || reported !== version) {
+              throw new Error(
+                `VS Code --version printed "${reported}" (exit ${result.status}), expected ${version}. ${result.error ?? ''}${result.stderr ?? ''}`
+              );
+            }
+          }
+
+          function removeInstall() {
+            const entries = fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir) : [];
+            for (const entry of entries) {
+              if (entry.startsWith('vscode-') && entry.endsWith(`-${version}`)) {
+                fs.rmSync(path.join(cacheDir, entry), { recursive: true, force: true });
+              }
+            }
+          }
+
+          (async () => {
+            for (let attempt = 1; ; attempt++) {
+              try {
+                const executable = await downloadAndUnzipVSCode(version);
+                check(executable);
+                console.log(`VS Code ${version} is ready at ${executable}`);
+                return;
+              } catch (error) {
+                console.error(error);
+                removeInstall();
+                if (attempt === 2) process.exit(1);
+                console.log('Removed the VS Code install, downloading it again in 20 seconds');
+                await new Promise((resolve) => setTimeout(resolve, 20_000));
+              }
+            }
+          })();
+          EOF
 
       - name: VSIX install and dashboard smoke test (Linux)
         if: runner.os == 'Linux'
