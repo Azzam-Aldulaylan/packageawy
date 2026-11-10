@@ -8,6 +8,7 @@ import type {
   DidChangeTrustParams,
   FileDidChangeParams,
   InitializeParams,
+  OpenManifestParams,
   ProcessDidExitParams,
   WebviewMessageParams,
 } from './protocol.js';
@@ -89,6 +90,10 @@ export function parseProcessDidExit(params: unknown): ProcessDidExitParams {
     processId: integer(value['processId'], 'processId'),
     exitCode: exitCode === null || exitCode === undefined ? null : integer(exitCode, 'exitCode'),
   };
+}
+
+export function parseOpenManifest(params: unknown): OpenManifestParams {
+  return { path: string(record(params, 'params')['path'], 'path') };
 }
 
 export function parseWebviewMessage(params: unknown): WebviewMessageParams {

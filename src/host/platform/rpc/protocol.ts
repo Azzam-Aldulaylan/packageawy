@@ -61,6 +61,11 @@ export interface WebviewMessageParams {
   message: unknown;
 }
 
+/** Absolute path of the package.json the user chose to open. */
+export interface OpenManifestParams {
+  path: string;
+}
+
 // Sidecar to client.
 
 /** A missing `value` removes the key. The client also treats null as removal. */
@@ -193,5 +198,6 @@ export const Methods = {
   webviewDidReceiveMessage: 'webview/didReceiveMessage',
   webviewDidDispose: 'webview/didDispose',
   webviewReveal: 'webview/reveal',
+  openManifest: 'dashboard/openManifest',
   cancelRequest: '$/cancelRequest',
 } as const;

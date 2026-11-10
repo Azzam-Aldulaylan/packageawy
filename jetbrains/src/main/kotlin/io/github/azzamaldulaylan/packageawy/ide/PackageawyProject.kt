@@ -21,6 +21,7 @@ import com.intellij.openapi.roots.ModuleRootEvent
 import com.intellij.openapi.roots.ModuleRootListener
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.jcef.JBCefApp
 import com.intellij.util.EnvironmentUtil
@@ -59,6 +60,8 @@ class PackageawyProject(private val project: Project) : Disposable {
     private var starting = false
     private val earlyMessages = ArrayList<JsonElement>()
     private var folders: List<WorkspaceFolder> = emptyList()
+    /** A package.json to open once the sidecar is ready. */
+    private var requestedManifest: String? = null
 
     fun createComponent(contentScope: Disposable): JComponent {
         if (!JBCefApp.isSupported()) {
@@ -87,6 +90,24 @@ class PackageawyProject(private val project: Project) : Disposable {
     fun refresh() = fromWebview(JsonObject().apply { addProperty("type", "refresh") })
 
     fun openDevTools() = panel?.openDevTools()
+
+    /** "Open in Packageawy": shows the tool window and selects the project that owns [manifestPath]. */
+    fun openManifest(manifestPath: String) {
+        val current = synchronized(lock) {
+            val s = session
+            if (s == null || !s.ready) {
+                // Showing the tool window starts the sidecar. The request goes out after initialize.
+                requestedManifest = manifestPath
+                null
+            } else {
+                s
+            }
+        }
+        current?.sidecar?.connection?.sendNotification("dashboard/openManifest", mapOf("path" to manifestPath))
+        ApplicationManager.getApplication().invokeLater {
+            if (!project.isDisposed) ToolWindowManager.getInstance(project).getToolWindow(IdeHostServices.TOOL_WINDOW_ID)?.activate(null)
+        }
+    }
 
     override fun dispose() {
         stopSidecar()
@@ -172,10 +193,15 @@ class PackageawyProject(private val project: Project) : Disposable {
                 notifyFailure("The Packageawy engine did not start: ${error.message}")
                 return@whenComplete
             }
+            var manifest: String? = null
             val queued = synchronized(lock) {
                 current.ready = true
+                manifest = requestedManifest
+                requestedManifest = null
                 ArrayList(current.pending).also { current.pending.clear() }
             }
+            // Before the page's queued `ready`, so the first load selects this project.
+            manifest?.let { sidecar.connection.sendNotification("dashboard/openManifest", mapOf("path" to it)) }
             for (message in queued) {
                 sidecar.connection.sendNotification("webview/didReceiveMessage", mapOf("message" to message))
             }

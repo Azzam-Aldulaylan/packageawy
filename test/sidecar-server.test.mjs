@@ -114,6 +114,31 @@ test('invalid webview messages are dropped', async (t) => {
   assert.equal(s.received.some((message) => message.method === 'webview/postMessage'), false);
 });
 
+const UNAVAILABLE = 'Packageawy opens package.json files from your workspace folders, outside node_modules.';
+const shown = (message) => message.method === 'window/showMessage' && message.params.message === UNAVAILABLE;
+
+test('dashboard/openManifest for a file outside every workspace folder shows a message', async (t) => {
+  const s = session();
+  t.after(() => s.close());
+  await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: true });
+  s.notify('webview/didReceiveMessage', { message: { type: 'ready' } });
+  await s.waitFor(posted('fatal-error'));
+  s.notify('dashboard/openManifest', { path: '/elsewhere/package.json' });
+  const message = await s.waitFor(shown);
+  assert.equal(message.params.severity, 'info');
+});
+
+test('dashboard/openManifest does nothing in an untrusted workspace', async (t) => {
+  const s = session();
+  t.after(() => s.close());
+  await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: false });
+  s.notify('dashboard/openManifest', { path: '/elsewhere/package.json' });
+  const ping = await s.request('unknown/method', {});
+  assert.equal(ping.error.code, ErrorCodes.MethodNotFound);
+  assert.equal(s.received.some(shown), false);
+  assert.equal(s.received.some((message) => message.method === 'webview/reveal'), false);
+});
+
 test('closing stdin closes the connection', async () => {
   const s = session();
   const closed = new Promise((resolve) => s.connection.onClose(resolve));

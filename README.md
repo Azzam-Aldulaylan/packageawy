@@ -34,6 +34,8 @@
 3. Click the Packageawy icon in the Activity Bar, or run **Packageawy: Open** from the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows and Linux).
 4. If the workspace has more than one `package.json`, pick the project you want to see. You can switch later with **Change Project**.
 
+You can also right-click any `package.json` and choose **Open in Packageawy** to open that project directly.
+
 Run **Packageawy: Refresh** to rescan at any time.
 
 ## Reading the table

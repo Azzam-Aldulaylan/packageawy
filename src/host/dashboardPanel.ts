@@ -41,6 +41,7 @@ import type { BackgroundRefreshOutcome, MessageSink } from './dashboardControlle
 import type { BuildInfo } from './dashboardData.js';
 import type { ReloadSource } from './fileChangeReload.js';
 import { reloadControllerFromDisk } from './fileChangeReload.js';
+import { OPEN_MANIFEST_BUSY_MESSAGE, OPEN_MANIFEST_UNAVAILABLE_MESSAGE, findProjectForManifest } from './openManifestTarget.js';
 import { pickProject } from './projectPicker.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
 import { discoverProjects, loadProject } from './projectResolution.js';
@@ -73,6 +74,8 @@ export interface DashboardPanelOptions {
   extensionVersion: string;
   /** Enables the integration test seam below. Never true for a normal session. */
   integrationTestMode: boolean;
+  /** Absolute path of a package.json to select on first load instead of asking. */
+  initialManifestPath?: string;
 }
 
 export interface DashboardPanelIntegrationTestSnapshot {
@@ -142,6 +145,10 @@ export class DashboardPanel {
    * whole workspace for new ones.
    */
   private candidateCount = 0;
+  /** A package.json the user asked to open ("Open in Packageawy") that the next initial selection uses. */
+  private requestedManifestPath: string | undefined;
+  /** Set by the first `ready`: before that, a requested project waits for the webview's own load. */
+  private webviewReady = false;
   /** Incremented at the start of every `reloadAndScan` call. See that method's doc comment for the race it closes. */
   private reloadGeneration = 0;
 
@@ -190,6 +197,7 @@ export class DashboardPanel {
     this.platform = platform;
     this.channel = channel;
     this.integrationTestMode = options.integrationTestMode;
+    this.requestedManifestPath = options.initialManifestPath;
     this.buildInfo = {
       extensionVersion: options.extensionVersion,
       builtAt: __BUILD_TIME__,
@@ -333,6 +341,18 @@ export class DashboardPanel {
     DashboardPanel.current = new DashboardPanel(platform, channel, options);
   }
 
+  /**
+   * Selects the project that owns `manifestPath` in the open panel ("Open in
+   * Packageawy"). False when no panel is open.
+   */
+  static openManifest(manifestPath: string): boolean {
+    const existing = DashboardPanel.current;
+    if (existing === undefined) return false;
+    existing.channel.reveal();
+    void existing.openManifest(manifestPath);
+    return true;
+  }
+
   /** The refresh command only refreshes what is already open. It never opens a panel. */
   static async refresh(): Promise<void> {
     await DashboardPanel.current?.handle({ type: 'refresh' });
@@ -382,6 +402,7 @@ export class DashboardPanel {
 
   private async handle(message: WebviewToHostMessage): Promise<void> {
     if (message.type === 'ready') {
+      this.webviewReady = true;
       await this.upgradeCoordinator.handleWebviewReady();
       const controller = await this.ensureController();
       if (controller === undefined) return;
@@ -688,6 +709,55 @@ export class DashboardPanel {
     if (this.upgradeCoordinator.isBusy()) return;
 
     await this.reloadAndScan(picked);
+  }
+
+  /**
+   * Before the first project loads, the request becomes the initial
+   * selection. After that it switches projects through the same path and
+   * busy rules as "Change project": a running change leaves the current
+   * project in place.
+   */
+  private async openManifest(manifestPath: string): Promise<void> {
+    if (!this.webviewReady) {
+      this.requestedManifestPath = manifestPath;
+      return;
+    }
+    // The first load (and its picker, when there are several projects) is
+    // still running: let it settle, then switch.
+    if (this.controller === undefined && this.pending !== undefined) await this.pending;
+    if (this.disposed) return;
+    if (this.controller === undefined) {
+      this.requestedManifestPath = manifestPath;
+      await this.handle({ type: 'refresh' });
+      return;
+    }
+    if (this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) {
+      this.platform.showInformationMessage(OPEN_MANIFEST_BUSY_MESSAGE);
+      return;
+    }
+
+    const performance = createPerformanceSession('Packageawy project discovery', this.performanceEnabled());
+    let candidates: DiscoveredProject[];
+    try {
+      candidates = await discoverProjects(this.platform, performance);
+    } catch (cause) {
+      performance.finish({ failed: true });
+      if (this.disposed) return;
+      this.sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
+      return;
+    }
+    performance.finish({ candidates: candidates.length });
+    if (this.disposed) return;
+    const target = findProjectForManifest(candidates, manifestPath);
+    if (target === undefined) {
+      this.platform.showInformationMessage(OPEN_MANIFEST_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    this.candidateCount = candidates.length;
+    if (target.id === this.selectedProject?.id) return;
+    if (this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
+    this.upgradeCoordinator.discardSmartCleanupRestorePoint();
+    await this.reloadAndScan(target);
   }
 
   /**
@@ -1084,6 +1154,14 @@ export class DashboardPanel {
     const candidates = await discoverProjects(this.platform, performance);
     if (this.disposed) return undefined;
     this.candidateCount = candidates.length;
+
+    const requested = this.requestedManifestPath;
+    this.requestedManifestPath = undefined;
+    if (requested !== undefined) {
+      const target = findProjectForManifest(candidates, requested);
+      if (target !== undefined) return target;
+      this.platform.showInformationMessage(OPEN_MANIFEST_UNAVAILABLE_MESSAGE);
+    }
 
     if (candidates.length === 0) {
       this.sink.postMessage({

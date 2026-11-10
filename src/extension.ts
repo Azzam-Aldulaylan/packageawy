@@ -10,7 +10,8 @@ import * as vscode from 'vscode';
 import { createPerformanceSession } from './core/performance/measurement.js';
 import { DashboardPanel } from './host/dashboardPanel.js';
 import type { DashboardPanelIntegrationTestSnapshot } from './host/dashboardPanel.js';
-import { showDashboard } from './host/platform/vscode/dashboardWebview.js';
+import { OPEN_MANIFEST_UNAVAILABLE_MESSAGE } from './host/openManifestTarget.js';
+import { openManifestInDashboard, showDashboard } from './host/platform/vscode/dashboardWebview.js';
 import { registerSidebar } from './host/platform/vscode/sidebar.js';
 import { VsCodePlatform } from './host/platform/vscode/vsCodePlatform.js';
 
@@ -41,6 +42,18 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
   context.subscriptions.push(
     vscode.commands.registerCommand('packageawy.open', () => {
       showDashboard(context, platform);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('packageawy.openPackageJson', (uri?: vscode.Uri) => {
+      // From the Command Palette there is no clicked file: use the active editor's.
+      const target = uri instanceof vscode.Uri ? uri : vscode.window.activeTextEditor?.document.uri;
+      if (target === undefined || target.scheme !== 'file') {
+        platform.showInformationMessage(OPEN_MANIFEST_UNAVAILABLE_MESSAGE);
+        return;
+      }
+      void openManifestInDashboard(context, platform, target.fsPath);
     })
   );
 

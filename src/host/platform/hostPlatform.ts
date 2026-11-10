@@ -60,6 +60,8 @@
  * - The client forwards each message from the webview as a
  *   `webview/didReceiveMessage` notification and sends `webview/didDispose`
  *   when the view closes. `reveal` is a `webview/reveal` notification.
+ * - `dashboard/openManifest` from the client asks the dashboard to select
+ *   the project whose package.json is at `path` ("Open in Packageawy").
  *
  * Parameter shapes are in rpc/protocol.ts. The sidecar entry point is
  * src/sidecar/main.ts.

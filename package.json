@@ -58,8 +58,35 @@
       {
         "command": "packageawy.refresh",
         "title": "Packageawy: Refresh"
+      },
+      {
+        "command": "packageawy.openPackageJson",
+        "title": "Open in Packageawy",
+        "category": "Packageawy"
       }
     ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "packageawy.openPackageJson",
+          "when": "resourceFilename == package.json",
+          "group": "navigation@90"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "packageawy.openPackageJson",
+          "when": "resourceFilename == package.json",
+          "group": "navigation@90"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "packageawy.openPackageJson",
+          "when": "resourceFilename == package.json"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {

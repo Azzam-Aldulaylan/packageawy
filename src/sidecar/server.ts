@@ -13,7 +13,7 @@ import type { InitializeResult } from '../host/platform/rpc/protocol.js';
 import { Methods } from '../host/platform/rpc/protocol.js';
 import { RpcPlatform } from '../host/platform/rpc/rpcPlatform.js';
 import { RpcWebviewChannel } from '../host/platform/rpc/rpcWebviewChannel.js';
-import { parseInitialize, parseWebviewMessage } from '../host/platform/rpc/validation.js';
+import { parseInitialize, parseOpenManifest, parseWebviewMessage } from '../host/platform/rpc/validation.js';
 
 export const SERVER_NAME = 'packageawy-sidecar';
 
@@ -81,6 +81,15 @@ export function startSidecar(options: SidecarOptions): JsonRpcConnection {
     const { message } = parseWebviewMessage(params);
     if (platform === undefined) early.push(message);
     else deliver(platform, message);
+  });
+
+  connection.onNotification(Methods.openManifest, (params) => {
+    const { path } = parseOpenManifest(params);
+    // Before initialize there is no workspace to look in. The client sends
+    // this after initialize completes.
+    if (platform === undefined || !platform.isWorkspaceTrusted()) return;
+    if (channel === undefined || channel.isDisposed) channel = openDashboard(platform);
+    DashboardPanel.openManifest(path);
   });
 
   connection.onNotification(Methods.webviewDidDispose, () => {
