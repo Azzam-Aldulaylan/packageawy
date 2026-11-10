@@ -10,6 +10,7 @@ import {
   shouldShowUpgradeVulnerabilitySeverity,
 } from '../../../src/host/upgradeReviewUiState.js';
 import type { UpgradeEnrichmentUiState } from '../../../src/host/upgradeReviewUiState.js';
+import { trapFocus } from '../focusTrap.js';
 import { CLASSIFICATION_LABEL, classificationOf } from '../dependencyClassification.js';
 import { IconFolder, IconInfo, IconRefresh, IconShield, IconSliders, IconTrash, IconTrendUp, IconX } from '../icons.js';
 import type { RemovalImpactState } from '../removalImpactState.js';
@@ -26,9 +27,6 @@ import { VulnerabilitiesPanel } from './VulnerabilitiesPanel.js';
 import { DirectionalButton } from './DirectionalButton.js';
 
 export type ManageTabId = 'overview' | 'vulnerabilities' | 'usage' | 'upgrade' | 'removal';
-
-const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface UpgradeReviewState {
   /** The upgrade target this row currently offers, or null when none. */
@@ -357,6 +355,11 @@ export function ManageDependencyModal({
 
   useEffect(() => {
     const node = dialogRef.current;
+    return node === null ? undefined : trapFocus(node);
+  }, []);
+
+  useEffect(() => {
+    const node = dialogRef.current;
     if (node === null) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -364,20 +367,6 @@ export function ManageDependencyModal({
         event.preventDefault();
         onClose();
         return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-        (el) => el.offsetParent !== null
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
       }
     };
     node.addEventListener('keydown', onKeyDown);

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef } from 'react';
 import type { Dispatch, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
 
 import type { RemoveAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
+import { trapFocus } from '../focusTrap.js';
 import {
   IconAlertTriangle,
   IconBroom,
@@ -38,9 +39,6 @@ import type { ManageTabId } from './ManageDependencyModal.js';
 import { SeverityBadge } from './SeverityBadge.js';
 import { StatusBanner } from './StatusBanner.js';
 import { VerificationSuggestions } from './VerificationSuggestions.js';
-
-const FOCUSABLE_SELECTOR =
-  'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
 const CONFIDENCE_LABEL: Record<SmartCleanupConfidence, string> = {
   safe: 'Recommended removal',
@@ -1036,6 +1034,11 @@ export function SmartCleanupWorkspace({
   }, [state.phase]);
 
   useEffect(() => {
+    const node = dialogRef.current;
+    return node === null ? undefined : trapFocus(node);
+  }, []);
+
+  useEffect(() => {
     const dialog = dialogRef.current;
     if (dialog === null) return;
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -1043,20 +1046,6 @@ export function SmartCleanupWorkspace({
         event.preventDefault();
         onClose();
         return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-        (element) => element.offsetParent !== null
-      );
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (first === undefined || last === undefined) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
       }
     };
     dialog.addEventListener('keydown', onKeyDown);

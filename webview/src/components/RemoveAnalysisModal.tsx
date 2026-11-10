@@ -2,15 +2,13 @@ import { useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
 
 import type { RemoveAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
+import { trapFocus } from '../focusTrap.js';
 import { IconAlertTriangle, IconX } from '../icons.js';
 import { LoadingRing } from './DependencyLoadingState.js';
 import { FilesSection } from './FilesSection.js';
 import { OutcomeStatus } from './OutcomeStatus.js';
 import { StatusBadge } from './StatusBadge.js';
 import { VerificationSection } from './VerificationSection.js';
-
-const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function stillRequiredByDetail(count: number): string {
   return count === 1
@@ -148,6 +146,11 @@ export function RemoveAnalysisModal({
 
   useEffect(() => {
     const node = dialogRef.current;
+    return node === null ? undefined : trapFocus(node);
+  }, []);
+
+  useEffect(() => {
+    const node = dialogRef.current;
     if (node === null) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -156,20 +159,6 @@ export function RemoveAnalysisModal({
           onCancel();
         }
         return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-        (el) => el.offsetParent !== null
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
       }
     };
     node.addEventListener('keydown', onKeyDown);
