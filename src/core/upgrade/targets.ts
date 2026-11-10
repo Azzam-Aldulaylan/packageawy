@@ -10,6 +10,7 @@
 
 import semver from 'semver';
 
+import type { UpgradeReason } from '../types.js';
 import { FetchError } from '../registry/http.js';
 import type { HttpClient } from '../registry/http.js';
 import { fetchDistTags, fetchPackageVersionMetadata, fetchPackument } from '../registry/versions.js';
@@ -19,7 +20,7 @@ import type { EtagStore } from '../registry/versions.js';
 export const MAX_STABLE_UPGRADE_TARGETS = 24;
 export const MAX_PRERELEASE_UPGRADE_TARGETS = 5;
 
-export type UpgradeTargetLabel = 'recommended' | 'lts' | 'latest';
+export type UpgradeTargetLabel = 'recommended' | 'lts' | 'latest' | 'security-fix';
 
 export interface UpgradeTargetOption {
   version: string;
@@ -32,19 +33,6 @@ export interface UpgradeTargetSelection {
   options: UpgradeTargetOption[];
   /** True when valid published upgrade versions were intentionally omitted. */
   truncated: boolean;
-}
-
-/**
- * Replace only the dashboard's default target with the registry-backed
- * recommendation. A target explicitly selected by the user is preserved.
- */
-export function preferPublisherRecommendedTarget(
-  requestedTarget: string,
-  existingFallback: string | null,
-  selection: UpgradeTargetSelection
-): string {
-  if (requestedTarget !== existingFallback || selection.recommendedVersion === null) return requestedTarget;
-  return selection.recommendedVersion;
 }
 
 function validPublishedTag(
@@ -75,7 +63,8 @@ function addIfPresent(target: Set<string>, version: string | null): void {
 export function selectUpgradeTargets(
   packument: PackumentDoc,
   installed: string,
-  existingFallback: string | null
+  existingFallback: string | null,
+  fallbackReason: UpgradeReason | null = null
 ): UpgradeTargetSelection {
   if (semver.valid(installed) === null) {
     return { recommendedVersion: null, options: [], truncated: false };
@@ -132,6 +121,7 @@ export function selectUpgradeTargets(
     if (version === recommendedVersion) labels.push('recommended');
     if (version === lts) labels.push('lts');
     if (version === latest) labels.push('latest');
+    if (version === fallback && fallbackReason === 'security-fix') labels.push('security-fix');
     return { version, channel, labels };
   };
 
@@ -155,11 +145,12 @@ export function selectUpgradeTargets(
 export function selectUpgradeTargetsFromDistTags(
   distTags: Record<string, string>,
   installed: string,
-  existingFallback: string | null
+  existingFallback: string | null,
+  fallbackReason: UpgradeReason | null = null
 ): UpgradeTargetSelection {
   const versions = new Set(Object.values(distTags));
   if (existingFallback !== null) versions.add(existingFallback);
-  return selectUpgradeTargets({ versions: [...versions], distTags }, installed, existingFallback);
+  return selectUpgradeTargets({ versions: [...versions], distTags }, installed, existingFallback, fallbackReason);
 }
 
 /**
@@ -175,15 +166,16 @@ export async function loadUpgradeTargets(
   name: string,
   installed: string,
   existingFallback: string | null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  fallbackReason: UpgradeReason | null = null
 ): Promise<UpgradeTargetSelection> {
   try {
     const packument = await fetchPackument(client, store, registry, name, signal);
-    return selectUpgradeTargets(packument, installed, existingFallback);
+    return selectUpgradeTargets(packument, installed, existingFallback, fallbackReason);
   } catch (cause) {
     if (!(cause instanceof FetchError) || cause.code !== 'TOO_LARGE') throw cause;
     const distTags = await fetchDistTags(client, store, registry, name, signal);
-    return selectUpgradeTargetsFromDistTags(distTags, installed, existingFallback);
+    return selectUpgradeTargetsFromDistTags(distTags, installed, existingFallback, fallbackReason);
   }
 }
 

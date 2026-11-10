@@ -184,6 +184,7 @@ export function App(): ReactElement {
   // copy before the host's `upgrade-analysis` reply carries the real analysis.
   const [activeTarget, setActiveTarget] = useState<string | null>(null);
   const [activeUpgradeChanges, setActiveUpgradeChanges] = useState<readonly BulkUpgradeCandidate[]>([]);
+  const [publisherLtsByPackage, setPublisherLtsByPackage] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [upgradeError, setUpgradeError] = useState<UpgradeErrorState | null>(null);
   // The host-owned analysis for `activeUpgrade`, once it arrives, never
   // constructed or edited here, only ever stored as received and echoed
@@ -449,7 +450,12 @@ export function App(): ReactElement {
       if (incoming.status === 'upgrade-targets') {
         if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
           setUpgradeTargetState({ phase: 'ready', targets: incoming.targets });
-          setSelectedManageTarget(incoming.targets.recommendedVersion);
+        }
+        if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
+          const lts = incoming.targets.options.find(option => option.labels.includes('lts'));
+          if (lts !== undefined) {
+            setPublisherLtsByPackage(previous => new Map(previous).set(incoming.package, lts.version));
+          }
         }
         return;
       }
@@ -1309,6 +1315,7 @@ export function App(): ReactElement {
     setActiveUpgrade(packageName);
     setActiveTarget(target);
     setActiveUpgradeChanges([{ packageName, currentVersion: '', targetVersion: target, major: false }]);
+    setPublisherLtsByPackage(new Map());
     setAnalysis(null);
     setAnalyzingPhase(null);
     setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
@@ -1333,6 +1340,7 @@ export function App(): ReactElement {
     setActiveUpgrade(first.packageName);
     setActiveTarget(first.targetVersion);
     setActiveUpgradeChanges(changes);
+    setPublisherLtsByPackage(new Map());
     setAnalysis(null);
     setAnalyzingPhase(null);
     setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
@@ -1379,6 +1387,7 @@ export function App(): ReactElement {
     activeRequestIdRef.current = null;
     setActiveTarget(null);
     setActiveUpgradeChanges([]);
+    setPublisherLtsByPackage(new Map());
     setAnalysis(null);
     setAnalyzingPhase(null);
     setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
@@ -1830,7 +1839,7 @@ export function App(): ReactElement {
       return;
     }
 
-    // Keep the existing host-owned target as a usable fallback. While a
+    // Start on the row's host-owned target. Published choices preserve it. While a
     // stale snapshot is revalidating, show the loading state but do not ask
     // the host for choices it will correctly refuse as ineligible.
     setSelectedManageTarget(row.upgradeTo);
@@ -2462,6 +2471,7 @@ export function App(): ReactElement {
           analyzingPhase={analyzingPhase}
           analysis={analysis}
           pendingChanges={activeUpgradeChanges}
+          publisherLtsByPackage={publisherLtsByPackage}
           busy={confirmBusy}
           hardStale={hardStaleAnalysisId !== null && hardStaleAnalysisId === analysis?.analysisId}
           now={minuteClock}

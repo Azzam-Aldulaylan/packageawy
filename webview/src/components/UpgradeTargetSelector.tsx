@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 
+import type { UpgradeReason } from '../../../src/core/types.js';
 import type { ProtocolError, UpgradeTargetOptions } from '../../../src/host/webviewProtocol.js';
 
 export type UpgradeTargetLoadState =
@@ -14,6 +15,7 @@ function optionLabel(
   const labels = option.labels.map((label) => {
     if (label === 'recommended') return 'Recommended';
     if (label === 'lts') return 'Publisher LTS';
+    if (label === 'security-fix') return 'Security fix';
     return 'Latest stable';
   });
   return labels.length === 0 ? option.version : `${option.version} · ${labels.join(' · ')}`;
@@ -23,12 +25,14 @@ export function UpgradeTargetSelector({
   state,
   selectedVersion,
   fallbackVersion,
+  fallbackReason,
   disabled,
   onChange,
 }: {
   state: UpgradeTargetLoadState;
   selectedVersion: string | null;
   fallbackVersion: string | null;
+  fallbackReason?: UpgradeReason | null;
   disabled: boolean;
   onChange: (version: string) => void;
 }): ReactElement {
@@ -36,8 +40,9 @@ export function UpgradeTargetSelector({
   const stable = ready?.options.filter((option) => option.channel === 'stable') ?? [];
   const prerelease = ready?.options.filter((option) => option.channel === 'prerelease') ?? [];
   const usableFallback = state.phase === 'error' || state.phase === 'idle' ? fallbackVersion : null;
-  const value = selectedVersion ?? ready?.recommendedVersion ?? usableFallback ?? '';
+  const value = selectedVersion ?? fallbackVersion ?? ready?.recommendedVersion ?? '';
   const selectedIsOutsideCurrentOptions = value !== '' && ready !== null && !ready.options.some((option) => option.version === value);
+  const fallbackLabel = fallbackReason === 'security-fix' ? 'Security fix' : 'dashboard target';
 
   return (
     <section className="upgrade-target-picker" aria-labelledby="upgrade-target-picker-label">
@@ -46,8 +51,8 @@ export function UpgradeTargetSelector({
           Upgrade to
         </label>
         <p className="upgrade-target-picker__hint">
-          Publisher LTS is preferred when the package declares an <code>lts</code> tag. Otherwise, the latest stable
-          release is recommended.
+          Starts on the version shown on the dashboard. Security fix, Publisher LTS and Latest stable versions
+          are labelled in the list.
         </p>
       </div>
       <div className="upgrade-target-picker__control">
@@ -65,7 +70,7 @@ export function UpgradeTargetSelector({
           {state.phase === 'loading' ? <option value={value}>Loading published versions…</option> : null}
           {ready !== null ? (
             <>
-              {selectedIsOutsideCurrentOptions ? <option value={value}>{value} (selected target)</option> : null}
+              {selectedIsOutsideCurrentOptions ? <option value={value}>{value} ({value === fallbackVersion ? fallbackLabel : 'selected target'})</option> : null}
               {ready.recommendedVersion === null ? <option value="">Select a version…</option> : null}
               {stable.length > 0 ? (
                 <optgroup label="Stable releases">
@@ -88,7 +93,7 @@ export function UpgradeTargetSelector({
             </>
           ) : null}
           {usableFallback !== null ? (
-            <option value={usableFallback}>{usableFallback} (existing recommendation)</option>
+            <option value={usableFallback}>{usableFallback} ({fallbackLabel})</option>
           ) : null}
         </select>
         {ready?.truncated === true ? (
