@@ -1843,6 +1843,26 @@ test('confirm-remove and cancel-remove mirror confirm-upgrade / cancel-upgrade\'
   assert.equal(isWebviewToHostMessage({ type: 'cancel-remove' }), false);
 });
 
+test('confirm-remove accepts only a true resultInDialog flag', () => {
+  assert.equal(isWebviewToHostMessage({ type: 'confirm-remove', analysisId: 'abc123', resultInDialog: true }), true);
+  assert.equal(
+    isWebviewToHostMessage({ type: 'confirm-remove', analysisId: 'abc123', resultInDialog: true, verificationScripts: ['build'] }),
+    true
+  );
+  assert.equal(isWebviewToHostMessage({ type: 'confirm-remove', analysisId: 'abc123', resultInDialog: false }), false);
+  assert.equal(isWebviewToHostMessage({ type: 'confirm-remove', analysisId: 'abc123', resultInDialog: 'yes' }), false);
+  assert.equal(isWebviewToHostMessage({ type: 'confirm-upgrade', analysisId: 'abc123', resultInDialog: true }), false);
+});
+
+test('remove-progress carries only a known phase for one analysis', () => {
+  for (const phase of ['installing', 'verifying', 'refreshing']) {
+    assert.equal(isHostToWebviewMessage({ status: 'remove-progress', analysisId: 'abc123', phase }), true);
+  }
+  assert.equal(isHostToWebviewMessage({ status: 'remove-progress', analysisId: 'abc123', phase: 'done' }), false);
+  assert.equal(isHostToWebviewMessage({ status: 'remove-progress', analysisId: '', phase: 'installing' }), false);
+  assert.equal(isHostToWebviewMessage({ status: 'remove-progress', analysisId: 'abc123', phase: 'installing', extra: 1 }), false);
+});
+
 // -------------------------------------- host -> webview: remove-analyzing/remove-analysis/remove-error
 
 const MINIMAL_REMOVE_ANALYSIS = {

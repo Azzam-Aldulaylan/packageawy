@@ -572,6 +572,9 @@ export interface SmartCleanupCompletionPresentation {
  * remains the authority for the new dependency/security facts. This message
  * only tells a guided workflow whether the transaction was kept or restored.
  */
+/** Transaction phases a confirmed removal reports while it runs, in order. */
+export type RemoveProgressPhase = 'installing' | 'verifying' | 'refreshing';
+
 export interface RemoveResultPresentation {
   /** Correlates this terminal outcome to the exact host-issued removal review that was confirmed. */
   analysisId: string;
@@ -704,6 +707,8 @@ export type HostToWebviewMessage =
   | { status: 'remove-analyzing'; package: string }
   /** The host-owned removal analysis, ready for the review/confirm modal to render. */
   | { status: 'remove-analysis'; analysis: RemoveAnalysisPresentation }
+  /** A confirmed removal started a real transaction phase. Only phases the host actually entered are posted. */
+  | { status: 'remove-progress'; analysisId: string; phase: RemoveProgressPhase }
   /** A coordinated removal reached a stable kept/restored boundary. */
   | { status: 'remove-result'; result: RemoveResultPresentation }
   /** A removal could not run: rejected by host-side validation, cancelled, or the task itself failed. */
@@ -833,7 +838,11 @@ export type WebviewToHostMessage =
   /** Retries only the most recent matching failed/cancelled targeted enrichment. The id is host-issued by `upgrade-result`. */
   | { type: 'retry-upgrade-enrichment'; refreshId: string }
   /** Same analysisId-lookup discipline as confirm-upgrade/cancel-upgrade, targeting a stored removal analysis instead. */
-  | ({ type: 'confirm-remove'; analysisId: string } & ConfirmVerificationOptIn)
+  /**
+   * `resultInDialog` is set when the webview shows the outcome in the Manage
+   * dialog that started the removal, so the host skips its own notification.
+   */
+  | ({ type: 'confirm-remove'; analysisId: string; resultInDialog?: true } & ConfirmVerificationOptIn)
   | { type: 'cancel-remove'; analysisId: string | null; requestId?: string }
   /** Restore the dependency files a kept Smart Cleanup run captured. Only the host-issued analysisId is accepted. */
   | { type: 'restore-smart-cleanup'; analysisId: string }
@@ -1049,7 +1058,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     return true;
   }
   if (type === 'confirm-remove') {
-    return isConfirmMessage(value);
+    const { resultInDialog, ...rest } = value;
+    return (resultInDialog === undefined || resultInDialog === true) && isConfirmMessage(rest);
   }
   if (type === 'restore-smart-cleanup') {
     return hasOnlyKeys(value, ['type', 'analysisId']) && isNonEmptyString(value['analysisId']);
@@ -2235,6 +2245,14 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'remove-analysis') {
     return hasOnlyKeys(value, ['status', 'analysis']) && isRemoveAnalysisPresentation(value['analysis']);
+  }
+  if (status === 'remove-progress') {
+    const phase = value['phase'];
+    return (
+      hasOnlyKeys(value, ['status', 'analysisId', 'phase']) &&
+      isNonEmptyString(value['analysisId']) &&
+      (phase === 'installing' || phase === 'verifying' || phase === 'refreshing')
+    );
   }
   if (status === 'remove-result') {
     const result = value['result'];

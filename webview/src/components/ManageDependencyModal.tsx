@@ -3,20 +3,33 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent
 
 import type { PackageRow, Severity } from '../../../src/core/types.js';
 import type { DependencyFinding } from '../../../src/core/hygiene/types.js';
-import type { RemoveAnalysisPresentation, UpgradeAnalysisPresentation, UpgradeResultPresentation } from '../../../src/host/webviewProtocol.js';
+import type {
+  RemoveAnalysisPresentation,
+  RemoveProgressPhase,
+  RemoveResultPresentation,
+  UpgradeAnalysisPresentation,
+  UpgradeResultPresentation,
+} from '../../../src/host/webviewProtocol.js';
 import type { UpgradeAnalysisSections } from '../../../src/host/upgradeAnalysisSections.js';
 import {
   shouldQuarantineUpgradeDerivedData,
   shouldShowUpgradeVulnerabilitySeverity,
 } from '../../../src/host/upgradeReviewUiState.js';
 import type { UpgradeEnrichmentUiState } from '../../../src/host/upgradeReviewUiState.js';
-import { trapFocus } from '../focusTrap.js';
+import { isTopmostTrap, trapFocus } from '../focusTrap.js';
 import { CLASSIFICATION_LABEL, classificationOf } from '../dependencyClassification.js';
 import { IconFolder, IconInfo, IconRefresh, IconShield, IconSliders, IconTrash, IconTrendUp, IconX } from '../icons.js';
 import type { RemovalImpactState } from '../removalImpactState.js';
 import type { TransitiveFixUiState } from '../transitiveRemediationState.js';
 import { OverviewPanel } from './OverviewPanel.js';
 import { PackageIcon } from './PackageIcon.js';
+import {
+  RemovalErrorPanel,
+  RemovalResultPanel,
+  RemovalRunningPanel,
+  removalViewFocusTarget,
+} from './RemovalProgressPanels.js';
+import type { RemovalView } from './RemovalProgressPanels.js';
 import { RemovalReviewPanel } from './RemovalReviewPanel.js';
 import { StatusBadge } from './StatusBadge.js';
 import { UpgradeReviewPanel } from './UpgradeReviewPanel.js';
@@ -63,11 +76,26 @@ interface RemovalReviewState {
   onConfigureVerification: () => void;
 }
 
+/** A removal this dialog started: running, or finished with the host's result. */
+export type ManageRemovalRun =
+  | { phase: 'running'; progress: RemoveProgressPhase | null }
+  | { phase: 'result'; result: RemoveResultPresentation }
+  | { phase: 'error'; error: { code: string; message: string } };
+
 /**
  * The Manage dialog footer line. The read-only promise holds only until a
  * change runs from this dialog. After that, say what happened instead.
  */
-export function manageFooterNote(result: UpgradeResultPresentation | null): string | null {
+export function manageFooterNote(
+  result: UpgradeResultPresentation | null,
+  removal: ManageRemovalRun | null = null
+): string | null {
+  if (removal !== null) {
+    if (removal.phase !== 'result') return null;
+    return removal.result.outcome === 'rolled-back'
+      ? 'Your dependency files were restored.'
+      : 'Changes were applied to package.json and the lockfile.';
+  }
   if (result === null) {
     return 'Analysis does not modify your project. Registry metadata and the local package manager may be used during analysis.';
   }
@@ -291,6 +319,7 @@ export function ManageDependencyModal({
   upgradeEnrichment,
   upgrade,
   removal,
+  removalRun = null,
   onAnalyzeRemediation,
   onReviewRemediation,
   onApplyRemediation,
@@ -327,6 +356,8 @@ export function ManageDependencyModal({
   upgradeEnrichment: UpgradeEnrichmentUiState | null;
   upgrade: UpgradeReviewState;
   removal: RemovalReviewState;
+  /** Set while a removal started here runs and while its result is shown. */
+  removalRun?: ManageRemovalRun | null;
   onAnalyzeRemediation: (packageName: string) => void;
   onReviewRemediation: (packageName: string, analysisId: string) => void;
   onApplyRemediation: (analysisId: string) => void;
@@ -342,7 +373,7 @@ export function ManageDependencyModal({
   closeLabel?: string;
 }): ReactElement {
   const dialogRef = useRef<HTMLDivElement | null>(null);
-  const footerNote = manageFooterNote(upgradeResult);
+  const footerNote = manageFooterNote(upgradeResult, removalRun);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocused = useRef<Element | null>(null);
 
@@ -372,20 +403,33 @@ export function ManageDependencyModal({
     return node === null ? undefined : trapFocus(node);
   }, []);
 
+  // Listens on the document, like the focus trap, so Escape still closes the
+  // dialog when a view swap removed the focused control and focus fell out.
   useEffect(() => {
     const node = dialogRef.current;
     if (node === null) return;
+    const ownerDocument = node.ownerDocument;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        if (blockClose) return;
-        event.preventDefault();
-        onClose();
-        return;
-      }
+      if (event.key !== 'Escape' || event.defaultPrevented || !isTopmostTrap(node)) return;
+      if (blockClose) return;
+      event.preventDefault();
+      onClose();
     };
-    node.addEventListener('keydown', onKeyDown);
-    return () => node.removeEventListener('keydown', onKeyDown);
+    ownerDocument.addEventListener('keydown', onKeyDown);
+    return () => ownerDocument.removeEventListener('keydown', onKeyDown);
   }, [blockClose, onClose]);
+
+  // When the removal view changes, the control that had focus (for example
+  // the Remove button) is gone. Move focus to the new view's heading.
+  const removalView: RemovalView =
+    removalRun !== null ? removalRun.phase : removal.error !== null ? 'review-error' : 'review';
+  const previousRemovalView = useRef<RemovalView>(removalView);
+  useEffect(() => {
+    const target = removalViewFocusTarget(previousRemovalView.current, removalView);
+    previousRemovalView.current = removalView;
+    if (target === null || activeTab !== 'removal') return;
+    dialogRef.current?.querySelector<HTMLElement>(`#${target}`)?.focus();
+  }, [activeTab, removalView]);
 
   const onOverlayClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
     if (event.target === event.currentTarget && !blockClose) onClose();
@@ -519,6 +563,12 @@ export function ManageDependencyModal({
         onOpenUsageReference={onOpenUsageReference}
       />
     );
+  } else if (removalRun?.phase === 'running') {
+    content = <RemovalRunningPanel row={row} progress={removalRun.progress} />;
+  } else if (removalRun?.phase === 'result') {
+    content = <RemovalResultPanel row={row} result={removalRun.result} />;
+  } else if (removalRun?.phase === 'error') {
+    content = <RemovalErrorPanel row={row} error={removalRun.error} />;
   } else {
     content = (
       <RemovalReviewPanel
@@ -586,7 +636,7 @@ export function ManageDependencyModal({
                 {closeLabel}
               </DirectionalButton>
             )}
-            <button type="button" className="modal__close" onClick={onClose} ref={closeButtonRef} aria-label={closeLabel} disabled={blockClose}>
+            <button type="button" className="modal__close" onClick={onClose} ref={closeButtonRef} aria-label="Close dialog" disabled={blockClose}>
               <IconX />
             </button>
           </div>
@@ -623,7 +673,7 @@ export function ManageDependencyModal({
             label="Removal review"
             icon={<IconTrash />}
             active={activeTab === 'removal'}
-            dotTone={removal.error !== null ? 'critical' : removal.active ? 'active' : undefined}
+            dotTone={removal.error !== null ? 'critical' : removal.active || removalRun?.phase === 'running' ? 'active' : undefined}
             onSelect={onChangeTab}
           />
         </nav>
@@ -637,7 +687,8 @@ export function ManageDependencyModal({
           {content}
         </div>
 
-        {(activeTab === 'upgrade' && upgrade.analysis !== null) || (activeTab === 'removal' && removal.analysis !== null) ? null : (
+        {(activeTab === 'upgrade' && upgrade.analysis !== null) ||
+        (activeTab === 'removal' && removal.analysis !== null && removalRun === null) ? null : (
           <footer className="modal__footer">
             {footerNote === null ? null : (
               <p className="manage-modal__footer-note">

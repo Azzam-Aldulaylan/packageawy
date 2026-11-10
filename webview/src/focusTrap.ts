@@ -44,6 +44,11 @@ function tabbableElements(container: HTMLElement): HTMLElement[] {
 /** Open traps in mount order; only the most recently opened dialog traps Tab. */
 const openTraps: HTMLElement[] = [];
 
+/** True when `container` is the most recently opened dialog, the one keyboard shortcuts belong to. */
+export function isTopmostTrap(container: HTMLElement): boolean {
+  return openTraps[openTraps.length - 1] === container;
+}
+
 /**
  * Traps Tab inside `container` until the returned cleanup runs. Listens on the
  * document so focus that has left the dialog is pulled back in as well.
