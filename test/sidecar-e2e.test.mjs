@@ -53,7 +53,7 @@ async function findFiles({ folder, dir, include, exclude, maxResults }) {
   return maxResults === undefined ? matches : matches.slice(0, maxResults);
 }
 
-function startClient(home) {
+function startClient(home, selectedManifestPath) {
   const child = spawn(process.execPath, ['--import', REFUSE_HTTPS, SIDECAR], {
     cwd: home,
     env: {
@@ -83,6 +83,9 @@ function startClient(home) {
     requests.push(message);
     let result = null;
     if (message.method === 'files/find') result = await findFiles(message.params);
+    if (message.method === 'window/showQuickPick') {
+      result = message.params.items.findIndex((item) => item.description === selectedManifestPath);
+    }
     if (message.method === 'git/watchHead') result = false;
     send({ jsonrpc: '2.0', id: message.id, result });
   };
@@ -193,6 +196,31 @@ test('dist/sidecar.js serves the dashboard to a JSON-RPC client', async (t) => {
   client.notify('webview/didDispose', {});
   client.close();
   assert.equal(await exited, 0);
+});
+
+test('the sidecar dashboard shows the selected npm workspace member installed version', async (t) => {
+  const home = await mkdtemp(path.join(tmpdir(), 'packageawy-sidecar-member-'));
+  await writeFile(path.join(home, '.npmrc'), `registry=${OFFLINE_REGISTRY}\n`);
+  const memberFixture = path.join(repositoryRoot, 'test', 'fixtures', 'npm-member-versions');
+  const client = startClient(home, 'packages/app/package.json');
+  const exited = new Promise((resolve) => client.child.once('exit', resolve));
+  t.after(async () => {
+    client.close();
+    if (client.child.exitCode === null) client.child.kill();
+    await exited;
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+  await client.request('initialize', {
+    workspaceFolders: [{ id: pathToFileURL(memberFixture).href, name: 'workspace', path: memberFixture }],
+    isWorkspaceTrusted: true, settings: {}, workspaceState: {}, globalState: {},
+  });
+  client.notify('webview/didReceiveMessage', { message: { type: 'ready' } });
+  const posted = await client.waitFor(
+    (n) => n.method === 'webview/postMessage' && DATA_STATUSES.has(n.params.message.status),
+    30_000
+  );
+  assert.equal(posted.params.message.data.project.manifestPath, 'packages/app/package.json');
+  assert.deepEqual(posted.params.message.data.rows.map(({ name, current }) => [name, current]), [['foo', '2.0.0']]);
 });
 
 test('likely-unused findings come back after a package.json change event', async (t) => {

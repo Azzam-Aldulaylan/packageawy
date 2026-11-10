@@ -1,0 +1,6 @@
+{
+  "name": "workspace-root",
+  "private": true,
+  "workspaces": ["packages/*", "packages/a/b"],
+  "dependencies": { "foo": "^1.0.0" }
+}

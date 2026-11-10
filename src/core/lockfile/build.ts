@@ -9,7 +9,7 @@ export interface BuildDependencyGraphOptions {
   manifest: Manifest;
   lockfileText: string | null;
   packageManager: PackageManagerKind;
-  /** Required for a pnpm workspace member. Ignored for npm. */
+  /** Lockfile-relative POSIX member path for npm or pnpm. Defaults to the lock root. */
   importerId?: string;
   performance?: PerformanceRecorder;
 }
@@ -29,6 +29,7 @@ export function buildDependencyGraph(options: BuildDependencyGraphOptions): Depe
     root: options.root,
     manifest: options.manifest,
     lockfileText: options.lockfileText,
+    ...(options.importerId === undefined ? {} : { memberPath: options.importerId }),
     ...(options.performance === undefined ? {} : { performance: options.performance }),
   });
 }
