@@ -6,30 +6,21 @@ import type { HttpClient } from '../core/registry/http.js';
 import type { AttributedAdvisory, DependencyGraph } from '../core/types.js';
 import { compareProposedGraphSecurityImpact } from './proposedGraphSecurityImpact.js';
 import type { SecurityIdentityEvidence } from './proposedGraphSecurityImpact.js';
-import { scopeRemainingFindings } from './upgradeReviewSecurityScope.js';
-import type { UpgradeGraphScope } from './upgradeReviewSecurityScope.js';
+import { scopeUnchangedFindings } from './upgradeReviewSecurityScope.js';
 import type { SecurityOutcome } from './webviewProtocol.js';
 
 type VulnerabilityContext = NonNullable<SecurityOutcome['contexts']>[number];
+type ContextPath = VulnerabilityContext['paths'][number];
 
 /**
- * Before evidence for an unchanged finding keeps only the paths through a
- * changed package, always including the selected one. A finding with none
- * has no Before evidence to show.
+ * Before evidence for an unchanged finding keeps only the paths that start
+ * at a target. Filtering never adds paths, so the protocol bound holds. When
+ * the bounded enumeration held none, the selected path stands alone and the
+ * list is marked truncated.
  */
-function scopedContext(context: VulnerabilityContext, scope: UpgradeGraphScope, graph: DependencyGraph,
-  selected: string[] | null): VulnerabilityContext | null {
-  const names = (path: VulnerabilityContext['paths'][number]) => path.nodes.map((node) => node.packageName);
-  const paths = context.paths.filter((path) => scope.passesThroughChange(names(path)));
-  if (selected !== null && !paths.some((path) => names(path).join('\u0000') === selected.join('\u0000'))) {
-    const nodes = selected.map((_, index) => {
-      const node = resolveNodeAlongPath(graph, selected.slice(0, index + 1));
-      return { packageName: node?.name ?? selected[index] ?? '', version: node?.version ?? null };
-    });
-    paths.unshift({ nodes });
-  }
-  const primaryPath = paths[0];
-  if (primaryPath === undefined) return null;
+function targetContext(context: VulnerabilityContext, targetNames: ReadonlySet<string>, selected: ContextPath): VulnerabilityContext {
+  const filtered = context.paths.filter((path) => targetNames.has(path.nodes[0]?.packageName ?? ''));
+  const paths = filtered.length > 0 ? filtered : [selected];
   const roots = new Map<string, VulnerabilityContext['directRoots'][number]>();
   for (const path of paths) {
     const root = path.nodes[0];
@@ -39,7 +30,10 @@ function scopedContext(context: VulnerabilityContext, scope: UpgradeGraphScope, 
     if (existing === undefined) roots.set(key, { packageName: root.packageName, version: root.version, pathCount: 1 });
     else existing.pathCount += 1;
   }
-  return { ...context, primaryPath, paths,
+  const { pathsTruncated: _, ...rest } = context;
+  const truncated = filtered.length === 0 || context.pathsTruncated === true;
+  return { ...rest, primaryPath: paths[0] ?? selected, paths,
+    ...(truncated ? { pathsTruncated: true } : {}),
     directRoots: [...roots.values()].sort((left, right) => left.packageName.localeCompare(right.packageName)) };
 }
 
@@ -89,34 +83,35 @@ export async function auditUpgradeReview(input: {
       const { flaggedVersion, ...entry } = attributed(evidence, false, scopedPath);
       return { ...entry, status: 'remains' as const, resolvedVersion: flaggedVersion };
     };
-    // Fixed and introduced findings are project-wide. Unchanged findings count
-    // only when the proposed tree still reaches them through a changed package.
-    const { scoped, elsewhere: unaffectedElsewhereCount, beforeScope } =
-      scopeRemainingFindings(input.before, afterGraph, input.proposal, impact.remaining);
+    // Fixed and introduced findings are project-wide. Unchanged findings are
+    // scoped to paths that start at a target, separately in each graph.
+    const scope = scopeUnchangedFindings(input.before, afterGraph, input.proposal, impact.remaining);
+    const unaffectedElsewhereCount = scope.elsewhere;
     const resolvedAdvisories = impact.fixed.map((entry) => attributed(entry, true));
     const proposed = input.proposal === undefined ? {} : { proposed: { graph: afterGraph, proposal: input.proposal } };
-    const resolvedContexts = buildVulnerabilityContexts({ graph: input.before,
+    const contexts = buildVulnerabilityContexts({ graph: input.before,
       attributedAdvisories: resolvedAdvisories.slice(0, 500), ...proposed });
-    // Before evidence for an unchanged finding lists only the paths through a changed package.
-    const remainingContexts = buildVulnerabilityContexts({ graph: input.before,
-      attributedAdvisories: scoped.map((entry) => attributed(entry.evidence, true, entry.beforePath))
-        .slice(0, Math.max(0, 500 - resolvedContexts.length)), ...proposed,
-    }).flatMap((context) => {
-      if (beforeScope === null) return [context];
-      const selected = scoped.find((entry) => entry.evidence.flaggedPackage === context.flaggedPackage &&
-        entry.beforeVersion === context.flaggedVersion && entry.beforePath !== null &&
-        attributed(entry.evidence, true, entry.beforePath).advisory.id === context.advisory.id)?.beforePath ?? null;
-      const result = scopedContext(context, beforeScope, input.before, selected);
-      return result === null ? [] : [result];
-    });
+    for (const entry of scope.before) {
+      if (contexts.length >= 500) break;
+      const [context] = buildVulnerabilityContexts({ graph: input.before,
+        attributedAdvisories: [attributed(entry.evidence, true, entry.path)], ...proposed });
+      if (context === undefined) continue;
+      const selected = { nodes: entry.path.map((_, index) => {
+        const node = resolveNodeAlongPath(input.before, entry.path.slice(0, index + 1));
+        return { packageName: node?.name ?? entry.path[index] ?? '', version: node?.version ?? null };
+      }) };
+      contexts.push(targetContext(context, scope.beforeScope.targetNames, selected));
+    }
+    const beforeCount = resolvedAdvisories.length + scope.before.length;
     return {
-      contexts: [...resolvedContexts, ...remainingContexts].slice(0, 500),
-      status: scoped.length + impact.introduced.length > 0 ? 'remains'
-        : impact.fixed.length > 0 ? 'resolved' : 'not-applicable',
+      contexts,
+      status: scope.remaining.length + impact.introduced.length > 0 ? 'remains'
+        : beforeCount > 0 ? 'resolved' : 'not-applicable',
       checkState: 'complete',
       resolvedAdvisories,
-      remaining: scoped.map((entry) => remaining(entry.evidence, entry.afterPath)),
+      remaining: scope.remaining.map((entry) => remaining(entry.evidence, entry.path)),
       introduced: impact.introduced.map((entry) => remaining(entry)),
+      beforeCount,
       ...(unaffectedElsewhereCount > 0 ? { unaffectedElsewhereCount } : {}),
     };
   } catch {

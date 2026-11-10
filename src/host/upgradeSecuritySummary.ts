@@ -18,7 +18,7 @@ export function summarizeUpgradeSecurity(security: SecurityOutcome): UpgradeSecu
   const confirmedRemainingCount = security.remaining.filter((entry) => entry.status === 'remains').length;
   const unknownCount = security.remaining.filter((entry) => entry.status === 'unknown').length;
   const introducedCount = security.introduced?.length ?? 0;
-  const beforeCount = security.resolvedAdvisories.length + confirmedRemainingCount + unknownCount;
+  const beforeCount = security.beforeCount ?? security.resolvedAdvisories.length + confirmedRemainingCount + unknownCount;
 
   let afterLabel: string;
   if (unknownCount > 0) {
