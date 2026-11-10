@@ -126,13 +126,14 @@ function isContainedPattern(pattern: string): boolean {
 }
 
 /**
- * True when an expansion of a pattern could select a directory inside `.git`,
- * which the manifest walk never reads. pnpm can still treat such a directory
- * as a member, so the review cannot stage the workspace faithfully.
+ * True when a pattern could select a directory inside `.git`, which the
+ * manifest walk never reads. Class and extglob syntax such as `[.]git` or
+ * `@(.git)` is not interpreted here, so any pattern using it counts.
  */
 function mayMatchGitDir(pattern: string): boolean {
+  if (/[[(]/.test(pattern)) return true;
   return expandBraces(pattern)?.some((expanded) => expanded.split(/[\\/]/).some((segment) =>
-    segment.toLowerCase().startsWith('.git') || (segment.startsWith('.') && /[*?[]/.test(segment)))) ?? true;
+    segment.toLowerCase().startsWith('.git') || (segment.startsWith('.') && /[*?]/.test(segment)))) ?? true;
 }
 
 /** Why a manifest cannot be staged as written, or undefined when it can. */
@@ -269,7 +270,7 @@ export async function readPnpmWorkspaceLayout(input: {
   if (patterns.some((pattern) => typeof pattern !== 'string' || !isContainedPattern(pattern.replace(/^!/, '')))) {
     reasons.push('A workspace package pattern points outside the workspace.');
   }
-  if (patterns.some((pattern) => typeof pattern === 'string' && !pattern.startsWith('!') && mayMatchGitDir(pattern))) {
+  if (patterns.some((pattern) => typeof pattern === 'string' && (!/^!(?!\()/.test(pattern) && mayMatchGitDir(pattern)))) {
     reasons.push('A workspace package pattern can select a directory inside .git, which the review does not stage.');
   }
   if (referencesOutside({ ...settings, packages: [] }, '.')) {
