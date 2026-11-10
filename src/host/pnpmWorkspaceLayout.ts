@@ -125,6 +125,16 @@ function isContainedPattern(pattern: string): boolean {
     !expanded.split(/[\\/]/).includes('..')) ?? false;
 }
 
+/**
+ * True when an expansion of a pattern could select a directory inside `.git`,
+ * which the manifest walk never reads. pnpm can still treat such a directory
+ * as a member, so the review cannot stage the workspace faithfully.
+ */
+function mayMatchGitDir(pattern: string): boolean {
+  return expandBraces(pattern)?.some((expanded) => expanded.split(/[\\/]/).some((segment) =>
+    segment.toLowerCase().startsWith('.git') || (segment.startsWith('.') && /[*?[]/.test(segment)))) ?? true;
+}
+
 /** Why a manifest cannot be staged as written, or undefined when it can. */
 function manifestProblem(text: string, baseDir: string, relative: string): string | undefined {
   let manifest: Record<string, unknown> | null;
@@ -258,6 +268,9 @@ export async function readPnpmWorkspaceLayout(input: {
   const patterns = Array.isArray(settings['packages']) ? settings['packages'] : [];
   if (patterns.some((pattern) => typeof pattern !== 'string' || !isContainedPattern(pattern.replace(/^!/, '')))) {
     reasons.push('A workspace package pattern points outside the workspace.');
+  }
+  if (patterns.some((pattern) => typeof pattern === 'string' && !pattern.startsWith('!') && mayMatchGitDir(pattern))) {
+    reasons.push('A workspace package pattern can select a directory inside .git, which the review does not stage.');
   }
   if (referencesOutside({ ...settings, packages: [] }, '.')) {
     reasons.push('A workspace setting points at a local path outside the workspace.');

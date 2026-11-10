@@ -221,3 +221,14 @@ test('a bare CR in .npmrc separates lines, and protocols are matched in any case
     assert.match((await read(setting)).unavailableReason ?? '', /workspace setting points at a local path/, spec);
   }
 });
+
+test('a package pattern that can select a directory inside .git is unknown', async (t) => {
+  for (const pattern of ['.git/*', '.GIT/hidden', '.{git,other}/*', '.g*/*', 'apps/.git/x']) {
+    const root = await workspace(t, { yaml: `packages:\n  - 'apps/*'\n  - '${pattern}'\n` });
+    assert.match((await read(root)).unavailableReason, /inside \.git/, pattern);
+  }
+  for (const pattern of ['apps/*', 'packages/**', '.internal/*', '!.git/*']) {
+    const root = await workspace(t, { yaml: `packages:\n  - 'apps/*'\n  - '${pattern}'\n` });
+    assert.equal((await read(root)).unavailableReason, undefined, pattern);
+  }
+});
