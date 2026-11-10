@@ -377,10 +377,10 @@ export function ManageDependencyModal({
     if (event.target === event.currentTarget && !blockClose) onClose();
   };
 
-  const startUpgradeReview = (_packageName: string, _target: string): void => {
-    // Target choice is now an explicit step inside Upgrade review. Overview
-    // and Vulnerabilities navigate there without silently starting analysis
-    // against the row's former one-size-fits-all target.
+  const startUpgradeReview = (_packageName: string, target: string): void => {
+    // Open on the version the action offers, even after an earlier picker
+    // choice. Analysis remains an explicit step inside Upgrade review.
+    upgrade.onTargetChange(target);
     onChangeTab('upgrade');
   };
   const startRemovalReview = (_packageName: string): void => {

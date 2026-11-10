@@ -413,7 +413,7 @@ export interface UpgradeAnalysisPresentation {
 export interface UpgradeTargetOption {
   version: string;
   channel: 'stable' | 'prerelease';
-  labels: Array<'recommended' | 'lts' | 'latest'>;
+  labels: Array<'recommended' | 'lts' | 'latest' | 'security-fix'>;
 }
 
 export interface UpgradeTargetOptions {
@@ -2016,7 +2016,7 @@ function isUsageAnalysisResult(value: unknown): value is UsageAnalysisResult {
   );
 }
 
-const UPGRADE_TARGET_LABELS: ReadonlySet<string> = new Set(['recommended', 'lts', 'latest']);
+const UPGRADE_TARGET_LABELS: ReadonlySet<string> = new Set(['recommended', 'lts', 'latest', 'security-fix']);
 
 function isUpgradeTargetOption(value: unknown): value is UpgradeTargetOption {
   if (!isRecord(value) || !hasOnlyKeys(value, ['version', 'channel', 'labels'])) return false;
