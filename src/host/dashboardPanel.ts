@@ -22,7 +22,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 
-import { NodeAuditRunner } from '../core/audit/npmAudit.js';
+import { ResolvedNpmAuditRunner } from './npmAuditRunner.js';
 import { BranchChangeCoordinator, realBranchTimerScheduler } from './branchChangeCoordinator.js';
 import { realTimerScheduler, BackgroundRefreshTimer } from '../core/cache/backgroundRefreshTimer.js';
 import type { FileChangeKind } from '../core/cache/fileChangeCoordinator.js';
@@ -130,7 +130,7 @@ export class DashboardPanel {
   private readonly httpClient = new NodeHttpClient();
   private readonly etagStore: PersistentEtagStore;
   private readonly projectCacheStore: PersistentProjectCacheStore;
-  private readonly auditRunner = new NodeAuditRunner();
+  private readonly auditRunner = new ResolvedNpmAuditRunner();
   private readonly backgroundTimer: BackgroundRefreshTimer;
   private readonly advisorySettingSubscription: Disposable;
   /** Computed once at construction: the same value for every controller/reload this panel session ever builds. See DashboardData's doc for why this exists (confirming a dev's rebuild actually loaded). */

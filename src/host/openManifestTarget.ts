@@ -19,7 +19,7 @@ export const OPEN_MANIFEST_BUSY_MESSAGE =
   'Packageawy is finishing a dependency change. Open this project again when it completes.';
 
 export const OPEN_MANIFEST_UNAVAILABLE_MESSAGE =
-  'Packageawy opens package.json files from your workspace folders, outside node_modules.';
+  'Choose a package.json in your workspace, outside node_modules.';
 
 function comparablePath(value: string, platform: NodeJS.Platform): string {
   const resolved = path.resolve(value);

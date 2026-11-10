@@ -85,7 +85,7 @@ test('node_modules, outside-workspace and non-manifest files are rejected', asyn
     const { project } = await resolveManifestTarget(platform, file);
     assert.equal(project, undefined, file);
   }
-  assert.equal(OPEN_MANIFEST_UNAVAILABLE_MESSAGE, 'Packageawy opens package.json files from your workspace folders, outside node_modules.');
+  assert.equal(OPEN_MANIFEST_UNAVAILABLE_MESSAGE, 'Choose a package.json in your workspace, outside node_modules.');
 });
 
 test('Windows paths compare without case, other platforms compare exactly', () => {

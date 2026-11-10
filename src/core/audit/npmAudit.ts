@@ -94,8 +94,10 @@ export interface NodeAuditRunnerOptions {
   stdoutLimitBytes?: number;
   terminationGraceMs?: number;
   /**
-   * Test seam: run this command instead of the platform npm. `prefixArgs`
-   * come before the fixed audit arguments. Never fed from user input.
+   * Run this command instead of the platform npm: the host's resolved node
+   * executable with npm-cli.js as a prefix arg, or a fake npm in tests.
+   * `prefixArgs` come before the fixed audit arguments. Never fed from user
+   * input.
    */
   spawnConfig?: { command: string; prefixArgs?: readonly string[]; shell?: boolean };
 }
@@ -112,9 +114,9 @@ export class NodeAuditRunner implements AuditRunner {
         return;
       }
 
-      // Deferred: locating npm when the extension host's inherited PATH lacks it
-      // (nvm/fnm/volta) is the spec's separate "npm Binary Resolution" concern,
-      // owned by whatever implements the Upgrade action, which needs it too.
+      // The extension host passes a resolved `<node> <npm-cli.js>` pair with no
+      // shell (src/host/npmAuditRunner.ts). The platform default below is only
+      // the fallback when no spawnConfig is given.
       const platformConfig = resolveAuditSpawnConfig(process.platform);
       const override = this.options.spawnConfig;
       const command = override?.command ?? platformConfig.command;
