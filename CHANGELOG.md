@@ -16,6 +16,9 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - Yarn and Bun projects open with their dependencies shown and a note that changes are available for npm and pnpm projects.
 - Registries that ask for sign-in get one note per registry, and their packages read **Sign-in needed**. Upgrades for every other package stay available.
 - The VSIX and the JetBrains plugin include `ThirdPartyNotices.txt` with the licenses of bundled packages.
+- The upgrade review's version list labels **Security fix**, **Publisher LTS** and **Latest stable** versions.
+- A removal started from the Manage dialog shows its progress (Installing, Verifying, Refreshing) and then its result in the dialog: what was removed, the install, dependency files, verification, and whether files were restored.
+- When verification scripts are checked in the upgrade review, the Verification row names them, for example "build, test will run".
 
 ### Changed
 
@@ -25,17 +28,26 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - pnpm is found through PATH, `PNPM_HOME`, the standalone installer, Homebrew, Volta, Scoop, winget, mise and asdf, as well as npm's global folder and Corepack. A version named in `packageManager` is preferred.
 - Packages under an `@scope` with its own registry in `.npmrc` are looked up on that registry in every scan and review. Workspace members also read the workspace root `.npmrc`.
 - npm audit runs for at most one minute, and the table shows without it when it cannot finish.
+- Upgrades keep the declared range style. `^1.2.3` stays `^`, `~1.2.3` stays `~`, and an exact version stays exact. `package.json` keeps its key order, indentation, spacing, line endings and final newline when upgrading and removing.
+- The Overview card, the dependency table, single upgrade review and bulk review all start on the same suggested version. Change-type badges and summary counts use one rule, so 0.21.1 to 0.22.0 is minor and 0.21.1 to 1.21.1 is major.
+- Opening Smart Cleanup closes the Manage dialog first, so only one dialog is open at a time.
+- After an upgrade, the Manage dialog footer says the changes were applied, and after a rollback that the files were restored.
+- The **Open setting** link on the "Security checks are turned off" banner opens the settings scope that holds the value: folder, workspace or user.
+- The registry cache is stored as files in the extension's storage folder instead of VS Code global state. The existing cache moves over once.
+- npm audit runs the same resolved `node` and npm that upgrades use, without a shell.
 
 ### Fixed
 
 - Aliased packages, such as `compat: npm:lodash@4.17.20` and `string-width-cjs`, are checked for vulnerabilities under their real package name.
 - Packages whose installed version is unknown read **Not checked** with a hint to install dependencies.
 - npm workspace members show the versions installed for that member.
-- pnpm `catalog:` dependencies keep their catalog reference. Upgrades are not offered for them.
+- pnpm `catalog:` dependencies keep their catalog reference.
 - Upgrades, removals and fixes at the root of a pnpm workspace run with `-w`.
 - Only one dependency change runs per project, including after the dashboard is closed and opened again.
 - Prettier 2 plugins count as used.
 - Tab and Shift+Tab stay inside every dialog.
+- The Manage dialog no longer reopens on its own after a removal, a project switch, or a rescan where the package was gone and later came back.
+- Scans and Refresh on Windows no longer print Node's DEP0190 warning.
 
 ## [0.9.4] - 2026-11-02
 
