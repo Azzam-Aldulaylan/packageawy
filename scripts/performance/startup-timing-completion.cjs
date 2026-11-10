@@ -18,10 +18,11 @@
 //   - no scan message (loading, scan-progress, stale) arrived after the
 //     latest scan report, which would mean another scan is running, and
 //   - a result message (ready, partial-error, stale, empty) has arrived.
-// Likely-unused analysis is done when a cleanup-result or cleanup-error
+// Likely-unused analysis is done when, after the most recent
+// cleanup-analyzing message (if any), a cleanup-result or cleanup-error
 // message arrived, or its "Packageawy cleanup usage analysis" report was
 // printed (it is printed even when the analysis returns early without a
-// message), with no cleanup-analyzing message after it.
+// message). The completion time is the last such signal in that cycle.
 
 const DATA_STATUSES = new Set(['empty', 'ready', 'partial-error', 'stale']);
 const SCAN_BUSY_STATUSES = new Set(['loading', 'scan-progress', 'stale']);
@@ -89,21 +90,20 @@ function completionState({ messages, reports, openedAt }) {
     (event) => event.message.status === 'cleanup-result' || event.message.status === 'cleanup-error'
   );
   const usageReports = recent.filter((report) => operationOf(report) === 'Packageawy cleanup usage analysis');
-  const usageDoneAt = [...usageMessages.map((event) => event.at), ...usageReports.map((report) => report.at)].sort(
-    (a, b) => a - b
-  )[0];
-  if (usageDoneAt === undefined) {
-    state.waitingFor = 'likely-unused analysis';
-    return state;
-  }
-  const lastUsageSignal = Math.max(
-    ...usageMessages.map((event) => event.at),
-    ...usageReports.map((report) => report.at)
+  // Only the latest analysis cycle counts: the signals after the most recent
+  // cleanup-analyzing start. Within it, the last result message is the end
+  // (or the last report, when the analysis returned without a message).
+  const latestStart = Math.max(
+    -Infinity,
+    ...messages.filter((event) => event.message.status === 'cleanup-analyzing').map((event) => event.at)
   );
-  if (messages.some((event) => event.message.status === 'cleanup-analyzing' && event.at > lastUsageSignal)) {
+  const cycleMessages = usageMessages.filter((event) => event.at > latestStart);
+  const cycleReports = usageReports.filter((report) => report.at > latestStart);
+  if (cycleMessages.length === 0 && cycleReports.length === 0) {
     state.waitingFor = 'likely-unused analysis';
     return state;
   }
+  const usageDoneAt = cycleMessages.length > 0 ? cycleMessages.at(-1).at : cycleReports.at(-1).at;
   state.usageDone = true;
   state.complete = true;
   state.completeAt = Math.max(lastData.at, usageDoneAt);

@@ -74,10 +74,29 @@ test('killProcessTree ends a detached child and the processes it started', { ski
     { detached: true, stdio: ['ignore', 'pipe', 'ignore'] }
   );
   const grandchildPid = await new Promise((resolve) => child.stdout.once('data', (chunk) => resolve(Number(String(chunk).trim()))));
-  await killProcessTree(child, { graceMs: 2000 });
+  assert.deepEqual(await killProcessTree(child, { graceMs: 2000 }), { ok: true });
   assert.notEqual(child.exitCode === null && child.signalCode === null, true, 'child has exited');
-  await new Promise((resolve) => setTimeout(resolve, 200));
   assert.throws(() => process.kill(grandchildPid, 0), /ESRCH/, 'grandchild has exited');
+});
+
+test('killProcessTree escalates to SIGKILL for a grandchild that ignores SIGTERM after its parent exits', { skip: process.platform === 'win32' }, async () => {
+  // The grandchild ignores SIGTERM; the child exits on SIGTERM as usual, so
+  // the child's exit alone must not end the cleanup.
+  const stubborn = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)";
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `const c = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(stubborn)}], { stdio: 'ignore' });` +
+        "setTimeout(() => console.log(c.pid), 300); setInterval(() => {}, 1000);",
+    ],
+    { detached: true, stdio: ['ignore', 'pipe', 'ignore'] }
+  );
+  const grandchildPid = await new Promise((resolve) => child.stdout.once('data', (chunk) => resolve(Number(String(chunk).trim()))));
+  const started = Date.now();
+  assert.deepEqual(await killProcessTree(child, { graceMs: 500, killWaitMs: 3000 }), { ok: true });
+  assert.ok(Date.now() - started >= 500, 'waited for the grace period before SIGKILL');
+  assert.throws(() => process.kill(grandchildPid, 0), /ESRCH/, 'SIGTERM-resistant grandchild was killed');
 });
 
 test('withRetries retries a failed attempt and reports every error when all attempts fail', async () => {
@@ -86,10 +105,26 @@ test('withRetries retries a failed attempt and reports every error when all atte
     calls += 1;
     return calls < 3 ? { ok: false, error: `failure ${calls}` } : { ok: true };
   }, 2);
-  assert.deepEqual(recovered, { ok: true, attempts: 3, errors: ['failure 1', 'failure 2'] });
+  assert.deepEqual(recovered, { ok: true, attempts: 3, errors: ['failure 1', 'failure 2'], stopped: false });
 
   const failed = await withRetries(async (attempt) => ({ ok: false, error: `attempt ${attempt}` }), 2);
-  assert.deepEqual(failed, { ok: false, attempts: 3, errors: ['attempt 1', 'attempt 2', 'attempt 3'] });
+  assert.deepEqual(failed, { ok: false, attempts: 3, errors: ['attempt 1', 'attempt 2', 'attempt 3'], stopped: false });
+});
+
+test('withRetries starts no further attempt once stopping is requested', async () => {
+  let stopping = false;
+  let calls = 0;
+  const outcome = await withRetries(
+    async () => {
+      calls += 1;
+      stopping = true; // An interrupt arrives while this attempt runs.
+      return { ok: false, error: 'interrupted' };
+    },
+    2,
+    { shouldStop: () => stopping }
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(outcome, { ok: false, attempts: 1, errors: ['interrupted'], stopped: true });
 });
 
 const OPENED = 1000;
@@ -176,6 +211,29 @@ test('a later scan or usage analysis that starts again keeps the dashboard incom
   assert.equal(rescanning.waitingFor, 'scan in progress');
   const reanalysing = completionState({ ...base, messages: [...base.messages, message(3500, 'cleanup-analyzing')] });
   assert.equal(reanalysing.waitingFor, 'likely-unused analysis');
+});
+
+test('a restarted likely-unused analysis completes at the end of its latest cycle, not the first', () => {
+  const state = completionState({
+    messages: [
+      message(1010, 'loading'),
+      message(2500, 'ready', rows(6)),
+      message(3000, 'cleanup-result'),
+      message(4000, 'cleanup-analyzing'),
+      message(6000, 'cleanup-result'),
+    ],
+    reports: [cacheReport(1005, 'hit=false'), scanReport(2501), usageReport(3001), usageReport(6001)],
+    openedAt: OPENED,
+  });
+  assert.equal(state.complete, true);
+  assert.equal(state.completeAt, 6000);
+
+  const twoBackgroundCycles = completionState({
+    messages: [message(1100, 'ready', rows(6)), message(1500, 'cleanup-result'), message(2500, 'cleanup-result')],
+    reports: [cacheReport(1099, 'hit=true  freshness=fresh'), usageReport(1501), usageReport(2501)],
+    openedAt: OPENED,
+  });
+  assert.equal(twoBackgroundCycles.completeAt, 2500);
 });
 
 test('reports printed before the dashboard was opened are ignored, and a fatal error is surfaced', () => {

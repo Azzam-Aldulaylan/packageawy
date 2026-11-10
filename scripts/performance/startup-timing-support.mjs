@@ -41,45 +41,89 @@ export function assertInsideTempRoot(root, folders) {
   }
 }
 
+function groupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the group exists but belongs to someone else, which does
+    // not happen for a group this script created; treat it as alive.
+    return error?.code === 'EPERM';
+  }
+}
+
+function signalGroup(pgid, signal) {
+  try {
+    process.kill(-pgid, signal);
+  } catch {
+    // Already gone.
+  }
+}
+
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => child.once('exit', () => resolve()));
+}
+
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 /**
- * Ends a child started with `detached: true` and everything it started, and
- * resolves once the child has exited. POSIX: SIGTERM to the process group,
- * then SIGKILL after `graceMs`. Windows: taskkill /T /F on the tree.
+ * Ends a child started with `detached: true` and every process in its tree,
+ * and resolves with { ok, error? } once they are gone.
+ *
+ * POSIX: SIGTERM to the process group, then poll the group (not just the
+ * child, whose exit says nothing about grandchildren that ignore SIGTERM)
+ * and send SIGKILL to the group after `graceMs`. Gives up after a further
+ * `killWaitMs` and reports it.
+ * Windows: waits for taskkill /T /F and checks its exit code (128 means the
+ * process was already gone).
  */
-export function killProcessTree(child, { graceMs = 5000 } = {}) {
-  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return Promise.resolve();
-  return new Promise((resolve) => {
-    let timer;
-    child.once('exit', () => {
-      clearTimeout(timer);
-      resolve();
+export async function killProcessTree(child, { graceMs = 5000, killWaitMs = 5000, pollMs = 50 } = {}) {
+  if (child.pid === undefined) return { ok: true };
+  if (process.platform === 'win32') {
+    if (child.exitCode !== null || child.signalCode !== null) return { ok: true };
+    const code = await new Promise((resolve) => {
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      killer.once('error', () => resolve(-1));
+      killer.once('exit', (exitCode) => resolve(exitCode ?? -1));
     });
-    const signalTree = (signal) => {
-      try {
-        if (process.platform === 'win32') {
-          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-        } else {
-          process.kill(-child.pid, signal);
-        }
-      } catch {
-        // Already gone.
-      }
-    };
-    signalTree('SIGTERM');
-    timer = setTimeout(() => signalTree('SIGKILL'), graceMs);
-  });
+    if (code !== 0 && code !== 128) return { ok: false, error: `taskkill exited with ${code}` };
+    await waitForExit(child);
+    return { ok: true };
+  }
+
+  const pgid = child.pid;
+  if (!groupAlive(pgid)) return { ok: true };
+  signalGroup(pgid, 'SIGTERM');
+  const killAt = Date.now() + graceMs;
+  const giveUpAt = killAt + killWaitMs;
+  let killed = false;
+  while (groupAlive(pgid)) {
+    if (!killed && Date.now() >= killAt) {
+      signalGroup(pgid, 'SIGKILL');
+      killed = true;
+    }
+    if (Date.now() >= giveUpAt) return { ok: false, error: `process group ${pgid} is still running after SIGKILL` };
+    await sleep(pollMs);
+  }
+  await waitForExit(child);
+  return { ok: true };
 }
 
 /**
  * Runs `attempt` until it returns { ok: true }, at most 1 + `retries` times.
- * Returns { ok, attempts, errors }.
+ * `shouldStop` is checked before every attempt, so an interrupt during one
+ * attempt does not start another. Returns { ok, attempts, errors, stopped }.
  */
-export async function withRetries(attempt, retries) {
+export async function withRetries(attempt, retries, { shouldStop = () => false } = {}) {
   const errors = [];
+  let attempts = 0;
   for (let index = 0; index <= retries; index += 1) {
-    const outcome = await attempt(index + 1);
-    if (outcome.ok) return { ok: true, attempts: index + 1, errors };
+    if (shouldStop()) return { ok: false, attempts, errors, stopped: true };
+    attempts += 1;
+    const outcome = await attempt(attempts);
+    if (outcome.ok) return { ok: true, attempts, errors, stopped: false };
     errors.push(outcome.error ?? 'unknown error');
   }
-  return { ok: false, attempts: retries + 1, errors };
+  return { ok: false, attempts, errors, stopped: false };
 }

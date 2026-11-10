@@ -216,6 +216,11 @@ let stopping = false;
 // that group if it hangs.
 function startVsCode(executable, args, env) {
   return new Promise((resolve) => {
+    // Checked right before every spawn, so nothing new starts during cleanup.
+    if (stopping) {
+      resolve({ code: undefined, error: 'stopped before launch' });
+      return;
+    }
     let child;
     try {
       child = spawn(executable, args, { env, detached: process.platform !== 'win32', windowsHide: true });
@@ -252,7 +257,8 @@ async function stopOnSignal(signal) {
   if (stopping) return;
   stopping = true;
   console.error(`\n[timing] ${signal}: stopping ${running.size} VS Code process tree(s) and removing temporary folders`);
-  await Promise.all([...running].map((child) => killProcessTree(child)));
+  const outcomes = await Promise.all([...running].map((child) => killProcessTree(child)));
+  for (const outcome of outcomes) if (!outcome.ok) console.error(`[timing] could not stop a VS Code process: ${outcome.error}`);
   await removeSessionRoot();
   process.exit(signal === 'SIGINT' ? 130 : 143);
 }
@@ -417,7 +423,11 @@ try {
           const primed = await launch(project, warmProfile);
           if (!primed.ok) console.log(`[timing] priming run failed: ${primed.error}`);
           return primed;
-        }, PRIMING_RETRIES);
+        }, PRIMING_RETRIES, { shouldStop: () => stopping });
+        if (priming.stopped) {
+          if (warmProfile) await rm(warmProfile, { recursive: true, force: true });
+          break;
+        }
         if (!priming.ok) {
           await rm(warmProfile, { recursive: true, force: true });
           result.skipped.push({ project: project.name, mode, reason: 'priming failed', attempts: priming.attempts, errors: priming.errors });
