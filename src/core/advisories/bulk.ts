@@ -95,10 +95,14 @@ export function buildBulkRequestBody(graph: DependencyGraph): Record<string, str
 export async function fetchBulkAdvisories(
   client: HttpClient,
   requestBody: Record<string, string[]>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  enabled: () => boolean = () => true
 ): Promise<Map<string, Advisory[]>> {
   const chunks = splitBulkRequestBody(requestBody);
-  const settled = await runPool(chunks, (chunk, chunkSignal) => fetchBulkAdvisoryChunk(client, chunk, chunkSignal), {
+  const settled = await runPool(chunks, (chunk, chunkSignal) => {
+    if (!enabled()) throw new FetchError('CANCELLED', 'Security checks are turned off for this project.');
+    return fetchBulkAdvisoryChunk(client, chunk, chunkSignal);
+  }, {
     limit: 2, ...(signal === undefined ? {} : { signal }),
   });
   if (signal?.aborted === true) throw new FetchError('CANCELLED', 'Advisory check was cancelled.');

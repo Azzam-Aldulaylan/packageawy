@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      plugin-bar:
+        specifier: 1.0.0
+        version: 1.0.0
+  other:
+    dependencies:
+      bar:
+        specifier: 1.0.0
+        version: 1.0.0
+packages:
+  plugin-bar@1.0.0:
+    peerDependencies:
+      bar: ^1.0.0
+    peerDependenciesMeta:
+      bar:
+        optional: true
+  bar@1.0.0: {}
+snapshots:
+  plugin-bar@1.0.0: {}
+  bar@1.0.0: {}

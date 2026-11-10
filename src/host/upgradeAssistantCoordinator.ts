@@ -619,6 +619,7 @@ export class UpgradeAssistantCoordinator {
   private readonly remediationPlans = new Map<string, StoredRemediationPlan>();
   private readonly remediationPlanByPackage = new Map<string, string>();
   private activeUpgradeAnalysisAbort: AbortController | undefined;
+  private activeUpgradeAdvisoryAbort: AbortController | undefined;
   /** One exact deep inventory is enough to make immediate re-analysis/cache reuse cheap without retaining many large file lists. */
   private readonly targetPackageSurfaceCache = new TargetPackageSurfaceCache();
 
@@ -1249,6 +1250,10 @@ export class UpgradeAssistantCoordinator {
     this.pendingAnalyzePackage = eligibility.packageName;
     const analysisAbort = new AbortController();
     this.activeUpgradeAnalysisAbort = analysisAbort;
+    const advisoryAbort = new AbortController();
+    this.activeUpgradeAdvisoryAbort = advisoryAbort;
+    const abortAdvisories = (): void => advisoryAbort.abort();
+    analysisAbort.signal.addEventListener('abort', abortAdvisories, { once: true });
     const pendingAnalysisWork: Promise<unknown>[] = [];
 
     // Tracks whether the full review completed for performance reporting;
@@ -1491,7 +1496,7 @@ export class UpgradeAssistantCoordinator {
       const securityResultPromise = securityGraphPromise.then(async (proposedSecurityGraph): Promise<SecurityOutcome> => {
         const security = await auditUpgradeReview({
           before: graph, after: proposedSecurityGraph, proposal, client: this.options.httpClient,
-          enabled: () => this.publicAdvisoryCheckEnabled(controller.root), signal: analysisAbort.signal,
+          enabled: () => this.publicAdvisoryCheckEnabled(controller.root), signal: advisoryAbort.signal,
         });
         if (!analysisAbort.signal.aborted && !this.droppedByCancellation(eligibility.packageName)) {
           this.options.sink.postMessage({
@@ -1600,7 +1605,7 @@ export class UpgradeAssistantCoordinator {
               }) : undefined;
           security = await auditUpgradeReview({
             before: graph, after: coordinatedGraph, proposal: smartPlanProposal, client: this.options.httpClient,
-            enabled: () => this.publicAdvisoryCheckEnabled(controller.root), signal: analysisAbort.signal,
+            enabled: () => this.publicAdvisoryCheckEnabled(controller.root), signal: advisoryAbort.signal,
           });
           if (!analysisAbort.signal.aborted && !this.droppedByCancellation(eligibility.packageName)) {
             this.options.sink.postMessage({
@@ -1763,6 +1768,8 @@ export class UpgradeAssistantCoordinator {
         this.sourceInvalidatedAnalyzePackage = null;
       }
       if (this.activeUpgradeAnalysisAbort === analysisAbort) this.activeUpgradeAnalysisAbort = undefined;
+      analysisAbort.signal.removeEventListener('abort', abortAdvisories);
+      if (this.activeUpgradeAdvisoryAbort === advisoryAbort) this.activeUpgradeAdvisoryAbort = undefined;
       performance.finish({ completed: succeeded });
     }
   }
@@ -1850,6 +1857,12 @@ export class UpgradeAssistantCoordinator {
       this.options.sink.postMessage({ status: 'upgrade-analysis-stale', analysisId: stored.id });
       await this.releaseReservation(stored.eligibility.packageName);
     }
+  }
+
+  /** Setting events must stop advisory work even while the panel defers refresh. */
+  handleAdvisorySettingChanged(): void {
+    this.activeUpgradeAdvisoryAbort?.abort();
+    this.activeRemediationAbort?.abort();
   }
 
   /** Every path that submits package names for advisories checks this first. */
@@ -2536,7 +2549,8 @@ export class UpgradeAssistantCoordinator {
       const npmAdvisories = await fetchBulkAdvisories(
         this.options.httpClient,
         buildBulkRequestBody(materialized.graph),
-        signal
+        signal,
+        () => this.publicAdvisoryCheckEnabled(controller.root)
       );
       proposedAdvisories = await enrichAdvisoriesWithGitHubIdentifiers(
         this.options.httpClient,
@@ -2772,7 +2786,8 @@ export class UpgradeAssistantCoordinator {
               const npmAdvisories = await fetchBulkAdvisories(
                 this.options.httpClient,
                 buildBulkRequestBody(graph),
-                abort.signal
+                abort.signal,
+                () => this.publicAdvisoryCheckEnabled(applied.root)
               );
               const advisoriesByName = await enrichAdvisoriesWithGitHubIdentifiers(
                 this.options.httpClient,

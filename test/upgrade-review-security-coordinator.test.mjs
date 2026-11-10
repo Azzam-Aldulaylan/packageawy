@@ -24,12 +24,13 @@ const bundle = await build({ entryPoints: ['src/host/upgradeAssistantCoordinator
   } }] });
 const { UpgradeAssistantCoordinator } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 
-async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false, cancelAt } = {}) {
+async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false, cancelAt, disableAtAdvisory = false } = {}) {
   const messages = [];
   const posts = [];
   const resolvedManifests = [];
   let phase;
   let cancelled;
+  let advisorySettingChange;
   const cancel = async signal => {
     cancelled = { signal, resolverStarts: resolvedManifests.length };
     coordinator.handleCancelUpgrade({ analysisId: null });
@@ -79,8 +80,14 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
         return { status: 200, headers: {}, body: JSON.stringify({ name, 'dist-tags': { latest: '3.0.0' },
           versions: { '1.0.0': metadata('1.0.0'), '2.0.0': metadata('2.0.0'), '3.0.0': metadata('3.0.0') } }) };
       },
-      post: async (_, body) => {
+      post: async (_, body, options) => {
         posts.push(JSON.parse(body));
+        if (disableAtAdvisory) {
+          off = true;
+          advisorySettingChange = { busy: coordinator.isBusy(), signal: options.signal };
+          coordinator.handleAdvisorySettingChanged?.();
+          advisorySettingChange.abortedImmediately = options.signal.aborted;
+        }
         if (advisoryFails) throw new Error('advisories offline');
         const name = coordinated ? 'peer' : 'app';
         return { status: 200, body: JSON.stringify({ [name]: [{ id: 9, severity: 'high', title: 'New version vulnerability',
@@ -102,8 +109,16 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
   assert.ok(result, `expected completed review, got ${JSON.stringify(messages.filter(message => message.status === 'upgrade-error'))}`);
   assert.equal(isHostToWebviewMessage(result), true);
   await coordinator.handleCancelUpgrade({ analysisId: result.analysis.analysisId });
-  return { result: result.analysis, messages, posts, resolvedManifests };
+  return { result: result.analysis, messages, posts, resolvedManifests, advisorySettingChange };
 }
+
+test('a setting change aborts advisory requests while a review is busy and completes its other sections', async () => {
+  const { result, advisorySettingChange } = await analyze({ disableAtAdvisory: true });
+  assert.equal(advisorySettingChange.busy, true);
+  assert.equal(advisorySettingChange.abortedImmediately, true, 'active requests are aborted at the setting event');
+  assert.equal(result.security.checkState, 'off');
+  assert.equal(result.compatibility.status, 'warning', 'the major-version compatibility review completes');
+});
 
 for (const cancelAt of ['candidate-metadata', 'target-metadata', 'resolution']) {
   test(`closing a coordinated review during ${cancelAt} aborts work and starts no further resolvers`, async () => {

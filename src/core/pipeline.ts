@@ -69,6 +69,8 @@ export interface BuildPackageRowsOptions {
    * npm audit does not run, and availability reports advisories as 'off'.
    */
   publicAdvisoryCheck?: boolean;
+  /** Re-read immediately before each advisory chunk is dispatched. */
+  publicAdvisoryCheckEnabled?: () => boolean;
   concurrency?: number;
   signal?: AbortSignal;
   /** Local diagnostics only. The default recorder is a zero-allocation no-op. */
@@ -213,7 +215,8 @@ export async function buildPackageRows(
   // npm audit is subprocess-bound and independent of registry metadata. Start
   // it as soon as the normalized graph provides the direct-name allow-list,
   // then consume its optional fixAvailable enrichment at the original stage.
-  const advisoryCheckOff = options.publicAdvisoryCheck === false;
+  const advisoryEnabled = (): boolean => options.publicAdvisoryCheck !== false && (options.publicAdvisoryCheckEnabled?.() ?? true);
+  const advisoryCheckOff = !advisoryEnabled();
   const auditPromise: Promise<{ fixes: Map<string, FixAvailable>; unavailable: boolean }> = (() => {
     // npm audit sends the same inventory to the registry, so it follows the advisory setting.
     if (advisoryCheckOff) return Promise.resolve({ fixes: new Map(), unavailable: false });
@@ -251,7 +254,7 @@ export async function buildPackageRows(
     let advisoriesByName = new Map<string, Advisory[]>();
     let advisoriesError: FetchError | undefined;
     try {
-      const npmAdvisories = await fetchBulkAdvisories(httpClient, bulkRequestBody, signal);
+      const npmAdvisories = await fetchBulkAdvisories(httpClient, bulkRequestBody, signal, advisoryEnabled);
       advisoriesByName = await enrichAdvisoriesWithGitHubIdentifiers(httpClient, etagStore, npmAdvisories, signal);
     } catch (cause) {
       advisoriesError =

@@ -291,7 +291,10 @@ export class DashboardPanel {
     // Turning the advisory check on or off changes what a scan sends and
     // shows, so the open project is scanned again, like a manual Refresh.
     this.advisorySettingSubscription = platform.onDidChangeSetting(PUBLIC_ADVISORY_CHECK_SETTING, () => {
-      if (!this.disposed) void this.handle({ type: 'refresh' });
+      if (this.disposed) return;
+      this.upgradeCoordinator.handleAdvisorySettingChanged();
+      this.controller?.handleAdvisorySettingChanged();
+      void this.handle({ type: 'refresh' });
     });
 
     this.channel.onDidReceiveMessage((raw: unknown) => {

@@ -2,12 +2,78 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { fetchBulkAdvisories } from '../out/core/advisories/bulk.js';
 import { auditUpgradeReview } from '../out/host/upgradeReviewSecurity.js';
+import { DashboardController } from '../out/host/dashboardController.js';
+import { MemoryEtagStore } from '../out/core/registry/versions.js';
 
 const maxBytes = 256 * 1024;
 const response = body => ({ status: 200, body: JSON.stringify(body) });
 const rawAdvisory = name => ({ id: name, url: `https://example.com/${name}`, title: name,
   severity: 'high', vulnerable_versions: '*' });
 const bodyOf = count => Object.fromEntries(Array.from({ length: count }, (_, i) => [`pkg-${i}`, ['1.0.0']]));
+
+function inventoryGraph(count) {
+  return { root: '/fixture', packageManager: 'npm', lockfileVersion: 3,
+    nodes: new Map(Object.keys(bodyOf(count)).map(name => [name, { name, path: name, version: '1.0.0',
+      direct: true, dev: false, range: '1.0.0', deps: [], edges: [] }])) };
+}
+
+test('a 1,001-package review rechecks the setting before dispatching a queued chunk', async () => {
+  let enabled = true;
+  const pending = [];
+  let posts = 0;
+  const graph = inventoryGraph(1001);
+  const work = auditUpgradeReview({ before: graph, after: graph, enabled: () => enabled,
+    signal: new AbortController().signal, client: { post: async () => {
+      posts++;
+      await new Promise(resolve => pending.push(resolve));
+      return response({});
+    } } });
+  assert.equal(pending.length, 2);
+  enabled = false;
+  while (pending.length) {
+    pending.splice(0).forEach(resolve => resolve());
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal((await work).checkState, 'off');
+  assert.equal(posts, 2, 'no queued inventory is dispatched after opting out');
+});
+
+for (const notify of [false, true]) {
+  test(`a chunked dashboard scan stops on opt-out with setting notification ${notify}`, async () => {
+    let enabled = true;
+    const pending = [];
+    const signals = [];
+    const deps = Object.fromEntries(Object.keys(bodyOf(1000)).map(name => [name, '1.0.0']));
+    const controller = new DashboardController({ root: '/fixture', manifestText: JSON.stringify({ dependencies: { app: '1.0.0' } }),
+      lockfileText: JSON.stringify({ lockfileVersion: 3, packages: {
+        '': { dependencies: { app: '1.0.0' } }, 'node_modules/app': { version: '1.0.0', dependencies: deps },
+        ...Object.fromEntries(Object.keys(deps).map(name => [`node_modules/${name}`, { version: '1.0.0' }])),
+      } }), lockfilePath: null, registry: 'https://registry.npmjs.org', etagStore: new MemoryEtagStore(),
+      projectInfo: { id: 'fixture', label: 'fixture', manifestPath: 'package.json' }, canChangeProject: false,
+      buildInfo: { extensionVersion: '0.0.1', builtAt: '2026-08-01T09:00:00.000Z' },
+      projectCacheStore: { get: () => undefined, set() {}, delete() {} }, cacheKey: 'fixture',
+      publicAdvisoryCheckEnabled: () => enabled, ttlMinutesProvider: () => 30,
+      httpClient: { get: async () => response({ version: '1.0.0' }), post: async (_, body, options) => {
+        signals.push(options.signal);
+        await new Promise(resolve => pending.push(resolve));
+        return response({});
+      } },
+    });
+    const work = controller.handleReady({ postMessage() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(signals.length, 2);
+    enabled = false;
+    if (notify) controller.handleAdvisorySettingChanged?.();
+    const aborted = signals.every(signal => signal.aborted);
+    while (pending.length) {
+      pending.splice(0).forEach(resolve => resolve());
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    await work;
+    assert.equal(signals.length, 2, 'the third inventory chunk stays queued');
+    if (notify) assert.equal(aborted, true, 'setting changes abort in-flight scan requests immediately');
+  });
+}
 
 for (const [count, sizes] of [[500, [500]], [501, [500, 1]], [1001, [500, 500, 1]]]) {
   test(`bulk requests split ${count} packages at the 500 package boundary and merge results`, async () => {

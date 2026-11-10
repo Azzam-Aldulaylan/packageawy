@@ -32,7 +32,7 @@ export async function auditUpgradeReview(input: {
     }
     // Read the setting at dispatch, including after resolver work has finished.
     if (!input.enabled()) return unavailableUpgradeSecurity(true);
-    const advisories = await fetchBulkAdvisories(input.client, body, input.signal);
+    const advisories = await fetchBulkAdvisories(input.client, body, input.signal, input.enabled);
     if (!input.enabled()) return unavailableUpgradeSecurity(true);
     const impact = compareProposedGraphSecurityImpact(
       { graph: input.before, advisoriesByName: advisories, advisories: 'complete' },

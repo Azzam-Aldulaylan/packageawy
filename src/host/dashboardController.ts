@@ -759,6 +759,10 @@ export class DashboardController {
     return this.options.publicAdvisoryCheckEnabled?.(this.options.root) ?? true;
   }
 
+  handleAdvisorySettingChanged(): void {
+    this.inFlight?.abort();
+  }
+
   /** Call from the panel's onDidDispose so an in-flight run stops with it. */
   dispose(): void {
     this.disposed = true;
@@ -844,6 +848,7 @@ export class DashboardController {
         : { auditRunner: this.options.auditRunner }),
       ...(this.options.packageManager === 'pnpm' ? { auditUnavailableWhenOmitted: false } : {}),
       ...(this.publicAdvisoryCheckEnabled() ? {} : { publicAdvisoryCheck: false }),
+      publicAdvisoryCheckEnabled: () => this.publicAdvisoryCheckEnabled(),
       ...(this.options.progressEnabled === true
         ? {
             onProgress: (progress) => {
