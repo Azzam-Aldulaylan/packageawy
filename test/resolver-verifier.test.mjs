@@ -459,3 +459,22 @@ test('a workspace run that leaves the reviewed member out of the lockfile is not
   assert.equal(verification.code, 'RESOLVER_FAILED');
   assert.deepEqual(await verifier.materializeResolvedGraph(workspaceProposal), { ok: false });
 });
+
+test('a workspace that cannot be staged faithfully is unknown and never runs the package manager', async () => {
+  let ran = false;
+  const verifier = new IsolatedResolverVerifier({
+    packageManager: 'pnpm', packageManagerVersion: '9.15.1',
+    invocation: { executable: '/trusted/pnpm', prefixArgs: [] },
+    manifestText: JSON.stringify({ name: '@acme/web', dependencies: { jose: '5.9.6' } }),
+    lockfile: { name: 'pnpm-lock.yaml', text: workspaceLock('5.9.6') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    retainResolvedGraph: true,
+    workspace: { importerId: 'apps/web', files: [], unavailableReason: 'The workspace has more packages than the review can stage.' },
+    runner: { async run() { ran = true; return { exitCode: 0, stdout: '', stderr: '' }; } },
+  });
+  const verification = await verifier.verify(workspaceProposal);
+  assert.equal(verification.status, 'unknown');
+  assert.match(verification.explanation, /more packages than the review can stage/);
+  assert.deepEqual(await verifier.materializeResolvedGraph(workspaceProposal), { ok: false });
+  assert.equal(ran, false);
+});

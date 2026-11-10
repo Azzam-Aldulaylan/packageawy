@@ -138,3 +138,65 @@ test('the fingerprint changes when a staged file changes', async (t) => {
   await writeFile(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n");
   assert.notEqual((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).fingerprint, sibling.fingerprint);
 });
+
+test('top-level !(...) extglobs match members rather than exclude them', async (t) => {
+  const root = await workspace(t, {
+    yaml: "packages:\n  - '!(excluded)'\n  - '!(skip)/*'\n",
+    dirs: ['web', 'excluded', 'group/inner'],
+  });
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'web' });
+  assert.deepEqual(workspaceFile(layout).packages, ['!(excluded)', '!(skip)/*']);
+  assert.deepEqual(paths(layout), ['excluded/package.json', 'group/inner/package.json', 'package.json', 'pnpm-workspace.yaml']);
+  assert.equal(layout.unavailableReason, undefined);
+});
+
+test('settings or manifests that point at local paths outside the workspace make the layout unavailable', async (t) => {
+  const contained = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n  - 'packages/*'\noverrides:\n  foo: link:./packages/shared\n" });
+  assert.equal((await readPnpmWorkspaceLayout({ lockfileRoot: contained, importerId: 'apps/web' })).unavailableReason, undefined);
+
+  for (const yaml of [
+    "packages:\n  - 'apps/*'\noverrides:\n  foo: link:/outside\n",
+    "packages:\n  - 'apps/*'\ncatalog:\n  foo: file:../outside\n",
+    "packages:\n  - 'apps/*'\npackageExtensions:\n  bar:\n    dependencies:\n      foo: ~/outside\n",
+  ]) {
+    const root = await workspace(t, { yaml });
+    assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).unavailableReason, /outside the workspace/);
+  }
+
+  const sibling = await workspace(t);
+  await writeFile(path.join(sibling, 'packages/shared/package.json'), JSON.stringify({ name: 'shared', dependencies: { x: 'file:../../../outside' } }));
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: sibling, importerId: 'apps/web' })).unavailableReason, /packages\/shared\/package.json/);
+});
+
+test('symlinks that leave the workspace are not followed and make the layout unavailable', async (t) => {
+  const { symlink } = await import('node:fs/promises');
+  const outside = await mkdtemp(path.join(tmpdir(), 'packageawy-outside-'));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await mkdir(path.join(outside, 'secret'), { recursive: true });
+  await writeFile(path.join(outside, 'secret/package.json'), '{"name":"secret"}');
+
+  const linkedPrefix = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n  - 'linked/*'\n" });
+  await symlink(outside, path.join(linkedPrefix, 'linked'));
+  const prefixLayout = await readPnpmWorkspaceLayout({ lockfileRoot: linkedPrefix, importerId: 'apps/web' });
+  assert.ok(!paths(prefixLayout).some((file) => file.startsWith('linked/')));
+  assert.match(prefixLayout.unavailableReason, /directory resolves outside the workspace/);
+
+  const linkedManifest = await workspace(t);
+  await rm(path.join(linkedManifest, 'packages/shared/package.json'));
+  await symlink(path.join(outside, 'secret/package.json'), path.join(linkedManifest, 'packages/shared/package.json'));
+  const manifestLayout = await readPnpmWorkspaceLayout({ lockfileRoot: linkedManifest, importerId: 'apps/web' });
+  assert.ok(!paths(manifestLayout).includes('packages/shared/package.json'));
+  assert.match(manifestLayout.unavailableReason, /resolves outside the workspace/);
+});
+
+test('a discovery cut short by its limits makes the layout unavailable', async (t) => {
+  const many = Array.from({ length: 501 }, (_, index) => `packages/p${index}`);
+  const wide = await workspace(t, { dirs: ['apps/web', ...many] });
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: wide, importerId: 'apps/web' })).unavailableReason, /more packages/);
+
+  const deep = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n  - 'tools/**'\n", dirs: ['apps/web', 'tools/1/2/3/4/5/6/7'] });
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: deep, importerId: 'apps/web' })).unavailableReason, /more packages/);
+
+  const fits = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n  - 'tools/**'\n", dirs: ['apps/web', 'tools/1/2'] });
+  assert.equal((await readPnpmWorkspaceLayout({ lockfileRoot: fits, importerId: 'apps/web' })).unavailableReason, undefined);
+});

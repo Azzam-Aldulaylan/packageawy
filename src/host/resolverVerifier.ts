@@ -82,6 +82,8 @@ export interface IsolatedWorkspaceLayout {
    * `manifestText` instead.
    */
   files: readonly { path: string; text: string }[];
+  /** Set when the workspace cannot be staged faithfully. Resolution is then skipped and stays unknown. */
+  unavailableReason?: string;
 }
 
 export interface IsolatedResolverVerifierOptions {
@@ -349,6 +351,16 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
   }
 
   private async verifyProposal(proposal: UpgradeProposal, signal?: AbortSignal): Promise<ResolverVerification> {
+    const unavailableReason = this.options.workspace?.unavailableReason;
+    if (unavailableReason !== undefined) {
+      return {
+        status: 'unknown',
+        packageManager: this.options.packageManager,
+        packageManagerVersion: this.options.packageManagerVersion,
+        code: 'RESOLVER_FAILED',
+        explanation: `Isolated resolver verification was skipped: ${unavailableReason}`,
+      };
+    }
     const stagedManifest = buildStagedManifest(
       this.options.manifestText,
       proposal.changes.map((change) => ({
@@ -431,6 +443,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     proposal: UpgradeProposal,
     signal?: AbortSignal
   ): Promise<{ ok: true; graph: DependencyGraph } | { ok: false }> {
+    if (this.options.workspace?.unavailableReason !== undefined) return { ok: false };
     if (this.options.retainResolvedGraph && proposal.changes.length > 0) {
       await this.verify(proposal, signal);
       const graph = this.reviewGraphs.get(this.proposalKey(proposal));

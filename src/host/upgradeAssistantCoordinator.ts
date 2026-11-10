@@ -1707,7 +1707,8 @@ export class UpgradeAssistantCoordinator {
           observedFingerprint: finalProjectEvidence?.evidenceFingerprint ?? null,
         }) ||
         finalDiskSnapshot === null ||
-        !resolvedProjectSourceMatches(finalDiskSnapshot, preflightProject)
+        !resolvedProjectSourceMatches(finalDiskSnapshot, preflightProject) ||
+        !await reviewWorkspaceStillMatches(finalDiskSnapshot, workspaceLayout?.fingerprint ?? null)
       ) {
         this.options.sink.postMessage({
           status: 'upgrade-error',

@@ -14,7 +14,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { load as loadYaml } from 'js-yaml';
@@ -108,9 +108,14 @@ function isSafeRelativePath(id: string): boolean {
   return id.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
+/** A leading `!` excludes, except the `!(...)` extglob, which matches. */
+function isExclusion(pattern: string): boolean {
+  return pattern.startsWith('!') && !pattern.startsWith('!(');
+}
+
 /** A pattern stays inside the workspace when it is relative and never steps up with `..`. */
 function isContainedPattern(pattern: string): boolean {
-  const body = pattern.startsWith('!') ? pattern.slice(1) : pattern;
+  const body = isExclusion(pattern) ? pattern.slice(1) : pattern;
   if (body === '' || body.includes('\\') || path.posix.isAbsolute(body) || /^[a-z]:/i.test(body)) return false;
   return body.split('/').every((segment) => segment !== '..');
 }
@@ -119,51 +124,121 @@ function isContainedPattern(pattern: string): boolean {
  * The literal leading directories of a positive pattern and how deep its
  * glob part may reach. `apps/*` walks only `apps/`, one level deep.
  */
-function walkPlan(pattern: string): { prefix: string[]; depth: number } {
+function walkPlan(pattern: string): { prefix: string[]; depth: number; unbounded: boolean } {
   const segments = pattern.split('/').filter((segment) => segment !== '' && segment !== '.');
   const globIndex = segments.findIndex((segment) => GLOB_CHARS.test(segment));
-  if (globIndex === -1) return { prefix: segments, depth: 0 };
+  if (globIndex === -1) return { prefix: segments, depth: 0, unbounded: false };
   const rest = segments.slice(globIndex);
   const unbounded = rest.some((segment) => segment.includes('**') || segment.includes('{'));
-  return { prefix: segments.slice(0, globIndex), depth: unbounded ? MAX_DISCOVERY_DEPTH : rest.length };
+  return { prefix: segments.slice(0, globIndex), depth: unbounded ? MAX_DISCOVERY_DEPTH : rest.length, unbounded };
+}
+
+function isInside(realRoot: string, realTarget: string): boolean {
+  return realTarget === realRoot || realTarget.startsWith(realRoot + path.sep);
+}
+
+/** Reads a file whose real path stays inside the workspace. `escapes` marks one that leaves it. */
+async function readContained(realRoot: string, absolutePath: string): Promise<{ text?: string; escapes?: true }> {
+  let real: string;
+  try {
+    real = await realpath(absolutePath);
+  } catch {
+    return {};
+  }
+  if (!isInside(realRoot, real)) return { escapes: true };
+  const text = await readIfExists(real);
+  return text === undefined ? {} : { text };
 }
 
 /**
  * Directories with a package.json that some positive pattern could match,
- * as lock-root-relative POSIX paths. Bounded by depth, directory reads and
- * candidates. node_modules and dot directories are skipped.
+ * as lock-root-relative POSIX paths. node_modules and dot directories are
+ * skipped. `complete` is false when a limit cut the walk short, and
+ * `escaped` is true when a directory resolves outside the workspace. Either
+ * way a member may be missing.
  */
-async function collectCandidates(lockfileRoot: string, patterns: readonly string[], signal?: AbortSignal): Promise<string[]> {
+async function collectCandidates(
+  realRoot: string,
+  patterns: readonly string[],
+  signal?: AbortSignal
+): Promise<{ candidates: string[]; complete: boolean; escaped: boolean }> {
   const candidates = new Set<string>();
   const visited = new Set<string>();
   let reads = 0;
-  const visit = async (relative: string, depthLeft: number): Promise<void> => {
+  let complete = true;
+  let escaped = false;
+  const visit = async (relative: string, depthLeft: number, unbounded: boolean): Promise<void> => {
     if (signal?.aborted) throw new Error('Workspace discovery was cancelled.');
-    if (reads >= MAX_DIRECTORY_READS || candidates.size >= MAX_CANDIDATES) return;
     const key = `${relative}\u0000${depthLeft}`;
     if (visited.has(key)) return;
+    if (reads >= MAX_DIRECTORY_READS || candidates.size >= MAX_CANDIDATES) {
+      complete = false;
+      return;
+    }
     visited.add(key);
-    reads += 1;
     let entries;
     try {
-      entries = await readdir(path.join(lockfileRoot, ...relative.split('/').filter(Boolean)), { withFileTypes: true });
+      const real = await realpath(path.join(realRoot, ...relative.split('/').filter(Boolean)));
+      if (!isInside(realRoot, real)) {
+        escaped = true;
+        return;
+      }
+      reads += 1;
+      entries = await readdir(real, { withFileTypes: true });
     } catch {
       return;
     }
-    if (relative !== '' && entries.some((entry) => entry.isFile() && entry.name === 'package.json')) candidates.add(relative);
-    if (depthLeft === 0) return;
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-      await visit(relative === '' ? entry.name : `${relative}/${entry.name}`, depthLeft - 1);
+    if (relative !== '' && entries.some((entry) => entry.name === 'package.json' && !entry.isDirectory())) {
+      candidates.add(relative);
+    }
+    const children = entries.filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) &&
+      !entry.name.startsWith('.') && entry.name !== 'node_modules');
+    if (depthLeft === 0) {
+      if (unbounded && children.length > 0) complete = false;
+      return;
+    }
+    for (const entry of children) {
+      await visit(relative === '' ? entry.name : `${relative}/${entry.name}`, depthLeft - 1, unbounded);
     }
   };
   for (const pattern of patterns) {
-    if (pattern.startsWith('!')) continue;
+    if (isExclusion(pattern)) continue;
     const plan = walkPlan(pattern);
     if (plan.prefix.some((segment) => segment.startsWith('.') || segment === 'node_modules')) continue;
-    await visit(plan.prefix.join('/'), plan.depth);
+    await visit(plan.prefix.join('/'), plan.depth, plan.unbounded);
   }
-  return [...candidates];
+  return { candidates: [...candidates], complete, escaped };
+}
+
+const LOCAL_PROTOCOL = /^(?:link|file|portal|git\+file):(.*)$/;
+const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
+
+/**
+ * True when a dependency specifier anywhere in `value` points at a local
+ * path outside the workspace, judged from `baseDir` (lock-root-relative).
+ * pnpm reads such paths during resolution, which would leave the temporary
+ * project.
+ */
+function referencesOutside(value: unknown, baseDir: string): boolean {
+  if (typeof value === 'string') {
+    const target = LOCAL_PROTOCOL.exec(value)?.[1] ?? (/^(?:\.{1,2}\/|\/|~)/.test(value) ? value : undefined);
+    if (target === undefined) return false;
+    if (target.startsWith('~') || path.posix.isAbsolute(target) || /^[a-z]:/i.test(target) || target.includes('\\')) return true;
+    const resolved = path.posix.normalize(path.posix.join(baseDir, target));
+    return resolved === '..' || resolved.startsWith('../');
+  }
+  if (Array.isArray(value)) return value.some((entry) => referencesOutside(entry, baseDir));
+  const record = asRecord(value);
+  return record !== null && Object.values(record).some((entry) => referencesOutside(entry, baseDir));
+}
+
+function manifestReferencesOutside(text: string, baseDir: string): boolean {
+  try {
+    const manifest = asRecord(JSON.parse(text)) ?? {};
+    return [...DEPENDENCY_FIELDS, 'pnpm'].some((field) => referencesOutside(manifest[field], baseDir));
+  } catch {
+    return false;
+  }
 }
 
 /** A copied manifest keeps only resolution keys in its `pnpm` field. */
@@ -202,7 +277,8 @@ function fingerprintFiles(files: readonly { path: string; text: string }[]): str
  * Returns undefined when the lock root has no pnpm-workspace.yaml or the
  * files cannot be read, so the resolver keeps its single-project layout.
  * The fingerprint covers every staged file, so editing any of them makes a
- * review stale.
+ * review stale. `unavailableReason` is set when the staged copy could differ
+ * from the real workspace, and the review then reports an unknown result.
  */
 export async function readPnpmWorkspaceLayout(input: {
   lockfileRoot: string;
@@ -210,29 +286,47 @@ export async function readPnpmWorkspaceLayout(input: {
   signal?: AbortSignal;
 }): Promise<PnpmWorkspaceLayout | undefined> {
   try {
-    const workspaceText = await readIfExists(path.join(input.lockfileRoot, WORKSPACE_MANIFEST));
-    if (workspaceText === undefined) return undefined;
+    const realRoot = await realpath(input.lockfileRoot);
+    const workspaceRead = await readContained(realRoot, path.join(realRoot, WORKSPACE_MANIFEST));
+    if (workspaceRead.text === undefined && workspaceRead.escapes === undefined) return undefined;
     if (input.importerId !== '.' && !isSafeRelativePath(input.importerId)) return undefined;
-    const source = asRecord(loadYaml(workspaceText)) ?? {};
+    let unavailableReason: string | undefined;
+    const incomplete = (reason: string): void => {
+      unavailableReason ??= reason;
+    };
+    if (workspaceRead.escapes) incomplete('pnpm-workspace.yaml resolves outside the workspace.');
+    const source = asRecord(loadYaml(workspaceRead.text ?? '')) ?? {};
     const rawPatterns = Array.isArray(source['packages']) ? source['packages'] : [];
     const patterns = rawPatterns.filter((entry): entry is string => typeof entry === 'string' && isContainedPattern(entry));
+    const settings = pick(source, SETTING_KEYS);
+    if (referencesOutside(settings, '.')) incomplete('A workspace setting points at a local path outside the workspace.');
     // JSON is valid YAML and needs no serializer.
-    const workspace = { packages: patterns, ...pick(source, SETTING_KEYS) };
+    const workspace = { packages: patterns, ...settings };
     const files: { path: string; text: string }[] = [
       { path: WORKSPACE_MANIFEST, text: `${JSON.stringify(workspace, null, 2)}\n` },
     ];
-    const npmrc = await readIfExists(path.join(input.lockfileRoot, NPMRC));
-    const sanitizedRc = npmrc === undefined ? undefined : sanitizedNpmrc(npmrc);
+    const npmrc = await readContained(realRoot, path.join(realRoot, NPMRC));
+    const sanitizedRc = npmrc.text === undefined ? undefined : sanitizedNpmrc(npmrc.text);
     if (sanitizedRc !== undefined) files.push({ path: NPMRC, text: sanitizedRc });
-    const ids = ['.', ...await collectCandidates(input.lockfileRoot, patterns, input.signal)];
-    for (const id of ids) {
+    const discovery = await collectCandidates(realRoot, patterns, input.signal);
+    if (discovery.escaped) incomplete('A workspace package directory resolves outside the workspace.');
+    if (!discovery.complete) incomplete('The workspace has more packages than the review can stage.');
+    for (const id of ['.', ...discovery.candidates]) {
       if (id === input.importerId || (id !== '.' && !isSafeRelativePath(id))) continue;
       const relative = id === '.' ? 'package.json' : `${id}/package.json`;
-      const raw = await readIfExists(path.join(input.lockfileRoot, ...relative.split('/')));
-      const text = raw === undefined ? undefined : sanitizedManifest(raw);
-      if (text !== undefined) files.push({ path: relative, text });
+      const read = await readContained(realRoot, path.join(realRoot, ...relative.split('/')));
+      if (read.escapes) incomplete(`${relative} resolves outside the workspace.`);
+      const text = read.text === undefined ? undefined : sanitizedManifest(read.text);
+      if (text === undefined) continue;
+      if (manifestReferencesOutside(text, id)) incomplete(`${relative} points at a local path outside the workspace.`);
+      files.push({ path: relative, text });
     }
-    return { importerId: input.importerId, files, fingerprint: fingerprintFiles(files) };
+    return {
+      importerId: input.importerId,
+      files,
+      fingerprint: fingerprintFiles(files),
+      ...(unavailableReason === undefined ? {} : { unavailableReason }),
+    };
   } catch {
     return undefined;
   }
