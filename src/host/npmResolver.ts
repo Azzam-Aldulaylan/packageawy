@@ -297,10 +297,8 @@ function validatePair(
   const realNode = deps.resolveRealNodePath(node);
   if (realNode === undefined) return undefined;
 
-  const p = pathModuleFor(platform);
-
   if (platform === 'win32') {
-    const npmCliJs = p.join(p.dirname(realNode), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const npmCliJs = windowsNpmCliJsFor(realNode);
     if (!deps.exists(npmCliJs)) return undefined;
     const version = deps.probeVersion(node, npmCliJs);
     if (version === undefined) return undefined;
@@ -309,12 +307,22 @@ function validatePair(
 
   const npmRoot = deps.resolveGlobalNpmRoot(node);
   if (npmRoot === undefined) return undefined;
-  const npmCliJs = p.join(npmRoot, 'npm', 'bin', 'npm-cli.js');
+  const npmCliJs = posixNpmCliJsFor(npmRoot);
   if (!deps.exists(npmCliJs)) return undefined;
   const version = deps.probeVersion(node, npmCliJs);
   if (version === undefined) return undefined;
 
   return { node, npmCliJs, version };
+}
+
+/** Windows: npm-cli.js beside the real node.exe, in the flat official layout. */
+export function windowsNpmCliJsFor(realNode: string): string {
+  return win32Path.join(win32Path.dirname(realNode), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+}
+
+/** POSIX: npm-cli.js inside the global root that `npm root -g` printed. */
+export function posixNpmCliJsFor(npmRoot: string): string {
+  return posixPath.join(npmRoot, 'npm', 'bin', 'npm-cli.js');
 }
 
 /**
@@ -343,7 +351,7 @@ export function resolveNpmInvocation(deps: NpmResolverDeps): NpmResolutionResult
   return { ok: false };
 }
 
-function realIsExecutable(path: string): boolean {
+export function realIsExecutable(path: string): boolean {
   try {
     accessSync(path, fsConstants.X_OK);
     return true;
@@ -352,7 +360,7 @@ function realIsExecutable(path: string): boolean {
   }
 }
 
-function realListDir(dirPath: string): string[] {
+export function realListDir(dirPath: string): string[] {
   try {
     return readdirSync(dirPath);
   } catch {

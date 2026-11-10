@@ -114,7 +114,7 @@ test('invalid webview messages are dropped', async (t) => {
   assert.equal(s.received.some((message) => message.method === 'webview/postMessage'), false);
 });
 
-const UNAVAILABLE = 'Packageawy opens package.json files from your workspace folders, outside node_modules.';
+const UNAVAILABLE = 'Choose a package.json in your workspace, outside node_modules.';
 const shown = (message) => message.method === 'window/showMessage' && message.params.message === UNAVAILABLE;
 
 test('dashboard/openManifest for a file outside every workspace folder shows a message', async (t) => {
