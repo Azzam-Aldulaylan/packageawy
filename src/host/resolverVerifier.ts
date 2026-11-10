@@ -30,6 +30,7 @@ import { buildStagedManifest } from '../core/upgrade/stagedManifest.js';
 import type { DependencyGraph, ResolvedRegistry } from '../core/types.js';
 import { stripUrlCredentials } from '../core/cache/keys.js';
 import { NodePackageManagerProcessRunner } from './packageManagerProcessRunner.js';
+import { sanitizedManifest } from './pnpmWorkspaceLayout.js';
 
 export interface PackageManagerInvocation {
   executable: string;
@@ -332,7 +333,9 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
         await mkdir(projectDir, { recursive: true });
       }
     }
-    await writeFile(path.join(projectDir, 'package.json'), manifestText, 'utf8');
+    // In a workspace the reviewed manifest gets the same `pnpm` field allowlist as the others.
+    const stagedText = workspace === undefined ? manifestText : sanitizedManifest(manifestText) ?? manifestText;
+    await writeFile(path.join(projectDir, 'package.json'), stagedText, 'utf8');
     if (this.options.lockfile !== undefined) {
       await writeFile(path.join(tempRoot, this.options.lockfile.name), this.options.lockfile.text, 'utf8');
     }

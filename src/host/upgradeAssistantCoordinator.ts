@@ -363,6 +363,7 @@ function readReviewWorkspaceLayout(project: ResolvedProject, signal?: AbortSigna
   return readPnpmWorkspaceLayout({
     lockfileRoot: project.lockfileRoot,
     importerId: project.importerId,
+    manifestText: project.manifestText,
     ...(signal === undefined ? {} : { signal }),
   });
 }

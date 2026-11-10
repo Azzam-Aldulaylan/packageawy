@@ -79,7 +79,6 @@ test('only resolution settings without paths reach the temporary project', async
     'registry=https://private.example/',
     'store-dir=/somewhere/store',
     'lockfile-dir=/somewhere/else',
-    'resolution-mode=${MODE}',
     '',
   ].join('\n'));
   await writeFile(path.join(root, 'package.json'), JSON.stringify({
@@ -262,4 +261,84 @@ test('read and parse failures make the layout unavailable instead of dropping fi
     await chmod(path.join(unreadable, 'packages'), 0o755);
     assert.match(layout.unavailableReason, /could not be read/);
   }
+});
+
+test('.npmrc values may be quoted or commented, and unsupported values make the layout unavailable', async (t) => {
+  const root = await workspace(t);
+  await writeFile(path.join(root, '.npmrc'), [
+    'link-workspace-packages="true"',
+    "auto-install-peers='false' ; comment",
+    'dedupe-peer-dependents=true # comment',
+    '; strict-peer-dependencies=true',
+    '',
+  ].join('\n'));
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.equal(layout.files.find((file) => file.path === '.npmrc').text,
+    'link-workspace-packages=true\nauto-install-peers=false\ndedupe-peer-dependents=true\n');
+  assert.equal(layout.unavailableReason, undefined);
+
+  await writeFile(path.join(root, '.npmrc'), 'link-workspace-packages="true"\nauto-install-peers=true\n');
+  assert.notEqual((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).fingerprint, layout.fingerprint);
+
+  await writeFile(path.join(root, '.npmrc'), 'resolution-mode=${MODE}\n');
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).unavailableReason, /resolution-mode/);
+});
+
+test('an .npmrc that resolves outside the workspace makes the layout unavailable', async (t) => {
+  const { symlink } = await import('node:fs/promises');
+  const outside = await mkdtemp(path.join(tmpdir(), 'packageawy-outside-'));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(path.join(outside, 'npmrc'), 'auto-install-peers=false\n');
+  const root = await workspace(t);
+  await symlink(path.join(outside, 'npmrc'), path.join(root, '.npmrc'));
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).unavailableReason, /\.npmrc resolves outside/);
+});
+
+test('local protocols are checked even without a leading dot', async (t) => {
+  for (const spec of ['file:assets/../../../../outside', 'link:assets/../../../../outside', 'portal:/abs']) {
+    const root = await workspace(t);
+    await writeFile(path.join(root, 'packages/shared/package.json'), JSON.stringify({ name: 'shared', dependencies: { x: spec } }));
+    assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).unavailableReason ?? '', /outside the workspace/, spec);
+  }
+  const root = await workspace(t);
+  await writeFile(path.join(root, 'packages/shared/package.json'), JSON.stringify({ name: 'shared', dependencies: { x: 'file:vendor/x' } }));
+  assert.equal((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).unavailableReason, undefined);
+});
+
+test('the reviewed manifest is checked for member and root importers', async (t) => {
+  const root = await workspace(t);
+  const escaping = JSON.stringify({ name: 'web', dependencies: { x: 'file:/outside' } });
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web', manifestText: escaping })).unavailableReason,
+    /reviewed package.json/);
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: '.', manifestText: escaping })).unavailableReason,
+    /reviewed package.json/);
+  const fine = JSON.stringify({ name: 'web', dependencies: { shared: 'link:../../packages/shared' } });
+  assert.equal((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web', manifestText: fine })).unavailableReason, undefined);
+});
+
+test('patched dependencies make the layout unavailable and their configuration is fingerprinted', async (t) => {
+  const yamlPatch = await workspace(t, { yaml: "packages:\n  - 'apps/*'\npatchedDependencies:\n  jose@5.9.6: patches/jose.patch\n" });
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: yamlPatch, importerId: 'apps/web' })).unavailableReason, /patches/);
+
+  const root = await workspace(t);
+  const manifest = (patchPath) => JSON.stringify({ name: 'root', pnpm: { patchedDependencies: { 'jose@5.9.6': patchPath } } });
+  await writeFile(path.join(root, 'package.json'), manifest('patches/a.patch'));
+  const first = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.match(first.unavailableReason, /patches/);
+  await writeFile(path.join(root, 'package.json'), manifest('patches/b.patch'));
+  assert.notEqual((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).fingerprint, first.fingerprint);
+});
+
+test('patterns that cannot be staged make the layout unavailable', async (t) => {
+  for (const yaml of ["packages:\n  - 'apps/*'\n  - '../shared/*'\n", "packages:\n  - 'apps/*'\n  - '.hidden/shared'\n", 'catalog:\n  react: 18.3.1\n']) {
+    const root = await workspace(t, { yaml });
+    assert.ok((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).unavailableReason, yaml);
+  }
+  const negatedOutside = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n  - '!../x'\n" });
+  assert.equal((await readPnpmWorkspaceLayout({ lockfileRoot: negatedOutside, importerId: 'apps/web' })).unavailableReason, undefined);
+});
+
+test('a settings-only pnpm-workspace.yaml at a single project root keeps the single-project layout', async (t) => {
+  const root = await workspace(t, { yaml: 'onlyBuiltDependencies:\n  - esbuild\n', dirs: [] });
+  assert.equal(await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: '.' }), undefined);
 });

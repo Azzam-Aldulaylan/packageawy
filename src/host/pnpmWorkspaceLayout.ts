@@ -228,10 +228,14 @@ const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependenc
  */
 function referencesOutside(value: unknown, baseDir: string): boolean {
   if (typeof value === 'string') {
-    const target = LOCAL_PROTOCOL.exec(value)?.[1] ?? value;
-    const looksLikePath = /^(?:\.{1,2}(?:\/|$)|\/|~\/|[a-z]:)/i.test(target) || target.includes('\\') ||
+    const protocol = LOCAL_PROTOCOL.exec(value);
+    const target = protocol?.[1] ?? value;
+    // Every link:, file:, portal: and git+file: target is a path. workspace: holds a path only when it has a `/` or `.`.
+    const isPath = (protocol !== null && !value.startsWith('workspace:')) ||
+      /^(?:\.{1,2}(?:\/|$)|\/|~\/|[a-z]:)/i.test(target) || target.includes('\\') ||
+      (value.startsWith('workspace:') && target.includes('/')) ||
       (TARBALL.test(target) && !/^[a-z][a-z+.-]*:\/\//i.test(target));
-    if (!looksLikePath) return false;
+    if (!isPath) return false;
     if (target.startsWith('~/') || path.posix.isAbsolute(target) || /^[a-z]:/i.test(target) || target.includes('\\')) return true;
     const resolved = path.posix.normalize(path.posix.join(baseDir, target));
     return resolved === '..' || resolved.startsWith('../');
@@ -241,7 +245,16 @@ function referencesOutside(value: unknown, baseDir: string): boolean {
   return record !== null && Object.values(record).some((entry) => referencesOutside(entry, baseDir));
 }
 
-function manifestReferencesOutside(text: string, baseDir: string): boolean {
+function collectPatches(text: string, patches: unknown[]): void {
+  try {
+    const patched = asRecord(asRecord(JSON.parse(text))?.['pnpm'])?.['patchedDependencies'];
+    if (patched !== undefined) patches.push(patched);
+  } catch {
+    // Parse failures are reported where the manifest is staged.
+  }
+}
+
+export function manifestReferencesOutside(text: string, baseDir: string): boolean {
   try {
     const manifest = asRecord(JSON.parse(text)) ?? {};
     return [...DEPENDENCY_FIELDS, 'pnpm'].some((field) => referencesOutside(manifest[field], baseDir));
@@ -251,7 +264,7 @@ function manifestReferencesOutside(text: string, baseDir: string): boolean {
 }
 
 /** A copied manifest keeps only resolution keys in its `pnpm` field. */
-function sanitizedManifest(text: string): string | undefined {
+export function sanitizedManifest(text: string): string | undefined {
   try {
     const manifest = asRecord(JSON.parse(text));
     if (manifest === null) return undefined;
@@ -264,14 +277,26 @@ function sanitizedManifest(text: string): string | undefined {
   }
 }
 
-/** Allowlisted scalar settings only. Credentials, registries and paths are left out. */
-function sanitizedNpmrc(text: string): string | undefined {
+/**
+ * Allowlisted scalar settings only, written canonically. Credentials,
+ * registries and paths are left out. An allowlisted key with a value that
+ * is not a plain scalar is reported, since pnpm would read it differently.
+ */
+function sanitizedNpmrc(text: string): { text?: string; unsupported?: string } {
   const lines: string[] = [];
   for (const raw of text.split(/\r?\n/)) {
-    const match = /^\s*([a-z-]+)\s*=\s*([\w.-]+)\s*$/.exec(raw);
-    if (match !== null && NPMRC_KEYS.has(match[1] ?? '')) lines.push(`${match[1]}=${match[2]}`);
+    const line = raw.trim();
+    if (line === '' || line.startsWith(';') || line.startsWith('#')) continue;
+    const separator = line.indexOf('=');
+    if (separator <= 0) continue;
+    const key = line.slice(0, separator).trim();
+    if (!NPMRC_KEYS.has(key)) continue;
+    let value = line.slice(separator + 1).replace(/\s+[;#].*$/, '').trim();
+    if (/^(["']).*\1$/.test(value)) value = value.slice(1, -1);
+    if (!/^[\w.-]+$/.test(value)) return { unsupported: `The workspace .npmrc sets ${key} to a value the review cannot stage.` };
+    lines.push(`${key}=${value}`);
   }
-  return lines.length === 0 ? undefined : `${lines.join('\n')}\n`;
+  return lines.length === 0 ? {} : { text: `${lines.join('\n')}\n` };
 }
 
 function fingerprintFiles(files: readonly { path: string; text: string }[], reasons: readonly string[]): string {
@@ -294,6 +319,8 @@ function fingerprintFiles(files: readonly { path: string; text: string }[], reas
 export async function readPnpmWorkspaceLayout(input: {
   lockfileRoot: string;
   importerId: string;
+  /** The reviewed manifest. It is checked like the others and staged by the resolver. */
+  manifestText?: string;
   signal?: AbortSignal;
 }): Promise<PnpmWorkspaceLayout | undefined> {
   let realRoot: string;
@@ -317,16 +344,35 @@ export async function readPnpmWorkspaceLayout(input: {
   } catch {
     reasons.push('pnpm-workspace.yaml could not be parsed.');
   }
+  if (!Array.isArray(source['packages'])) {
+    // A settings-only file at a single project's root keeps the single-project layout used before workspaces were staged.
+    if (input.importerId === '.' && reasons.length === 0) return undefined;
+    reasons.push('pnpm-workspace.yaml has no packages list to stage.');
+  }
   const rawPatterns = Array.isArray(source['packages']) ? source['packages'] : [];
-  const patterns = rawPatterns.filter((entry): entry is string => typeof entry === 'string' && isContainedPattern(entry));
+  const patterns: string[] = [];
+  for (const entry of rawPatterns) {
+    if (typeof entry === 'string' && isContainedPattern(entry)) patterns.push(entry);
+    else if (typeof entry !== 'string' || !isExclusion(entry)) reasons.push('A workspace package pattern points outside the workspace.');
+  }
+  for (const pattern of patterns) {
+    if (!isExclusion(pattern) && walkPlan(pattern).prefix.some((segment) => segment.startsWith('.') || segment === 'node_modules')) {
+      reasons.push('A workspace package pattern names a hidden or node_modules directory.');
+    }
+  }
   const settings = pick(source, SETTING_KEYS);
+  // Patches are applied by the real install. Their configuration is part of the fingerprint.
+  const patches: unknown[] = [];
+  if (source['patchedDependencies'] !== undefined) patches.push(source['patchedDependencies']);
   if (referencesOutside(settings, '.')) reasons.push('A workspace setting points at a local path outside the workspace.');
   // JSON is valid YAML and needs no serializer.
   files.push({ path: WORKSPACE_MANIFEST, text: `${JSON.stringify({ packages: patterns, ...settings }, null, 2)}\n` });
   const npmrc = await readContained(realRoot, path.join(realRoot, NPMRC));
   if (npmrc.failed) reasons.push('The workspace .npmrc could not be read.');
-  const sanitizedRc = npmrc.text === undefined ? undefined : sanitizedNpmrc(npmrc.text);
-  if (sanitizedRc !== undefined) files.push({ path: NPMRC, text: sanitizedRc });
+  if (npmrc.escapes) reasons.push('The workspace .npmrc resolves outside the workspace.');
+  const sanitizedRc = npmrc.text === undefined ? {} : sanitizedNpmrc(npmrc.text);
+  if (sanitizedRc.unsupported !== undefined) reasons.push(sanitizedRc.unsupported);
+  if (sanitizedRc.text !== undefined) files.push({ path: NPMRC, text: sanitizedRc.text });
   let discovery;
   try {
     discovery = await collectCandidates(realRoot, patterns, input.signal);
@@ -336,6 +382,12 @@ export async function readPnpmWorkspaceLayout(input: {
   if (discovery.escaped) reasons.push('A workspace package directory resolves outside the workspace.');
   if (discovery.failed) reasons.push('A workspace package directory could not be read.');
   if (!discovery.complete) reasons.push('The workspace has more packages than the review can stage.');
+  if (input.manifestText !== undefined) {
+    collectPatches(input.manifestText, patches);
+    if (manifestReferencesOutside(input.manifestText, input.importerId)) {
+      reasons.push('The reviewed package.json points at a local path outside the workspace.');
+    }
+  }
   for (const id of ['.', ...discovery.candidates]) {
     if (id === input.importerId || (id !== '.' && !isSafeRelativePath(id))) continue;
     const relative = id === '.' ? 'package.json' : `${id}/package.json`;
@@ -343,6 +395,7 @@ export async function readPnpmWorkspaceLayout(input: {
     if (read.escapes) reasons.push(`${relative} resolves outside the workspace.`);
     if (read.failed) reasons.push(`${relative} could not be read.`);
     if (read.text === undefined) continue;
+    collectPatches(read.text, patches);
     const text = sanitizedManifest(read.text);
     if (text === undefined) {
       reasons.push(`${relative} could not be parsed.`);
@@ -350,6 +403,10 @@ export async function readPnpmWorkspaceLayout(input: {
     }
     if (manifestReferencesOutside(text, id)) reasons.push(`${relative} points at a local path outside the workspace.`);
     files.push({ path: relative, text });
+  }
+  if (patches.length > 0) {
+    reasons.push('The workspace patches dependencies, and patches are applied only by a real install.');
+    reasons.push(JSON.stringify(patches));
   }
   return {
     importerId: input.importerId,
