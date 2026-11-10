@@ -2,15 +2,11 @@ import type { ResolvedRegistry } from '../types.js';
 import type { HttpClient } from '../registry/http.js';
 import type { EtagStore, PackageVersionMetadata } from '../registry/versions.js';
 import { fetchPackageVersionMetadata } from '../registry/versions.js';
+import { registryForPackage } from '../registry/npmrc.js';
 import type { PackageMetadataProvider } from './types.js';
 
-/** Select a scoped registry without allowing a package name to affect URL structure. */
-export function registryForPackage(registry: ResolvedRegistry, packageName: string): string {
-  if (!packageName.startsWith('@')) return registry.url;
-  const slash = packageName.indexOf('/');
-  if (slash <= 1) return registry.url;
-  return registry.scoped[packageName.slice(0, slash)] ?? registry.url;
-}
+// Re-exported for existing host imports. The routing rule lives with registry resolution.
+export { registryForPackage };
 
 /**
  * Lazy adapter over the existing project-independent ETag store. Constructing

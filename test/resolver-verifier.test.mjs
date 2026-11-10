@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildLockfileMaterializationArgs,
   buildResolverArgs,
   buildTransitiveRemediationMaterializationArgs,
   IsolatedResolverVerifier,
@@ -23,6 +24,32 @@ test('pnpm resolver argv confines writes to temp and never enables lifecycle scr
   assert.deepEqual(buildResolverArgs('pnpm', 'https://registry.npmjs.org', { strictPeerDeps: false, legacyPeerDeps: false }), [
     'install', '--ignore-scripts', '--lockfile=false', '--reporter=silent', '--registry=https://registry.npmjs.org',
   ]);
+});
+
+test('scoped registries become sorted --@scope:registry flags and invalid entries are skipped', () => {
+  const policy = { strictPeerDeps: false, legacyPeerDeps: false };
+  const scoped = {
+    '@zeta': 'https://npm.zeta.example/',
+    '@company': 'https://user:secret@npm.company.example/',
+    '@evil --registry=https://attacker.example': 'https://npm.company.example/',
+    '@bad': 'https://npm.company.example/ --ignore-scripts=false',
+    '@file': 'file:///etc/passwd',
+    '@-dash': 'https://npm.company.example/',
+  };
+  const expected = ['--@company:registry=https://npm.company.example/', '--@zeta:registry=https://npm.zeta.example/'];
+  for (const manager of ['npm', 'pnpm']) {
+    for (const args of [
+      buildResolverArgs(manager, 'https://registry.npmjs.org', policy, scoped),
+      buildLockfileMaterializationArgs(manager, 'https://registry.npmjs.org', policy, scoped),
+      buildTransitiveRemediationMaterializationArgs(manager, ['minimatch'], 'https://registry.npmjs.org', policy, scoped),
+    ]) {
+      const registryIndex = args.indexOf('--registry=https://registry.npmjs.org');
+      assert.ok(registryIndex >= 0);
+      assert.deepEqual(args.slice(registryIndex + 1, registryIndex + 3), expected);
+      assert.deepEqual(args.filter((arg) => arg.includes(':registry=')), expected);
+      assert.ok(!args.some((arg) => arg.includes('secret') || arg.includes('attacker') || arg.includes('file:')));
+    }
+  }
 });
 
 test('isolated verifier rewrites only its temporary manifest and reports resolver success', async () => {

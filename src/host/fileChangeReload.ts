@@ -14,6 +14,7 @@
  */
 
 import type { DashboardController, MessageSink } from './dashboardController.js';
+import type { ResolvedRegistry } from '../core/types.js';
 import type { SelectedProjectInfo } from './webviewProtocol.js';
 
 export interface ReloadedProject {
@@ -22,6 +23,8 @@ export interface ReloadedProject {
   lockfileText: string | null;
   lockfilePath: string | null;
   registry: string;
+  /** Full registry routing, including scoped overrides. */
+  resolvedRegistry?: ResolvedRegistry;
   packageManager?: 'npm' | 'pnpm';
   importerId?: string;
   lockfileName?: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
@@ -31,7 +34,12 @@ export interface ReloadedProject {
 export interface ReloadSource<TCandidate> {
   loadProject(candidate: TCandidate): Promise<ReloadedProject>;
   toProjectInfo(candidate: TCandidate): SelectedProjectInfo;
-  cacheKeyFor(candidate: TCandidate, registry: string, packageManager?: 'npm' | 'pnpm'): string;
+  cacheKeyFor(
+    candidate: TCandidate,
+    registry: string,
+    packageManager?: 'npm' | 'pnpm',
+    scopedRegistries?: Readonly<Record<string, string>>
+  ): string;
 }
 
 export interface ReloadControllerFromDiskParams<TCandidate> {
@@ -78,7 +86,13 @@ export async function reloadControllerFromDisk<TCandidate>(
   }
 
   const projectInfo = params.source.toProjectInfo(params.candidate);
-  const cacheKey = params.source.cacheKeyFor(params.candidate, project.registry, project.packageManager);
+  const resolvedRegistry = project.resolvedRegistry ?? { url: project.registry, source: 'default' as const, scoped: {} };
+  const cacheKey = params.source.cacheKeyFor(
+    params.candidate,
+    project.registry,
+    project.packageManager,
+    resolvedRegistry.scoped
+  );
 
   params.controller.invalidateCache();
   params.controller.updateProjectSnapshot(
@@ -88,6 +102,7 @@ export async function reloadControllerFromDisk<TCandidate>(
       lockfileText: project.lockfileText,
       lockfilePath: project.lockfilePath,
       registry: project.registry,
+      resolvedRegistry,
       packageManager: project.packageManager ?? 'npm',
       importerId: project.importerId ?? '.',
       lockfileName: project.lockfileName ?? null,

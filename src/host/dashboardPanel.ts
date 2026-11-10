@@ -181,8 +181,8 @@ export class DashboardPanel {
   private readonly reloadSource: ReloadSource<DiscoveredProject> = {
     loadProject: (candidate) => this.loadProjectMeasured(candidate, 'Packageawy project reload'),
     toProjectInfo,
-    cacheKeyFor: (candidate, registry, packageManager) =>
-      deriveProjectCacheKey(candidate.id, registry, packageManager ?? 'npm'),
+    cacheKeyFor: (candidate, registry, packageManager, scopedRegistries) =>
+      deriveProjectCacheKey(candidate.id, registry, packageManager ?? 'npm', scopedRegistries ?? {}),
   };
 
   private constructor(platform: HostPlatform, channel: WebviewChannel, options: DashboardPanelOptions) {
@@ -1142,7 +1142,7 @@ export class DashboardPanel {
 
   /** project identity (stable across scans) plus registry. See deriveProjectCacheKey for why both are needed to avoid cross-registry contamination within the same project. */
   private cacheKeyFor(candidate: DiscoveredProject, project: ResolvedProject): string {
-    return deriveProjectCacheKey(candidate.id, project.registry, project.packageManager);
+    return deriveProjectCacheKey(candidate.id, project.registry, project.packageManager, project.resolvedRegistry.scoped);
   }
 
   private readonly ttlMinutesProvider = (): number => {

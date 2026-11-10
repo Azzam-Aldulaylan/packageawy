@@ -366,7 +366,10 @@ export interface VersionRequest {
 export interface FetchVersionOptions {
   client: HttpClient;
   store: EtagStore;
+  /** Default registry, used for every package `registryFor` does not route. */
   registry: string;
+  /** Per-package routing, e.g. `@scope:registry` overrides from .npmrc. */
+  registryFor?: (name: string) => string;
   signal?: AbortSignal;
   /** Optional scan-local loader used to share one packument across consumers. */
   packumentLoader?: (name: string, signal?: AbortSignal) => Promise<PackumentDoc>;
@@ -396,7 +399,8 @@ export async function fetchVersionInfo(
   options: FetchVersionOptions,
   req: VersionRequest
 ): Promise<VersionInfo> {
-  const { client, store, registry, signal } = options;
+  const { client, store, signal } = options;
+  const registry = options.registryFor?.(req.name) ?? options.registry;
 
   const latestDoc = await fetchLatest(client, store, registry, req.name, signal);
 
@@ -467,6 +471,7 @@ export async function fetchAllVersions(
           client: options.client,
           store: options.store,
           registry: options.registry,
+          ...(options.registryFor === undefined ? {} : { registryFor: options.registryFor }),
           ...(signal === undefined ? {} : { signal }),
           ...(options.packumentLoader === undefined ? {} : { packumentLoader: options.packumentLoader }),
         },

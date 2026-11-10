@@ -48,7 +48,18 @@ export function stripUrlCredentials(url: string): string {
 export function deriveProjectCacheKey(
   projectId: string,
   registry: string,
-  packageManager: 'npm' | 'pnpm' = 'npm'
+  packageManager: 'npm' | 'pnpm' = 'npm',
+  scopedRegistries: Readonly<Record<string, string>> = {}
 ): string {
-  return JSON.stringify([projectId, stripUrlCredentials(registry), packageManager]);
+  // Scoped registries route `@scope/*` rows to their own registry, so they
+  // are part of the registry identity. Sorted for a stable key, and left out
+  // entirely when empty so unscoped projects keep their existing key.
+  const scoped = Object.entries(scopedRegistries)
+    .map(([scope, url]): [string, string] => [scope, stripUrlCredentials(url)])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify(
+    scoped.length === 0
+      ? [projectId, stripUrlCredentials(registry), packageManager]
+      : [projectId, stripUrlCredentials(registry), packageManager, scoped]
+  );
 }

@@ -147,7 +147,11 @@ async function findLockfile(
   return { lockfile: name === null ? null : { dir, name }, other };
 }
 
-async function resolveRegistryConfiguration(platform: HostPlatform, projectRoot: string): Promise<{
+async function resolveRegistryConfiguration(
+  platform: HostPlatform,
+  projectRoot: string,
+  lockfileRoot: string
+): Promise<{
   registry: ResolvedRegistry;
   peerPolicy: PeerResolutionPolicy;
 }> {
@@ -160,11 +164,18 @@ async function resolveRegistryConfiguration(platform: HostPlatform, projectRoot:
   const projectNpmrc = allowProjectNpmrc
     ? await readIfExists(path.join(projectRoot, '.npmrc'))
     : undefined;
+  // A workspace member inherits the workspace root's .npmrc (the lockfile
+  // root), and its own .npmrc overrides it.
+  const workspaceRootNpmrc =
+    allowProjectNpmrc && path.resolve(lockfileRoot) !== path.resolve(projectRoot)
+      ? await readIfExists(path.join(lockfileRoot, '.npmrc'))
+      : undefined;
   const userNpmrc = await readIfExists(path.join(homedir(), '.npmrc'));
 
   const resolveOptions = {
     allowProjectNpmrc,
     ...(projectNpmrc === undefined ? {} : { projectNpmrc }),
+    ...(workspaceRootNpmrc === undefined ? {} : { workspaceRootNpmrc }),
     ...(userNpmrc === undefined ? {} : { userNpmrc }),
   };
   const { registry } = resolveRegistry(resolveOptions);
@@ -249,7 +260,7 @@ export async function loadProject(
   const importerRelative = path.relative(lockfileRoot, root).split(path.sep).join('/');
   const importerId = importerRelative === '' ? '.' : importerRelative;
 
-  const configuration = await resolveRegistryConfiguration(platform, root);
+  const configuration = await resolveRegistryConfiguration(platform, root, lockfileRoot);
   return {
     root,
     manifestText,

@@ -32,9 +32,10 @@ import type { EtagStore, VersionRequest } from './registry/versions.js';
 import { fetchAllVersions, fetchPackument } from './registry/versions.js';
 import type { PackumentDoc } from './registry/versions.js';
 import { DEFAULT_CONCURRENCY, runPool } from './registry/pool.js';
+import { registryForPackage } from './registry/npmrc.js';
 import { resolveUpgradeCandidate } from './upgrade/candidate.js';
 import type { Advisory, AttributedAdvisory, FixAvailable, PackageRow, ScanDataAvailability, VersionInfo } from './types.js';
-import type { PackageManagerKind } from './types.js';
+import type { PackageManagerKind, ResolvedRegistry } from './types.js';
 
 export interface BuildPackageRowsOptions {
   /** Absolute path to the directory holding package.json. */
@@ -46,6 +47,12 @@ export interface BuildPackageRowsOptions {
   importerId?: string;
   /** Resolved from .npmrc: version data only. Advisories always go to npm. */
   registry: string;
+  /**
+   * Full .npmrc routing, including `@scope:registry` overrides. When given,
+   * every registry metadata request in the scan goes to the package's own
+   * registry, so scoped names never reach the default registry.
+   */
+  resolvedRegistry?: ResolvedRegistry;
   httpClient: HttpClient;
   etagStore: EtagStore;
   /** Omit entirely to skip the optional `npm audit` enrichment. */
@@ -156,6 +163,9 @@ export async function buildPackageRows(
   const recorder = options.performance ?? NOOP_PERFORMANCE_RECORDER;
   const httpClient = instrumentHttpClient(options.httpClient, recorder);
   const etagStore = instrumentEtagStore(options.etagStore, recorder);
+  const resolvedRegistry = options.resolvedRegistry;
+  const registryFor = (name: string): string =>
+    resolvedRegistry === undefined ? registry : registryForPackage(resolvedRegistry, name);
   throwIfAborted(signal);
 
   options.onProgress?.({ stage: 'manifest' });
@@ -189,7 +199,7 @@ export async function buildPackageRows(
       return cached;
     }
     recorder.increment(`packument requests for ${reason}`);
-    const pending = fetchPackument(httpClient, etagStore, registry, name, requestSignal);
+    const pending = fetchPackument(httpClient, etagStore, registryFor(name), name, requestSignal);
     packumentPromises.set(name, pending);
     return pending;
   };
@@ -262,6 +272,7 @@ export async function buildPackageRows(
     client: httpClient,
     store: etagStore,
     registry,
+    registryFor,
     packumentLoader: (name, requestSignal) => loadPackument(name, 'version resolution', requestSignal),
   };
   if (options.concurrency !== undefined) fetchOptions.limit = options.concurrency;

@@ -22,7 +22,8 @@ import { buildDependencyGraph } from '../core/lockfile/build.js';
 import { parseManifest } from '../core/manifest/parse.js';
 import { buildTransitiveRemediationArgs } from '../core/upgrade/plan.js';
 import { buildStagedManifest } from '../core/upgrade/stagedManifest.js';
-import type { DependencyGraph } from '../core/types.js';
+import type { DependencyGraph, ResolvedRegistry } from '../core/types.js';
+import { stripUrlCredentials } from '../core/cache/keys.js';
 import { NodePackageManagerProcessRunner } from './packageManagerProcessRunner.js';
 
 export interface PackageManagerInvocation {
@@ -73,14 +74,41 @@ export interface IsolatedResolverVerifierOptions {
   manifestText: string;
   lockfile?: { name: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml'; text: string };
   registry: string;
+  /** Full .npmrc routing. Its scoped registries become `--@scope:registry=` flags. */
+  resolvedRegistry?: ResolvedRegistry;
   policy: PeerResolutionPolicy;
   runner?: ResolverProcessRunner;
+}
+
+const SCOPE_PATTERN = /^@[a-z0-9][a-z0-9._-]*$/i;
+
+/**
+ * One `--@scope:registry=<url>` flag per scope, sorted by scope. These become
+ * command-line arguments, so a scope or URL that is not plainly valid is
+ * skipped rather than passed through. Both npm and pnpm accept this form.
+ */
+export function buildScopedRegistryArgs(scoped: Readonly<Record<string, string>> = {}): string[] {
+  const args: string[] = [];
+  for (const scope of Object.keys(scoped).sort()) {
+    const raw = scoped[scope];
+    if (raw === undefined || !SCOPE_PATTERN.test(scope) || /\s/.test(raw)) continue;
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') continue;
+    args.push(`--${scope}:registry=${stripUrlCredentials(raw)}`);
+  }
+  return args;
 }
 
 export function buildResolverArgs(
   manager: SupportedPackageManager,
   registry: string,
-  policy: PeerResolutionPolicy
+  policy: PeerResolutionPolicy,
+  scoped: Readonly<Record<string, string>> = {}
 ): string[] {
   const policyArgs: string[] = [];
   if (policy.legacyPeerDeps && manager === 'npm') policyArgs.push('--legacy-peer-deps');
@@ -98,6 +126,7 @@ export function buildResolverArgs(
       '--fund=false',
       '--json',
       `--registry=${registry}`,
+      ...buildScopedRegistryArgs(scoped),
       ...policyArgs,
     ];
   }
@@ -107,6 +136,7 @@ export function buildResolverArgs(
     '--lockfile=false',
     '--reporter=silent',
     `--registry=${registry}`,
+    ...buildScopedRegistryArgs(scoped),
     ...policyArgs,
   ];
 }
@@ -122,7 +152,8 @@ export function buildResolverArgs(
 export function buildLockfileMaterializationArgs(
   manager: SupportedPackageManager,
   registry: string,
-  policy: PeerResolutionPolicy
+  policy: PeerResolutionPolicy,
+  scoped: Readonly<Record<string, string>> = {}
 ): string[] {
   const policyArgs: string[] = [];
   if (policy.legacyPeerDeps && manager === 'npm') policyArgs.push('--legacy-peer-deps');
@@ -139,6 +170,7 @@ export function buildLockfileMaterializationArgs(
       '--fund=false',
       '--json',
       `--registry=${registry}`,
+      ...buildScopedRegistryArgs(scoped),
       ...policyArgs,
     ];
   }
@@ -148,6 +180,7 @@ export function buildLockfileMaterializationArgs(
     '--ignore-scripts',
     '--reporter=silent',
     `--registry=${registry}`,
+    ...buildScopedRegistryArgs(scoped),
     ...policyArgs,
   ];
 }
@@ -160,15 +193,16 @@ export function buildTransitiveRemediationMaterializationArgs(
   manager: SupportedPackageManager,
   packageNames: readonly string[],
   registry: string,
-  policy: PeerResolutionPolicy
+  policy: PeerResolutionPolicy,
+  scoped: Readonly<Record<string, string>> = {}
 ): string[] {
   const args = buildTransitiveRemediationArgs(manager, packageNames, { ignoreScripts: true });
   if (manager === 'npm') {
-    args.push('--audit=false', '--fund=false', '--json', `--registry=${registry}`);
+    args.push('--audit=false', '--fund=false', '--json', `--registry=${registry}`, ...buildScopedRegistryArgs(scoped));
     if (policy.legacyPeerDeps) args.push('--legacy-peer-deps');
     else if (policy.strictPeerDeps) args.push('--strict-peer-deps');
   } else {
-    args.push('--reporter=silent', `--registry=${registry}`);
+    args.push('--reporter=silent', `--registry=${registry}`, ...buildScopedRegistryArgs(scoped));
     if (policy.strictPeerDeps) args.push('--strict-peer-dependencies');
   }
   return args;
@@ -233,7 +267,12 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
       }
       const result = await this.runner.run(
         this.options.invocation,
-        buildResolverArgs(this.options.packageManager, this.options.registry, this.options.policy),
+        buildResolverArgs(
+          this.options.packageManager,
+          this.options.registry,
+          this.options.policy,
+          this.options.resolvedRegistry?.scoped
+        ),
         tempRoot,
         signal
       );
@@ -291,7 +330,12 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
       }
       const result = await this.runner.run(
         this.options.invocation,
-        buildLockfileMaterializationArgs(this.options.packageManager, this.options.registry, this.options.policy),
+        buildLockfileMaterializationArgs(
+          this.options.packageManager,
+          this.options.registry,
+          this.options.policy,
+          this.options.resolvedRegistry?.scoped
+        ),
         tempRoot,
         signal
       );
@@ -346,7 +390,8 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
           this.options.packageManager,
           packageNames,
           this.options.registry,
-          this.options.policy
+          this.options.policy,
+          this.options.resolvedRegistry?.scoped
         ),
         tempRoot,
         signal
