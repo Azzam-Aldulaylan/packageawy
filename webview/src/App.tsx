@@ -80,6 +80,7 @@ import { IconBrand, IconBroom, IconListChecks, IconRefresh, IconSliders } from '
 import type { RemovalImpactState } from './removalImpactState.js';
 import { remediationPlanFromState } from './transitiveRemediationState.js';
 import type { TransitiveFixUiState } from './transitiveRemediationState.js';
+import { dialogsAfterOpenRequest, manageRowAfterSnapshot } from './manageDialogState.js';
 import { buildSmartCleanupPlan } from './smartCleanupPlanAdapter.js';
 import {
   createSmartCleanupState,
@@ -302,6 +303,9 @@ export function App(): ReactElement {
   // the workspace stays open the whole time. See requestRemoveFromManage
   // and the Manage dependency render block below.
   const [manageRow, setManageRow] = useState<string | null>(null);
+  // Read by the message handler, which is registered once. Updated wherever
+  // `manageRow` changes so a snapshot never sees an older value.
+  const manageRowRef = useRef<string | null>(null);
   // Which of Manage's five sections is showing: reset to 'overview'
   // whenever a fresh Manage session opens (openManage) or the underlying
   // scan is superseded. Lifted up here (rather than local to
@@ -1095,6 +1099,25 @@ export function App(): ReactElement {
       const reviewEffect = upgradeReviewDashboardEffect(activeUpgradeRef.current, dashboardDataRef.current, incoming);
       let nextMessage = incoming;
       if ('data' in incoming) {
+        // Forget the Manage dialog when its package left this snapshot or
+        // the project changed. Otherwise a later snapshot that lists the
+        // package again (files reset outside VS Code) would reopen it.
+        const previousData = dashboardDataRef.current;
+        const rememberedManageRow = manageRowRef.current;
+        if (
+          rememberedManageRow !== null &&
+          manageRowAfterSnapshot(
+            rememberedManageRow,
+            previousData === null ? null : smartCleanupProjectKey(previousData),
+            smartCleanupProjectKey(incoming.data),
+            incoming.data.rows.map((row) => row.name)
+          ) === null
+        ) {
+          manageRowRef.current = null;
+          setManageRow(null);
+          setManageTab('overview');
+          smartCleanupDrilldownRef.current = null;
+        }
         dashboardDataRef.current = incoming.data;
         dashboardSnapshotStatusRef.current = incoming.status;
         const cachedReview = smartCleanupReviewCacheRef.current;
@@ -1628,6 +1651,7 @@ export function App(): ReactElement {
       setUpgradeEnrichment(null);
       pendingEnrichmentDashboardMessageRef.current = null;
     }
+    manageRowRef.current = packageName;
     setManageRow(packageName);
     setManageTab('overview');
   }, []);
@@ -1712,6 +1736,7 @@ export function App(): ReactElement {
     if (removalImpact.phase === 'analyzing') requestCancelRemovalImpact();
     if (upgradeOrigin === 'manage-dependency' && activeUpgrade !== null) requestCancelUpgrade();
     if (removeOrigin === 'manage-dependency' && activeRemove !== null) requestCancelRemove();
+    manageRowRef.current = null;
     setManageRow(null);
     upgradeResultRef.current = null;
     setUpgradeResult(null);
@@ -1851,6 +1876,25 @@ export function App(): ReactElement {
 
   const startSmartCleanup = useCallback(() => {
     if (data === undefined) return;
+    const openManageRow = manageRowRef.current;
+    if (openManageRow !== null) {
+      // Same rule as the Manage dialog's own Close: running work keeps it open.
+      const manageCloseBlocked =
+        removalImpact.phase === 'analyzing' ||
+        confirmBusy ||
+        removeBusy ||
+        remediationByPackage.get(openManageRow)?.phase === 'applying';
+      const next = dialogsAfterOpenRequest(
+        { manageOpen: true, smartCleanupOpen: smartCleanupOpenRef.current },
+        'smart-cleanup',
+        manageCloseBlocked
+      );
+      if (next.manageOpen) return;
+      // Leave Manage without its Back to Smart Cleanup restore: this call
+      // opens Smart Cleanup itself.
+      smartCleanupDrilldownRef.current = null;
+      closeManage();
+    }
     const currentIdentity = {
       projectKey: smartCleanupProjectKey(data),
       dashboardGeneratedAt: data.generatedAt,
@@ -1891,7 +1935,29 @@ export function App(): ReactElement {
       vscode.postMessage({ type: 'analyze-cleanup' });
     }
     vscode.postMessage({ type: 'analyze-smart-cleanup-metadata', requestId });
-  }, [cleanupFindings, cleanupState, data, smartCleanupState]);
+  }, [
+    cleanupFindings,
+    cleanupState,
+    closeManage,
+    confirmBusy,
+    data,
+    remediationByPackage,
+    removalImpact.phase,
+    removeBusy,
+    smartCleanupState,
+  ]);
+
+  // The dashboard table sits behind Smart Cleanup, so a row's Manage button
+  // must not stack a second dialog on top of it.
+  const openManageFromDashboard = useCallback((packageName: string) => {
+    const next = dialogsAfterOpenRequest(
+      { manageOpen: manageRowRef.current !== null, smartCleanupOpen: smartCleanupOpenRef.current },
+      'manage',
+      false
+    );
+    if (!next.manageOpen) return;
+    openManage(packageName);
+  }, [openManage]);
 
   const closeSmartCleanup = useCallback(() => {
     if (smartCleanupState.phase === 'analyzing') {
@@ -2303,7 +2369,7 @@ export function App(): ReactElement {
           cleanupChecking={cleanupState.phase === 'analyzing'}
           onOpenSmartCleanup={startSmartCleanup}
           onOpenBulkActions={() => setBulkActionsOpen(true)}
-          onOpenManage={openManage}
+          onOpenManage={openManageFromDashboard}
         />
       ) : null}
 
