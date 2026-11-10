@@ -232,3 +232,14 @@ test('a package pattern that can select a directory inside .git is unknown', asy
     assert.equal((await read(root)).unavailableReason, undefined, pattern);
   }
 });
+
+test('root resolutions and overrides that point outside the workspace are unknown', async (t) => {
+  const outside = await outsideDir(t);
+  for (const field of ['resolutions', 'overrides']) {
+    for (const spec of [`file:${outside}`, 'link:../../outside', '../outside']) {
+      const root = await workspace(t);
+      await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'root', [field]: { 'is-number': spec } }));
+      assert.match((await read(root)).unavailableReason, /points at a local path outside the workspace/, `${field} ${spec}`);
+    }
+  }
+});

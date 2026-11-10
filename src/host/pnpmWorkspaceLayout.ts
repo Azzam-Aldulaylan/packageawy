@@ -153,7 +153,7 @@ function manifestProblem(text: string, baseDir: string, relative: string): strin
   const pnpm = asRecord(manifest['pnpm']) ?? {};
   const unsupported = Object.keys(pnpm).find((key) => !MANIFEST_SETTINGS.includes(key));
   if (unsupported !== undefined) return `${relative} sets pnpm.${unsupported}, which the review does not stage.`;
-  if ([...DEPENDENCY_FIELDS, 'pnpm'].some((field) => referencesOutside(manifest?.[field], baseDir))) {
+  if ([...DEPENDENCY_FIELDS, 'pnpm', 'resolutions', 'overrides'].some((field) => referencesOutside(manifest?.[field], baseDir))) {
     return `${relative} points at a local path outside the workspace.`;
   }
   return undefined;
