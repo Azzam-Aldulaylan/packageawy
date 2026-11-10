@@ -78,7 +78,7 @@ function makeControllerAndStore(cacheKey) {
     registry: REGISTRY,
     httpClient: staticClient('1.6.0'),
     etagStore: new MemoryEtagStore(),
-    projectInfo: { label: 'app', manifestPath: 'package.json' },
+    projectInfo: { id: 'id:app', label: 'app', manifestPath: 'package.json' },
     canChangeProject: false,
     buildInfo: { extensionVersion: '0.0.1', builtAt: '2026-08-01T09:00:00.000Z' },
     projectCacheStore,
@@ -100,7 +100,7 @@ function fakeSource({ afterCalled }) {
         registry: REGISTRY,
       };
     },
-    toProjectInfo: (candidate) => ({ label: candidate.label, manifestPath: 'package.json' }),
+    toProjectInfo: (candidate) => ({ id: 'id:' + candidate.label, label: candidate.label, manifestPath: 'package.json' }),
     cacheKeyFor: (candidate, registry) => `${candidate.id}::${registry}`,
   };
 }
@@ -225,7 +225,7 @@ test('a loadProject failure propagates to the caller without touching the contro
     async loadProject() {
       throw new Error('ENOENT: package.json was deleted');
     },
-    toProjectInfo: () => ({ label: 'app', manifestPath: 'package.json' }),
+    toProjectInfo: () => ({ id: 'id:app', label: 'app', manifestPath: 'package.json' }),
     cacheKeyFor: () => cacheKey,
   };
 

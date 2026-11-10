@@ -11,6 +11,7 @@
 
 import semver from 'semver';
 import type { PackageManagerKind } from '../types.js';
+import { classifyUpdate } from '../version/updateClassification.js';
 
 /** Where a dependency is declared in package.json: decides the npm save flag. */
 export type DependencyClassification = 'prod' | 'dev' | 'optional';
@@ -213,7 +214,7 @@ export function buildLockfileReconciliationArgs(
 
 /** Whether the semver major version changes: surfaced in the confirmation dialog. */
 export function isMajorUpgrade(current: string, target: string): boolean {
-  return semver.major(current) !== semver.major(target);
+  return classifyUpdate(current, target) === 'major';
 }
 
 /**

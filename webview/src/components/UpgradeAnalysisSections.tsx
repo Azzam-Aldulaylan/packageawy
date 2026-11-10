@@ -166,29 +166,36 @@ function securityReviewSignal(
   };
 }
 
-function verificationReviewSignal(verification: UpgradeAnalysisVerification): UpgradeReviewSignal {
+export function verificationReviewSignal(
+  verification: UpgradeAnalysisVerification,
+  selectedScripts: readonly string[] = []
+): UpgradeReviewSignal {
   const scriptCount = verification.configured ? verification.scriptNames.length : 0;
+  const optedIn = !verification.configured && selectedScripts.length > 0;
   return {
     area: 'verification',
     label: 'Verification',
     value: verification.configured
       ? `Install + ${scriptCount} ${scriptCount === 1 ? 'script' : 'scripts'} queued`
-      : 'Build/test checks not configured',
-    tone: verification.configured ? 'neutral' : 'warning',
-    needsReview: !verification.configured,
+      : optedIn
+        ? `${selectedScripts.join(', ')} will run`
+        : 'Build/test checks not configured',
+    tone: verification.configured || optedIn ? 'neutral' : 'warning',
+    needsReview: !verification.configured && !optedIn,
   };
 }
 
 export function buildUpgradeReviewSignals(
   analysis: UpgradeAnalysisPresentation,
   advisoriesAvailable: boolean,
-  advisoriesOff = false
+  advisoriesOff = false,
+  selectedScripts: readonly string[] = []
 ): UpgradeReviewSignal[] {
   return [
     dependencyReviewSignal(analysis.compatibility),
     projectReviewSignal(analysis.projectCompatibility),
     securityReviewSignal(analysis.security, advisoriesAvailable, advisoriesOff),
-    verificationReviewSignal(analysis.verification),
+    verificationReviewSignal(analysis.verification, selectedScripts),
   ];
 }
 

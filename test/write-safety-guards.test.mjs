@@ -237,6 +237,7 @@ function heldCoordinator(root, lifecycle = []) {
     httpClient: {},
     etagStore: {},
     ensureController: async () => ({
+      lastResultRows: () => [],
       validateBulkUpgradeRequest: () => ({
         ok: true,
         upgrades: [{ packageName: 'dep', currentVersion: '1.0.0', target: '2.0.0', classification: 'prod' }],

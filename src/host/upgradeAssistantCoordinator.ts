@@ -59,7 +59,6 @@ import { inspectAppliedUpgradeState } from '../core/upgrade/appliedState.js';
 import { planSmartUpgrade } from '../core/upgrade/smartPlan.js';
 import {
   loadUpgradeTargets,
-  preferPublisherRecommendedTarget,
   publishedUpgradeTargetsForRequest,
   selectUpgradeTargetsFromDistTags,
 } from '../core/upgrade/targets.js';
@@ -1068,7 +1067,9 @@ export class UpgradeAssistantCoordinator {
         registryForPackage(source.resolvedRegistry, row.name),
         row.name,
         row.current,
-        row.upgradeTo
+        row.upgradeTo,
+        undefined,
+        row.upgradeReason
       );
       const stillEligible = controller.validateUpgradeRequest({ package: row.name, target: row.upgradeTo });
       if (!stillEligible.ok) {
@@ -1126,61 +1127,42 @@ export class UpgradeAssistantCoordinator {
     return new Map(entries);
   }
 
-  private async publisherRecommendedBulkRequests(
+  private async loadPublisherUpgradeTargets(
     controller: DashboardController,
     requests: readonly UpgradeChangeRequest[],
+    requestId: string,
     signal: AbortSignal
-  ): Promise<{
-    requests: readonly UpgradeChangeRequest[];
-    publishedTargetsByPackage: ReadonlyMap<string, ReadonlySet<string>>;
-  }> {
+  ): Promise<void> {
     const source = controller.upgradeSource;
     const rowsByName = new Map(controller.lastResultRows().map((row) => [row.name, row]));
-    const candidates = requests.flatMap((request) => {
+    const rows = requests.flatMap((request) => {
       const row = rowsByName.get(request.package);
-      if (
-        row === undefined ||
-        row.current === null ||
-        row.upgradeTo === null ||
-        request.target !== row.upgradeTo
-      ) return [];
-      return [{ request, row }];
+      return row?.current != null && row.upgradeTo !== null ? [row] : [];
     });
-    const results = await runPool(
-      candidates,
-      ({ row }, workerSignal) => fetchDistTags(
+    await runPool(
+      rows,
+      (row, workerSignal) => fetchDistTags(
         this.options.httpClient,
         this.options.etagStore,
         registryForPackage(source.resolvedRegistry, row.name),
         row.name,
         workerSignal
       ),
-      { signal }
+      {
+        signal,
+        onSettled: (row, result) => {
+          if (!result.ok || signal.aborted || this.options.isDisposed() || row.current === null) return;
+          // Publisher tags describe available choices. The validated request
+          // remains the target for both single and bulk analysis.
+          this.options.sink.postMessage({
+            status: 'upgrade-targets',
+            package: row.name,
+            requestId,
+            targets: selectUpgradeTargetsFromDistTags(result.value, row.current, row.upgradeTo, row.upgradeReason),
+          });
+        },
+      }
     );
-
-    const replacements = new Map<string, string>();
-    const publishedTargetsByPackage = new Map<string, ReadonlySet<string>>();
-    candidates.forEach(({ request, row }, index) => {
-      const result = results[index];
-      if (result?.ok !== true || row.current === null) return;
-      const selection = selectUpgradeTargetsFromDistTags(
-        result.value,
-        row.current,
-        row.upgradeTo
-      );
-      const target = preferPublisherRecommendedTarget(request.target, row.upgradeTo, selection);
-      if (target === request.target) return;
-      replacements.set(request.package, target);
-      publishedTargetsByPackage.set(request.package, new Set([target]));
-    });
-
-    return {
-      requests: requests.map((request) => {
-        const target = replacements.get(request.package);
-        return target === undefined ? request : { ...request, target };
-      }),
-      publishedTargetsByPackage,
-    };
   }
 
   /**
@@ -1193,13 +1175,12 @@ export class UpgradeAssistantCoordinator {
   }
 
   async handleAnalyzeBulkUpgrade(message: BulkUpgradeMessage): Promise<void> {
-    await this.handleAnalyzeUpgradeRequests(message.requestId, message.changes, true);
+    await this.handleAnalyzeUpgradeRequests(message.requestId, message.changes);
   }
 
   private async handleAnalyzeUpgradeRequests(
     requestId: string,
-    messages: readonly UpgradeChangeRequest[],
-    preferPublisherLts = false
+    messages: readonly UpgradeChangeRequest[]
   ): Promise<void> {
     this.reclaimExpiredAnalysis();
     this.reclaimExpiredRemoval();
@@ -1246,9 +1227,9 @@ export class UpgradeAssistantCoordinator {
     }
     const initialEligibility = batch.upgrades[0];
     if (initialEligibility === undefined) return;
-    let eligibility: EligibleUpgrade = initialEligibility;
-    let eligibilities = batch.upgrades;
-    let effectiveMessages = messages;
+    const eligibility: EligibleUpgrade = initialEligibility;
+    const eligibilities = batch.upgrades;
+    const effectiveMessages = messages;
 
     // Reserve across preflight and however long the analysis modal stays
     // open, not merely process execution: forged requests cannot stack
@@ -1275,32 +1256,8 @@ export class UpgradeAssistantCoordinator {
       this.options.performanceEnabled?.() ?? false
     );
     try {
-      if (preferPublisherLts) {
-        const recommended = await this.publisherRecommendedBulkRequests(
-          controller,
-          effectiveMessages,
-          analysisAbort.signal
-        );
-        if (analysisAbort.signal.aborted || this.droppedByCancellation(eligibility.packageName)) return;
-        effectiveMessages = recommended.requests;
-        publishedTargetsByPackage = new Map([
-          ...publishedTargetsByPackage,
-          ...recommended.publishedTargetsByPackage,
-        ]);
-        batch = controller.validateBulkUpgradeRequest(effectiveMessages, publishedTargetsByPackage);
-        if (!batch.ok) {
-          this.options.sink.postMessage({
-            status: 'upgrade-error',
-            package: batch.packageName ?? eligibility.packageName,
-            error: describeBulkRejection(batch),
-          });
-          return;
-        }
-        const recommendedEligibility = batch.upgrades[0];
-        if (recommendedEligibility === undefined) return;
-        eligibility = recommendedEligibility;
-        eligibilities = batch.upgrades;
-      }
+      await this.loadPublisherUpgradeTargets(controller, effectiveMessages, requestId, analysisAbort.signal);
+      if (analysisAbort.signal.aborted || this.droppedByCancellation(eligibility.packageName)) return;
       performance.setMetadata('changes', eligibilities.length);
       const selected = this.options.getSelectedProject();
       if (selected === undefined) return;

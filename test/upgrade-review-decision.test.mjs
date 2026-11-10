@@ -257,3 +257,20 @@ test('Manage and standalone review render the same warning; selected target is n
   assert.ok(footer);
   assert.match(footer, /class="button button--caution"[^>]*>Upgrade to 15\.5\.24<\/button>/);
 });
+
+for (const count of [1, 2]) {
+  test(`bulk review labels Publisher LTS alongside ${count} unchanged selected targets`, () => {
+    const changes = Array.from({ length: count }, (_, index) => ({
+      packageName: `pkg-${index}`, currentVersion: '1.0.0', targetVersion: '3.0.0',
+      classification: 'prod', majorUpdate: true,
+    }));
+    const html = renderToStaticMarkup(createElement(UpgradeAnalysisBody, {
+      packageName: 'pkg-0', targetVersion: '3.0.0', analyzingPhase: null,
+      analysis: analysis({ changes }),
+      publisherLtsByPackage: new Map(changes.map(change => [change.packageName, '2.0.0'])),
+      onOpenAdvisory: noop, onConfigureVerification: noop,
+    }));
+    assert.equal((html.match(/Publisher LTS 2\.0\.0/g) ?? []).length, count);
+    assert.equal((html.match(/class="smart-plan__versions">1\.0\.0 → 3\.0\.0/g) ?? []).length, count);
+  });
+}

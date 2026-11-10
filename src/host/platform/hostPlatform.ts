@@ -150,6 +150,11 @@ export interface HostPlatform {
   updateWorkspaceSetting(key: string, value: unknown): Promise<void>;
   readonly workspaceState: KeyValueStore;
   readonly globalState: KeyValueStore;
+  /**
+   * Where bulky shared caches (registry responses) are kept. Hosts without
+   * a separate store leave it out and `globalState` is used.
+   */
+  readonly cacheStore?: KeyValueStore;
 
   findFiles(search: FileSearch, token?: CancellationToken): Promise<string[]>;
   statFile(filePath: string): Promise<{ size: number }>;
@@ -178,7 +183,11 @@ export interface HostPlatform {
   /** Opens the file, placing the cursor at `position` when given. */
   openFile(filePath: string, position?: FilePosition): void;
   openExternal(url: string): void;
-  openSettings(key: string): void;
+  /**
+   * Opens the Settings editor at `key`. With `resourcePath`, a host may open
+   * the scope whose value applies to that path.
+   */
+  openSettings(key: string, resourcePath?: string): void;
 }
 
 /** The dashboard's message channel to the webview. */

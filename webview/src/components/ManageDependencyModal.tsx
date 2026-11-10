@@ -63,6 +63,19 @@ interface RemovalReviewState {
   onConfigureVerification: () => void;
 }
 
+/**
+ * The Manage dialog footer line. The read-only promise holds only until a
+ * change runs from this dialog. After that, say what happened instead.
+ */
+export function manageFooterNote(result: UpgradeResultPresentation | null): string | null {
+  if (result === null) {
+    return 'Analysis does not modify your project. Registry metadata and the local package manager may be used during analysis.';
+  }
+  if (result.application === 'applied') return 'Changes were applied to package.json and the lockfile.';
+  if (result.application === 'rolled-back') return 'Your dependency files were restored.';
+  return null;
+}
+
 function UpgradeResultPanel({
   result,
   enrichment,
@@ -329,6 +342,7 @@ export function ManageDependencyModal({
   closeLabel?: string;
 }): ReactElement {
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const footerNote = manageFooterNote(upgradeResult);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocused = useRef<Element | null>(null);
 
@@ -377,10 +391,10 @@ export function ManageDependencyModal({
     if (event.target === event.currentTarget && !blockClose) onClose();
   };
 
-  const startUpgradeReview = (_packageName: string, _target: string): void => {
-    // Target choice is now an explicit step inside Upgrade review. Overview
-    // and Vulnerabilities navigate there without silently starting analysis
-    // against the row's former one-size-fits-all target.
+  const startUpgradeReview = (_packageName: string, target: string): void => {
+    // Open on the version the action offers, even after an earlier picker
+    // choice. Analysis remains an explicit step inside Upgrade review.
+    upgrade.onTargetChange(target);
     onChangeTab('upgrade');
   };
   const startRemovalReview = (_packageName: string): void => {
@@ -625,11 +639,12 @@ export function ManageDependencyModal({
 
         {(activeTab === 'upgrade' && upgrade.analysis !== null) || (activeTab === 'removal' && removal.analysis !== null) ? null : (
           <footer className="modal__footer">
-            <p className="manage-modal__footer-note">
-              <IconShield className="manage-modal__footer-note-icon" aria-hidden="true" />
-              Analysis does not modify your project. Registry metadata and the local package manager may be used during
-              analysis.
-            </p>
+            {footerNote === null ? null : (
+              <p className="manage-modal__footer-note">
+                <IconShield className="manage-modal__footer-note-icon" aria-hidden="true" />
+                {footerNote}
+              </p>
+            )}
             {closeLabel === 'Close' ? (
               <button type="button" className="button button--secondary" onClick={onClose} disabled={blockClose}>
                 Close

@@ -63,7 +63,7 @@ const VULNERABLE_ROW = {
   upgradeReason: 'security-fix',
 };
 
-const PROJECT = { label: 'app', manifestPath: 'package.json' };
+const PROJECT = { id: 'id:app', label: 'app', manifestPath: 'package.json' };
 
 const DATA = {
   rows: [CLEAN_ROW, VULNERABLE_ROW],
@@ -1153,8 +1153,10 @@ test('a malformed DashboardData shell is rejected', () => {
     { ...DATA, project: undefined },
     { ...DATA, project: null },
     { ...DATA, project: { label: 'app' } },
-    { ...DATA, project: { label: 'app', manifestPath: 'package.json', extra: 1 } },
-    { ...DATA, project: { label: 1, manifestPath: 'package.json' } },
+    { ...DATA, project: { id: 'id:app', label: 'app', manifestPath: 'package.json', extra: 1 } },
+    { ...DATA, project: { id: 'id:app', label: 1, manifestPath: 'package.json' } },
+    { ...DATA, project: { label: 'app', manifestPath: 'package.json' } },
+    { ...DATA, project: { id: '', label: 'app', manifestPath: 'package.json' } },
     { ...DATA, canChangeProject: undefined },
     { ...DATA, canChangeProject: 'true' },
     { ...DATA, extensionVersion: undefined },

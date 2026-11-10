@@ -131,7 +131,7 @@ for (const packageManager of ['npm', 'pnpm']) {
     assert.doesNotMatch(html, />Safe</);
     assert.equal((html.match(/>Not checked</g) ?? []).length, result.rows.length);
     assert.match(html, /title="Install dependencies to check this package"/);
-    const message = toHostToWebviewMessage(result, { isEmpty: false, isStale: false }, { label: 'app', manifestPath: '/app/package.json' }, false, { extensionVersion: 'test', builtAt: 'test' });
+    const message = toHostToWebviewMessage(result, { isEmpty: false, isStale: false }, { id: 'id:app', label: 'app', manifestPath: '/app/package.json' }, false, { extensionVersion: 'test', builtAt: 'test' });
     assert.equal(message.status, 'partial-error');
     assert.equal(isHostToWebviewMessage(message), true);
   });
