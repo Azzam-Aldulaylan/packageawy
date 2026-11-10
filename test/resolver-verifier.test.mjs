@@ -108,7 +108,7 @@ test('isolated verifier uses the same classified mixed manifest as real reconcil
   assert.equal(observedManifest.devDependencies.typescript, '6.0.0');
 });
 
-test('resolver preserves shadow declarations outside the authoritative classification', async () => {
+test('resolver stages shadow declarations at the target, as the real upgrade does', async () => {
   let observedManifest;
   const verifier = new IsolatedResolverVerifier({
     packageManager: 'npm', packageManagerVersion: '10.0.0',
@@ -129,7 +129,7 @@ test('resolver preserves shadow declarations outside the authoritative classific
 
   await verifier.verify(proposal);
   assert.equal(observedManifest.dependencies.react, '19.0.0');
-  assert.equal(observedManifest.devDependencies.react, '^17.0.0');
+  assert.equal(observedManifest.devDependencies.react, '19.0.0');
 });
 
 test('peer resolver failures are conflicts and temporary paths are redacted and bounded', async () => {

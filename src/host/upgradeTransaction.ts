@@ -38,7 +38,20 @@ export interface UpgradeTransactionFileAdapter {
 
 export type InstallExecutionResult =
   | { status: 'succeeded'; exitCode?: number }
-  | { status: 'failed'; code: string; message: string; exitCode?: number | null }
+  | {
+      status: 'failed';
+      code: string;
+      message: string;
+      exitCode?: number | null;
+      /**
+       * Bytes this transaction itself last wrote to an allowlisted path,
+       * reported when the executor saw that a later write was not its own
+       * (a compare-and-swap conflict). Rollback uses these instead of the
+       * post-install disk contents as its expectation, so a concurrent user
+       * edit becomes a rollback conflict and is kept.
+       */
+      ownedStates?: readonly { path: string; state: FileState }[];
+    }
   | { status: 'cancelled'; message: string; exitCode?: number | null };
 
 export interface UpgradeInstallExecutor {
@@ -481,6 +494,17 @@ async function captureExpectedStates(
   return expected;
 }
 
+function withOwnedStates(
+  entries: readonly ExpectedEntry[],
+  owned: readonly { path: string; state: FileState }[] | undefined
+): ExpectedEntry[] {
+  if (owned === undefined || owned.length === 0) return [...entries];
+  return entries.map((entry) => {
+    const claim = owned.find((item) => item.path === entry.snapshot.path);
+    return claim === undefined ? entry : { snapshot: entry.snapshot, expected: cloneState(claim.state) };
+  });
+}
+
 async function rollback(
   entries: readonly ExpectedEntry[],
   files: UpgradeTransactionFileAdapter
@@ -722,7 +746,10 @@ export async function runUpgradeTransaction(
   // Once install starts it is always awaited. Cancellation is observed only
   // after it reaches this stable boundary, then handled by rollback.
   const install = await executeInstall(options.install);
-  const expected = await captureExpectedStates(snapshot.entries, options.files);
+  const expected = withOwnedStates(
+    await captureExpectedStates(snapshot.entries, options.files),
+    install.status === 'failed' ? install.ownedStates : undefined
+  );
 
   if (install.status !== 'succeeded') {
     const rolledBack = await rollback(expected, options.files);

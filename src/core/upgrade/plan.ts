@@ -141,6 +141,13 @@ export function buildManifestReconciliationArgs(
 ): string[] {
   const args = ['install'];
   if (options.lockfileOnly === true) args.push(packageManager === 'pnpm' ? '--lockfile-only' : '--package-lock-only');
+  // A project `.npmrc` with `save=false` makes a bare `npm install` leave
+  // package-lock.json untouched, so the staged package.json and the lockfile
+  // would disagree (and `npm ci` would then fail). Saving is forced, as the
+  // old `npm install pkg@x --save-prod` path did. A bare install adds no
+  // package, so npm still does not rewrite package.json. pnpm install always
+  // writes its lockfile regardless of `save`.
+  if (packageManager === 'npm') args.push('--save');
   // pnpm defaults frozen-lockfile on CI. This command intentionally follows a
   // host-staged manifest change, so the lockfile must be allowed to reconcile
   // even when the extension host itself is running in a CI-like environment.

@@ -110,7 +110,8 @@ import {
   describeRemoveTransactionOutcome,
   describeUpgradeTransactionOutcome,
 } from './upgradeAssistantOutcome.js';
-import { UpgradeExecutionSession, type UpgradeRunOutcome } from './upgradeRunner.js';
+import { createRangePreservingInstall } from './rangePreservingInstall.js';
+import { UpgradeExecutionSession } from './upgradeRunner.js';
 import { OperationReservation, SourceGenerationGuard } from './operationReservation.js';
 import { runUpgradeTransaction } from './upgradeTransaction.js';
 import type { UpgradeTransactionFileAdapter } from './upgradeTransaction.js';
@@ -3227,23 +3228,14 @@ export class UpgradeAssistantCoordinator {
         return;
       }
       if (!prepared.ok || (preparedRestyle !== null && !preparedRestyle.ok)) return;
-      const executeInstall = async (): Promise<UpgradeRunOutcome> => {
-        const resolved = await prepared.execute();
-        if (!resolved.ok || preparedRestyle === null) return resolved;
-        const swapped = await files.compareAndSwap(
-          manifestPath,
-          { exists: true, contents: Buffer.from(stagedManifest, 'utf8') },
-          { exists: true, contents: Buffer.from(styledManifest, 'utf8') }
-        );
-        if (swapped !== 'restored') {
-          return {
-            ok: false,
-            code: 'STALE_SOURCE',
-            message: 'package.json changed while the upgrade was installing. The upgrade was not kept.',
-          };
-        }
-        return await preparedRestyle.execute();
-      };
+      const install = createRangePreservingInstall({
+        files,
+        manifestPath,
+        stagedManifest,
+        styledManifest,
+        resolve: () => prepared.execute(),
+        restyle: preparedRestyle === null ? null : () => preparedRestyle.execute(),
+      });
 
       if (!this.sourceGeneration.isCurrent(executionSourceGeneration)) {
         this.options.sink.postMessage({
@@ -3265,14 +3257,7 @@ export class UpgradeAssistantCoordinator {
           expectedContents: Buffer.from(disk.manifestText, 'utf8'),
           contents: Buffer.from(stagedManifest, 'utf8'),
         },
-        install: {
-          execute: async () => {
-            const outcome = await executeInstall();
-            return outcome.ok
-              ? { status: 'succeeded' as const }
-              : { status: 'failed' as const, code: outcome.code, message: outcome.message };
-          },
-        },
+        install,
         ...(stored.verificationScripts.length === 0
           ? {}
           : {

@@ -136,7 +136,7 @@ test('removal deletes only the member text and never re-sorts siblings', () => {
 
 test('the lockfile-only restyle pass never runs scripts or touches node_modules', () => {
   assert.deepEqual(buildManifestReconciliationArgs('npm', { ignoreScripts: false, lockfileOnly: true }), [
-    'install', '--package-lock-only', '--ignore-scripts',
+    'install', '--package-lock-only', '--save', '--ignore-scripts',
   ]);
   assert.deepEqual(buildManifestReconciliationArgs('pnpm', { ignoreScripts: false, lockfileOnly: true }), [
     'install', '--lockfile-only', '--no-frozen-lockfile', '--ignore-scripts',
@@ -157,6 +157,8 @@ test('the lockfile-only restyle pass never runs scripts or touches node_modules'
     ]) {
       assert.ok(args.every((arg) => !arg.includes('@')));
       assert.equal(args.includes('add'), false);
+      // A project .npmrc `save=false` must not stop npm writing package-lock.json.
+      assert.equal(args.includes('--save'), manager === 'npm');
     }
   }
 });

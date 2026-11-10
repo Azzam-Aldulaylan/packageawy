@@ -75,7 +75,7 @@ test('missing, misclassified, and duplicate changes are rejected', () => {
   }
 });
 
-test('only the authoritative classified block changes when a declaration is shadowed', () => {
+test('a declaration shadowed in another dependency block moves to the target too', () => {
   const staged = JSON.parse(buildStagedManifest(JSON.stringify({
     dependencies: { shared: '^2.0.0' },
     devDependencies: { shared: '^1.0.0', optional: '^1.0.0' },
@@ -86,9 +86,25 @@ test('only the authoritative classified block changes when a declaration is shad
   ]));
 
   assert.equal(staged.dependencies.shared, '3.0.0');
-  assert.equal(staged.devDependencies.shared, '^1.0.0');
+  assert.equal(staged.devDependencies.shared, '3.0.0');
   assert.equal(staged.optionalDependencies.optional, '3.0.0');
-  assert.equal(staged.devDependencies.optional, '^1.0.0');
+  assert.equal(staged.devDependencies.optional, '3.0.0');
+});
+
+test('each shadowed copy keeps its own style, and a non-registry copy is rejected before any change', () => {
+  const source = '{\n  "dependencies": {\n    "shared": "1.0.0"\n  },\n  "devDependencies": {\n    "shared": "~1.0.0"\n  }\n}\n';
+  assert.equal(
+    buildStagedManifest(source, [{ packageName: 'shared', target: '1.4.0', classification: 'prod' }], { rangeStyle: 'preserve' }),
+    source.replace('"shared": "1.0.0"', '"shared": "1.4.0"').replace('"shared": "~1.0.0"', '"shared": "~1.4.0"')
+  );
+  for (const shadow of ['file:../shared', 'workspace:*', 'catalog:', 'npm:other@^1.0.0']) {
+    assert.throws(
+      () => buildStagedManifest(JSON.stringify({ dependencies: { shared: '1.0.0' }, devDependencies: { shared: shadow } }), [
+        { packageName: 'shared', target: '1.4.0', classification: 'prod' },
+      ]),
+      (error) => error instanceof StagedManifestError && error.code === 'SHADOWED_DECLARATION' && /also declared in devDependencies/.test(error.message)
+    );
+  }
 });
 
 test('unsafe identifiers, non-exact versions, malformed blocks, and prototype keys are rejected', () => {

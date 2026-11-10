@@ -7,7 +7,7 @@
 
 import semver from 'semver';
 
-import { isCatalogSpecifier } from '../manifest/parse.js';
+import { classifySpecifier, isCatalogSpecifier } from '../manifest/parse.js';
 import {
   isSafeNpmPackageName,
   isSafeSemverVersion,
@@ -41,7 +41,8 @@ export type StagedManifestErrorCode =
   | 'INVALID_CHANGE'
   | 'DUPLICATE_CHANGE'
   | 'MISSING_DECLARATION'
-  | 'CATALOG_SPECIFIER';
+  | 'CATALOG_SPECIFIER'
+  | 'SHADOWED_DECLARATION';
 
 export class StagedManifestError extends Error {
   constructor(
@@ -58,6 +59,8 @@ const BLOCK_BY_CLASSIFICATION: Record<DependencyClassification, string> = {
   dev: 'devDependencies',
   optional: 'optionalDependencies',
 };
+
+const DEPENDENCY_BLOCKS = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -286,9 +289,9 @@ function editLikeSource(
 /**
  * Return manifest text with the planned versions in their existing blocks.
  * No dependency is added, moved, or removed, and only the changed values'
- * text differs from the source. If a package also appears in a shadowed
- * block, only the host-asserted authoritative classification is updated,
- * matching manifest parsing's existing precedence behavior. With
+ * text differs from the source. The host-asserted classification must hold
+ * the declaration; a copy in another dependency block is updated too (or the
+ * change is rejected when that copy is not a registry specifier). With
  * `rangeStyle: 'preserve'` each value keeps its declaration's operator.
  */
 export function buildStagedManifest(
@@ -335,12 +338,28 @@ export function buildStagedManifest(
         `${change.packageName} gets its version from the pnpm catalog in pnpm-workspace.yaml.`
       );
     }
-    const specifier =
-      options.rangeStyle === 'preserve'
-        ? preservedSpecifier(block[change.packageName] as string, change.target)
-        : change.target;
-    block[change.packageName] = specifier;
-    edits.push({ blockName: expectedBlock, packageName: change.packageName, specifier });
+    // A package can also be declared in another dependency block. Leaving
+    // that copy at the old version makes npm keep installing it while
+    // package.json claims the new one, so every registry declaration of the
+    // package moves to the target, each keeping its own style.
+    for (const blockName of DEPENDENCY_BLOCKS) {
+      const current = dependencyBlock(root, blockName);
+      if (current === null || !Object.hasOwn(current, change.packageName)) continue;
+      const declared = current[change.packageName];
+      if (blockName !== expectedBlock) {
+        if (typeof declared !== 'string' || isCatalogSpecifier(declared) || classifySpecifier(declared).unresolvable !== undefined) {
+          throw new StagedManifestError(
+            'SHADOWED_DECLARATION',
+            `${change.packageName} is also declared in ${blockName} with a specifier Packageawy cannot upgrade. ` +
+              `Keep it in one dependency block, then try again.`
+          );
+        }
+      }
+      const specifier =
+        options.rangeStyle === 'preserve' ? preservedSpecifier(declared as string, change.target) : change.target;
+      current[change.packageName] = specifier;
+      edits.push({ blockName, packageName: change.packageName, specifier });
+    }
   }
 
   return editLikeSource(contents, root, (text) =>
