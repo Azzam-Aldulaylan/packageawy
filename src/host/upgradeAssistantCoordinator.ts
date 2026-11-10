@@ -126,6 +126,8 @@ import { applyVerificationOptIn } from './verificationOptIn.js';
 import type { VerificationOptInRequest } from './verificationOptIn.js';
 import type { VerificationScript } from './verificationPolicy.js';
 import { smartCleanupProjectCapability } from './smartCleanupProjectCapability.js';
+import { dependencyChangeRefusal } from './packageManagerSupport.js';
+import { canonicalProjectRoot, projectMutationLocks, type ProjectMutationLocks } from './projectMutationLock.js';
 import { buildSmartCleanupCompletionReport } from './smartCleanupCompletionReport.js';
 import type {
   SmartCleanupBeforeSnapshot,
@@ -244,6 +246,14 @@ export interface UpgradeAssistantCoordinatorOptions {
    */
   onMutationLockReleased?(): void;
   performanceEnabled?(): boolean;
+  /**
+   * The directory whose dependency files a change here would write: the
+   * lockfile root when one is known. Falls back to the selected project's
+   * directory. Keys the extension-wide one-change-per-project lock.
+   */
+  mutationRoot?(): string | undefined;
+  /** Test seam. Production shares one process-wide lock registry. */
+  mutationLocks?: ProjectMutationLocks;
   /** Test seam. Production always uses the host-owned project loader. */
   loadProject?: (candidate: DiscoveredProject) => Promise<ResolvedProject>;
   /** Test seam. Production always uses the platform's cancellable progress. See defaultWithCompatibilityProgress. */
@@ -346,6 +356,7 @@ function resolvedProjectSourceMatches(left: ResolvedProject, right: ResolvedProj
     left.lockfilePath === right.lockfilePath &&
     left.registry === right.registry &&
     left.packageManager === right.packageManager &&
+    (left.otherPackageManager ?? null) === (right.otherPackageManager ?? null) &&
     left.importerId === right.importerId &&
     JSON.stringify(left.peerPolicy) === JSON.stringify(right.peerPolicy) &&
     JSON.stringify(left.resolvedRegistry) === JSON.stringify(right.resolvedRegistry);
@@ -604,11 +615,23 @@ export class UpgradeAssistantCoordinator {
   /** One exact deep inventory is enough to make immediate re-analysis/cache reuse cheap without retaining many large file lists. */
   private readonly targetPackageSurfaceCache = new TargetPackageSurfaceCache();
 
+  /** Identity in the process-wide project lock registry. */
+  private readonly mutationOwner = {};
+  private readonly mutationLocks: ProjectMutationLocks;
+  /** Canonical root this coordinator's current reservation holds in the shared registry. */
+  private heldMutationRootKey: string | undefined;
+  private canonicalRootCache: { root: string; key: string } | undefined;
+  private readonly stopListeningForSharedRelease: () => void;
+
   constructor(private readonly options: UpgradeAssistantCoordinatorOptions) {
     this.session = new UpgradeExecutionSession(options.platform);
+    this.mutationLocks = options.mutationLocks ?? projectMutationLocks;
     this.reservation = new OperationReservation({
       reserve: (packageName) => this.session.reserve(packageName),
-      release: (packageName) => this.session.release(packageName),
+      release: (packageName) => {
+        this.session.release(packageName);
+        this.releaseSharedMutationRoot();
+      },
       flushDeferredChanges: () => options.flushDeferredChanges(),
       resumePendingBackground: () => options.onMutationLockReleased?.(),
       isDisposed: () => options.isDisposed(),
@@ -619,15 +642,53 @@ export class UpgradeAssistantCoordinator {
       ((title, run) => defaultWithCompatibilityProgress(options.platform, title, run));
     this.getUpgradeConfiguration = options.getUpgradeConfiguration ??
       (() => defaultGetUpgradeConfiguration(options.platform));
+    // A change another panel started in this project may finish while this
+    // panel is open. Watcher events deferred meanwhile are applied then.
+    this.stopListeningForSharedRelease = this.mutationLocks.onDidRelease((key, owner) => {
+      if (this.options.isDisposed()) {
+        this.stopListeningForSharedRelease();
+        return;
+      }
+      // This coordinator's own release already flushes through OperationReservation.
+      if (owner === this.mutationOwner || key !== this.currentMutationRootKey() || this.reservation.isMutationBusy) return;
+      void this.options.flushDeferredChanges()
+        .catch(() => {})
+        .then(() => this.options.onMutationLockReleased?.());
+    });
   }
 
   isBusy(): boolean {
-    return this.session.isBusy();
+    return this.session.isBusy() || this.projectChangedElsewhere();
   }
 
   /** File reloads defer only while a package-manager transaction can write. */
   isMutationBusy(): boolean {
-    return this.reservation.isMutationBusy;
+    return this.reservation.isMutationBusy || this.projectChangedElsewhere();
+  }
+
+  /** Another coordinator, such as one from a panel closed mid-install, holds this project's lock. */
+  private projectChangedElsewhere(): boolean {
+    const key = this.currentMutationRootKey();
+    return key !== undefined && this.mutationLocks.isHeldByOther(key, this.mutationOwner);
+  }
+
+  private currentMutationRootKey(): string | undefined {
+    const selected = this.options.getSelectedProject();
+    const folderPath = selected?.folder?.path;
+    const root = this.options.mutationRoot?.() ??
+      (selected === undefined || typeof folderPath !== 'string' ? undefined : path.join(folderPath, selected.dir ?? ''));
+    if (root === undefined) return undefined;
+    if (this.canonicalRootCache?.root !== root) {
+      this.canonicalRootCache = { root, key: canonicalProjectRoot(root) };
+    }
+    return this.canonicalRootCache.key;
+  }
+
+  private releaseSharedMutationRoot(): void {
+    const key = this.heldMutationRootKey;
+    if (key === undefined) return;
+    this.heldMutationRootKey = undefined;
+    this.mutationLocks.release(key, this.mutationOwner);
   }
 
   isRemediationBusy(): boolean {
@@ -655,7 +716,16 @@ export class UpgradeAssistantCoordinator {
   private reserve(packageName: string): boolean {
     // Any new analysis or dependency change supersedes a kept cleanup's restore point.
     this.dropSmartCleanupRestorePoint('superseded');
-    return this.reservation.reserve(packageName);
+    const key = this.currentMutationRootKey();
+    // The shared project lock is taken with the reservation and held until the
+    // reservation's single release path, after install, verification, and rollback.
+    if (key !== undefined && this.mutationLocks.tryAcquire(key, this.mutationOwner) === null) return false;
+    if (!this.reservation.reserve(packageName)) {
+      if (key !== undefined && this.heldMutationRootKey !== key) this.mutationLocks.release(key, this.mutationOwner);
+      return false;
+    }
+    this.heldMutationRootKey = key;
+    return true;
   }
 
   /** Drops a kept Smart Cleanup restore point. Called for a new analysis, a project switch, or panel teardown. */
@@ -719,6 +789,12 @@ export class UpgradeAssistantCoordinator {
           package: stored.reservationKey,
           error: { code: 'RESTORE_UNAVAILABLE', message: SMART_CLEANUP_RESTORE_MESSAGES.unavailable },
         });
+        return;
+      }
+      const controller = await this.options.ensureController();
+      const refusal = controller === undefined ? null : dependencyChangeRefusal(controller.upgradeSource);
+      if (refusal !== null) {
+        this.options.sink.postMessage({ status: 'remove-error', package: stored.reservationKey, error: refusal });
         return;
       }
       if (!this.reservation.beginMutation(stored.reservationKey)) return;
@@ -1134,6 +1210,11 @@ export class UpgradeAssistantCoordinator {
 
     const controller = await this.options.ensureController();
     if (controller === undefined) return;
+    const refusal = dependencyChangeRefusal(controller.upgradeSource);
+    if (refusal !== null) {
+      this.options.sink.postMessage({ status: 'upgrade-error', package: messages[0]?.package ?? 'unknown', error: refusal });
+      return;
+    }
 
     let publishedTargetsByPackage: ReadonlyMap<string, ReadonlySet<string>> = new Map();
     let batch = controller.validateBulkUpgradeRequest(messages);
@@ -1886,6 +1967,12 @@ export class UpgradeAssistantCoordinator {
       if (this.pendingRemovalAnalysis === pending) this.pendingRemovalAnalysis = undefined;
       return;
     }
+    const refusal = dependencyChangeRefusal(controller.upgradeSource);
+    if (refusal !== null) {
+      this.options.sink.postMessage({ status: 'remove-error', package: requestedPackage, error: refusal });
+      if (this.pendingRemovalAnalysis === pending) this.pendingRemovalAnalysis = undefined;
+      return;
+    }
 
     if (smartCleanup !== undefined) {
       const capability = smartCleanupProjectCapability(controller.upgradeSource);
@@ -2278,6 +2365,11 @@ export class UpgradeAssistantCoordinator {
   ): Promise<void> {
     const controller = await this.options.ensureController();
     if (controller === undefined) return;
+    const refusal = dependencyChangeRefusal(controller.upgradeSource);
+    if (refusal !== null) {
+      this.options.sink.postMessage({ status: 'remediation-error', package: message.package, error: refusal });
+      return;
+    }
 
     const eligibility = resolveRemediationRequest(controller.lastResultRows(), message.package);
     if (!eligibility.ok) {
@@ -3349,6 +3441,7 @@ export class UpgradeAssistantCoordinator {
         disk.lockfilePath === stored.snapshot.lockfilePath &&
         disk.registry === stored.snapshot.registry &&
         disk.packageManager === stored.snapshot.packageManager &&
+        (disk.otherPackageManager ?? null) === (stored.snapshot.otherPackageManager ?? null) &&
         disk.importerId === stored.snapshot.importerId;
       const rechecked = stored.requests.length === 0
         ? { ok: true as const }

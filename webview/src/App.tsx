@@ -2635,6 +2635,10 @@ function Dashboard({
         </StatusBanner>
       )}
 
+      {data.readOnlyReason === undefined ? null : (
+        <StatusBanner tone="info">{data.readOnlyReason}</StatusBanner>
+      )}
+
       {status === 'empty' ? (
         <DependencyEmptyState
           icon="package"
@@ -2693,7 +2697,7 @@ function Dashboard({
                     className="button button--secondary"
                     type="button"
                     onClick={onOpenBulkActions}
-                    disabled={actionsDisabled || upgradesDisabled}
+                    disabled={actionsDisabled || upgradesDisabled || data.readOnlyReason !== undefined}
                     title="Upgrade, remove, or check multiple dependencies at once"
                   >
                     <IconListChecks />

@@ -23,7 +23,7 @@ import { buildDependencyGraph } from './lockfile/build.js';
 import { npmAlias } from './lockfile/identity.js';
 import { computeGraphHygieneFindings } from './hygiene/index.js';
 import type { DependencyFinding } from './hygiene/index.js';
-import { parseManifest } from './manifest/parse.js';
+import { isCatalogSpecifier, parseManifest } from './manifest/parse.js';
 import type { PerformanceRecorder } from './performance/measurement.js';
 import { NOOP_PERFORMANCE_RECORDER } from './performance/measurement.js';
 import type { HttpClient } from './registry/http.js';
@@ -386,6 +386,7 @@ export async function buildPackageRows(
       advisories,
       ...(fixAvailable === undefined ? {} : { fixAvailable }),
     });
+    const catalogOwned = isCatalogSpecifier(node.range);
     const candidate = resolveUpgradeCandidate({
       securityTarget,
       current: node.version,
@@ -404,10 +405,11 @@ export async function buildPackageRows(
       advisories,
       advisoryCoverage: advisoryCoverage.get(node.name) ?? 'partial',
       worstSeverity: worstSeverity(advisories),
-      // Keep aliases out of ordinary install commands, which would replace
-      // their npm: declaration with a dependency on the installed name.
-      upgradeTo: node.registryName === undefined ? candidate?.target ?? null : null,
-      upgradeReason: node.registryName === undefined ? candidate?.reason ?? null : null,
+      // A catalog specifier is owned by pnpm-workspace.yaml, and an npm:
+      // alias would lose its declaration in an ordinary install. Neither is
+      // offered an upgrade here.
+      upgradeTo: catalogOwned || node.registryName !== undefined ? null : (candidate?.target ?? null),
+      upgradeReason: catalogOwned || node.registryName !== undefined ? null : (candidate?.reason ?? null),
     };
     if (info?.description !== undefined) row.description = info.description;
     if (info?.license !== undefined) row.license = info.license;

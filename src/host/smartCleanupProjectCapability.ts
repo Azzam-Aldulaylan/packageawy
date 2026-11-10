@@ -1,9 +1,12 @@
+import type { OtherPackageManager } from '../core/manifest/parse.js';
 import type { PackageManagerKind } from '../core/types.js';
+import { otherPackageManagerMessage } from './packageManagerSupport.js';
 
 export interface SmartCleanupProjectSource {
   packageManager: PackageManagerKind;
   importerId: string;
   lockfileName: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
+  otherPackageManager?: OtherPackageManager | null;
 }
 
 export type SmartCleanupProjectCapability =
@@ -19,6 +22,9 @@ export type SmartCleanupProjectCapability =
 export function smartCleanupProjectCapability(
   source: SmartCleanupProjectSource
 ): SmartCleanupProjectCapability {
+  if (source.otherPackageManager !== undefined && source.otherPackageManager !== null) {
+    return { executionSupported: false, reason: otherPackageManagerMessage(source.otherPackageManager) };
+  }
   if (source.importerId !== '.') {
     return {
       executionSupported: false,

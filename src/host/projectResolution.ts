@@ -35,9 +35,14 @@ import {
   discoverProjectCandidates,
   dirOf,
   nearestLockfileDir,
+  otherPackageManagerForLockfiles,
   packageManagerForLockfile,
   PNPM_LOCK,
+  BUN_LOCK,
+  BUN_LOCKB,
+  YARN_LOCK,
 } from '../core/workspace/scan.js';
+import type { OtherPackageManager } from '../core/manifest/parse.js';
 import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
 
 export class NoProjectFoundError extends Error {
@@ -70,6 +75,8 @@ export interface ResolvedProject {
   lockfileRoot: string;
   /** Lock-root-relative POSIX pnpm importer id. `.` at the lock root. */
   importerId: string;
+  /** Set when the project is managed by Yarn, Bun, or an unrecognized package manager: shown read-only. */
+  otherPackageManager?: OtherPackageManager | null;
 }
 
 /**
@@ -82,7 +89,7 @@ export interface DiscoveredProject extends DiscoveredProjectCandidate {
 }
 
 const EXCLUDE_GLOB = `**/{${DEFAULT_EXCLUDED_DIRS.join(',')}}/**`;
-const LOCKFILE_GLOB = `**/{${PACKAGE_LOCK},${SHRINKWRAP},${PNPM_LOCK}}`;
+const LOCKFILE_GLOB = `**/{${PACKAGE_LOCK},${SHRINKWRAP},${PNPM_LOCK},${YARN_LOCK},${BUN_LOCK},${BUN_LOCKB}}`;
 
 async function readIfExists(absolutePath: string): Promise<string | undefined> {
   try {
@@ -117,23 +124,27 @@ async function findLockfile(
   folder: WorkspaceFolder,
   projectDir: string,
   preferredPackageManager: PackageManagerKind
-): Promise<{ dir: string; name: string } | null> {
+): Promise<{ lockfile: { dir: string; name: string } | null; other: 'yarn' | 'bun' | null }> {
   const files = await platform.findFiles({ folder, dir: '', include: LOCKFILE_GLOB, exclude: EXCLUDE_GLOB });
 
   const namesByDir = new Map<string, string[]>();
+  const allNamesByDir = new Map<string, string[]>();
   for (const file of files) {
     const rel = relativeToFolder(folder, file);
     if (rel === null) continue;
     const dir = dirOf(rel);
     const name = dir === '' ? rel : rel.slice(dir.length + 1);
+    allNamesByDir.set(dir, [...(allNamesByDir.get(dir) ?? []), name]);
+    if (packageManagerForLockfile(name) === null) continue;
     namesByDir.set(dir, [...(namesByDir.get(dir) ?? []), name]);
   }
+  const other = otherPackageManagerForLockfiles(projectDir, allNamesByDir);
 
   const dir = nearestLockfileDir(projectDir, [...namesByDir.keys()]);
-  if (dir === null) return null;
+  if (dir === null) return { lockfile: null, other };
 
   const name = chooseLockfile(namesByDir.get(dir) ?? [], preferredPackageManager);
-  return name === null ? null : { dir, name };
+  return { lockfile: name === null ? null : { dir, name }, other };
 }
 
 async function resolveRegistryConfiguration(platform: HostPlatform, projectRoot: string): Promise<{
@@ -220,7 +231,13 @@ export async function loadProject(
   const preferredPackageManager = manifest.packageManager?.name ?? 'npm';
 
   const endLockfileDiscovery = performance.start('lockfile discovery');
-  const lockfile = await findLockfile(platform, candidate.folder, candidate.dir, preferredPackageManager);
+  const { lockfile, other: otherLockfileManager } = await findLockfile(
+    platform,
+    candidate.folder,
+    candidate.dir,
+    preferredPackageManager
+  );
+  const otherPackageManager = manifest.otherPackageManager ?? otherLockfileManager;
   endLockfileDiscovery({ found: lockfile !== null });
   const lockfilePath = lockfile === null ? null : path.join(base, lockfile.dir, lockfile.name);
   const endLockfileRead = performance.start('lockfile read');
@@ -248,5 +265,6 @@ export async function loadProject(
         : (lockfile.name as 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml'),
     lockfileRoot,
     importerId,
+    otherPackageManager,
   };
 }

@@ -623,6 +623,8 @@ export interface DashboardData {
   advisoriesError?: ProtocolError;
   /** `npm audit` enrichment was skipped or failed. Upgrade targets are self-computed. */
   auditUnavailable?: boolean;
+  /** Set when another package manager owns this project: dependencies are shown and changes stay off. */
+  readOnlyReason?: string;
   /** Deprecated findings, computed fresh with every scan. See src/core/hygiene/index.ts. Likely-unused findings are never included here. See 'cleanup-result' below. */
   hygieneFindings: DependencyFinding[];
   /** package.json's `version` for the running extension: shown in the footer so a dev can tell which build is loaded. */
@@ -912,6 +914,7 @@ function isDashboardData(value: unknown): value is DashboardData {
     typeof value['canChangeProject'] === 'boolean' &&
     isAbsentOr(value['advisoriesError'], isProtocolError) &&
     isAbsentOr(value['auditUnavailable'], (v) => typeof v === 'boolean') &&
+    isAbsentOr(value['readOnlyReason'], isNonEmptyString) &&
     Array.isArray(hygieneFindings) &&
     hygieneFindings.every(isDependencyFinding) &&
     typeof value['extensionVersion'] === 'string' &&

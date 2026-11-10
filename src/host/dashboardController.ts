@@ -22,7 +22,7 @@ import type { PersistentProjectCacheStore } from '../core/cache/projectCacheStor
 import type { ScanSnapshot } from '../core/cache/schema.js';
 import type { ProjectSourceFingerprint } from '../core/cache/sourceFingerprint.js';
 import { computeSourceFingerprint, isSourceFingerprint, sourceFingerprintsMatch } from '../core/cache/sourceFingerprint.js';
-import type { DeclaredDependency } from '../core/manifest/parse.js';
+import type { DeclaredDependency, OtherPackageManager } from '../core/manifest/parse.js';
 import { parseManifest } from '../core/manifest/parse.js';
 import type { PerformanceRecorder } from '../core/performance/measurement.js';
 import { createPerformanceSession } from '../core/performance/measurement.js';
@@ -45,6 +45,7 @@ import type { PackageManagerKind, PackageRow, ResolvedRegistry } from '../core/t
 import { validateBulkRemoveRequest, validateBulkUpgradeRequest, validateUpgradeRequest } from '../core/upgrade/validate.js';
 import type { BuildInfo } from './dashboardData.js';
 import { toHostToWebviewMessage } from './dashboardData.js';
+import { otherPackageManagerMessage } from './packageManagerSupport.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
 
 export interface MessageSink {
@@ -74,6 +75,8 @@ export interface DashboardControllerOptions {
   packageManager?: PackageManagerKind;
   importerId?: string;
   lockfileName?: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
+  /** Yarn, Bun, or an unrecognized package manager owns this project: every dependency change is refused. */
+  otherPackageManager?: OtherPackageManager | null;
   /** Already resolved by the caller via resolveRegistry. */
   registry: string;
   /** Full registry routing, including scoped overrides, for on-demand package metadata. */
@@ -150,6 +153,7 @@ export type ProjectSnapshot = Pick<
   | 'packageManager'
   | 'importerId'
   | 'lockfileName'
+  | 'otherPackageManager'
   | 'registry'
   | 'resolvedRegistry'
   | 'peerPolicy'
@@ -246,6 +250,12 @@ export class DashboardController {
     return this.options.root;
   }
 
+  /** Why dependency changes are off for this project, or undefined when npm or pnpm owns it. */
+  private readOnlyReason(): string | undefined {
+    const kind = this.options.otherPackageManager ?? null;
+    return kind === null ? undefined : otherPackageManagerMessage(kind);
+  }
+
   /** Host-only source state used to build preflight and transaction inputs. */
   get upgradeSource(): {
     manifestText: string;
@@ -257,6 +267,7 @@ export class DashboardController {
     packageManager: PackageManagerKind;
     importerId: string;
     lockfileName: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
+    otherPackageManager: OtherPackageManager | null;
   } {
     return {
       manifestText: this.options.manifestText,
@@ -276,6 +287,7 @@ export class DashboardController {
       packageManager: this.options.packageManager ?? 'npm',
       importerId: this.options.importerId ?? '.',
       lockfileName: this.options.lockfileName ?? null,
+      otherPackageManager: this.options.otherPackageManager ?? null,
     };
   }
 
@@ -392,7 +404,8 @@ export class DashboardController {
         this.options.projectInfo,
         this.options.canChangeProject,
         this.options.buildInfo,
-        this.lastGeneratedAt
+        this.lastGeneratedAt,
+        this.readOnlyReason()
       )
     );
   }
@@ -662,7 +675,8 @@ export class DashboardController {
           this.options.projectInfo,
           this.options.canChangeProject,
           this.options.buildInfo,
-          this.lastGeneratedAt
+          this.lastGeneratedAt,
+          this.readOnlyReason()
         )
       );
       if (freshness !== 'fresh') {
@@ -877,7 +891,8 @@ export class DashboardController {
           this.options.projectInfo,
           this.options.canChangeProject,
           this.options.buildInfo,
-          generatedAt
+          generatedAt,
+          this.readOnlyReason()
         )
       );
       return { status: 'succeeded' };

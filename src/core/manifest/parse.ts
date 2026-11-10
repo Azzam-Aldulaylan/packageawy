@@ -29,6 +29,8 @@ export interface DeclaredDependency {
   unresolvable?: UnresolvableReason;
   /** For `npm:` aliases, the real package name the alias points at. */
   aliasTarget?: string;
+  /** Set for pnpm `catalog:` specifiers: the version lives in pnpm-workspace.yaml, so the specifier is never rewritten. */
+  catalog?: true;
 }
 
 export interface Manifest {
@@ -38,7 +40,20 @@ export interface Manifest {
   workspaces: string[];
   /** A recognized package.json `packageManager` declaration. */
   packageManager: PackageManagerDeclaration | null;
+  /** A `packageManager` value naming anything other than npm or pnpm: `unknown` for an unrecognized value. */
+  otherPackageManager: OtherPackageManager | null;
   dependencies: DeclaredDependency[];
+}
+
+/** Package managers Packageawy reads but never runs. */
+export type OtherPackageManager = 'yarn' | 'bun' | 'unknown';
+
+function readOtherPackageManager(value: unknown): OtherPackageManager | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  if (readPackageManager(value) !== null) return null;
+  const match = /^(yarn|bun)(?:@.*)?$/.exec(value.trim());
+  if (match?.[1] === 'yarn' || match?.[1] === 'bun') return match[1];
+  return 'unknown';
 }
 
 function readPackageManager(value: unknown): PackageManagerDeclaration | null {
@@ -48,6 +63,13 @@ function readPackageManager(value: unknown): PackageManagerDeclaration | null {
   const name = match[1];
   if (name !== 'npm' && name !== 'pnpm') return null;
   return { name, version: match[2] ?? null };
+}
+
+export const CATALOG_SPECIFIER_MESSAGE = 'Version comes from the pnpm catalog in pnpm-workspace.yaml.';
+
+/** pnpm catalog protocol: `catalog:` (default catalog) or `catalog:name`. */
+export function isCatalogSpecifier(spec: string): boolean {
+  return spec.trim().startsWith('catalog:');
 }
 
 /** Shorthand GitHub form, e.g. "user/repo" or "user/repo#semver:^1.0.0". */
@@ -73,8 +95,14 @@ const GIT_PREFIXES = [
 export function classifySpecifier(spec: string): {
   unresolvable?: UnresolvableReason;
   aliasTarget?: string;
+  catalog?: true;
 } {
   const value = spec.trim();
+
+  // A catalog dependency still resolves from the registry through the
+  // lockfile, so it keeps its versions and advisories. Only edits to its
+  // specifier are off limits.
+  if (isCatalogSpecifier(value)) return { catalog: true };
 
   if (value.startsWith('file:')) return { unresolvable: 'file' };
   if (value.startsWith('link:')) return { unresolvable: 'workspace-link' };
@@ -128,11 +156,12 @@ function readDepBlock(
 
     const raw = (source as Record<string, unknown>)[key];
     const range = typeof raw === 'string' ? raw : '';
-    const { unresolvable, aliasTarget } = classifySpecifier(range);
+    const { unresolvable, aliasTarget, catalog } = classifySpecifier(range);
 
     const entry: DeclaredDependency = { name: key, range, dev, optional };
     if (unresolvable !== undefined) entry.unresolvable = unresolvable;
     if (aliasTarget !== undefined) entry.aliasTarget = aliasTarget;
+    if (catalog !== undefined) entry.catalog = catalog;
 
     // dependencies wins over devDependencies when a name appears in both,
     // matching npm's precedence.
@@ -167,7 +196,14 @@ function readWorkspaces(value: unknown): string[] {
 export function parseManifest(contents: string): Manifest {
   const json: unknown = JSON.parse(contents);
   if (typeof json !== 'object' || json === null) {
-    return { name: null, version: null, workspaces: [], packageManager: null, dependencies: [] };
+    return {
+      name: null,
+      version: null,
+      workspaces: [],
+      packageManager: null,
+      otherPackageManager: null,
+      dependencies: [],
+    };
   }
 
   const obj = json as Record<string, unknown>;
@@ -183,6 +219,7 @@ export function parseManifest(contents: string): Manifest {
     version: typeof obj['version'] === 'string' ? obj['version'] : null,
     workspaces: readWorkspaces(obj['workspaces']),
     packageManager: readPackageManager(obj['packageManager']),
+    otherPackageManager: readOtherPackageManager(obj['packageManager']),
     dependencies: [...deps.values()],
   };
 }

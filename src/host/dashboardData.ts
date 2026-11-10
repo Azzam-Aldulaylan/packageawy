@@ -36,7 +36,8 @@ export function toDashboardData(
   project: SelectedProjectInfo,
   canChangeProject: boolean,
   buildInfo: BuildInfo,
-  generatedAt: string = new Date().toISOString()
+  generatedAt: string = new Date().toISOString(),
+  readOnlyReason?: string
 ): DashboardData {
   const data: DashboardData = {
     rows: result.rows,
@@ -55,6 +56,7 @@ export function toDashboardData(
     };
   }
   if (result.auditUnavailable === true) data.auditUnavailable = true;
+  if (readOnlyReason !== undefined) data.readOnlyReason = readOnlyReason;
   return data;
 }
 
@@ -74,9 +76,10 @@ export function toHostToWebviewMessage(
   project: SelectedProjectInfo,
   canChangeProject: boolean,
   buildInfo: BuildInfo,
-  generatedAt?: string
+  generatedAt?: string,
+  readOnlyReason?: string
 ): HostToWebviewMessage {
-  const data = toDashboardData(result, project, canChangeProject, buildInfo, generatedAt);
+  const data = toDashboardData(result, project, canChangeProject, buildInfo, generatedAt, readOnlyReason);
   if (options.isEmpty) return { status: 'empty', data };
   if (options.isStale) return { status: 'stale', data };
   if (

@@ -14,6 +14,7 @@
 import semver from 'semver';
 
 import type { DeclaredDependency } from '../manifest/parse.js';
+import { CATALOG_SPECIFIER_MESSAGE, isCatalogSpecifier } from '../manifest/parse.js';
 import type { PackageRow } from '../types.js';
 import type { DependencyClassification } from './plan.js';
 import { isSafeNpmPackageName, isSafeSemverVersion } from './plan.js';
@@ -25,6 +26,7 @@ export type UpgradeRejectionReason =
   | 'no-eligible-upgrade'
   | 'stale-target'
   | 'not-declared'
+  | 'catalog-specifier'
   | 'unsafe-identifier';
 
 export interface EligibleUpgrade {
@@ -121,6 +123,11 @@ export function validateUpgradeRequest(
 
   const declared = declaredDependencies.find((d) => d.name === row.name);
   if (declared === undefined) return { ok: false, reason: 'not-declared' };
+  // An upgrade writes an exact version into package.json, which would replace
+  // the catalog reference. The catalog in pnpm-workspace.yaml owns this version.
+  if (declared.catalog === true || isCatalogSpecifier(declared.range)) {
+    return { ok: false, reason: 'catalog-specifier' };
+  }
 
   if (!isSafeNpmPackageName(row.name) || !isSafeSemverVersion(request.target)) {
     return { ok: false, reason: 'unsafe-identifier' };
@@ -309,6 +316,8 @@ export function describeRejection(reason: UpgradeRejectionReason): RejectionDesc
         code: 'NOT_DECLARED',
         message: 'This package could not be matched to a declared dependency.',
       };
+    case 'catalog-specifier':
+      return { code: 'CATALOG_SPECIFIER', message: CATALOG_SPECIFIER_MESSAGE };
     case 'unsafe-identifier':
       return {
         code: 'UNSAFE_IDENTIFIER',
