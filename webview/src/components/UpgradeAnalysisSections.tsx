@@ -138,7 +138,14 @@ function projectReviewSignal(projectCompatibility: ProjectCompatibilityAnalysis)
   };
 }
 
-function securityReviewSignal(security: SecurityOutcome | null, advisoriesAvailable: boolean): UpgradeReviewSignal {
+function securityReviewSignal(
+  security: SecurityOutcome | null,
+  advisoriesAvailable: boolean,
+  advisoriesOff = false
+): UpgradeReviewSignal {
+  if (advisoriesOff) {
+    return { area: 'security', label: 'Security impact', value: 'Security checks are off', tone: 'neutral', needsReview: false };
+  }
   const summary = security === null ? null : summarizeUpgradeSecurity(security);
   const resolved = security?.resolvedAdvisories.length ?? 0;
   const value = !advisoriesAvailable ? 'Advisory data unavailable'
@@ -174,12 +181,13 @@ function verificationReviewSignal(verification: UpgradeAnalysisVerification): Up
 
 export function buildUpgradeReviewSignals(
   analysis: UpgradeAnalysisPresentation,
-  advisoriesAvailable: boolean
+  advisoriesAvailable: boolean,
+  advisoriesOff = false
 ): UpgradeReviewSignal[] {
   return [
     dependencyReviewSignal(analysis.compatibility),
     projectReviewSignal(analysis.projectCompatibility),
-    securityReviewSignal(analysis.security, advisoriesAvailable),
+    securityReviewSignal(analysis.security, advisoriesAvailable, advisoriesOff),
     verificationReviewSignal(analysis.verification),
   ];
 }
@@ -199,6 +207,7 @@ export function UpgradeAnalysisSections({
   targetVersion,
   sections,
   advisoriesAvailable,
+  advisoriesOff = false,
   onChangeTab,
   onConfigureVerification,
   onOpenAdvisory,
@@ -208,6 +217,7 @@ export function UpgradeAnalysisSections({
   targetVersion: string;
   sections: UpgradeAnalysisSectionsState;
   advisoriesAvailable: boolean;
+  advisoriesOff?: boolean;
   onChangeTab: (tab: ManageTabId) => void;
   onConfigureVerification: () => void;
   onOpenAdvisory?: ((packageName: string, advisoryId: string | number, path: string[], reference?: string) => void) | undefined;
@@ -221,7 +231,7 @@ export function UpgradeAnalysisSections({
     ? projectReviewSignal(projectCompatibility.value)
     : { value: projectCompatibility.status === 'loading' ? 'Checking…' : 'Waiting', tone: 'neutral' as const };
   const securitySummary = security.status === 'complete'
-    ? securityReviewSignal(security.value, advisoriesAvailable)
+    ? securityReviewSignal(security.value, advisoriesAvailable, advisoriesOff)
     : { value: 'Waiting', tone: 'neutral' as const };
   const planComplete = overview.status === 'complete' && (smartPlan.status === 'complete' || smartPlan.status === 'not-applicable');
   const coordinatedChangeCount = planComplete && smartPlan.status === 'complete' && smartPlan.value !== null &&

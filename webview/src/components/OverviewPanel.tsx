@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react';
 
 import type { AttributedAdvisory, PackageRow, Severity } from '../../../src/core/types.js';
-import { sortAdvisoriesBySeverity } from '../../../src/host/severityDisplay.js';
+import { ADVISORY_CHECK_OFF_TEXT, sortAdvisoriesBySeverity } from '../../../src/host/severityDisplay.js';
 import { classifyRowUpdate } from '../../../src/host/updateClassification.js';
 import type { TransitiveRemediationUiState as LegacyTransitiveRemediationUiState } from '../../../src/host/upgradeAction.js';
 import { hasEligibleTransitiveFix, resolveActionState } from '../../../src/host/upgradeAction.js';
@@ -361,12 +361,25 @@ const MAX_COMPACT_VULNERABILITIES = 2;
 function VulnerabilitySummary({
   row,
   advisoriesAvailable,
+  advisoriesOff,
   onChangeTab,
 }: {
   row: PackageRow;
   advisoriesAvailable: boolean;
+  advisoriesOff: boolean;
   onChangeTab: (tab: ManageTabId) => void;
 }): ReactElement | null {
+  if (advisoriesOff) {
+    return (
+      <section className="manage-vulnerabilities" aria-labelledby="manage-vulnerabilities-heading">
+        <h3 className="manage-vulnerabilities__heading" id="manage-vulnerabilities-heading">
+          <IconShield className="manage-vulnerabilities__heading-icon" />
+          Vulnerabilities
+        </h3>
+        <p className="manage-vulnerabilities__more">{ADVISORY_CHECK_OFF_TEXT}.</p>
+      </section>
+    );
+  }
   if (!advisoriesAvailable) {
     return (
       <section className="manage-vulnerabilities" aria-labelledby="manage-vulnerabilities-heading">
@@ -443,6 +456,7 @@ export function OverviewPanel({
   upgradeDisabled,
   updateResolutionAvailable,
   advisoriesAvailable,
+  advisoriesOff = false,
   onStartUpgradeReview,
   onStartRemovalReview,
   onAnalyzeRemediation,
@@ -461,6 +475,7 @@ export function OverviewPanel({
   upgradeDisabled: boolean;
   updateResolutionAvailable: boolean;
   advisoriesAvailable: boolean;
+  advisoriesOff?: boolean;
   onStartUpgradeReview: (packageName: string, target: string) => void;
   onStartRemovalReview: (packageName: string) => void;
   onAnalyzeRemediation: (packageName: string) => void;
@@ -490,7 +505,12 @@ export function OverviewPanel({
           </dl>
         </section>
 
-        <VulnerabilitySummary row={row} advisoriesAvailable={advisoriesAvailable} onChangeTab={onChangeTab} />
+        <VulnerabilitySummary
+          row={row}
+          advisoriesAvailable={advisoriesAvailable}
+          advisoriesOff={advisoriesOff}
+          onChangeTab={onChangeTab}
+        />
       </div>
 
       <div className="overview-panel__actions">

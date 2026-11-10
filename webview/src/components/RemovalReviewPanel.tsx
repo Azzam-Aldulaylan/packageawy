@@ -122,11 +122,13 @@ function RemovalSummaryCard({
   analysis,
   assessment,
   advisoriesAvailable,
+  advisoriesOff,
 }: {
   row: PackageRow;
   analysis: RemoveAnalysisPresentation;
   assessment: RemovalAssessment | undefined;
   advisoriesAvailable: boolean;
+  advisoriesOff: boolean;
 }): ReactElement {
   const status = statusCopy(row.name, assessment);
   const change = analysis.changes.find((candidate) => candidate.packageName === row.name) ?? analysis.changes[0];
@@ -141,7 +143,9 @@ function RemovalSummaryCard({
       <dl className="manage-glance removal-summary__facts">
         <GlanceRow label="Version">{row.current ?? row.range}</GlanceRow>
         <GlanceRow label="Required by">{`${requiredBy} package${requiredBy === 1 ? '' : 's'}`}</GlanceRow>
-        {!advisoriesAvailable ? (
+        {advisoriesOff ? (
+          <GlanceRow label="Vulnerabilities">Not checked, security checks are off</GlanceRow>
+        ) : !advisoriesAvailable ? (
           <GlanceRow label="Vulnerabilities">Unavailable</GlanceRow>
         ) : row.advisories.length > 0 ? (
           <GlanceRow label="Vulnerabilities">{String(row.advisories.length)}</GlanceRow>
@@ -466,6 +470,7 @@ export function RemovalReviewPanel({
   removalImpact,
   usage,
   advisoriesAvailable,
+  advisoriesOff = false,
   now,
   onAnalyzeRemoval,
   onConfirm,
@@ -480,6 +485,7 @@ export function RemovalReviewPanel({
   removalImpact: RemovalImpactState;
   usage: UsageRequestState | undefined;
   advisoriesAvailable: boolean;
+  advisoriesOff?: boolean;
   now: number;
   onAnalyzeRemoval: () => void;
   onConfirm: () => void;
@@ -585,7 +591,7 @@ export function RemovalReviewPanel({
       <RemovalFreshnessBar analysis={analysis} now={now} onRefresh={onAnalyzeRemoval} />
       <div className="removal-tab">
         <div className="removal-tab__summary">
-          <RemovalSummaryCard row={row} analysis={analysis} assessment={assessment} advisoriesAvailable={advisoriesAvailable} />
+          <RemovalSummaryCard row={row} analysis={analysis} assessment={assessment} advisoriesAvailable={advisoriesAvailable} advisoriesOff={advisoriesOff} />
           <RecommendedActionCard
             row={row}
             assessment={assessment}

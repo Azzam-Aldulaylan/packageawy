@@ -63,6 +63,12 @@ export interface BuildPackageRowsOptions {
    * applicable, currently the pnpm host path.
    */
   auditUnavailableWhenOmitted?: boolean;
+  /**
+   * Defaults to true. False means the project turned the public advisory
+   * check off: no package names go to the bulk advisory endpoint or GitHub,
+   * npm audit does not run, and availability reports advisories as 'off'.
+   */
+  publicAdvisoryCheck?: boolean;
   concurrency?: number;
   signal?: AbortSignal;
   /** Local diagnostics only. The default recorder is a zero-allocation no-op. */
@@ -207,7 +213,10 @@ export async function buildPackageRows(
   // npm audit is subprocess-bound and independent of registry metadata. Start
   // it as soon as the normalized graph provides the direct-name allow-list,
   // then consume its optional fixAvailable enrichment at the original stage.
+  const advisoryCheckOff = options.publicAdvisoryCheck === false;
   const auditPromise: Promise<{ fixes: Map<string, FixAvailable>; unavailable: boolean }> = (() => {
+    // npm audit sends the same inventory to the registry, so it follows the advisory setting.
+    if (advisoryCheckOff) return Promise.resolve({ fixes: new Map(), unavailable: false });
     if (options.auditRunner === undefined) {
       return Promise.resolve({
         fixes: new Map(),
@@ -233,10 +242,11 @@ export async function buildPackageRows(
   // every /latest request. This adds one bounded request (to npm's advisory
   // endpoint) while the registry pool is active. Patched-version work still
   // waits for attribution and therefore cannot amplify that overlap.
-  const bulkRequestBody = buildBulkRequestBody(graph);
-  let advisoryRequestSettled = false;
-  options.onProgress?.({ stage: 'advisories' });
+  let advisoryRequestSettled = advisoryCheckOff;
+  if (!advisoryCheckOff) options.onProgress?.({ stage: 'advisories' });
   const advisoryPromise: Promise<{ advisoriesByName: Map<string, Advisory[]>; advisoriesError?: FetchError }> = (async () => {
+    if (advisoryCheckOff) return { advisoriesByName: new Map<string, Advisory[]>() };
+    const bulkRequestBody = buildBulkRequestBody(graph);
     const endAdvisoryRequest = recorder.start('bulk advisory request');
     let advisoriesByName = new Map<string, Advisory[]>();
     let advisoriesError: FetchError | undefined;
@@ -434,7 +444,8 @@ export async function buildPackageRows(
 
   const availability: ScanDataAvailability = {
     updates: unavailableUpdatePackages.length === 0 ? 'complete' : 'partial',
-    advisories: advisoriesError !== undefined ? 'unavailable'
+    advisories: advisoryCheckOff ? 'off'
+      : advisoriesError !== undefined ? 'unavailable'
       : [...advisoryCoverage.values()].includes('partial') ? 'partial' : 'complete',
     unavailableUpdatePackages,
   };

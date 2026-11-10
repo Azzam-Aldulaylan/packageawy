@@ -29,6 +29,7 @@ import io.github.azzamaldulaylan.packageawy.rpc.CancelSignal
 import io.github.azzamaldulaylan.packageawy.rpc.ErrorCodes
 import io.github.azzamaldulaylan.packageawy.rpc.ResponseError
 import io.github.azzamaldulaylan.packageawy.settings.PackageawyConfigurable
+import io.github.azzamaldulaylan.packageawy.settings.PackageawyProjectConfigurable
 import io.github.azzamaldulaylan.packageawy.settings.PackageawyProjectSettings
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
@@ -119,7 +120,10 @@ class IdeHostServices(
 
     override fun openSettings(key: String) {
         ApplicationManager.getApplication().invokeLater {
-            if (!project.isDisposed) ShowSettingsUtil.getInstance().showSettingsDialog(project, PackageawyConfigurable::class.java)
+            if (project.isDisposed) return@invokeLater
+            // The advisory check is a project setting. Everything else lives on the IDE-wide page.
+            val page = if (key == "security.publicAdvisoryCheck") PackageawyProjectConfigurable::class.java else PackageawyConfigurable::class.java
+            ShowSettingsUtil.getInstance().showSettingsDialog(project, page)
         }
     }
 

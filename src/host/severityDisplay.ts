@@ -25,11 +25,21 @@ const LABELS: Record<Severity, string> = {
   info: 'Info',
 };
 
+/** Shown wherever advisory facts would appear when the project turned the check off. */
+export const ADVISORY_CHECK_OFF_TEXT = 'Security checks are turned off for this project';
+
 /**
  * A null severity reads as Safe only after the package's version was checked.
- * Missing version evidence gets a neutral label and an install hint.
+ * Missing version evidence gets a neutral label and an install hint. When the
+ * project turned the advisory check off, every cell reads Off, never Safe.
  */
-export function severityDisplay(severity: Severity | null, advisoriesAvailable = true, checked = true): SeverityDisplay {
+export function severityDisplay(
+  severity: Severity | null,
+  advisoriesAvailable = true,
+  checked = true,
+  advisoriesOff = false
+): SeverityDisplay {
+  if (advisoriesOff) return { label: 'Off', className: 'info', reason: ADVISORY_CHECK_OFF_TEXT };
   if (!checked && severity === null) {
     return { label: 'Not checked', className: 'info', reason: 'Install dependencies to check this package' };
   }

@@ -274,6 +274,7 @@ export function ManageDependencyModal({
   upgradeDisabled,
   updateResolutionAvailable,
   advisoriesAvailable,
+  advisoriesOff = false,
   blockClose,
   upgradeResult,
   upgradeEnrichment,
@@ -307,6 +308,8 @@ export function ManageDependencyModal({
   upgradeDisabled: boolean;
   updateResolutionAvailable: boolean;
   advisoriesAvailable: boolean;
+  /** The project turned the advisory check off. Panels say so instead of reporting missing data. */
+  advisoriesOff?: boolean;
   /** True only while a protected, hard-to-reverse operation this modal itself started is actually running (a file-mutating install/removal, or the removal-impact scan): X/Escape refuse to close until it settles, same discipline the modal already had. */
   blockClose: boolean;
   upgradeResult: UpgradeResultPresentation | null;
@@ -425,6 +428,7 @@ export function ManageDependencyModal({
         upgradeDisabled={upgradeDisabled}
         updateResolutionAvailable={quarantineDerivedData ? false : updateResolutionAvailable}
         advisoriesAvailable={quarantineDerivedData ? false : advisoriesAvailable}
+        advisoriesOff={!quarantineDerivedData && advisoriesOff}
         onStartUpgradeReview={startUpgradeReview}
         onStartRemovalReview={startRemovalReview}
         onAnalyzeRemediation={onAnalyzeRemediation}
@@ -452,6 +456,7 @@ export function ManageDependencyModal({
         remediation={remediation}
         actionsDisabled={upgradeDisabled}
         advisoriesAvailable={quarantineDerivedData ? false : advisoriesAvailable}
+        advisoriesOff={!quarantineDerivedData && advisoriesOff}
         onOpenAdvisory={onOpenAdvisory}
         onStartUpgradeReview={(target) => startUpgradeReview(row.name, target)}
         onAnalyzeRemediation={startTransitiveCheckFromVulnerabilities}
@@ -498,6 +503,7 @@ export function ManageDependencyModal({
         disabled={upgradeDisabled}
         usage={usage}
         advisoriesAvailable={quarantineDerivedData ? false : advisoriesAvailable}
+        advisoriesOff={!quarantineDerivedData && advisoriesOff}
         onAnalyzeUpgrade={upgrade.onAnalyze}
         onTargetChange={upgrade.onTargetChange}
         onConfirm={upgrade.onConfirm}
@@ -521,6 +527,7 @@ export function ManageDependencyModal({
         removalImpact={removalImpact}
         usage={usage}
         advisoriesAvailable={quarantineDerivedData ? false : advisoriesAvailable}
+        advisoriesOff={!quarantineDerivedData && advisoriesOff}
         now={now}
         onAnalyzeRemoval={removal.onAnalyze}
         onConfirm={removal.onConfirm}

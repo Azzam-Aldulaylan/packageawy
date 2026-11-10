@@ -157,6 +157,7 @@ export function PackageTable({
   rows,
   unavailableUpdatePackages,
   advisoriesAvailable,
+  advisoriesOff = false,
   searchQuery,
   sortState,
   onSort,
@@ -167,6 +168,8 @@ export function PackageTable({
   rows: readonly PackageRow[];
   unavailableUpdatePackages: ReadonlySet<string>;
   advisoriesAvailable: boolean;
+  /** The project turned the advisory check off: severity cells read Off. */
+  advisoriesOff?: boolean;
   searchQuery: string;
   sortState: TableSortState;
   onSort: (column: SortColumn) => void;
@@ -321,6 +324,7 @@ export function PackageTable({
                   <SeverityBadge
                     severity={row.worstSeverity}
                     advisoriesAvailable={advisoriesAvailable}
+                    advisoriesOff={advisoriesOff}
                     checked={row.advisoryCoverage !== 'partial'}
                   />
                 </td>

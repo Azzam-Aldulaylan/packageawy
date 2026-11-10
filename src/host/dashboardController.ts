@@ -105,7 +105,16 @@ export interface DashboardControllerOptions {
   performanceEnabled?: () => boolean;
   /** Host panels enable real scan progress. Tests/other adapters may omit it. */
   progressEnabled?: boolean;
+  /**
+   * Reads `packageawy.security.publicAdvisoryCheck` for the project at
+   * `root`. Called for each scan and cache read so a settings change applies
+   * on the next one. Omitted means on.
+   */
+  publicAdvisoryCheckEnabled?: (root: string) => boolean;
 }
+
+/** Settings key, relative to the `packageawy` section. Resource scoped, so it can differ per workspace folder. */
+export const PUBLIC_ADVISORY_CHECK_SETTING = 'security.publicAdvisoryCheck';
 
 function isCancellation(cause: unknown): boolean {
   return cause instanceof FetchError && cause.code === 'CANCELLED';
@@ -139,8 +148,10 @@ function toScanSnapshot(result: {
   return snapshot;
 }
 
+/** A project that turned the advisory check off still has complete data for what it asked for. */
 function hasCompleteCoreData(snapshot: ScanSnapshot): boolean {
-  return snapshot.availability.updates === 'complete' && snapshot.availability.advisories === 'complete';
+  const advisories = snapshot.availability.advisories;
+  return snapshot.availability.updates === 'complete' && (advisories === 'complete' || advisories === 'off');
 }
 
 /** The project-specific slice of options that a reload replaces: everything but the fetch machinery. */
@@ -593,9 +604,12 @@ export class DashboardController {
     // should always be well-formed. Guarding it anyway keeps this method
     // consistent with the rest of the cache layer's rule: never trust the
     // shape of anything read back from storage, never crash on it either.
+    // An entry scanned under the other advisory setting would show advisory
+    // facts the project turned off, or hide ones it turned back on.
     if (
       !isSourceFingerprint(cached.sourceFingerprint) ||
-      !sourceFingerprintsMatch(cached.sourceFingerprint, this.currentSourceFingerprint())
+      !sourceFingerprintsMatch(cached.sourceFingerprint, this.currentSourceFingerprint()) ||
+      (cached.availability.advisories === 'off') !== !this.publicAdvisoryCheckEnabled()
     ) {
       endValidation({ valid: false });
       this.options.projectCacheStore.delete(this.options.cacheKey);
@@ -740,6 +754,10 @@ export class DashboardController {
     return classifyFreshness(this.lastGeneratedAt, this.options.ttlMinutesProvider(), this.now()) !== 'fresh';
   }
 
+  publicAdvisoryCheckEnabled(): boolean {
+    return this.options.publicAdvisoryCheckEnabled?.(this.options.root) ?? true;
+  }
+
   /** Call from the panel's onDidDispose so an in-flight run stops with it. */
   dispose(): void {
     this.disposed = true;
@@ -824,6 +842,7 @@ export class DashboardController {
         ? {}
         : { auditRunner: this.options.auditRunner }),
       ...(this.options.packageManager === 'pnpm' ? { auditUnavailableWhenOmitted: false } : {}),
+      ...(this.publicAdvisoryCheckEnabled() ? {} : { publicAdvisoryCheck: false }),
       ...(this.options.progressEnabled === true
         ? {
             onProgress: (progress) => {

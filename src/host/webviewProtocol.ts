@@ -833,6 +833,8 @@ export type WebviewToHostMessage =
   /** Restore the dependency files a kept Smart Cleanup run captured. Only the host-issued analysisId is accepted. */
   | { type: 'restore-smart-cleanup'; analysisId: string }
   | { type: 'configure-verification' }
+  /** Opens the `security.publicAdvisoryCheck` setting. Carries nothing else. */
+  | { type: 'configure-advisory-check' }
   /**
    * Only ever a package name. See resolveRemediationRequest
    * (src/core/advisories/remediationRequest.ts). The host re-derives the
@@ -1078,7 +1080,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     const analysisId = value['analysisId'];
     return hasOnlyKeys(value, ['type', 'analysisId']) && (analysisId === null || isNonEmptyString(analysisId));
   }
-  if (type === 'configure-verification') {
+  if (type === 'configure-verification' || type === 'configure-advisory-check') {
     return hasOnlyKeys(value, ['type']);
   }
   if (type === 'confirm-remediation') {

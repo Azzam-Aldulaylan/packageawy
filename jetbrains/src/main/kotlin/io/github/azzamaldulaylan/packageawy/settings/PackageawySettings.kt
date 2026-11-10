@@ -18,11 +18,13 @@ data class SettingsState(
     /**
      * Keys relative to the `packageawy` section, as the sidecar reads them.
      * A project's verification-script override, when set, replaces the IDE-wide list.
+     * The public advisory check is a project setting, so the caller passes it in.
      */
-    fun snapshot(projectVerificationScripts: List<String>? = null): Map<String, Any> = linkedMapOf(
+    fun snapshot(projectVerificationScripts: List<String>? = null, publicAdvisoryCheck: Boolean = true): Map<String, Any> = linkedMapOf(
         "registry.useProjectNpmrc" to useProjectNpmrc,
         "upgrade.ignoreScripts" to ignoreScripts,
         "upgrade.verificationScripts" to (projectVerificationScripts ?: verificationScripts).map { it.trim() }.filter { it.isNotEmpty() },
+        "security.publicAdvisoryCheck" to publicAdvisoryCheck,
         "cacheTtlMinutes" to cacheTtlMinutes.coerceAtLeast(0),
         "debug.performance" to debugPerformance,
     )

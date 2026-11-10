@@ -59,8 +59,15 @@ export class VsCodePlatform implements HostPlatform {
     return vscode.workspace.isTrusted;
   }
 
-  getSetting<T>(key: string, defaultValue: T): T {
-    return vscode.workspace.getConfiguration(SETTINGS_SECTION).get<T>(key, defaultValue);
+  getSetting<T>(key: string, defaultValue: T, resourcePath?: string): T {
+    const scope = resourcePath === undefined ? undefined : vscode.Uri.file(resourcePath);
+    return vscode.workspace.getConfiguration(SETTINGS_SECTION, scope).get<T>(key, defaultValue);
+  }
+
+  onDidChangeSetting(key: string, listener: () => void): Disposable {
+    return vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration(`${SETTINGS_SECTION}.${key}`)) listener();
+    });
   }
 
   async updateWorkspaceSetting(key: string, value: unknown): Promise<void> {

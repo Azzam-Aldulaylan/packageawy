@@ -253,8 +253,10 @@ class PackageawyProject(private val project: Project) : Disposable {
     }
 
     /** The IDE-wide settings with this project's overrides applied. */
-    private fun settingsSnapshot(app: SettingsState): Map<String, Any> =
-        app.snapshot(PackageawyProjectSettings.getInstance(project).state.verificationScriptsOverride())
+    private fun settingsSnapshot(app: SettingsState): Map<String, Any> {
+        val projectState = PackageawyProjectSettings.getInstance(project).state
+        return app.snapshot(projectState.verificationScriptsOverride(), projectState.publicAdvisoryCheck)
+    }
 
     private fun workspaceFolders(): List<WorkspaceFolder> {
         val roots = ReadAction.computeBlocking<List<Path>, RuntimeException> {

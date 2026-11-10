@@ -14,6 +14,7 @@
  *   trust flag, the current settings, and both storage snapshots.
  * - `workspace/didChangeFolders`, `workspace/didChangeTrust` and
  *   `settings/didChange` notifications keep that state current.
+ *   `onDidChangeSetting` fires when `settings/didChange` changes that key.
  * - `workspaceFolders`, `isWorkspaceTrusted`, `getSetting` and
  *   `workspaceState.get` / `globalState.get` answer from that copy.
  * - `workspaceState.update` / `globalState.update` update the copy and send
@@ -135,7 +136,14 @@ export interface FilePosition {
 export interface HostPlatform {
   workspaceFolders(): readonly WorkspaceFolder[];
   isWorkspaceTrusted(): boolean;
-  getSetting<T>(key: string, defaultValue: T): T;
+  /**
+   * `resourcePath` reads a resource-scoped setting for the folder holding
+   * that path, so a multi-root workspace can set it per folder. The sidecar
+   * client sends values for its one project and ignores it.
+   */
+  getSetting<T>(key: string, defaultValue: T, resourcePath?: string): T;
+  /** Calls `listener` after the value of `key` may have changed, at any scope. */
+  onDidChangeSetting(key: string, listener: () => void): Disposable;
   /** Stores `value` as the current workspace's (project's) value of `key`. Rejects when the editor refuses it. */
   updateWorkspaceSetting(key: string, value: unknown): Promise<void>;
   readonly workspaceState: KeyValueStore;

@@ -170,7 +170,9 @@ export function isScanDataAvailability(value: unknown): value is ScanDataAvailab
   const advisories = value['advisories'];
   const unavailable = value['unavailableUpdatePackages'];
   if (updates !== 'complete' && updates !== 'partial') return false;
-  if (advisories !== 'complete' && advisories !== 'partial' && advisories !== 'unavailable') return false;
+  if (advisories !== 'complete' && advisories !== 'partial' && advisories !== 'unavailable' && advisories !== 'off') {
+    return false;
+  }
   if (!Array.isArray(unavailable) || !unavailable.every((name) => typeof name === 'string' && name !== '')) return false;
   if (new Set(unavailable).size !== unavailable.length) return false;
   return updates === 'complete' ? unavailable.length === 0 : unavailable.length > 0;
