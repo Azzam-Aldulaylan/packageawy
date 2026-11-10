@@ -14,6 +14,69 @@ const controller = (client, overrides = {}) => new DashboardController({
   projectCacheStore: new PersistentProjectCacheStore(store()), cacheKey: 'a', ttlMinutesProvider: () => 30, ...overrides,
 });
 
+for (const saved of [{ age: 3600000 }, { incomplete: true }]) {
+  test(`cached startup keeps cleanup findings after held revalidation: ${saved.incomplete ? 'core incomplete' : 'expired'}`, async t => {
+    const s = await panel(t, { saved });
+    await s.prepared();
+    let requests = 0;
+    const usage = s.current.usageCoordinator;
+    const original = usage.requestBackgroundUsageRefresh.bind(usage);
+    usage.requestBackgroundUsageRefresh = async options => { requests++; return original(options); };
+    const ready = s.ready();
+    await until(() => s.snapshots().length === 1);
+    assert.equal(s.snapshots()[0].status, saved.incomplete ? 'stale' : 'ready');
+    // Give an incorrectly released usage pass time to start while every
+    // registry, advisory and audit response is still held open.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests, 0);
+    assert.equal(s.searches.some(search => search.include === '**/*.{js,jsx,ts,tsx,mjs,cjs}'), false);
+    assert.equal(s.posted.some(m => m.status.startsWith('cleanup')), false);
+    s.gate.resolve();
+    await ready;
+    await until(() => s.posted.some(m => m.status === 'cleanup-result' && m.findings.length > 0));
+    assert.equal(requests, 1);
+    const ordered = s.posted.filter(m => 'data' in m || m.status === 'cleanup-result');
+    assert.deepEqual(ordered.map(m => m.status), [saved.incomplete ? 'stale' : 'ready', 'ready', 'cleanup-result']);
+    assert.equal(ordered.at(-1).findings[0].packageName, 'clean-pkg');
+  });
+}
+
+test('a pre-ready watcher usage request is issued once after the joined first ready settles', async t => {
+  const s = await panel(t, { saved: { age: 3600000 } });
+  await s.prepared();
+  const requests = [];
+  s.current.usageCoordinator.requestBackgroundUsageRefresh = async options => requests.push(options);
+  const source = s.watchers.findLast(w => w.glob.includes('**/*.{js'));
+  source.listener(`${s.root}/a/index.ts`);
+  await until(() => s.current.automaticUsagePending);
+  const ready = s.ready();
+  await until(() => s.snapshots().length === 1);
+  assert.deepEqual(requests, []);
+  s.gate.resolve();
+  await ready;
+  assert.deepEqual(requests, [{ force: false }]);
+  assert.equal(s.current.automaticUsagePending, false);
+});
+
+for (const outcome of ['picker cancelled', 'fatal']) {
+  test(`first ready without a controller releases later usage requests: ${outcome}`, async t => {
+    const s = await panel(t, outcome === 'fatal'
+      ? { invalid: 'a' } : { projects: ['a', 'b'], target: null });
+    let pickerCalls = 0;
+    s.platform.showQuickPick = async () => { pickerCalls++; return undefined; };
+    s.gate.resolve();
+    await s.finished();
+    await s.ready();
+    assert.equal(s.current.controller, undefined);
+    assert.deepEqual(statuses(s.posted), ['fatal-error']);
+    assert.equal(pickerCalls, outcome === 'picker cancelled' ? 1 : 0);
+    const requests = [];
+    s.current.usageCoordinator.requestBackgroundUsageRefresh = async options => requests.push(options);
+    s.current.requestAutomaticUsageRefresh({ force: true });
+    assert.deepEqual(requests, [{ force: true }]);
+  });
+}
+
 for (const [name, saved, ttl, expected] of [
   ['expired complete', { age: 3600000 }, 30, ['ready', 'ready']],
   ['TTL zero', {}, 0, ['ready', 'ready']],

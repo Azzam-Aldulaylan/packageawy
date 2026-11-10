@@ -139,6 +139,30 @@ const usageReport = (at) => ({
 
 const rendered = (at, generatedAt) => ({ at, direction: 'inbound', message: { type: 'rendered', generatedAt } });
 
+test('completion waits for fresh paint after cached rows have already painted', () => {
+  const cachedPaint = rendered(1200, 'cached');
+  const messages = [
+    message(1100, 'ready', { ...rows(6), generatedAt: 'cached' }),
+    cachedPaint,
+    message(1400, 'ready', { ...rows(6), generatedAt: 'fresh' }),
+    message(1500, 'cleanup-result'),
+  ];
+  const input = { messages, reports: [cacheReport(1050, 'hit=true  freshness=stale'), scanReport(1450)], openedAt: OPENED };
+  const waiting = completionState(input);
+  assert.equal(waiting.scanDone, true);
+  assert.equal(waiting.usageDone, true);
+  assert.equal(waiting.firstPaintedRows, cachedPaint);
+  assert.equal(waiting.complete, false);
+  assert.equal(waiting.waitingFor, 'painted rows acknowledgement');
+  messages.push(rendered(1600, 'cached'));
+  assert.equal(completionState(input).complete, false, 'another cached acknowledgement cannot acknowledge fresh data');
+  messages.push(rendered(1700, 'fresh'), rendered(1800, 'fresh'));
+  const finished = completionState(input);
+  assert.equal(finished.complete, true);
+  assert.equal(finished.firstPaintedRows, cachedPaint, 'the open-to-painted-rows metric keeps the first paint');
+  assert.equal(finished.completeAt, 1700);
+});
+
 test('completion waits for a matching painted acknowledgement, including an older warm timestamp', () => {
   const generatedAt = '2020-01-01T00:00:00.000Z';
   const snapshot = { ...message(1100, 'ready', { ...rows(6), generatedAt }), direction: 'outbound' };
@@ -248,13 +272,13 @@ test('an expired cache shows cached rows first, then waits for the revalidating 
   assert.equal(waiting.waitingFor, 'scan report');
 
   const revalidated = completionState({
-    messages: [...cached, message(3000, 'ready', rows(7))],
+    messages: [...cached, message(3000, 'ready', rows(7)), rendered(3002, 'snapshot-7')],
     reports: [...reports, scanReport(3001)],
     openedAt: OPENED,
   });
   assert.equal(revalidated.complete, true);
   assert.equal(revalidated.lastData.at, 3000);
-  assert.equal(revalidated.completeAt, 3000);
+  assert.equal(revalidated.completeAt, 3002);
 });
 
 test('a later scan or usage analysis that starts again keeps the dashboard incomplete', () => {

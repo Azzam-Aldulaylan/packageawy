@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { buildPackageRows } from '../out/core/pipeline.js';
 import { MemoryEtagStore } from '../out/core/registry/versions.js';
+import { severityDisplay } from '../out/host/severityDisplay.js';
+import { rowHasUpdate, rowHasVulnerability } from '../out/host/summaryMetrics.js';
+import { packumentSecurityReference, securityClient, securityOptions } from './helpers/cold-load-security.mjs';
 
 const PUBLIC = 'https://registry.npmjs.org/';
 const OTHER = 'https://registry.fixture.invalid/';
@@ -39,6 +42,34 @@ function clientFor(versions = ['1.2.3', '2.0.0']) {
   };
 }
 const scan = (options, client = clientFor()) => buildPackageRows({ ...options, httpClient: client, etagStore: new MemoryEtagStore() });
+
+for (const timing of ['early', 'late']) {
+  test(`security rows equal the packument-only reference with ${timing} bulk advisories`, async () => {
+    const referenceClient = securityClient();
+    const expected = await packumentSecurityReference(referenceClient);
+    assert.ok(referenceClient.calls.every(url => !/\/(?:4\.17\.20|1\.11\.10)$/.test(url)), 'the reference makes no exact-document requests');
+    const client = securityClient(timing);
+    const actual = await scan({ ...securityOptions, auditRunner: client }, client);
+    assert.deepEqual(actual, expected, 'rows, availability, patched advisories and hygiene match the reference');
+    const display = rows => rows.map(row => ({ name: row.name, safe: severityDisplay(row.worstSeverity).label === 'Safe',
+      vulnerable: rowHasVulnerability(row), severity: row.worstSeverity, updateAvailable: rowHasUpdate(row),
+      wanted: row.wanted, latest: row.latest, upgradeTo: row.upgradeTo }));
+    assert.deepEqual(display(actual.rows), display(expected.rows));
+    const byName = Object.fromEntries(expected.rows.map(row => [row.name, row]));
+    assert.equal(byName.dayjs.worstSeverity, null, 'a behind exact pin stays Safe');
+    assert.equal(byName.lodash.worstSeverity, 'high', 'a behind exact pin is vulnerable');
+    assert.equal(byName.ms.upgradeTo, null, 'the current Safe package has no update');
+    assert.equal(byName.minimist.worstSeverity, 'critical');
+    assert.equal(byName.minimist.upgradeTo, '1.2.8', 'boolean audit fix uses the packument fallback');
+    assert.equal(byName.express.upgradeTo, '4.19.2', 'audit selects the transitive fix rather than latest');
+    assert.deepEqual(byName.express.advisories[0].path, ['express', 'body-parser']);
+    assert.ok(byName.express.advisories[0].advisory.identifiers.some(id => id.type === 'CVE'));
+    assert.ok(client.calls.includes(`${PUBLIC}dayjs/1.11.10`), 'the unflagged pin uses its exact document');
+    assert.equal(client.calls.includes(`${PUBLIC}dayjs`), false);
+    assert.equal(client.calls.includes(`${PUBLIC}lodash/4.17.20`), timing === 'late');
+    assert.equal(client.calls.filter(url => url === `${PUBLIC}lodash`).length, 1, 'prefetch and version work share the flagged packument');
+  });
+}
 
 for (const registry of [PUBLIC, PUBLIC.slice(0, -1)]) {
   test(`pipeline makes canonical public pin eligible with registry ${registry}`, async () => {

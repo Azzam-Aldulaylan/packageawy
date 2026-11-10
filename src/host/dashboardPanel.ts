@@ -172,7 +172,8 @@ export class DashboardPanel {
     controller?: DashboardController;
     error?: ProtocolError;
   } | undefined;
-  private firstSnapshotDelivered = false;
+  /** Automatic usage analysis waits until the first ready, including its scan, has settled. */
+  private automaticUsageReleased = false;
   private automaticUsagePending = false;
   private automaticUsageForce = false;
   /** Incremented at the start of every `reloadAndScan` call. See that method's doc comment for the race it closes. */
@@ -242,12 +243,6 @@ export class DashboardPanel {
           performance.finish({ status: message.status });
         }
         this.channel.postMessage(message);
-        if ('data' in message && !this.firstSnapshotDelivered) {
-          this.firstSnapshotDelivered = true;
-          if (this.automaticUsagePending) {
-            queueMicrotask(() => this.requestAutomaticUsageRefresh());
-          }
-        }
       },
     };
     this.etagStore = new PersistentEtagStore(platform.cacheStore ?? platform.globalState);
@@ -285,7 +280,7 @@ export class DashboardPanel {
           this.branchChangeCoordinator.mutationReleased();
           return;
         }
-        if (this.firstSnapshotDelivered) void this.usageCoordinator.runPendingBackgroundRefresh();
+        if (this.automaticUsageReleased) void this.usageCoordinator.runPendingBackgroundRefresh();
       },
       performanceEnabled: this.performanceEnabled,
       storeProjectCompatibilityReferences: (packageName, references, folder) =>
@@ -473,39 +468,56 @@ export class DashboardPanel {
     if (message.type === 'ready') {
       const firstReady = !this.webviewReady;
       this.webviewReady = true;
-      if (firstReady && this.branchChangeCoordinator.hasPending) this.branchChangeCoordinator.mutationReleased();
-      await this.upgradeCoordinator.handleWebviewReady();
-      if (firstReady && this.startup !== undefined) {
-        const startup = this.startup;
-        await startup.preparation;
-        if (this.disposed) return;
-        this.startup = undefined;
-        const matches = startup.generation === this.startupGeneration &&
-          (this.requestedManifestPath === undefined || (startup.candidate !== undefined &&
-            findProjectForManifest([startup.candidate], this.requestedManifestPath) !== undefined));
-        this.deliveryReady = true;
-        if (matches && startup.error !== undefined) {
-          this.sink.postMessage({ status: 'fatal-error', error: startup.error });
-          return;
+      try {
+        await this.handleReadyMessage(firstReady);
+      } finally {
+        if (firstReady) {
+          // Today's order: usage analysis follows the first scan. A cached
+          // startup replay must not let it run before the revalidation lands.
+          this.automaticUsageReleased = true;
+          if (this.automaticUsagePending) this.requestAutomaticUsageRefresh();
         }
-        if (matches && startup.controller !== undefined && this.controller === startup.controller &&
-            this.selectedProject?.id === startup.candidate?.id) {
-          this.requestAutomaticUsageRefresh();
-          await startup.controller.handleStartupReady(this.sink);
-          return;
-        }
-        startup.controller?.dispose();
-        this.controller?.dispose();
-        this.controller = undefined;
-        this.pending = undefined;
       }
-      this.deliveryReady = true;
-      const controller = await this.ensureController();
-      if (controller === undefined) return;
-      await controller.handleReady(this.sink);
-      this.requestAutomaticUsageRefresh();
       return;
     }
+    await this.handleOtherMessage(message);
+  }
+
+  private async handleReadyMessage(firstReady: boolean): Promise<void> {
+    if (firstReady && this.branchChangeCoordinator.hasPending) this.branchChangeCoordinator.mutationReleased();
+    await this.upgradeCoordinator.handleWebviewReady();
+    if (firstReady && this.startup !== undefined) {
+      const startup = this.startup;
+      await startup.preparation;
+      if (this.disposed) return;
+      this.startup = undefined;
+      const matches = startup.generation === this.startupGeneration &&
+        (this.requestedManifestPath === undefined || (startup.candidate !== undefined &&
+          findProjectForManifest([startup.candidate], this.requestedManifestPath) !== undefined));
+      this.deliveryReady = true;
+      if (matches && startup.error !== undefined) {
+        this.sink.postMessage({ status: 'fatal-error', error: startup.error });
+        return;
+      }
+      if (matches && startup.controller !== undefined && this.controller === startup.controller &&
+          this.selectedProject?.id === startup.candidate?.id) {
+        await startup.controller.handleStartupReady(this.sink);
+        this.requestAutomaticUsageRefresh();
+        return;
+      }
+      startup.controller?.dispose();
+      this.controller?.dispose();
+      this.controller = undefined;
+      this.pending = undefined;
+    }
+    this.deliveryReady = true;
+    const controller = await this.ensureController();
+    if (controller === undefined) return;
+    await controller.handleReady(this.sink);
+    this.requestAutomaticUsageRefresh();
+  }
+
+  private async handleOtherMessage(message: Exclude<WebviewToHostMessage, { type: 'ready' }>): Promise<void> {
     if (message.type === 'load-upgrade-targets') {
       await this.upgradeCoordinator.handleLoadUpgradeTargets(message);
       return;
@@ -1203,7 +1215,7 @@ export class DashboardPanel {
     if (this.disposed) return;
     this.automaticUsagePending = true;
     this.automaticUsageForce ||= options.force === true;
-    if (!this.firstSnapshotDelivered) return;
+    if (!this.automaticUsageReleased) return;
     const force = this.automaticUsageForce;
     this.automaticUsagePending = false;
     this.automaticUsageForce = false;
