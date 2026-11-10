@@ -41,7 +41,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - Aliased packages, such as `compat: npm:lodash@4.17.20` and `string-width-cjs`, are checked for vulnerabilities under their real package name.
 - Packages whose installed version is unknown read **Not checked** with a hint to install dependencies.
 - npm workspace members show the versions installed for that member.
-- pnpm `catalog:` dependencies keep their catalog reference. Upgrades are not offered for them.
+- pnpm `catalog:` dependencies keep their catalog reference.
 - Upgrades, removals and fixes at the root of a pnpm workspace run with `-w`.
 - Only one dependency change runs per project, including after the dashboard is closed and opened again.
 - Prettier 2 plugins count as used.

@@ -33,7 +33,7 @@ Releases are published by the **Release** workflow. It runs only when started by
    - **publish_marketplace**: publish to the Visual Studio Marketplace.
    - **publish_open_vsx**: publish to Open VSX.
    - **publish_jetbrains**: publish the JetBrains plugin to JetBrains Marketplace.
-   - **dry_run**: run every check, build and smoke test, but publish nothing and create no tag or release.
+   - **dry_run**: run release verification, VSIX packaging and VSIX smoke tests without publishing or creating a tag or release.
 4. Choose **Run workflow** again to start it.
 
 The workflow then does the following:
@@ -66,7 +66,7 @@ node scripts/release/release-checks.mjs verify --pre-release true
 | `JETBRAINS_PRIVATE_KEY` | Plugin signing | The full text of the private key, `private.pem`. |
 | `JETBRAINS_PRIVATE_KEY_PASSWORD` | Plugin signing | The password for that private key. |
 
-JetBrains documents how to create the certificate chain and private key in its plugin signing guide. The four JetBrains secrets are only needed when **publish_jetbrains** is on. When a store is chosen but its secret is missing, the workflow stops before publishing anything and names the missing secret.
+JetBrains documents how to create the certificate chain and private key in its plugin signing guide. The four JetBrains secrets are only needed when **publish_jetbrains** is on. Marketplace and Open VSX secrets are checked before the VSIX publish steps. JetBrains secrets are checked at the start of the JetBrains job, after the GitHub release is created. Each check names missing secrets and stops its job.
 
 ### Manual fallback
 
