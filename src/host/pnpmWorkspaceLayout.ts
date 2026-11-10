@@ -85,12 +85,9 @@ const MAX_DISCOVERY_DEPTH = 6;
 const MAX_DIRECTORY_READS = 2000;
 const MAX_CANDIDATES = 500;
 
-async function readIfExists(absolutePath: string): Promise<string | undefined> {
-  try {
-    return await readFile(absolutePath, 'utf8');
-  } catch {
-    return undefined;
-  }
+function isMissing(cause: unknown): boolean {
+  const code = (cause as { code?: unknown } | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -129,7 +126,9 @@ function walkPlan(pattern: string): { prefix: string[]; depth: number; unbounded
   const globIndex = segments.findIndex((segment) => GLOB_CHARS.test(segment));
   if (globIndex === -1) return { prefix: segments, depth: 0, unbounded: false };
   const rest = segments.slice(globIndex);
-  const unbounded = rest.some((segment) => segment.includes('**') || segment.includes('{'));
+  // An extglob group that spans a `/` can repeat directories, like a brace or `**`.
+  const unbounded = rest.some((segment) => segment.includes('**') || segment.includes('{') ||
+    segment.split('(').length !== segment.split(')').length);
   return { prefix: segments.slice(0, globIndex), depth: unbounded ? MAX_DISCOVERY_DEPTH : rest.length, unbounded };
 }
 
@@ -137,17 +136,22 @@ function isInside(realRoot: string, realTarget: string): boolean {
   return realTarget === realRoot || realTarget.startsWith(realRoot + path.sep);
 }
 
-/** Reads a file whose real path stays inside the workspace. `escapes` marks one that leaves it. */
-async function readContained(realRoot: string, absolutePath: string): Promise<{ text?: string; escapes?: true }> {
-  let real: string;
+/**
+ * Reads a file whose real path stays inside the workspace. A missing file
+ * returns an empty result. `escapes` marks one that leaves the workspace and
+ * `failed` one that exists but cannot be read.
+ */
+async function readContained(
+  realRoot: string,
+  absolutePath: string
+): Promise<{ text?: string; escapes?: true; failed?: true }> {
   try {
-    real = await realpath(absolutePath);
-  } catch {
-    return {};
+    const real = await realpath(absolutePath);
+    if (!isInside(realRoot, real)) return { escapes: true };
+    return { text: await readFile(real, 'utf8') };
+  } catch (cause) {
+    return isMissing(cause) ? {} : { failed: true };
   }
-  if (!isInside(realRoot, real)) return { escapes: true };
-  const text = await readIfExists(real);
-  return text === undefined ? {} : { text };
 }
 
 /**
@@ -161,15 +165,16 @@ async function collectCandidates(
   realRoot: string,
   patterns: readonly string[],
   signal?: AbortSignal
-): Promise<{ candidates: string[]; complete: boolean; escaped: boolean }> {
+): Promise<{ candidates: string[]; complete: boolean; escaped: boolean; failed: boolean }> {
   const candidates = new Set<string>();
   const visited = new Set<string>();
   let reads = 0;
   let complete = true;
   let escaped = false;
+  let failed = false;
   const visit = async (relative: string, depthLeft: number, unbounded: boolean): Promise<void> => {
     if (signal?.aborted) throw new Error('Workspace discovery was cancelled.');
-    const key = `${relative}\u0000${depthLeft}`;
+    const key = `${relative}\u0000${depthLeft}\u0000${unbounded}`;
     if (visited.has(key)) return;
     if (reads >= MAX_DIRECTORY_READS || candidates.size >= MAX_CANDIDATES) {
       complete = false;
@@ -185,7 +190,8 @@ async function collectCandidates(
       }
       reads += 1;
       entries = await readdir(real, { withFileTypes: true });
-    } catch {
+    } catch (cause) {
+      if (!isMissing(cause)) failed = true;
       return;
     }
     if (relative !== '' && entries.some((entry) => entry.name === 'package.json' && !entry.isDirectory())) {
@@ -207,10 +213,11 @@ async function collectCandidates(
     if (plan.prefix.some((segment) => segment.startsWith('.') || segment === 'node_modules')) continue;
     await visit(plan.prefix.join('/'), plan.depth, plan.unbounded);
   }
-  return { candidates: [...candidates], complete, escaped };
+  return { candidates: [...candidates], complete, escaped, failed };
 }
 
-const LOCAL_PROTOCOL = /^(?:link|file|portal|git\+file):(.*)$/;
+const LOCAL_PROTOCOL = /^(?:link|file|portal|git\+file|workspace):(.*)$/;
+const TARBALL = /\.(?:tgz|tar|tar\.gz)$/i;
 const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
 
 /**
@@ -221,9 +228,11 @@ const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependenc
  */
 function referencesOutside(value: unknown, baseDir: string): boolean {
   if (typeof value === 'string') {
-    const target = LOCAL_PROTOCOL.exec(value)?.[1] ?? (/^(?:\.{1,2}\/|\/|~)/.test(value) ? value : undefined);
-    if (target === undefined) return false;
-    if (target.startsWith('~') || path.posix.isAbsolute(target) || /^[a-z]:/i.test(target) || target.includes('\\')) return true;
+    const target = LOCAL_PROTOCOL.exec(value)?.[1] ?? value;
+    const looksLikePath = /^(?:\.{1,2}(?:\/|$)|\/|~\/|[a-z]:)/i.test(target) || target.includes('\\') ||
+      (TARBALL.test(target) && !/^[a-z][a-z+.-]*:\/\//i.test(target));
+    if (!looksLikePath) return false;
+    if (target.startsWith('~/') || path.posix.isAbsolute(target) || /^[a-z]:/i.test(target) || target.includes('\\')) return true;
     const resolved = path.posix.normalize(path.posix.join(baseDir, target));
     return resolved === '..' || resolved.startsWith('../');
   }
@@ -265,8 +274,10 @@ function sanitizedNpmrc(text: string): string | undefined {
   return lines.length === 0 ? undefined : `${lines.join('\n')}\n`;
 }
 
-function fingerprintFiles(files: readonly { path: string; text: string }[]): string {
+function fingerprintFiles(files: readonly { path: string; text: string }[], reasons: readonly string[]): string {
   const hash = createHash('sha256');
+  // Availability counts too, so a change that only makes the workspace unstageable still stales a review.
+  for (const reason of reasons) hash.update(reason).update('\u0000');
   for (const file of [...files].sort((left, right) => left.path.localeCompare(right.path))) {
     hash.update(file.path).update('\u0000').update(file.text).update('\u0000');
   }
@@ -274,8 +285,8 @@ function fingerprintFiles(files: readonly { path: string; text: string }[]): str
 }
 
 /**
- * Returns undefined when the lock root has no pnpm-workspace.yaml or the
- * files cannot be read, so the resolver keeps its single-project layout.
+ * Returns undefined when the lock root has no pnpm-workspace.yaml, so the
+ * resolver keeps its single-project layout, or when discovery is cancelled.
  * The fingerprint covers every staged file, so editing any of them makes a
  * review stale. `unavailableReason` is set when the staged copy could differ
  * from the real workspace, and the review then reports an unknown result.
@@ -285,49 +296,65 @@ export async function readPnpmWorkspaceLayout(input: {
   importerId: string;
   signal?: AbortSignal;
 }): Promise<PnpmWorkspaceLayout | undefined> {
+  let realRoot: string;
   try {
-    const realRoot = await realpath(input.lockfileRoot);
-    const workspaceRead = await readContained(realRoot, path.join(realRoot, WORKSPACE_MANIFEST));
-    if (workspaceRead.text === undefined && workspaceRead.escapes === undefined) return undefined;
-    if (input.importerId !== '.' && !isSafeRelativePath(input.importerId)) return undefined;
-    let unavailableReason: string | undefined;
-    const incomplete = (reason: string): void => {
-      unavailableReason ??= reason;
-    };
-    if (workspaceRead.escapes) incomplete('pnpm-workspace.yaml resolves outside the workspace.');
-    const source = asRecord(loadYaml(workspaceRead.text ?? '')) ?? {};
-    const rawPatterns = Array.isArray(source['packages']) ? source['packages'] : [];
-    const patterns = rawPatterns.filter((entry): entry is string => typeof entry === 'string' && isContainedPattern(entry));
-    const settings = pick(source, SETTING_KEYS);
-    if (referencesOutside(settings, '.')) incomplete('A workspace setting points at a local path outside the workspace.');
-    // JSON is valid YAML and needs no serializer.
-    const workspace = { packages: patterns, ...settings };
-    const files: { path: string; text: string }[] = [
-      { path: WORKSPACE_MANIFEST, text: `${JSON.stringify(workspace, null, 2)}\n` },
-    ];
-    const npmrc = await readContained(realRoot, path.join(realRoot, NPMRC));
-    const sanitizedRc = npmrc.text === undefined ? undefined : sanitizedNpmrc(npmrc.text);
-    if (sanitizedRc !== undefined) files.push({ path: NPMRC, text: sanitizedRc });
-    const discovery = await collectCandidates(realRoot, patterns, input.signal);
-    if (discovery.escaped) incomplete('A workspace package directory resolves outside the workspace.');
-    if (!discovery.complete) incomplete('The workspace has more packages than the review can stage.');
-    for (const id of ['.', ...discovery.candidates]) {
-      if (id === input.importerId || (id !== '.' && !isSafeRelativePath(id))) continue;
-      const relative = id === '.' ? 'package.json' : `${id}/package.json`;
-      const read = await readContained(realRoot, path.join(realRoot, ...relative.split('/')));
-      if (read.escapes) incomplete(`${relative} resolves outside the workspace.`);
-      const text = read.text === undefined ? undefined : sanitizedManifest(read.text);
-      if (text === undefined) continue;
-      if (manifestReferencesOutside(text, id)) incomplete(`${relative} points at a local path outside the workspace.`);
-      files.push({ path: relative, text });
-    }
-    return {
-      importerId: input.importerId,
-      files,
-      fingerprint: fingerprintFiles(files),
-      ...(unavailableReason === undefined ? {} : { unavailableReason }),
-    };
+    realRoot = await realpath(input.lockfileRoot);
   } catch {
     return undefined;
   }
+  const workspaceRead = await readContained(realRoot, path.join(realRoot, WORKSPACE_MANIFEST));
+  if (workspaceRead.text === undefined && workspaceRead.escapes === undefined && workspaceRead.failed === undefined) {
+    return undefined;
+  }
+  if (input.importerId !== '.' && !isSafeRelativePath(input.importerId)) return undefined;
+  const reasons: string[] = [];
+  const files: { path: string; text: string }[] = [];
+  if (workspaceRead.escapes) reasons.push('pnpm-workspace.yaml resolves outside the workspace.');
+  if (workspaceRead.failed) reasons.push('pnpm-workspace.yaml could not be read.');
+  let source: Record<string, unknown> = {};
+  try {
+    source = asRecord(loadYaml(workspaceRead.text ?? '')) ?? {};
+  } catch {
+    reasons.push('pnpm-workspace.yaml could not be parsed.');
+  }
+  const rawPatterns = Array.isArray(source['packages']) ? source['packages'] : [];
+  const patterns = rawPatterns.filter((entry): entry is string => typeof entry === 'string' && isContainedPattern(entry));
+  const settings = pick(source, SETTING_KEYS);
+  if (referencesOutside(settings, '.')) reasons.push('A workspace setting points at a local path outside the workspace.');
+  // JSON is valid YAML and needs no serializer.
+  files.push({ path: WORKSPACE_MANIFEST, text: `${JSON.stringify({ packages: patterns, ...settings }, null, 2)}\n` });
+  const npmrc = await readContained(realRoot, path.join(realRoot, NPMRC));
+  if (npmrc.failed) reasons.push('The workspace .npmrc could not be read.');
+  const sanitizedRc = npmrc.text === undefined ? undefined : sanitizedNpmrc(npmrc.text);
+  if (sanitizedRc !== undefined) files.push({ path: NPMRC, text: sanitizedRc });
+  let discovery;
+  try {
+    discovery = await collectCandidates(realRoot, patterns, input.signal);
+  } catch {
+    return undefined;
+  }
+  if (discovery.escaped) reasons.push('A workspace package directory resolves outside the workspace.');
+  if (discovery.failed) reasons.push('A workspace package directory could not be read.');
+  if (!discovery.complete) reasons.push('The workspace has more packages than the review can stage.');
+  for (const id of ['.', ...discovery.candidates]) {
+    if (id === input.importerId || (id !== '.' && !isSafeRelativePath(id))) continue;
+    const relative = id === '.' ? 'package.json' : `${id}/package.json`;
+    const read = await readContained(realRoot, path.join(realRoot, ...relative.split('/')));
+    if (read.escapes) reasons.push(`${relative} resolves outside the workspace.`);
+    if (read.failed) reasons.push(`${relative} could not be read.`);
+    if (read.text === undefined) continue;
+    const text = sanitizedManifest(read.text);
+    if (text === undefined) {
+      reasons.push(`${relative} could not be parsed.`);
+      continue;
+    }
+    if (manifestReferencesOutside(text, id)) reasons.push(`${relative} points at a local path outside the workspace.`);
+    files.push({ path: relative, text });
+  }
+  return {
+    importerId: input.importerId,
+    files,
+    fingerprint: fingerprintFiles(files, reasons),
+    ...(reasons[0] === undefined ? {} : { unavailableReason: reasons[0] }),
+  };
 }

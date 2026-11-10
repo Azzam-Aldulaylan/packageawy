@@ -200,3 +200,66 @@ test('a discovery cut short by its limits makes the layout unavailable', async (
   const fits = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n  - 'tools/**'\n", dirs: ['apps/web', 'tools/1/2'] });
   assert.equal((await readPnpmWorkspaceLayout({ lockfileRoot: fits, importerId: 'apps/web' })).unavailableReason, undefined);
 });
+
+test('every local specifier form is checked for containment, and ordinary ranges are not', async (t) => {
+  for (const spec of ['workspace:../../../outside', '../../../outside.tgz', 'file:../../../x.tar.gz', 'C:\\outside', 'link:~/outside']) {
+    const root = await workspace(t);
+    await writeFile(path.join(root, 'packages/shared/package.json'), JSON.stringify({ name: 'shared', dependencies: { x: spec } }));
+    const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+    assert.match(layout.unavailableReason ?? '', /outside the workspace/, spec);
+  }
+  const root = await workspace(t);
+  await writeFile(path.join(root, 'packages/shared/package.json'), JSON.stringify({
+    name: 'shared',
+    dependencies: { a: '~18.2.0', b: 'workspace:*', c: 'workspace:^', d: 'npm:foo@1', e: 'link:../../apps/web', f: 'https://x.example/p.tgz' },
+  }));
+  assert.equal((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).unavailableReason, undefined);
+});
+
+test('a change that only affects availability still changes the fingerprint', async (t) => {
+  const { symlink } = await import('node:fs/promises');
+  const outside = await mkdtemp(path.join(tmpdir(), 'packageawy-outside-'));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const root = await workspace(t);
+  const before = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  await symlink(outside, path.join(root, 'packages/escape'));
+  const after = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.match(after.unavailableReason, /resolves outside the workspace/);
+  assert.notEqual(after.fingerprint, before.fingerprint);
+});
+
+test('depth truncation is reported whatever the pattern order', async (t) => {
+  for (const order of [["tools/*/*/*/*/*/*", 'tools/**'], ['tools/**', 'tools/*/*/*/*/*/*']]) {
+    const root = await workspace(t, {
+      yaml: `packages:\n  - 'apps/*'\n${order.map((p) => `  - '${p}'`).join('\n')}\n`,
+      dirs: ['apps/web', 'tools/1/2/3/4/5/6/7'],
+    });
+    assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' })).unavailableReason ?? '', /more packages/, order.join(' then '));
+  }
+});
+
+test('an extglob group spanning directories is walked as deep as it can repeat', async (t) => {
+  const root = await workspace(t, { yaml: "packages:\n  - 'apps/*'\n  - 'tools/+(x/)pkg'\n", dirs: ['apps/web', 'tools/x/x/x/pkg'] });
+  const layout = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web' });
+  assert.ok(paths(layout).includes('tools/x/x/x/pkg/package.json'));
+  assert.equal(layout.unavailableReason, undefined);
+});
+
+test('read and parse failures make the layout unavailable instead of dropping files', async (t) => {
+  const badJson = await workspace(t);
+  await writeFile(path.join(badJson, 'packages/shared/package.json'), '{ not json');
+  assert.match((await readPnpmWorkspaceLayout({ lockfileRoot: badJson, importerId: 'apps/web' })).unavailableReason, /packages\/shared\/package.json could not be parsed/);
+
+  const badYaml = await workspace(t, { yaml: 'packages: [\n' });
+  const yamlLayout = await readPnpmWorkspaceLayout({ lockfileRoot: badYaml, importerId: 'apps/web' });
+  assert.match(yamlLayout.unavailableReason, /pnpm-workspace.yaml could not be parsed/);
+
+  if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+    const { chmod } = await import('node:fs/promises');
+    const unreadable = await workspace(t);
+    await chmod(path.join(unreadable, 'packages'), 0o000);
+    const layout = await readPnpmWorkspaceLayout({ lockfileRoot: unreadable, importerId: 'apps/web' });
+    await chmod(path.join(unreadable, 'packages'), 0o755);
+    assert.match(layout.unavailableReason, /could not be read/);
+  }
+});
