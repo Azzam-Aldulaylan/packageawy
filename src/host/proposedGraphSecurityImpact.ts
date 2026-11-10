@@ -137,7 +137,7 @@ function collectOccurrences(
 
   for (const node of snapshot.graph.nodes.values()) {
     if (node.version === null || !index.distance.has(node.path)) continue;
-    const advisories = snapshot.advisoriesByName.get(node.name) ?? [];
+    const advisories = snapshot.advisoriesByName.get(node.registryName ?? node.name) ?? [];
     for (const advisory of advisories) {
       if (semver.validRange(advisory.vulnerableVersions) === null) {
         invalidAdvisoryRange = true;
@@ -162,7 +162,7 @@ function collectOccurrences(
         state,
         advisory,
         aliases: aliasesFor(advisory),
-        flaggedPackage: node.name,
+        flaggedPackage: node.registryName ?? node.name,
         version: node.version,
         paths: paths.paths,
         pathsTruncated: paths.truncated,

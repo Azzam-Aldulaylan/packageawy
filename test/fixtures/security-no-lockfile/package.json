@@ -1,0 +1,5 @@
+{
+  "name": "security-no-lockfile",
+  "dependencies": { "lodash": "^4.17.20", "compat": "npm:lodash@4.17.20" },
+  "devDependencies": { "typescript": "^5.4.0" }
+}

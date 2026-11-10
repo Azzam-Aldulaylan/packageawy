@@ -57,7 +57,8 @@ import { isSourceFingerprint } from './sourceFingerprint.js';
  * snapshots so they cannot keep replaying CVE-less rows after that pagination
  * behavior is corrected.
  */
-export const CACHE_SCHEMA_VERSION = 8;
+// 9: regenerate alias identities and coverage for packages without versions.
+export const CACHE_SCHEMA_VERSION = 9;
 
 /**
  * The registry response cache did not change when project rows gained a

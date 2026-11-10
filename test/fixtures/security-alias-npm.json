@@ -1,0 +1,12 @@
+{
+  "lockfileVersion": 3,
+  "packages": {
+    "": { "dependencies": { "compat": "npm:lodash@4.17.20", "@isaacs/cliui": "^8.0.2" } },
+    "node_modules/compat": { "name": "lodash", "version": "4.17.20" },
+    "node_modules/@isaacs/cliui": {
+      "version": "8.0.2",
+      "dependencies": { "string-width-cjs": "npm:string-width@^4.2.0" }
+    },
+    "node_modules/string-width-cjs": { "version": "4.2.0" }
+  }
+}

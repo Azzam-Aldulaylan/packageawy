@@ -19,9 +19,11 @@
  */
 
 import type { DependencyEdge, DependencyEdgeKind, DependencyGraph, DependencyNode } from '../types.js';
+import semver from 'semver';
 import type { Manifest } from '../manifest/parse.js';
 import type { PerformanceRecorder } from '../performance/measurement.js';
 import { NOOP_PERFORMANCE_RECORDER } from '../performance/measurement.js';
+import { npmAlias } from './identity.js';
 
 const NODE_MODULES = 'node_modules/';
 
@@ -165,6 +167,12 @@ function parsePackages(
     // Spec: a workspace-linked package has no registry entry. Tag it and skip
     // the lookup rather than erroring.
     if (isLink) node.unresolvable = 'workspace-link';
+    const registryName = typeof entry['name'] === 'string'
+      ? entry['name']
+      : npmAlias(version ?? '')?.name ?? npmAlias(key === `${NODE_MODULES}${name}` ? declaredRanges.get(name) ?? '' : '')?.name;
+    if (registryName !== undefined && registryName !== name) node.registryName = registryName;
+    const versionAlias = npmAlias(version ?? '');
+    if (!isLink && versionAlias !== null) node.version = semver.valid(versionAlias.range);
 
     nodes.set(key, node);
   }
@@ -214,6 +222,10 @@ function parseV1Dependencies(
         node.version = null;
         node.unresolvable = 'workspace-link';
       }
+      const alias = npmAlias(version ?? '') ?? npmAlias(prefix === '' ? declaredRanges.get(name) ?? '' : '');
+      const registryName = typeof entry['name'] === 'string' ? entry['name'] : alias?.name;
+      if (registryName !== undefined && registryName !== name) node.registryName = registryName;
+      if (npmAlias(version ?? '') !== null) node.version = semver.valid(alias?.range ?? '');
 
       nodes.set(path, node);
 
@@ -332,6 +344,15 @@ export function buildGraph(options: BuildGraphOptions): DependencyGraph {
 
   const graph: DependencyGraph = { root, packageManager: 'npm', lockfileVersion, nodes };
   resolveNpmEdgeTargets(graph);
+  // Older lockfiles can omit `name`. Resolve alias specs on the incoming
+  // dependency edges after npm's installed-name lookup has found the node.
+  for (const node of nodes.values()) {
+    for (const edge of node.edges) {
+      const alias = npmAlias(edge.requestedRange);
+      const target = edge.targetNodeId === null ? undefined : nodes.get(edge.targetNodeId);
+      if (alias !== null && target !== undefined) target.registryName ??= alias.name;
+    }
+  }
   endGraph({ 'graph nodes': nodes.size });
   return graph;
 }

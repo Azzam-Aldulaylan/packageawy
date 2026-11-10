@@ -18,6 +18,7 @@
  */
 
 import type { HttpClient } from '../registry/http.js';
+import semver from 'semver';
 import { FetchError, errorForStatus } from '../registry/http.js';
 import type { Advisory, DependencyGraph, Severity } from '../types.js';
 
@@ -69,10 +70,11 @@ export function buildBulkRequestBody(graph: DependencyGraph): Record<string, str
   const byName = new Map<string, Set<string>>();
 
   for (const node of graph.nodes.values()) {
-    if (node.version === null) continue;
-    const versions = byName.get(node.name) ?? new Set<string>();
+    if (node.version === null || semver.valid(node.version) === null) continue;
+    const name = node.registryName ?? node.name;
+    const versions = byName.get(name) ?? new Set<string>();
     versions.add(node.version);
-    byName.set(node.name, versions);
+    byName.set(name, versions);
   }
 
   const body: Record<string, string[]> = {};

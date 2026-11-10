@@ -40,7 +40,10 @@ export interface DependencyEdge {
 }
 
 export interface DependencyNode {
+  /** Installed name used for graph edges, display, and manifest edits. */
   name: string;
+  /** Registry identity when different from the installed name. */
+  registryName?: string;
   /** Resolved version from the lockfile, or null when unresolvable. */
   version: string | null;
   /** The range as declared in package.json, e.g. "^18.2.0". */
@@ -84,12 +87,12 @@ export interface VersionInfo {
  * Whether the two network-backed facts needed for a trustworthy dashboard
  * were resolved by this scan. Update metadata fails per package, so its
  * unavailable names are retained instead of collapsing them into null
- * versions that look "up to date". The bulk advisory request is all-or-
- * nothing, hence its scan-wide status.
+ * versions that look "up to date". Advisory coverage is partial when the
+ * graph contains packages without a resolved version.
  */
 export interface ScanDataAvailability {
   updates: 'complete' | 'partial';
-  advisories: 'complete' | 'unavailable';
+  advisories: 'complete' | 'partial' | 'unavailable';
   unavailableUpdatePackages: string[];
 }
 
@@ -125,9 +128,9 @@ export type PatchedVersionResult =
 /** An advisory attributed to a direct dependency, with the path we derived. */
 export interface AttributedAdvisory {
   advisory: Advisory;
-  /** The package the advisory is actually against. */
+  /** Registry name of the package the advisory is actually against. */
   flaggedPackage: string;
-  /** Chain from the direct dependency down to flaggedPackage. */
+  /** Chain of installed names from the direct dependency to the flagged node. */
   path: string[];
   /**
    * The actual resolved version of `flaggedPackage` in the dependency graph
@@ -185,7 +188,9 @@ export interface PackageRow {
   deprecated?: string;
   unresolvable?: UnresolvableReason;
   advisories: AttributedAdvisory[];
-  /** Highest severity across advisories, or null when clean. */
+  /** Completeness of version coverage in this dependency's reachable tree. */
+  advisoryCoverage?: 'complete' | 'partial';
+  /** Highest known severity, or null when no finding is known. See advisoryCoverage. */
   worstSeverity: Severity | null;
   /** Target version for the upgrade action, or null when not offerable. */
   upgradeTo: string | null;

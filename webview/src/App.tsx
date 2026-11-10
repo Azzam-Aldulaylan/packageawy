@@ -101,6 +101,9 @@ function partialErrorText(data: DashboardData): string | null {
   if (data.advisoriesError !== undefined) {
     reasons.push(`vulnerability data is unavailable (${data.advisoriesError.code})`);
   }
+  if (data.availability.advisories === 'partial') {
+    reasons.push('Install dependencies to check packages with unknown versions');
+  }
   if (data.auditUnavailable === true) {
     reasons.push('npm audit could not run, so upgrade targets are self-computed');
   }
@@ -1792,7 +1795,7 @@ export function App(): ReactElement {
   const data = message !== undefined && 'data' in message ? message.data : undefined;
   const coreDataIncomplete =
     data !== undefined &&
-    (data.availability.updates === 'partial' || data.availability.advisories === 'unavailable');
+    (data.availability.updates === 'partial' || data.availability.advisories !== 'complete');
 
   // A full packument is fetched only for the dependency whose Manage
   // workspace is open. A fresh dashboard snapshot gets a fresh request id;
@@ -2558,7 +2561,7 @@ function Dashboard({
     status === 'stale' ||
     activeRemove !== null ||
     data.availability.updates === 'partial' ||
-    data.availability.advisories === 'unavailable';
+    data.availability.advisories !== 'complete';
 
   const metrics = useMemo(() => summaryMetrics(data.rows), [data.rows]);
   const unavailableUpdatePackages = useMemo(
@@ -2742,7 +2745,7 @@ function Dashboard({
                 <PackageTable
                   rows={pageResult.pageRows}
                   unavailableUpdatePackages={unavailableUpdatePackages}
-                  advisoriesAvailable={data.availability.advisories === 'complete'}
+                  advisoriesAvailable={data.availability.advisories !== 'unavailable'}
                   searchQuery={search}
                   onOpenAdvisory={onOpenAdvisory}
                   sortState={sortState}

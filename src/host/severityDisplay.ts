@@ -14,6 +14,7 @@ export interface SeverityDisplay {
   label: string;
   /** CSS modifier class suffix, e.g. "critical" for `severity--critical`. */
   className: string;
+  reason?: string;
 }
 
 const LABELS: Record<Severity, string> = {
@@ -25,11 +26,13 @@ const LABELS: Record<Severity, string> = {
 };
 
 /**
- * `null` means the package has no known advisory: labelled "Safe" rather
- * than left blank, so the column is readable without inferring meaning from
- * an empty cell.
+ * A null severity reads as Safe only after the package's version was checked.
+ * Missing version evidence gets a neutral label and an install hint.
  */
-export function severityDisplay(severity: Severity | null, advisoriesAvailable = true): SeverityDisplay {
+export function severityDisplay(severity: Severity | null, advisoriesAvailable = true, checked = true): SeverityDisplay {
+  if (!checked && severity === null) {
+    return { label: 'Not checked', className: 'info', reason: 'Install dependencies to check this package' };
+  }
   if (!advisoriesAvailable) return { label: 'Unavailable', className: 'info' };
   if (severity === null) return { label: 'Safe', className: 'none' };
   return { label: LABELS[severity], className: severity };
