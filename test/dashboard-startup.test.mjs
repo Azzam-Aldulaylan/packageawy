@@ -268,6 +268,27 @@ for (const invalid of ['bad manifest', 'bad lockfile']) {
   });
 }
 
+for (const invalid of ['bad manifest', 'bad lockfile']) {
+  test(`a pre-ready refresh after a ${invalid} startup failure is what ready presents`, async t => {
+    const { writeFile } = await import('node:fs/promises');
+    const discovery = deferred();
+    const s = await panel(t, { invalid: invalid === 'bad manifest' ? 'a' : undefined,
+      discover: () => discovery.promise });
+    if (invalid === 'bad lockfile') await writeFile(`${s.root}/a/package-lock.json`, '{"lockfileVersion":999}');
+    discovery.resolve();
+    s.gate.resolve();
+    await s.finished();
+    await writeFile(`${s.root}/a/package.json`, manifest);
+    await writeFile(`${s.root}/a/package-lock.json`, lockfile);
+    await s.refresh();
+    assert.deepEqual(s.posted, []);
+    await s.ready();
+    assert.equal(statuses(s.posted).includes('fatal-error'), false);
+    assert.equal(s.snapshots().at(-1).status, 'ready');
+    assert.deepEqual(s.snapshots().at(-1).data.rows.map(r => r.name), ['clean-pkg']);
+  });
+}
+
 for (const target of ['missing', null]) {
   test(`ambiguous startup has no messages or picker before ready: ${target}`, async t => {
     const s = await panel(t, { projects: ['a', 'b'], target });

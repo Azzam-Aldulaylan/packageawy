@@ -713,8 +713,11 @@ export class DashboardPanel {
     if (message.type === 'refresh') {
       // A Refresh before the first ready waits for startup's own disk read,
       // so it rereads after that read instead of being overwritten by it.
+      // The Refresh then owns the result: ready presents the refreshed
+      // controller through the ordinary path, never startup's old outcome.
       await this.settleStartupPreparation();
       if (this.disposed) return;
+      this.startup = undefined;
       // Ignored, not queued, while an upgrade holds the panel's lock: this
       // covers both the webview's Refresh button (also disabled client-
       // side while an upgrade is active, see App.tsx) and the Command
