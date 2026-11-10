@@ -256,6 +256,9 @@ export class DashboardPanel {
         await this.fileChangeCoordinator.flushAll();
       },
       onMutationLockReleased: () => {
+        // A setting change queued while this or another panel's change held
+        // the project lock runs now that the lock is free.
+        void this.flushAdvisorySettingRefresh();
         if (this.branchChangeCoordinator.hasPending) {
           this.branchChangeCoordinator.mutationReleased();
           return;

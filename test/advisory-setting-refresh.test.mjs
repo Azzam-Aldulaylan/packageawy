@@ -54,3 +54,29 @@ for (const type of ['upgrade', 'analyze-remediation', 'analyze-remediations']) {
     }
   });
 }
+
+test('a setting refresh queued behind another panel change runs when the shared lock is released', async () => {
+  globalThis.__BUILD_TIME__ = 'test';
+  let settingChanged;
+  const store = { get: () => undefined, update: async () => {} };
+  const panel = new DashboardPanel({
+    getSetting: (_, fallback) => fallback, globalState: store, workspaceState: store,
+    onDidChangeSetting: (_, listener) => { settingChanged = listener; return { dispose() {} }; },
+  }, { postMessage() {}, onDidReceiveMessage() {}, onDidDispose() {} },
+  { extensionVersion: 'test', integrationTestMode: false });
+  const coordinator = panel.upgradeCoordinator;
+  let otherPanelHoldsLock = true;
+  coordinator.isBusy = () => otherPanelHoldsLock;
+  coordinator.isRemediationBusy = () => false;
+  const scans = [];
+  panel.controller = { root: '/fixture', upgradeSource: { lockfilePath: null }, handleAdvisorySettingChanged() {}, dispose() {} };
+  panel.selectedProject = { id: 'fixture' };
+  panel.reloadAndScan = async () => { scans.push('scan'); };
+  await settingChanged();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(scans, [], 'no refresh while the other panel holds the lock');
+  otherPanelHoldsLock = false;
+  coordinator.options.onMutationLockReleased();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(scans, ['scan'], 'the queued refresh runs on lock release');
+});
