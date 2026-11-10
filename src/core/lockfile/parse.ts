@@ -158,7 +158,7 @@ function parsePackages(
       version: isLink ? null : version,
       range: declaredRanges.get(name) ?? '',
       dev: entry['dev'] === true || entry['devOptional'] === true,
-      direct: key === `${NODE_MODULES}${name}` && declaredRanges.has(name),
+      direct: false,
       path: key,
       deps: edgeNames(entry),
       edges: dependencyEdges(entry),
@@ -169,7 +169,7 @@ function parsePackages(
     if (isLink) node.unresolvable = 'workspace-link';
     const registryName = typeof entry['name'] === 'string'
       ? entry['name']
-      : npmAlias(version ?? '')?.name ?? npmAlias(key === `${NODE_MODULES}${name}` ? declaredRanges.get(name) ?? '' : '')?.name;
+      : npmAlias(version ?? '')?.name;
     if (registryName !== undefined && registryName !== name) node.registryName = registryName;
     const versionAlias = npmAlias(version ?? '');
     if (!isLink && versionAlias !== null) node.version = semver.valid(versionAlias.range);
@@ -204,7 +204,7 @@ function parseV1Dependencies(
         version,
         range: declaredRanges.get(name) ?? '',
         dev: entry['dev'] === true,
-        direct: prefix === '' && declaredRanges.has(name),
+        direct: false,
         path,
         deps: edgeNamesV1(entry),
         edges: edgeNamesV1(entry).map((dependencyName) => ({
@@ -222,7 +222,7 @@ function parseV1Dependencies(
         node.version = null;
         node.unresolvable = 'workspace-link';
       }
-      const alias = npmAlias(version ?? '') ?? npmAlias(prefix === '' ? declaredRanges.get(name) ?? '' : '');
+      const alias = npmAlias(version ?? '');
       const registryName = typeof entry['name'] === 'string' ? entry['name'] : alias?.name;
       if (registryName !== undefined && registryName !== name) node.registryName = registryName;
       if (npmAlias(version ?? '') !== null) node.version = semver.valid(alias?.range ?? '');
@@ -244,6 +244,8 @@ export interface BuildGraphOptions {
   manifest: Manifest;
   /** Raw lockfile text, or null when no lockfile exists. */
   lockfileText: string | null;
+  /** Lockfile-relative POSIX member directory. Omit or use `.` for the root project. */
+  memberPath?: string;
   performance?: PerformanceRecorder;
 }
 
@@ -257,6 +259,9 @@ export interface BuildGraphOptions {
 export function buildGraph(options: BuildGraphOptions): DependencyGraph {
   const { root, manifest, lockfileText } = options;
   const performance = options.performance ?? NOOP_PERFORMANCE_RECORDER;
+  const relativePath = (options.memberPath ?? '').replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '');
+  const memberPath = relativePath === '.' ? '' : relativePath;
+  const memberPrefix = memberPath === '' ? '' : `${memberPath}/`;
 
   const declaredRanges = new Map<string, string>();
   for (const dep of manifest.dependencies) {
@@ -273,7 +278,7 @@ export function buildGraph(options: BuildGraphOptions): DependencyGraph {
         range: dep.range,
         dev: dep.dev,
         direct: true,
-        path: `${NODE_MODULES}${dep.name}`,
+        path: `${memberPrefix}${NODE_MODULES}${dep.name}`,
         deps: [],
         edges: [],
         // A non-registry specifier keeps its own, more specific reason.
@@ -313,12 +318,13 @@ export function buildGraph(options: BuildGraphOptions): DependencyGraph {
     nodes = new Map();
   }
 
+  const graph: DependencyGraph = { root, packageManager: 'npm', lockfileVersion, nodes };
   // Carry manifest-level specifier tags onto their resolved nodes, and make
   // sure every declared dependency has a row even if the lockfile lacks it.
   for (const dep of manifest.dependencies) {
-    const path = `${NODE_MODULES}${dep.name}`;
-    const existing = nodes.get(path);
-    if (existing === undefined) {
+    const path = `${memberPrefix}${NODE_MODULES}${dep.name}`;
+    const existing = resolveFrom(graph, memberPath, dep.name);
+    if (existing === null) {
       const node: DependencyNode = {
         name: dep.name,
         version: null,
@@ -335,6 +341,8 @@ export function buildGraph(options: BuildGraphOptions): DependencyGraph {
     }
     existing.direct = true;
     existing.range = dep.range;
+    const alias = npmAlias(dep.range);
+    if (alias !== null && alias.name !== existing.name) existing.registryName ??= alias.name;
     // The lockfile's "link": true is the stronger signal: don't overwrite it
     // with a weaker manifest-derived tag.
     if (dep.unresolvable !== undefined && existing.unresolvable === undefined) {
@@ -342,7 +350,6 @@ export function buildGraph(options: BuildGraphOptions): DependencyGraph {
     }
   }
 
-  const graph: DependencyGraph = { root, packageManager: 'npm', lockfileVersion, nodes };
   resolveNpmEdgeTargets(graph);
   // Older lockfiles can omit `name`. Resolve alias specs on the incoming
   // dependency edges after npm's installed-name lookup has found the node.
@@ -375,16 +382,17 @@ export function resolveFrom(
   fromPath: string,
   name: string
 ): DependencyNode | null {
-  let prefix = fromPath === '' ? '' : `${fromPath}/`;
+  let directory = fromPath;
   for (;;) {
-    const candidate = graph.nodes.get(`${prefix}${NODE_MODULES}${name}`);
-    if (candidate !== undefined) return candidate;
-    if (prefix === '') return null;
-    // Strip the last "<segment>/node_modules/<pkg>/" level and retry.
-    const trimmed = prefix.slice(0, -1);
-    const idx = trimmed.lastIndexOf(`${NODE_MODULES}`);
-    if (idx === -1) return null;
-    prefix = trimmed.slice(0, idx);
+    // npm skips node_modules/node_modules while walking every ancestor.
+    if (directory !== 'node_modules' && !directory.endsWith('/node_modules')) {
+      const prefix = directory === '' ? '' : `${directory}/`;
+      const candidate = graph.nodes.get(`${prefix}${NODE_MODULES}${name}`);
+      if (candidate !== undefined) return candidate;
+    }
+    if (directory === '') return null;
+    const separator = directory.lastIndexOf('/');
+    directory = separator < 0 ? '' : directory.slice(0, separator);
   }
 }
 

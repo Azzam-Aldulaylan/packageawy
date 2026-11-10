@@ -1,0 +1,4 @@
+{
+  "name": "@ws/nested",
+  "dependencies": { "foo": "^3.0.0" }
+}

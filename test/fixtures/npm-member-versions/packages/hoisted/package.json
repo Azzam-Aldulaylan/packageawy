@@ -1,0 +1,4 @@
+{
+  "name": "@ws/hoisted",
+  "dependencies": { "foo": "^1.0.0" }
+}

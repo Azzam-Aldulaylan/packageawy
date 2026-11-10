@@ -1,0 +1,4 @@
+{
+  "name": "@ws/app",
+  "dependencies": { "foo": "^2.0.0" }
+}

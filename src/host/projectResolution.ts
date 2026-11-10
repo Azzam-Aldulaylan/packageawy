@@ -73,7 +73,7 @@ export interface ResolvedProject {
   packageManager: PackageManagerKind;
   lockfileName: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
   lockfileRoot: string;
-  /** Lock-root-relative POSIX pnpm importer id. `.` at the lock root. */
+  /** Lock-root-relative POSIX npm member path or pnpm importer id. `.` at the lock root. */
   importerId: string;
   /** Set when the project is managed by Yarn, Bun, or an unrecognized package manager: shown read-only. */
   otherPackageManager?: OtherPackageManager | null;
