@@ -15,135 +15,7 @@ import { summaryFilterPredicate, summaryMetrics } from '../../out/host/summaryMe
 import { sortRows } from '../../out/host/tableSort.js';
 import { criteriaCounts, criteriaPredicate, matchReasonTags } from '../../out/host/dependencyCriteria.js';
 
-const REGISTRY = 'https://registry.benchmark.invalid';
-const BULK = 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk';
-const SIZES = [
-  { name: 'Small', direct: 15, transitivePerDirect: 2, vulnerableEvery: 5 },
-  { name: 'Medium', direct: 50, transitivePerDirect: 4, vulnerableEvery: 5 },
-  { name: 'Large', direct: 125, transitivePerDirect: 8, vulnerableEvery: 5 },
-  { name: 'XL', direct: 150, transitivePerDirect: 8, vulnerableEvery: 5 },
-];
-
-function fixture({ direct, transitivePerDirect, vulnerableEvery }) {
-  const dependencies = {};
-  const packages = { '': { name: 'benchmark-project', version: '1.0.0', dependencies } };
-  const vulnerable = new Set();
-
-  for (let index = 0; index < direct; index += 1) {
-    const name = `fixture-pkg-${String(index).padStart(3, '0')}`;
-    dependencies[name] = '^1.0.0';
-    if (index % vulnerableEvery === 0) vulnerable.add(name);
-    const childDependencies = {};
-    for (let child = 0; child < transitivePerDirect; child += 1) {
-      const childName = `fixture-child-${String(index).padStart(3, '0')}-${String(child).padStart(2, '0')}`;
-      childDependencies[childName] = '^1.0.0';
-      packages[`node_modules/${name}/node_modules/${childName}`] = { version: '1.0.0' };
-    }
-    packages[`node_modules/${name}`] = {
-      version: '1.0.0',
-      ...(transitivePerDirect === 0 ? {} : { dependencies: childDependencies }),
-    };
-  }
-
-  return {
-    manifestText: JSON.stringify({
-      name: 'benchmark-project',
-      version: '1.0.0',
-      dependencies,
-    }),
-    lockfileText: JSON.stringify({
-      name: 'benchmark-project',
-      version: '1.0.0',
-      lockfileVersion: 3,
-      packages,
-    }),
-    vulnerable,
-    graphNodes: Object.keys(packages).length - 1,
-  };
-}
-
-function response(body, etag) {
-  const text = JSON.stringify(body);
-  return {
-    status: 200,
-    headers: etag === undefined ? {} : { etag },
-    body: text,
-    wireBytes: Buffer.byteLength(text),
-  };
-}
-
-function delay(milliseconds) {
-  return milliseconds === 0
-    ? Promise.resolve()
-    : new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function fakeAdapters(fixtureData, latency) {
-  const calls = [];
-  const events = [];
-  let inFlightPackuments = 0;
-  let peakPackuments = 0;
-
-  const client = {
-    calls,
-    events,
-    get peakPackuments() {
-      return peakPackuments;
-    },
-    async get(url) {
-      const kind = url.endsWith('/latest') ? 'latest' : 'packument';
-      calls.push({ method: 'GET', kind, url });
-      events.push({ event: 'start', kind, at: performance.now() });
-      if (kind === 'packument') {
-        inFlightPackuments += 1;
-        peakPackuments = Math.max(peakPackuments, inFlightPackuments);
-      }
-      await delay(kind === 'latest' ? latency.latest : latency.packument);
-      if (kind === 'packument') inFlightPackuments -= 1;
-      events.push({ event: 'end', kind, at: performance.now() });
-      return kind === 'latest'
-        ? response({ version: '1.2.0', license: 'MIT' }, '"latest"')
-        : response({
-            'dist-tags': { latest: '1.2.0' },
-            versions: { '1.0.0': {}, '1.0.1': {}, '1.1.0': {}, '1.2.0': {} },
-          }, '"packument"');
-    },
-    async post(url) {
-      calls.push({ method: 'POST', kind: 'advisories', url });
-      events.push({ event: 'start', kind: 'advisories', at: performance.now() });
-      await delay(latency.advisories);
-      const advisories = {};
-      for (const name of fixtureData.vulnerable) {
-        advisories[name] = [{
-          id: `benchmark-${name}`,
-          severity: 'high',
-          title: 'Deterministic benchmark advisory',
-          url: 'https://example.invalid/advisory',
-          vulnerable_versions: '<1.0.1',
-        }];
-      }
-      events.push({ event: 'end', kind: 'advisories', at: performance.now() });
-      if (url !== BULK) throw new Error(`unexpected POST ${url}`);
-      return response(advisories);
-    },
-  };
-
-  const auditRunner = {
-    calls: 0,
-    async run() {
-      this.calls += 1;
-      events.push({ event: 'start', kind: 'audit', at: performance.now() });
-      await delay(latency.audit);
-      events.push({ event: 'end', kind: 'audit', at: performance.now() });
-      return {
-        stdout: JSON.stringify({ auditReportVersion: 2, vulnerabilities: {} }),
-        exitCode: 0,
-      };
-    },
-  };
-
-  return { client, auditRunner };
-}
+import { REGISTRY, SIZES, PUBLIC_BEHIND_PINS, fixture, fakeAdapters, delay } from './registry-fixtures.mjs';
 
 function median(values) {
   const ordered = [...values].sort((a, b) => a - b);
@@ -511,7 +383,7 @@ async function runCase(size, latency, iterations, concurrency) {
       root: '/benchmark/project',
       manifestText: fixtureData.manifestText,
       lockfileText: fixtureData.lockfileText,
-      registry: REGISTRY,
+      registry: fixtureData.registry,
       httpClient: adapters.client,
       etagStore: new MemoryEtagStore(),
       auditRunner: adapters.auditRunner,
@@ -525,6 +397,9 @@ async function runCase(size, latency, iterations, concurrency) {
   }
 
   const packumentCalls = final.adapters.client.calls.filter((call) => call.kind === 'packument').length;
+  const exactCalls = final.adapters.client.calls.filter((call) => call.kind === 'exact-version').length;
+  const registryCalls = final.adapters.client.calls.filter((call) => !call.url.startsWith('https://api.github.com/'));
+  const responseBytes = registryCalls.reduce((total, call) => total + call.wireBytes, 0);
   const latestCalls = final.adapters.client.calls.filter((call) => call.kind === 'latest').length;
   const operationDurations = new Map();
   for (const report of reports) {
@@ -541,6 +416,9 @@ async function runCase(size, latency, iterations, concurrency) {
     vulnerable: fixtureData.vulnerable.size,
     totalMs: median(totals),
     latestCalls,
+    exactCalls,
+    responseBytes,
+    requests: registryCalls.length,
     packumentCalls,
     peakPackuments: final.adapters.client.peakPackuments,
     rows: final.result.rows.length,
@@ -548,14 +426,37 @@ async function runCase(size, latency, iterations, concurrency) {
   };
 }
 
+async function reportRegistryTraffic() {
+  console.log('Registry traffic per fixture (requests include bulk advisories)');
+  for (const size of [...SIZES, PUBLIC_BEHIND_PINS]) {
+    const data = fixture(size);
+    const store = new MemoryEtagStore();
+    for (const cache of ['empty', 'populated']) {
+      const { client, auditRunner } = fakeAdapters(data, { latest: 0, packument: 0, advisories: 0, audit: 0 });
+      await buildPackageRows({
+        root: '/benchmark/project',
+        manifestText: data.manifestText,
+        lockfileText: data.lockfileText,
+        registry: data.registry,
+        httpClient: client,
+        etagStore: store,
+        auditRunner,
+      });
+      const calls = client.calls.filter((call) => !call.url.startsWith('https://api.github.com/'));
+      console.log(`${size.name} cache=${cache} requests=${calls.length} bytes=${calls.reduce((sum, call) => sum + call.wireBytes, 0)}`);
+    }
+  }
+}
+
 async function main() {
   console.log('Packageawy performance benchmark');
+  await reportRegistryTraffic();
   console.log('CPU/local processing (zero-latency fixture adapters; median of 7)');
-  for (const size of SIZES) {
+  for (const size of [...SIZES, PUBLIC_BEHIND_PINS]) {
     const result = await runCase(size, { latest: 0, packument: 0, advisories: 0, audit: 0 }, 7);
     console.log(
       `${result.name.padEnd(7)} ${String(result.direct).padStart(3)} direct / ${String(result.graphNodes).padStart(4)} nodes  ` +
-      `${format(result.totalMs).padStart(10)}  requests latest=${result.latestCalls} packument=${result.packumentCalls}`
+      `${format(result.totalMs).padStart(10)}  requests=${result.requests} latest=${result.latestCalls} exact=${result.exactCalls} packument=${result.packumentCalls} bytes=${result.responseBytes}`
     );
   }
 

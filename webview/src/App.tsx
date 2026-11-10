@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
+import { createSnapshotRenderTracker } from './snapshotRender.js';
 
 import type { PackageRow } from '../../src/core/types.js';
 import type { DependencyFinding } from '../../src/core/hygiene/types.js';
@@ -191,6 +192,10 @@ export function App(): ReactElement {
   } | undefined>(undefined);
   const initialRenderStartedAt = useRef<number | null>(null);
   const initialRenderMeasured = useRef(false);
+  const [trackSnapshotRender] = useState(() => createSnapshotRenderTracker(
+    document.body.dataset['renderAcknowledgements'] === 'true',
+    (message) => vscode.postMessage(message)
+  ));
   // The anchor package for the upgrade flow this webview most recently
   // requested, or null. A coordinated request may contain more changes, but
   // the host still owns one project-wide transaction/lock and identifies the
@@ -1337,31 +1342,18 @@ export function App(): ReactElement {
   }, []);
 
   useEffect(() => {
-    if (
-      initialRenderMeasured.current ||
-      initialRenderStartedAt.current === null ||
-      message === undefined ||
-      !('data' in message)
-    ) {
-      return;
-    }
-    let secondFrame = 0;
-    const firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        const durationMs = performance.now() - (initialRenderStartedAt.current ?? performance.now());
-        initialRenderMeasured.current = true;
-        console.debug('Packageawy webview initial render', {
-          operation: 'webview initial render',
-          durationMs,
-          metadata: { rows: message.data.rows.length },
-        });
+    if (message === undefined || !('data' in message)) return;
+    const measure = !initialRenderMeasured.current && initialRenderStartedAt.current !== null;
+    return trackSnapshotRender(message.data.generatedAt, measure ? () => {
+      const durationMs = performance.now() - (initialRenderStartedAt.current ?? performance.now());
+      initialRenderMeasured.current = true;
+      console.debug('Packageawy webview initial render', {
+        operation: 'webview initial render',
+        durationMs,
+        metadata: { rows: message.data.rows.length },
       });
-    });
-    return () => {
-      cancelAnimationFrame(firstFrame);
-      if (secondFrame !== 0) cancelAnimationFrame(secondFrame);
-    };
-  }, [message]);
+    } : undefined);
+  }, [message, trackSnapshotRender]);
 
   const refresh = useCallback(() => {
     vscode.postMessage({ type: 'refresh' });

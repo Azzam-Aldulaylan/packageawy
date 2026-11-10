@@ -11,7 +11,7 @@ const { completionState } = require('./completion.js');
 
 const POLL_MS = 10;
 const TIMEOUT_MS = 180_000;
-// The run fails if the scan and the likely-unused analysis have not both
+// The run fails if the scan, paint acknowledgement and likely-unused analysis have not all
 // signalled completion by then (see startup-timing-completion.cjs).
 const COMPLETE_TIMEOUT_MS = Number(process.env['PACKAGEAWY_TIMING_COMPLETE_TIMEOUT_MS'] ?? 180_000);
 
@@ -173,12 +173,15 @@ async function run() {
       COMPLETE_TIMEOUT_MS
     );
 
-    const { messages } = api.dashboard.snapshot();
-    report.scan.statuses = messages.map((event) => event.message.status).filter((status) => status !== 'scan-progress');
+    const { messages, panelCreatedAt } = api.dashboard.snapshot();
+    report.scan.panelCreatedAt = panelCreatedAt;
+    report.scan.openToPanelCreatedMs = panelCreatedAt === null ? undefined : panelCreatedAt - openedAt;
+    report.scan.statuses = messages.map((event) => event.message.status).filter((status) => status !== undefined && status !== 'scan-progress');
     report.scan.progressMessages = messages.filter((event) => event.message.status === 'scan-progress').length;
     report.scan.finalStatus = state.lastData.message.status;
     report.scan.rows = state.lastData.message.data?.rows?.length ?? 0;
     report.scan.openToFirstRowsMs = state.firstRows === undefined ? undefined : state.firstRows.at - openedAt;
+    report.scan.openToPaintedRowsMs = state.firstPaintedRows === undefined ? undefined : state.firstPaintedRows.at - openedAt;
     report.scan.firstRowsStatus = state.firstRows?.message.status;
     report.scan.openToScanResultMs = state.lastData.at - openedAt;
     report.scan.openToCompleteMs = state.completeAt - openedAt;
@@ -189,7 +192,7 @@ async function run() {
     report.error = error instanceof Error ? error.message : String(error);
     try {
       // Which messages arrived helps explain a run that did not settle.
-      report.scan.statuses = lastSnapshot?.().messages.map((event) => event.message.status);
+      report.scan.statuses = lastSnapshot?.().messages.map((event) => event.message.status).filter((status) => status !== undefined);
     } catch {
       // No dashboard to read.
     }

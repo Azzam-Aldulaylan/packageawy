@@ -826,6 +826,7 @@ export type HostToWebviewMessage =
  */
 export type WebviewToHostMessage =
   | { type: 'ready' }
+  | { type: 'rendered'; generatedAt: string }
   | { type: 'refresh' }
   | { type: 'change-project' }
   /** On-demand, bounded published-version choices for one host-owned direct dependency. */
@@ -1016,6 +1017,9 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (!isRecord(value)) return false;
 
   const type = value['type'];
+  if (type === 'rendered') {
+    return hasOnlyKeys(value, ['type', 'generatedAt']) && isNonEmptyString(value['generatedAt']);
+  }
   if (type === 'ready' || type === 'refresh' || type === 'change-project') {
     return hasOnlyKeys(value, ['type']);
   }
