@@ -121,6 +121,12 @@ function isUsableRegistryUrl(value: string): boolean {
 export interface ResolveOptions {
   /** Raw text of the project .npmrc, if it exists and is allowed to be read. */
   projectNpmrc?: string;
+  /**
+   * Raw text of the workspace root .npmrc (the lockfile root) when the project
+   * is a workspace member. Applied after user config and before the member's
+   * own .npmrc, under the same `allowProjectNpmrc` gate.
+   */
+  workspaceRootNpmrc?: string;
   /** Raw text of the user-level ~/.npmrc. */
   userNpmrc?: string;
   /**
@@ -165,6 +171,10 @@ export function resolvePeerResolutionPolicy(options: ResolveOptions): PeerResolu
   const layers: Array<{ text: string | undefined; source: Exclude<PeerPolicySource, 'default'> }> = [
     { text: options.userNpmrc, source: 'user-npmrc' },
     {
+      text: options.allowProjectNpmrc ? options.workspaceRootNpmrc : undefined,
+      source: 'project-npmrc',
+    },
+    {
       text: options.allowProjectNpmrc ? options.projectNpmrc : undefined,
       source: 'project-npmrc',
     },
@@ -195,8 +205,8 @@ export function resolvePeerResolutionPolicy(options: ResolveOptions): PeerResolu
 }
 
 /**
- * Resolve the effective registry: project .npmrc (when allowed), then user
- * .npmrc, then the public registry. Scoped keys get the same validation as the
+ * Resolve the effective registry: member .npmrc, then workspace root .npmrc
+ * (both only when allowed), then user .npmrc, then the public registry. Scoped keys get the same validation as the
  * top-level key (Rule 3).
  */
 export function resolveRegistry(options: ResolveOptions): ResolveResult {
@@ -210,7 +220,12 @@ export function resolveRegistry(options: ResolveOptions): ResolveResult {
     origin: 'user-npmrc' | 'project-npmrc';
   }> = [
     { text: options.userNpmrc, origin: 'user-npmrc' },
-    // Project last so it wins, but only when explicitly allowed.
+    // Project layers last so they win, but only when explicitly allowed. A
+    // workspace member's own .npmrc overrides the workspace root's.
+    {
+      text: options.allowProjectNpmrc ? options.workspaceRootNpmrc : undefined,
+      origin: 'project-npmrc',
+    },
     {
       text: options.allowProjectNpmrc ? options.projectNpmrc : undefined,
       origin: 'project-npmrc',
@@ -239,4 +254,16 @@ export function resolveRegistry(options: ResolveOptions): ResolveResult {
   }
 
   return { registry: { url, source, scoped }, rejectedForExpansion };
+}
+
+/**
+ * The registry that serves `packageName`: its scope's registry when one is
+ * configured, otherwise the default. The package name only selects among
+ * already-validated URLs and never affects URL structure.
+ */
+export function registryForPackage(registry: ResolvedRegistry, packageName: string): string {
+  if (!packageName.startsWith('@')) return registry.url;
+  const slash = packageName.indexOf('/');
+  if (slash <= 1) return registry.url;
+  return registry.scoped[packageName.slice(0, slash)] ?? registry.url;
 }

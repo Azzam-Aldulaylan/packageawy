@@ -1468,6 +1468,7 @@ export class UpgradeAssistantCoordinator {
                   },
                 }),
             registry: preflightProject.registry,
+            resolvedRegistry: preflightProject.resolvedRegistry,
             policy: preflightProject.peerPolicy,
           })
         : undefined;
@@ -2527,6 +2528,7 @@ export class UpgradeAssistantCoordinator {
       manifestText: preflightProject.manifestText,
       lockfile: { name: preflightProject.lockfileName, text: preflightProject.lockfileText },
       registry: preflightProject.registry,
+      resolvedRegistry: preflightProject.resolvedRegistry,
       policy: preflightProject.peerPolicy,
     });
     const targetNames = [...new Set(targetAdvisories.map((entry) => entry.flaggedPackage))].sort();

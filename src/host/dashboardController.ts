@@ -815,6 +815,7 @@ export class DashboardController {
       packageManager: this.options.packageManager ?? 'npm',
       importerId: this.options.importerId ?? '.',
       registry: this.options.registry,
+      ...(this.options.resolvedRegistry === undefined ? {} : { resolvedRegistry: this.options.resolvedRegistry }),
       httpClient: this.options.httpClient,
       etagStore: this.options.etagStore,
       signal: controller.signal,
