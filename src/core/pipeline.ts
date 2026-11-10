@@ -11,6 +11,8 @@
  * Nothing here may import 'vscode'. See types.ts.
  */
 
+import semver from 'semver';
+
 import type { AuditRunner } from './audit/npmAudit.js';
 import { runNpmAudit, mapFixAvailableToDirectDependencies } from './audit/npmAudit.js';
 import { worstSeverity, resolveUpgradeTarget } from './advisories/aggregate.js';
@@ -29,9 +31,10 @@ import { NOOP_PERFORMANCE_RECORDER } from './performance/measurement.js';
 import type { HttpClient } from './registry/http.js';
 import { FetchError } from './registry/http.js';
 import type { EtagStore, VersionRequest } from './registry/versions.js';
-import { fetchAllVersions, fetchPackument } from './registry/versions.js';
+import { ABBREVIATED_ACCEPT, fetchAllVersions, fetchPackument } from './registry/versions.js';
 import type { PackumentDoc } from './registry/versions.js';
 import { DEFAULT_CONCURRENCY, runPool } from './registry/pool.js';
+import { limitMetadataRequests } from './registry/requestLimiter.js';
 import { registryForPackage } from './registry/npmrc.js';
 import { resolveUpgradeCandidate } from './upgrade/candidate.js';
 import type { Advisory, AttributedAdvisory, FixAvailable, PackageRow, ScanDataAvailability, VersionInfo } from './types.js';
@@ -146,7 +149,12 @@ function instrumentHttpClient(client: HttpClient, recorder: PerformanceRecorder)
       const isGitHubAdvisory =
         url.startsWith(`${GITHUB_ADVISORIES_API}/`) || url.startsWith(`${GITHUB_ADVISORIES_API}?`);
       recorder.increment(isGitHubAdvisory ? 'GitHub advisory requests' : 'registry requests');
-      if (!isGitHubAdvisory) recorder.increment(url.endsWith('/latest') ? '/latest requests' : 'packument requests');
+      if (!isGitHubAdvisory) {
+        const kind = url.endsWith('/latest') ? '/latest'
+          : options?.headers?.accept === ABBREVIATED_ACCEPT ? 'packument'
+          : url.endsWith('/dist-tags') ? 'dist-tags' : 'exact-version';
+        recorder.increment(`${kind} requests`);
+      }
       const response = await client.get(url, options);
       recorder.increment(isGitHubAdvisory ? 'GitHub advisory response wire bytes' : 'registry response wire bytes', response.wireBytes);
       if (response.status === 304) recorder.increment('304 responses');
@@ -170,6 +178,7 @@ export async function buildPackageRows(
   const { root, manifestText, lockfileText, registry, signal } = options;
   const recorder = options.performance ?? NOOP_PERFORMANCE_RECORDER;
   const httpClient = instrumentHttpClient(options.httpClient, recorder);
+  const metadataClient = limitMetadataRequests(httpClient, options.concurrency);
   const etagStore = instrumentEtagStore(options.etagStore, recorder);
   const resolvedRegistry = options.resolvedRegistry;
   const registryFor = (name: string): string =>
@@ -207,7 +216,7 @@ export async function buildPackageRows(
       return cached;
     }
     recorder.increment(`packument requests for ${reason}`);
-    const pending = fetchPackument(httpClient, etagStore, registryFor(name), name, requestSignal);
+    const pending = fetchPackument(metadataClient, etagStore, registryFor(name), name, requestSignal);
     packumentPromises.set(name, pending);
     return pending;
   };
@@ -243,8 +252,8 @@ export async function buildPackageRows(
   // The bulk advisory request depends only on the normalized graph. Start it
   // alongside version metadata instead of placing its network latency behind
   // every /latest request. This adds one bounded request (to npm's advisory
-  // endpoint) while the registry pool is active. Patched-version work still
-  // waits for attribution and therefore cannot amplify that overlap.
+  // endpoint) while metadata GETs share their own request budget.
+  let knownFlaggedPackages = new Set<string>();
   let advisoryRequestSettled = advisoryCheckOff;
   if (!advisoryCheckOff) options.onProgress?.({ stage: 'advisories' });
   const advisoryPromise: Promise<{ advisoriesByName: Map<string, Advisory[]>; advisoriesError?: FetchError }> = (async () => {
@@ -255,6 +264,12 @@ export async function buildPackageRows(
     let advisoriesError: FetchError | undefined;
     try {
       const npmAdvisories = await fetchBulkAdvisories(httpClient, bulkRequestBody, signal, advisoryEnabled);
+      knownFlaggedPackages = distinctFlaggedPackages(attributeAdvisories(graph, npmAdvisories));
+      for (const name of knownFlaggedPackages) {
+        // Keep the original promise in the map, including failures. Only the
+        // patched-version stage consumes its result and reports progress.
+        void loadPackument(name, 'patched version', signal).catch(() => {});
+      }
       advisoriesByName = await enrichAdvisoriesWithGitHubIdentifiers(httpClient, etagStore, npmAdvisories, signal);
     } catch (cause) {
       advisoriesError =
@@ -279,14 +294,19 @@ export async function buildPackageRows(
     name: node.registryName ?? node.name,
     range: npmAlias(node.range)?.range ?? node.range,
     installed: node.version,
+    exactPinEligible: registryFor(node.registryName ?? node.name).replace(/\/+$/, '') === 'https://registry.npmjs.org' &&
+      node.unresolvable === undefined && node.registryName === undefined &&
+      npmAlias(node.range) === null && semver.valid(node.range) === node.range &&
+      node.version === node.range && semver.prerelease(node.range) === null,
   }));
 
   const fetchOptions: Parameters<typeof fetchAllVersions>[0] = {
-    client: httpClient,
+    client: metadataClient,
     store: etagStore,
     registry,
     registryFor,
     packumentLoader: (name, requestSignal) => loadPackument(name, 'version resolution', requestSignal),
+    isFlagged: (name) => knownFlaggedPackages.has(name),
   };
   if (options.concurrency !== undefined) fetchOptions.limit = options.concurrency;
   if (signal !== undefined) fetchOptions.signal = signal;
