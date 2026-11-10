@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { buildStagedManifest, buildStagedManifestForRemoval, StagedManifestError } from '../out/core/upgrade/stagedManifest.js';
+import { buildStagedManifest, buildStagedManifestForRemoval, isRegistrySpecifier, StagedManifestError } from '../out/core/upgrade/stagedManifest.js';
 
 test('mixed classifications are updated in place with exact versions', () => {
   const source = JSON.stringify({
@@ -101,6 +101,9 @@ test('each shadowed copy keeps its own style, and a non-registry copy is rejecte
     'file:../shared', 'workspace:*', 'catalog:', 'npm:other@^1.0.0', 'link:../shared',
     '../local', './local', '/tmp/local', './local.tgz', 'local.tgz', 'pkg.tar.gz', '~/x', '.\\win', 'C:\\pkg', '.',
     'git+https://example.com/x.git', 'github:user/repo', 'user/repo', 'https://example.com/x.tgz',
+    // Forms a deny-list missed; the allow-list rejects them.
+    '.local', 'vendor/local/subdir', 'git@github.com:user/repo.git', './x.tgz', 'C:\\x',
+    'https://x/y.tgz', 'npm:alias@1', 'user/repo.tgz', 'some thing', 'tag@1',
   ]) {
     assert.throws(
       () => buildStagedManifest(JSON.stringify({ dependencies: { shared: '1.0.0' }, devDependencies: { shared: shadow } }), [
@@ -111,7 +114,7 @@ test('each shadowed copy keeps its own style, and a non-registry copy is rejecte
     );
   }
   // Registry ranges and tags in the shadow copy still move to the target.
-  for (const shadow of ['^1.0.0', '~1.0.0', '>=1.0.0', '1.x', '*', 'latest', '']) {
+  for (const shadow of ['^1.0.0', '~1.0.0', '>=1.0.0', '1.x', '*', 'latest', '', '6.0.0', '^6', '~6.1', '>=6 <8', '6.x', 'next']) {
     const staged = JSON.parse(buildStagedManifest(JSON.stringify({ dependencies: { shared: '1.0.0' }, devDependencies: { shared: shadow } }), [
       { packageName: 'shared', target: '1.4.0', classification: 'prod' },
     ]));
@@ -199,4 +202,16 @@ test('buildStagedManifestForRemoval rejects missing, misclassified, duplicate, a
     () => buildStagedManifestForRemoval(source, []),
     (error) => error instanceof StagedManifestError && error.code === 'INVALID_CHANGE'
   );
+});
+
+test('the shadow allow-list accepts only semver ranges and plain dist-tags', () => {
+  for (const spec of ['6.0.0', '^6', '~6.1', '>=6 <8', '6.x', '*', 'latest', 'next', '', '^1.0.0 || ^2.0.0']) {
+    assert.equal(isRegistrySpecifier(spec), true, JSON.stringify(spec));
+  }
+  for (const spec of [
+    '.local', 'vendor/local/subdir', 'git@github.com:user/repo.git', '../local', './x.tgz', 'C:\\x',
+    'github:user/repo', 'https://x/y.tgz', 'npm:alias@1', 'workspace:*', 'catalog:', 'local.tgz', 'file:x', 'link:x',
+  ]) {
+    assert.equal(isRegistrySpecifier(spec), false, spec);
+  }
 });

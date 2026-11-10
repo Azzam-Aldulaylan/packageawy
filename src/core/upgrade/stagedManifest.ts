@@ -60,6 +60,21 @@ const BLOCK_BY_CLASSIFICATION: Record<DependencyClassification, string> = {
   optional: 'optionalDependencies',
 };
 
+/** A plain dist-tag such as `latest` or `next`: no path, URL or protocol characters. */
+const DIST_TAG = /^[a-z][a-z0-9._-]*$/i;
+
+/**
+ * Allow-list for a second (shadow) declaration that an upgrade rewrites:
+ * only a semver range (exact, ^, ~, x-range, compound, *, empty) or a plain
+ * dist-tag. Anything else (paths, tarballs, git, URLs, aliases, workspace:,
+ * catalog:) is someone's deliberate non-registry source and is not touched.
+ */
+export function isRegistrySpecifier(spec: string): boolean {
+  const value = spec.trim();
+  if (isCatalogSpecifier(value) || classifySpecifier(value).unresolvable !== undefined) return false;
+  return semver.validRange(value) !== null || DIST_TAG.test(value);
+}
+
 const DEPENDENCY_BLOCKS = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -347,7 +362,7 @@ export function buildStagedManifest(
       if (current === null || !Object.hasOwn(current, change.packageName)) continue;
       const declared = current[change.packageName];
       if (blockName !== expectedBlock) {
-        if (typeof declared !== 'string' || isCatalogSpecifier(declared) || classifySpecifier(declared).unresolvable !== undefined) {
+        if (typeof declared !== 'string' || !isRegistrySpecifier(declared)) {
           throw new StagedManifestError(
             'SHADOWED_DECLARATION',
             `${change.packageName} is also declared in ${blockName} with a specifier Packageawy cannot upgrade. ` +
