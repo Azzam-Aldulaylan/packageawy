@@ -509,7 +509,6 @@ test('installer failure after staging restores exact manifest and lockfile snaps
     },
     install: {
       execute: async () => {
-        files.set(manifestPath, present('{"dependencies":{"react":"^19.1.0"}}'));
         files.set(lockfilePath, present('partial lock'));
         return { status: 'failed', code: 'INSTALL_FAILED', message: 'exit 1', exitCode: 1 };
       },
@@ -521,6 +520,65 @@ test('installer failure after staging restores exact manifest and lockfile snaps
   assert.equal(result.manifestStage.status, 'succeeded');
   assert.equal(files.text(manifestPath), manifestBefore);
   assert.deepEqual(files.states.get(lockfilePath).contents, lockBefore);
+});
+
+test('a staged manifest rewritten by anyone but the transaction is kept as a rollback conflict', async () => {
+  // The bare reconciliation install never writes package.json, so bytes
+  // other than the staged ones there are someone else's edit. Rollback
+  // compares against what the transaction wrote and keeps that edit.
+  const manifestBefore = '{\n  "dependencies": { "react": "^18" }\n}\n';
+  const foreign = '{"dependencies":{"react":"^19.1.0"}}';
+  const files = new MemoryFiles({
+    [manifestPath]: present(manifestBefore),
+    [lockfilePath]: present('lock-before'),
+  });
+
+  const result = await runUpgradeTransaction({
+    allowlistedPaths: [manifestPath, lockfilePath],
+    files,
+    manifestStage: {
+      path: manifestPath,
+      expectedContents: encoder.encode(manifestBefore),
+      contents: encoder.encode('{"dependencies":{"react":"^19"}}\n'),
+    },
+    install: {
+      execute: async () => {
+        files.set(manifestPath, present(foreign));
+        files.set(lockfilePath, present('partial lock'));
+        return { status: 'failed', code: 'INSTALL_FAILED', message: 'exit 1', exitCode: 1 };
+      },
+    },
+  });
+
+  assert.equal(result.completion, 'incomplete');
+  assert.equal(result.rollback.files.find((file) => file.path === manifestPath).status, 'conflict');
+  assert.equal(files.text(manifestPath), foreign);
+  assert.equal(files.text(lockfilePath), 'lock-before');
+});
+
+test('install steps may only write through the transaction to a file it staged', async () => {
+  const files = new MemoryFiles({
+    [manifestPath]: present('{"dependencies":{"react":"^18"}}'),
+    [lockfilePath]: present('lock-before'),
+  });
+  const result = await runUpgradeTransaction({
+    allowlistedPaths: [manifestPath, lockfilePath],
+    files,
+    manifestStage: {
+      path: manifestPath,
+      expectedContents: encoder.encode('{"dependencies":{"react":"^18"}}'),
+      contents: encoder.encode('{"dependencies":{"react":"19.0.0"}}'),
+    },
+    install: {
+      execute: async (context) => {
+        await context.compareAndSwap(lockfilePath, present('lock-before'), present('forged'));
+        return { status: 'succeeded' };
+      },
+    },
+  });
+  assert.equal(result.install.status, 'failed');
+  assert.equal(files.text(lockfilePath), 'lock-before');
+  assert.equal(files.text(manifestPath), '{"dependencies":{"react":"^18"}}');
 });
 
 test('successful install and successful verification keep upgraded files and report verified separately', async () => {

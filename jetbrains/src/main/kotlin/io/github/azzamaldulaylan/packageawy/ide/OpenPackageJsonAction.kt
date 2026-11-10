@@ -8,7 +8,7 @@ import com.intellij.openapi.project.DumbAwareAction
 
 /** Which files "Open in Packageawy" applies to. The sidecar decides whether the file is a discovered project. */
 object OpenManifest {
-    const val UNAVAILABLE_MESSAGE = "Packageawy opens package.json files from your workspace folders, outside node_modules."
+    const val UNAVAILABLE_MESSAGE = "Choose a package.json in your workspace, outside node_modules."
 
     fun isPackageJson(name: String): Boolean = name == "package.json"
 

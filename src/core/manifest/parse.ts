@@ -72,6 +72,12 @@ export function isCatalogSpecifier(spec: string): boolean {
   return spec.trim().startsWith('catalog:');
 }
 
+/** Leading forms npm always reads as a local path: ".x", "./x", "../x", "~/x", "/x", "\\x", "C:". */
+const LOCAL_PATH = /^(?:\.|~[\\/]|[\\/]|[a-zA-Z]:(?:[\\/]|$))/;
+const LOCAL_TARBALL = /\.(?:tgz|tar\.gz|tar)$/i;
+/** SCP-style git remote, e.g. "git@github.com:user/repo.git". */
+const SCP_GIT = /^[^\s@/:]+@[^\s/:]+:/;
+
 /** Shorthand GitHub form, e.g. "user/repo" or "user/repo#semver:^1.0.0". */
 const GITHUB_SHORTHAND = /^[\w.-]+\/[\w.-]+(?:#.*)?$/;
 
@@ -123,20 +129,32 @@ export function classifySpecifier(spec: string): {
       : { unresolvable: 'alias', aliasTarget: target };
   }
 
-  if (value.startsWith('http://') || value.startsWith('https://')) {
+  // Any other URL. git+ and ssh protocols are git sources, http(s) points
+  // at a tarball. The scheme is matched case-insensitively, as npm does.
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value)?.[1]?.toLowerCase();
+  if (scheme !== undefined) {
+    if (scheme === 'http' || scheme === 'https') return { unresolvable: 'tarball' };
+    if (scheme === 'ssh' || scheme === 'git' || scheme.startsWith('git+')) return { unresolvable: 'git' };
     return { unresolvable: 'tarball' };
   }
 
-  // Bare "user/repo" is GitHub shorthand. Guard against swallowing scoped
-  // package names (@scope/name is not a specifier) and path-like values.
-  if (
-    !value.startsWith('@') &&
-    !value.startsWith('.') &&
-    !value.startsWith('/') &&
-    GITHUB_SHORTHAND.test(value)
-  ) {
+  // npm reads these as local directories or tarballs even without file:.
+  if (LOCAL_PATH.test(value)) return { unresolvable: 'file' };
+
+  if (SCP_GIT.test(value)) return { unresolvable: 'git' };
+
+  // Bare "user/repo" (optionally "#ref", even when it ends in .tgz) is
+  // GitHub shorthand. Scoped names (@scope/name) are not specifiers.
+  if (!value.startsWith('@') && GITHUB_SHORTHAND.test(value)) {
     return { unresolvable: 'git' };
   }
+
+  // "pkg.tgz", "pkg.tar.gz", "pkg.tar": a local tarball.
+  if (LOCAL_TARBALL.test(value)) return { unresolvable: 'file' };
+
+  // Any other value with a path separator ("vendor/local/subdir") is a
+  // directory to npm; registry ranges and tags never contain one.
+  if (!value.startsWith('@') && /[\\/]/.test(value)) return { unresolvable: 'file' };
 
   return {};
 }

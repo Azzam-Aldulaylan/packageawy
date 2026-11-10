@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { buildManifestReconciliationArgs } from '../../out/core/upgrade/plan.js';
 import { buildStagedManifest, buildStagedManifestForRemoval } from '../../out/core/upgrade/stagedManifest.js';
 import { createNodeUpgradeTransactionFileAdapter } from '../../out/host/nodeUpgradeTransactionFiles.js';
 import { runUpgradeTransaction } from '../../out/host/upgradeTransaction.js';
@@ -10,6 +11,7 @@ import {
   createRealProjectFixture,
   FIXTURE_BASELINE_VERSION,
   FIXTURE_DEPENDENCY,
+  FIXTURE_DEV_DEPENDENCY,
   FIXTURE_TARGET_VERSION,
   installArgs,
   runCommand,
@@ -156,6 +158,137 @@ async function runManager(packageManager) {
     assert.deepEqual(rollbackAfter.lockfile, rollbackBefore.lockfile);
     await resetFixture(fixture);
 
+    // A ~ declaration upgraded to a target below the newest matching version
+    // keeps its operator and still resolves exactly the target: exact stage,
+    // full install, then the declared range and a lockfile-only pass.
+    const rangeSource = (await readFile(fixture.manifestPath, 'utf8'))
+      .replace(`"${FIXTURE_DEV_DEPENDENCY}": "4.1.5"`, `"${FIXTURE_DEV_DEPENDENCY}": "~4.0.0"`);
+    await writeFile(fixture.manifestPath, rangeSource);
+    await runPackageManager(packageManager, installArgs(packageManager), fixture.root);
+    const rangeChange = [{ packageName: FIXTURE_DEV_DEPENDENCY, target: '4.1.0', classification: 'dev' }];
+    const rangeExact = buildStagedManifest(rangeSource, rangeChange);
+    const rangeStyled = buildStagedManifest(rangeSource, rangeChange, { rangeStyle: 'preserve' });
+    assert.equal(rangeStyled, rangeSource.replace('"kleur": "~4.0.0"', '"kleur": "~4.1.0"'));
+    started = performance.now();
+    const ranged = await runUpgradeTransaction({
+      allowlistedPaths,
+      files,
+      manifestStage: {
+        path: fixture.manifestPath,
+        expectedContents: Buffer.from(rangeSource),
+        contents: Buffer.from(rangeExact),
+      },
+      install: {
+        execute: async (context) => {
+          const first = await installExecutor(packageManager, fixture.root);
+          if (first.status !== 'succeeded') return first;
+          const swapped = await context.compareAndSwap(
+            fixture.manifestPath,
+            { exists: true, contents: Buffer.from(rangeExact) },
+            { exists: true, contents: Buffer.from(rangeStyled) }
+          );
+          if (swapped !== 'restored') return { status: 'failed', code: 'CONFLICT', message: 'package.json changed.' };
+          try {
+            await runPackageManager(
+              packageManager,
+              buildManifestReconciliationArgs(packageManager, { ignoreScripts: true, lockfileOnly: true }),
+              fixture.root
+            );
+            return { status: 'succeeded' };
+          } catch (cause) {
+            return { status: 'failed', code: 'PACKAGE_MANAGER_FAILED', message: String(cause) };
+          }
+        },
+      },
+    });
+    metrics.rangeStyleMs = performance.now() - started;
+    assert.equal(ranged.completion, 'kept');
+    assert.equal(await readFile(fixture.manifestPath, 'utf8'), rangeStyled);
+    const rangeLock = await readFile(fixture.lockfilePath, 'utf8');
+    if (packageManager === 'npm') {
+      const lock = JSON.parse(rangeLock);
+      assert.equal(lock.packages[''].devDependencies.kleur, '~4.1.0');
+      assert.equal(lock.packages['node_modules/kleur'].version, '4.1.0');
+    } else {
+      assert.match(rangeLock, /kleur:\s*\n\s*specifier: ~4\.1\.0\s*\n\s*version: 4\.1\.0\b/);
+    }
+    const installedKleur = JSON.parse(
+      await readFile(path.join(fixture.root, 'node_modules', FIXTURE_DEV_DEPENDENCY, 'package.json'), 'utf8')
+    );
+    assert.equal(installedKleur.version, '4.1.0');
+    await resetFixture(fixture);
+
+    // The real reconciliation argv must update the lockfile even when a
+    // project .npmrc says save=false, and a package declared in both
+    // dependencies and devDependencies must install the target.
+    const reconcile = async () => {
+      try {
+        await runPackageManager(
+          packageManager,
+          buildManifestReconciliationArgs(packageManager, { ignoreScripts: true }),
+          fixture.root
+        );
+        return { status: 'succeeded' };
+      } catch (cause) {
+        return { status: 'failed', code: 'PACKAGE_MANAGER_FAILED', message: String(cause) };
+      }
+    };
+    const assertResolvedTarget = async () => {
+      const lock = await readFile(fixture.lockfilePath, 'utf8');
+      if (packageManager === 'npm') {
+        assert.equal(JSON.parse(lock).packages[`node_modules/${FIXTURE_DEPENDENCY}`].version, FIXTURE_TARGET_VERSION);
+      } else {
+        assert.match(lock, new RegExp(`${FIXTURE_DEPENDENCY}:\\s*\\n\\s*specifier: ${FIXTURE_TARGET_VERSION}\\s*\\n\\s*version: ${FIXTURE_TARGET_VERSION}\\b`));
+      }
+      const installed = JSON.parse(
+        await readFile(path.join(fixture.root, 'node_modules', FIXTURE_DEPENDENCY, 'package.json'), 'utf8')
+      );
+      assert.equal(installed.version, FIXTURE_TARGET_VERSION);
+    };
+    const npmrcPath = path.join(fixture.root, '.npmrc');
+    await writeFile(npmrcPath, 'save=false\n');
+    try {
+      const saveSource = await readFile(fixture.manifestPath);
+      const saveManifest = buildStagedManifest(saveSource.toString('utf8'), [{
+        packageName: FIXTURE_DEPENDENCY, target: FIXTURE_TARGET_VERSION, classification: 'prod',
+      }], { rangeStyle: 'preserve' });
+      const saved = await runUpgradeTransaction({
+        allowlistedPaths,
+        files,
+        manifestStage: { path: fixture.manifestPath, expectedContents: saveSource, contents: Buffer.from(saveManifest) },
+        install: { execute: reconcile },
+      });
+      assert.equal(saved.completion, 'kept');
+      assert.equal(await readFile(fixture.manifestPath, 'utf8'), saveManifest);
+      await assertResolvedTarget();
+    } finally {
+      await rm(npmrcPath, { force: true });
+    }
+    await resetFixture(fixture);
+
+    const duplicateSource = (await readFile(fixture.manifestPath, 'utf8')).replace(
+      `"${FIXTURE_DEV_DEPENDENCY}": "4.1.5"`,
+      `"${FIXTURE_DEV_DEPENDENCY}": "4.1.5",\n    "${FIXTURE_DEPENDENCY}": "${FIXTURE_BASELINE_VERSION}"`
+    );
+    await writeFile(fixture.manifestPath, duplicateSource);
+    await runPackageManager(packageManager, installArgs(packageManager), fixture.root);
+    const duplicateManifest = buildStagedManifest(duplicateSource, [{
+      packageName: FIXTURE_DEPENDENCY, target: FIXTURE_TARGET_VERSION, classification: 'prod',
+    }], { rangeStyle: 'preserve' });
+    assert.equal(
+      duplicateManifest,
+      duplicateSource.replaceAll(`"${FIXTURE_DEPENDENCY}": "${FIXTURE_BASELINE_VERSION}"`, `"${FIXTURE_DEPENDENCY}": "${FIXTURE_TARGET_VERSION}"`)
+    );
+    const duplicated = await runUpgradeTransaction({
+      allowlistedPaths,
+      files,
+      manifestStage: { path: fixture.manifestPath, expectedContents: Buffer.from(duplicateSource), contents: Buffer.from(duplicateManifest) },
+      install: { execute: reconcile },
+    });
+    assert.equal(duplicated.completion, 'kept');
+    await assertResolvedTarget();
+    await resetFixture(fixture);
+
     const staleExpected = await readFile(fixture.manifestPath);
     const staleManifest = buildStagedManifest(staleExpected.toString('utf8'), [{
       packageName: FIXTURE_DEPENDENCY,
@@ -203,7 +336,8 @@ console.log('Disposable real-project transaction results');
 for (const report of reports) {
   console.log(
     `${report.packageManager}: setup ${report.setupMs.toFixed(0)} ms, upgrade ${report.upgradeMs.toFixed(0)} ms, ` +
-    `removal ${report.removalMs.toFixed(0)} ms, rollback ${report.rollbackMs.toFixed(0)} ms`
+    `removal ${report.removalMs.toFixed(0)} ms, rollback ${report.rollbackMs.toFixed(0)} ms, ` +
+    `range style ${report.rangeStyleMs.toFixed(0)} ms`
   );
 }
 
