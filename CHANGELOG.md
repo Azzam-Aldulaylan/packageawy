@@ -8,6 +8,10 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 - The dashboard opens faster on a project without saved results. VS Code starts reading the project as soon as the panel opens, exact version pins on the public npm registry are confirmed with one small request instead of the full version list, and fixed versions for vulnerable packages are looked up as soon as the vulnerability results arrive.
 
+### Fixed
+
+- Upgrade reviews count only the vulnerabilities this upgrade affects. Unrelated vulnerabilities elsewhere in the project are no longer listed as remaining, and the review notes how many there are.
+
 ## [0.9.5] - 2026-11-10
 
 ### Added

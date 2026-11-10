@@ -2,6 +2,7 @@ import type { ReactElement } from 'react';
 
 import { IntroducedSecurityFindings } from './IntroducedSecurityFindings.js';
 import { securityOutcomeDisplay } from '../../../src/host/outcomeCopy.js';
+import { unaffectedElsewhereText } from '../../../src/host/upgradeSecuritySummary.js';
 import type { SecurityOutcome } from '../../../src/host/webviewProtocol.js';
 import { IconShield } from '../icons.js';
 import { OutcomeStatus } from './OutcomeStatus.js';
@@ -15,6 +16,7 @@ function overallDetail(security: SecurityOutcome): string | undefined {
   const unknownCount = security.remaining.filter((r) => r.status === 'unknown').length;
 
   if (security.status === 'resolved') {
+    if (resolvedCount === 0) return 'Known vulnerabilities counted before this upgrade are no longer reached through it.';
     return resolvedCount === 1
       ? '1 vulnerability resolved by this upgrade.'
       : `${resolvedCount} vulnerabilities resolved by this upgrade.`;
@@ -82,6 +84,9 @@ export function SecuritySection({
           ))}
         </ul>
       ) : null}
+      {security === null || unaffectedElsewhereText(security) === null ? null : (
+        <p className="security-outcome__elsewhere">{unaffectedElsewhereText(security)}</p>
+      )}
     </section>
   );
 }

@@ -1,7 +1,7 @@
 import type { ReactElement, ReactNode } from 'react';
 
 import { IntroducedSecurityFindings } from './IntroducedSecurityFindings.js';
-import { summarizeUpgradeSecurity } from '../../../src/host/upgradeSecuritySummary.js';
+import { summarizeUpgradeSecurity, unaffectedElsewhereText } from '../../../src/host/upgradeSecuritySummary.js';
 import type { PackageRow } from '../../../src/core/types.js';
 import type {
   CompatibilityFindingKind,
@@ -307,9 +307,10 @@ export function SecurityOutcomeCard({
     ? { label: 'Upgrade adds known vulnerabilities', className: 'remains' }
     : securityOutcomeDisplay(security.status);
   const contexts = sortAdvisoriesBySeverity(security.contexts ?? []);
+  const elsewhere = unaffectedElsewhereText(security);
   const subtitle =
     summary.introducedCount > 0 ? 'This upgrade adds known vulnerabilities. Review the findings before continuing.'
-      : security.status === 'not-applicable' ? 'No known vulnerabilities were found in this review.'
+      : security.status === 'not-applicable' ? 'No known vulnerabilities were found for this upgrade.'
       : security.status === 'resolved'
       ? 'This upgrade will improve your security posture.'
       : security.status === 'remains'
@@ -334,7 +335,7 @@ export function SecurityOutcomeCard({
       <div className="security-outcome">
         <section className="security-outcome__box" aria-labelledby="security-before-heading">
           <h4 className="security-outcome__label" id="security-before-heading">Before upgrade</h4>
-          <p className="security-outcome__value security-outcome__value--bad">
+          <p className={`security-outcome__value${beforeCount > 0 ? ' security-outcome__value--bad' : ''}`}>
             {beforeCount} known vulnerabilit{beforeCount === 1 ? 'y' : 'ies'}
           </p>
           <p className="security-outcome__detail">From this analysis</p>
@@ -494,6 +495,7 @@ export function SecurityOutcomeCard({
           ) : null}
         </section>
       </div>
+      {elsewhere === null ? null : <p className="security-outcome__elsewhere">{elsewhere}</p>}
     </section>
   );
 }
