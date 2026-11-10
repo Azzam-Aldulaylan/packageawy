@@ -22,7 +22,7 @@ import { directNodes } from './lockfile/parse.js';
 import { buildDependencyGraph } from './lockfile/build.js';
 import { computeGraphHygieneFindings } from './hygiene/index.js';
 import type { DependencyFinding } from './hygiene/index.js';
-import { parseManifest } from './manifest/parse.js';
+import { isCatalogSpecifier, parseManifest } from './manifest/parse.js';
 import type { PerformanceRecorder } from './performance/measurement.js';
 import { NOOP_PERFORMANCE_RECORDER } from './performance/measurement.js';
 import type { HttpClient } from './registry/http.js';
@@ -380,6 +380,7 @@ export async function buildPackageRows(
       advisories,
       ...(fixAvailable === undefined ? {} : { fixAvailable }),
     });
+    const catalogOwned = isCatalogSpecifier(node.range);
     const candidate = resolveUpgradeCandidate({
       securityTarget,
       current: node.version,
@@ -397,8 +398,9 @@ export async function buildPackageRows(
       range: node.range,
       advisories,
       worstSeverity: worstSeverity(advisories),
-      upgradeTo: candidate?.target ?? null,
-      upgradeReason: candidate?.reason ?? null,
+      // A catalog specifier is owned by pnpm-workspace.yaml, never rewritten here.
+      upgradeTo: catalogOwned ? null : (candidate?.target ?? null),
+      upgradeReason: catalogOwned ? null : (candidate?.reason ?? null),
     };
     if (info?.description !== undefined) row.description = info.description;
     if (info?.license !== undefined) row.license = info.license;

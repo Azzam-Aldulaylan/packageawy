@@ -25,6 +25,7 @@ export interface ReloadedProject {
   packageManager?: 'npm' | 'pnpm';
   importerId?: string;
   lockfileName?: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
+  otherPackageManager?: 'yarn' | 'bun' | 'unknown' | null;
 }
 
 export interface ReloadSource<TCandidate> {
@@ -90,6 +91,7 @@ export async function reloadControllerFromDisk<TCandidate>(
       packageManager: project.packageManager ?? 'npm',
       importerId: project.importerId ?? '.',
       lockfileName: project.lockfileName ?? null,
+      otherPackageManager: project.otherPackageManager ?? null,
       projectInfo,
       canChangeProject: params.canChangeProject,
       cacheKey,

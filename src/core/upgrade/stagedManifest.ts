@@ -5,6 +5,7 @@
  * swap protection before one package-manager reconciliation install.
  */
 
+import { isCatalogSpecifier } from '../manifest/parse.js';
 import {
   isSafeNpmPackageName,
   isSafeSemverVersion,
@@ -26,7 +27,8 @@ export type StagedManifestErrorCode =
   | 'INVALID_MANIFEST'
   | 'INVALID_CHANGE'
   | 'DUPLICATE_CHANGE'
-  | 'MISSING_DECLARATION';
+  | 'MISSING_DECLARATION'
+  | 'CATALOG_SPECIFIER';
 
 export class StagedManifestError extends Error {
   constructor(
@@ -127,6 +129,12 @@ export function buildStagedManifest(
       throw new StagedManifestError(
         'MISSING_DECLARATION',
         `${change.packageName} is not a string declaration in ${expectedBlock}.`
+      );
+    }
+    if (isCatalogSpecifier(block[change.packageName] as string)) {
+      throw new StagedManifestError(
+        'CATALOG_SPECIFIER',
+        `${change.packageName} gets its version from the pnpm catalog in pnpm-workspace.yaml.`
       );
     }
     block[change.packageName] = change.target;

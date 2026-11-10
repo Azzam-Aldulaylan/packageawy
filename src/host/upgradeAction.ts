@@ -14,6 +14,7 @@
  * no compiled `out/` counterpart to unit-test against if this lived there.
  */
 
+import { CATALOG_SPECIFIER_MESSAGE, isCatalogSpecifier } from '../core/manifest/parse.js';
 import type { AttributedAdvisory, PackageRow, UnresolvableReason } from '../core/types.js';
 import { rowHasUpdate } from './summaryMetrics.js';
 import type { UpdateKind } from './updateClassification.js';
@@ -122,6 +123,10 @@ function remediationUnknownTooltip(): string {
  * transitive) advisories all answer `false` here. See resolveActionState's
  * own comments for why each of those disqualifies it.
  */
+function hasTransitiveAdvisory(row: PackageRow): boolean {
+  return row.worstSeverity !== null && row.advisories.some((entry) => entry.path.length > 1);
+}
+
 export function hasEligibleTransitiveFix(row: PackageRow): boolean {
   if (row.upgradeTo !== null) return false;
   if (row.current === null) return false;
@@ -168,6 +173,12 @@ export function resolveActionState(row: PackageRow, remediation?: TransitiveReme
   // choosing the honest reason, checked in order from "most specifically
   // knowable" to "genuinely nothing newer exists".
   if (row.current === null) return { kind: 'unavailable', tooltip: unavailableReasonText(row) };
+
+  // A catalog dependency's version is changed in pnpm-workspace.yaml. A
+  // transitive fix still applies, since it leaves package.json untouched.
+  if (isCatalogSpecifier(row.range) && !hasTransitiveAdvisory(row)) {
+    return { kind: 'unavailable', tooltip: CATALOG_SPECIFIER_MESSAGE };
+  }
 
   if (row.worstSeverity !== null) {
     const transitiveAdvisories = row.advisories.filter((entry) => entry.path.length > 1);

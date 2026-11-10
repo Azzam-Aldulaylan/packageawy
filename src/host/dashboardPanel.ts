@@ -224,6 +224,12 @@ export class DashboardPanel {
       etagStore: this.etagStore,
       ensureController: () => this.ensureController(),
       getSelectedProject: () => this.selectedProject,
+      mutationRoot: () => {
+        const controller = this.controller;
+        if (controller === undefined) return undefined;
+        const lockfilePath = controller.upgradeSource.lockfilePath;
+        return lockfilePath === null ? controller.root : path.dirname(lockfilePath);
+      },
       getSmartCleanupDeprecationEvidence: () => this.smartCleanupMetadataCoordinator.currentDeprecationEvidence(),
       isDisposed: () => this.disposed,
       reloadFinalState: async () => {
@@ -1104,6 +1110,7 @@ export class DashboardPanel {
       packageManager: project.packageManager,
       importerId: project.importerId,
       lockfileName: project.lockfileName,
+      otherPackageManager: project.otherPackageManager ?? null,
       registry: project.registry,
       resolvedRegistry: project.resolvedRegistry,
       peerPolicy: project.peerPolicy,

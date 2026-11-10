@@ -13,6 +13,9 @@
 export const SHRINKWRAP = 'npm-shrinkwrap.json';
 export const PACKAGE_LOCK = 'package-lock.json';
 export const PNPM_LOCK = 'pnpm-lock.yaml';
+export const YARN_LOCK = 'yarn.lock';
+export const BUN_LOCK = 'bun.lock';
+export const BUN_LOCKB = 'bun.lockb';
 
 /**
  * Directories never worth scanning. `node_modules` is the important one: a
@@ -105,6 +108,24 @@ export function chooseLockfile(
   if (filenames.includes(SHRINKWRAP)) return SHRINKWRAP;
   if (filenames.includes(PACKAGE_LOCK)) return PACKAGE_LOCK;
   if (filenames.includes(PNPM_LOCK)) return PNPM_LOCK;
+  return null;
+}
+
+/**
+ * The package manager a Yarn or Bun lockfile says owns this project, or null.
+ * Only the nearest directory holding any lockfile decides, and an npm or pnpm
+ * lockfile in that same directory keeps the project on npm or pnpm.
+ */
+export function otherPackageManagerForLockfiles(
+  dir: string,
+  namesByDir: ReadonlyMap<string, readonly string[]>
+): 'yarn' | 'bun' | null {
+  const nearest = nearestLockfileDir(dir, [...namesByDir.keys()]);
+  if (nearest === null) return null;
+  const names = namesByDir.get(nearest) ?? [];
+  if (names.some((name) => packageManagerForLockfile(name) !== null)) return null;
+  if (names.includes(YARN_LOCK)) return 'yarn';
+  if (names.includes(BUN_LOCK) || names.includes(BUN_LOCKB)) return 'bun';
   return null;
 }
 
