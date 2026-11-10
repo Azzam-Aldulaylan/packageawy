@@ -49,6 +49,8 @@ import type {
   UpgradeResultPresentation,
 } from '../../src/host/webviewProtocol.js';
 import { isHostToWebviewMessage } from '../../src/host/webviewProtocol.js';
+import { sameUpdateAdvisoryContext } from '../../src/host/updateAdvisoryState.js';
+import { UpdateAdvisoryContext } from './components/UpdateVersionWarning.js';
 import type { UpgradeAnalysisSections } from '../../src/host/upgradeAnalysisSections.js';
 import { applyPartialSection, markPhaseLoading, WAITING_UPGRADE_ANALYSIS_SECTIONS } from '../../src/host/upgradeAnalysisSections.js';
 import { DashboardToolbar } from './components/DashboardToolbar.js';
@@ -456,6 +458,16 @@ export function App(): ReactElement {
         return;
       }
       const incoming = event.data;
+
+      if (incoming.status === 'update-advisories') {
+        setMessage(previous => {
+          if (previous === undefined || !('data' in previous) ||
+              previous.data.availability.advisories === 'off' ||
+              !sameUpdateAdvisoryContext(previous.data.updateAdvisoryContext, incoming.context)) return previous;
+          return { ...previous, data: { ...previous.data, updateAdvisories: incoming.results } };
+        });
+        return;
+      }
 
       if (incoming.status === 'scan-progress') {
         setScanProgress({
@@ -2342,6 +2354,7 @@ export function App(): ReactElement {
     cleanupState.phase === 'analyzing';
 
   return (
+    <UpdateAdvisoryContext.Provider value={data?.availability.advisories === 'off' ? [] : data?.updateAdvisories ?? []}>
     <VerificationOptInContext.Provider value={verificationOptInStore}>
     <main className="dashboard">
       <header className="dashboard__header">
@@ -2666,6 +2679,7 @@ export function App(): ReactElement {
       ) : null}
     </main>
     </VerificationOptInContext.Provider>
+    </UpdateAdvisoryContext.Provider>
   );
 }
 

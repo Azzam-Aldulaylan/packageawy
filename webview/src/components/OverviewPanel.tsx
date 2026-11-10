@@ -26,6 +26,7 @@ import { DirectionalButton } from './DirectionalButton.js';
 import { SeverityBadge } from './SeverityBadge.js';
 import { TransitiveFixReview } from './TransitiveFixReview.js';
 import { CurrentVersionCell } from './VersionCell.js';
+import { UpdateVersionWarning } from './UpdateVersionWarning.js';
 import { patchedVersionText } from './VulnerabilityCard.js';
 import type { OpenAdvisoryHandler } from './VulnerabilityCard.js';
 import type { UsageRequestState } from './UsageReferencesPanel.js';
@@ -140,6 +141,7 @@ function UpgradeCard({
           <span className="manage-action-card__version">{row.current ?? row.range}</span>
           <span className="manage-action-card__version-arrow" aria-hidden="true">→</span>
           <span className="manage-action-card__version manage-action-card__version--target">{state.target}</span>
+          <UpdateVersionWarning name={row.registryName ?? row.name} version={state.target} />
         </div>
         <p className="manage-action-card__badges">
           {state.kind === 'security-fix' ? (

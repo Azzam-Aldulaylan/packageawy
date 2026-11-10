@@ -140,6 +140,7 @@ export function isPackageRow(value: unknown): value is PackageRow {
   const upgradeReason = value['upgradeReason'];
   return (
     typeof value['name'] === 'string' &&
+    isAbsentOr(value['registryName'], v => typeof v === 'string' && v.length > 0) &&
     isStringOrNull(value['current']) &&
     isStringOrNull(value['wanted']) &&
     isStringOrNull(value['latest']) &&

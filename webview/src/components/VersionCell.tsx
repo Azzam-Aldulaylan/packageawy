@@ -7,6 +7,7 @@ import { availableVersionDisplay, currentVersionDisplay } from '../../../src/hos
 import { SIGN_IN_CELL_LABEL, registrySignInCellTitle } from '../../../src/host/registrySignIn.js';
 import { StatusBadge } from './StatusBadge.js';
 import { InfoTooltip } from './Tooltip.js';
+import { UpdateVersionWarning } from './UpdateVersionWarning.js';
 
 const TAG_LABELS: Record<CurrentVersionTag, string> = {
   'workspace-link': 'workspace',
@@ -85,6 +86,7 @@ export function AvailableVersionCell({
       <span className="version-cell">
         <span className="version-cell__row">
           <span className="version-cell__value">{display.value}</span>
+          <UpdateVersionWarning name={row.registryName ?? row.name} version={display.value} />
           <ClassificationBadge kind={display.updateKind} />
         </span>
         {display.hasUpdate ? <span className="version-cell__caption">Latest · within range</span> : null}
@@ -96,11 +98,13 @@ export function AvailableVersionCell({
     <span className="version-cell">
       <span className="version-cell__row">
         <span className="version-cell__value version-cell__value--primary">{display.value}</span>
+        <UpdateVersionWarning name={row.registryName ?? row.name} version={display.value} />
         <ClassificationBadge kind={display.updateKind} />
       </span>
       <span className="version-cell__caption">Latest</span>
       <span className="version-cell__caption version-cell__caption--muted">
         Within current range: {display.withinRange}
+        <UpdateVersionWarning name={row.registryName ?? row.name} version={display.withinRange} />
       </span>
     </span>
   );

@@ -164,6 +164,7 @@ test('host target listing carries the security label through to the review picke
     etagStore: { get: () => undefined, set: () => {} },
     ensureController: async () => ({
       lastResultRows: () => [dependency], validateUpgradeRequest: () => ({ ok: true }),
+      enrichUpdateVersions: async () => {},
       upgradeSource: { resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} } },
     }),
     getSelectedProject: () => undefined, isDisposed: () => false,

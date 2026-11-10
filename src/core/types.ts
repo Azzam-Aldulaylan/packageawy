@@ -180,6 +180,8 @@ export type UpgradeReason = 'security-fix' | 'update';
 
 export interface PackageRow {
   name: string;
+  /** Registry identity for npm aliases. */
+  registryName?: string;
   /** Human-readable registry summary, when the package publishes one. */
   description?: string;
   /** SPDX id from the registry's `/latest` doc, when the package publishes one. */

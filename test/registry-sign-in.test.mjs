@@ -125,7 +125,8 @@ test('validation accepts the sign-in shape, absent or present, and rejects incon
 
 test('the project cache rejects snapshots from before sign-in grouping', () => {
   assert.equal(isPersistedProjectCacheCollection({ schemaVersion: 9, entries: [] }), false);
-  assert.equal(isPersistedProjectCacheCollection({ schemaVersion: 10, entries: [] }), true);
+  assert.equal(isPersistedProjectCacheCollection({ schemaVersion: 10, entries: [] }), false);
+  assert.equal(isPersistedProjectCacheCollection({ schemaVersion: 11, entries: [] }), true);
 });
 
 test('the dashboard shows one info banner per host with plain wording', () => {

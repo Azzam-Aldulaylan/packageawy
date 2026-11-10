@@ -8813,3 +8813,8 @@ button {
   flex-shrink: 0;
   margin-top: 0.15rem;
 }
+
+.update-version-warning .info-tooltip__trigger {
+  margin: 0;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+}

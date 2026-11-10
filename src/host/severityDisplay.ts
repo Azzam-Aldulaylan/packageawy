@@ -44,7 +44,7 @@ export function severityDisplay(
     return { label: 'Not checked', className: 'info', reason: 'Install dependencies to check this package' };
   }
   if (!advisoriesAvailable) return { label: 'Unavailable', className: 'info' };
-  if (severity === null) return { label: 'Safe', className: 'none' };
+  if (severity === null) return { label: 'Safe', className: 'none', reason: 'No known vulnerabilities in the installed dependency tree.' };
   return { label: LABELS[severity], className: severity };
 }
 

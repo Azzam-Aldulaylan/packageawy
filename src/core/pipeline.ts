@@ -430,6 +430,7 @@ export async function buildPackageRows(
 
     const row: PackageRow = {
       name: node.name,
+      ...(node.registryName === undefined ? {} : { registryName: node.registryName }),
       current: node.version,
       wanted: info?.wanted ?? null,
       latest: info?.latest ?? null,

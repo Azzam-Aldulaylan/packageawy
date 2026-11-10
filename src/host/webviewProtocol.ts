@@ -619,8 +619,23 @@ export interface SelectedProjectInfo {
   manifestPath: string;
 }
 
+/** Exact-version facts, separate from the installed dependency tree. */
+export type UpdateAdvisoryResult = { name: string; version: string } & (
+  | { status: 'checked'; count: number; highestSeverity: Severity | null }
+  | { status: 'unavailable' }
+);
+
+export interface UpdateAdvisoryContext {
+  scanId: number;
+  projectId: string;
+  sourceGeneration: number;
+  settingsGeneration: number;
+}
+
 /** Everything the table needs to render, JSON-safe end to end. */
 export interface DashboardData {
+  updateAdvisoryContext?: UpdateAdvisoryContext;
+  updateAdvisories?: UpdateAdvisoryResult[];
   rows: PackageRow[];
   /** Whether update and advisory facts are complete for this snapshot. */
   availability: ScanDataAvailability;
@@ -653,6 +668,7 @@ export type ScanProgressStage =
   | 'rows';
 
 export type HostToWebviewMessage =
+  | { status: 'update-advisories'; context: UpdateAdvisoryContext; results: UpdateAdvisoryResult[] }
   | { status: 'loading' }
   | { status: 'scan-progress'; stage: ScanProgressStage; completed?: number; total?: number }
   | { status: 'empty'; data: DashboardData }
@@ -928,6 +944,8 @@ function isDashboardData(value: unknown): value is DashboardData {
   return (
     Array.isArray(rows) &&
     rows.every(isPackageRow) &&
+    isAbsentOr(value['updateAdvisoryContext'], isUpdateAdvisoryContext) &&
+    isAbsentOr(value['updateAdvisories'], isUpdateAdvisoryResults) &&
     isScanDataAvailability(value['availability']) &&
     typeof value['generatedAt'] === 'string' &&
     isSelectedProjectInfo(value['project']) &&
@@ -2121,12 +2139,33 @@ function isSmartCleanupCompletionPresentation(value: unknown): value is SmartCle
   );
 }
 
+function isUpdateAdvisoryContext(value: unknown): value is UpdateAdvisoryContext {
+  return isRecord(value) && hasOnlyKeys(value, ['scanId', 'projectId', 'sourceGeneration', 'settingsGeneration']) &&
+    isNonEmptyString(value['projectId']) && ['scanId', 'sourceGeneration', 'settingsGeneration'].every(key =>
+      Number.isSafeInteger(value[key]) && (value[key] as number) >= 0);
+}
+
+function isUpdateAdvisoryResults(value: unknown): value is UpdateAdvisoryResult[] {
+  return Array.isArray(value) && value.every(result => {
+    if (!isRecord(result) || !isNonEmptyString(result['name']) || !isNonEmptyString(result['version'])) return false;
+    if (result['status'] === 'unavailable') return hasOnlyKeys(result, ['name', 'version', 'status']);
+    return result['status'] === 'checked' && hasOnlyKeys(result, ['name', 'version', 'status', 'count', 'highestSeverity']) &&
+      Number.isSafeInteger(result['count']) && (result['count'] as number) >= 0 &&
+      (result['count'] === 0 ? result['highestSeverity'] === null :
+        ['critical', 'high', 'moderate', 'low', 'info'].includes(result['highestSeverity'] as string));
+  });
+}
+
 export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMessage {
   if (!isRecord(value)) return false;
 
   const status = value['status'];
   if (typeof status !== 'string') return false;
 
+  if (status === 'update-advisories') {
+    return hasOnlyKeys(value, ['status', 'context', 'results']) &&
+      isUpdateAdvisoryContext(value['context']) && isUpdateAdvisoryResults(value['results']);
+  }
   if (status === 'loading') return hasOnlyKeys(value, ['status']);
   if (status === 'scan-progress') {
     const stage = value['stage'];
