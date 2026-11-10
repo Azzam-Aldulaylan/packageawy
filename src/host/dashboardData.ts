@@ -15,6 +15,7 @@
 
 import type { ScanSnapshot } from '../core/cache/schema.js';
 import type { DashboardData, HostToWebviewMessage, SelectedProjectInfo } from './webviewProtocol.js';
+import { updatesSettled } from './registrySignIn.js';
 
 /** Static per-session identity for the running extension build. See DashboardData's doc. */
 export interface BuildInfo {
@@ -83,7 +84,7 @@ export function toHostToWebviewMessage(
   if (options.isEmpty) return { status: 'empty', data };
   if (options.isStale) return { status: 'stale', data };
   if (
-    result.availability.updates === 'partial' ||
+    !updatesSettled(result.availability) ||
     // 'off' is the project's choice, not a degraded scan.
     (result.availability.advisories !== 'complete' && result.availability.advisories !== 'off') ||
     result.advisoriesError !== undefined ||

@@ -35,6 +35,7 @@ export type FetchErrorCode =
   | 'TOO_MANY_REDIRECTS'
   | 'BAD_URL'
   | 'REGISTRY_404'
+  | 'REGISTRY_AUTH_REQUIRED'
   | 'REGISTRY_5XX'
   | 'RATE_LIMITED'
   | 'PARSE_ERROR'
@@ -43,12 +44,15 @@ export type FetchErrorCode =
 export class FetchError extends Error {
   readonly code: FetchErrorCode;
   readonly status?: number;
+  /** Registry host (no credentials, no path) for REGISTRY_AUTH_REQUIRED. */
+  readonly registryHost?: string;
 
-  constructor(code: FetchErrorCode, message: string, status?: number) {
+  constructor(code: FetchErrorCode, message: string, status?: number, registryHost?: string) {
     super(message);
     this.name = 'FetchError';
     this.code = code;
     if (status !== undefined) this.status = status;
+    if (registryHost !== undefined) this.registryHost = registryHost;
   }
 
   /** Whether retrying the same request could plausibly succeed. */
@@ -296,4 +300,21 @@ export function errorForStatus(status: number, url: string): FetchError {
   if (status === 429) return new FetchError('RATE_LIMITED', `rate limited: ${url}`, 429);
   if (status >= 500) return new FetchError('REGISTRY_5XX', `server error ${status}: ${url}`, status);
   return new FetchError('NETWORK', `unexpected status ${status}: ${url}`, status);
+}
+
+/**
+ * Registry metadata status mapping. Packageawy never sends registry
+ * credentials, so a registry that requires sign-in answers 401 or 403. That
+ * is a known, stable state rather than a transient network failure, and it
+ * names only the host: the URL can carry userinfo from an .npmrc registry.
+ */
+export function registryErrorForStatus(status: number, url: string): FetchError {
+  if (status !== 401 && status !== 403) return errorForStatus(status, url);
+  let host = 'registry';
+  try {
+    host = new URL(url).host || host;
+  } catch {
+    // Keep the neutral fallback. The raw URL is never echoed.
+  }
+  return new FetchError('REGISTRY_AUTH_REQUIRED', `registry sign-in required (${status}): ${host}`, status, host);
 }

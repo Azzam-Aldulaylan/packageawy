@@ -156,6 +156,7 @@ function ManageButton({ row, onOpenManage }: { row: PackageRow; onOpenManage: (p
 export function PackageTable({
   rows,
   unavailableUpdatePackages,
+  signInHosts,
   advisoriesAvailable,
   advisoriesOff = false,
   searchQuery,
@@ -167,6 +168,8 @@ export function PackageTable({
 }: {
   rows: readonly PackageRow[];
   unavailableUpdatePackages: ReadonlySet<string>;
+  /** Package name to the registry host that asked for sign-in. */
+  signInHosts?: ReadonlyMap<string, string>;
   advisoriesAvailable: boolean;
   /** The project turned the advisory check off: severity cells read Off. */
   advisoriesOff?: boolean;
@@ -318,7 +321,11 @@ export function PackageTable({
                   <CurrentVersionCell row={row} />
                 </td>
                 <td className="packages__wrap">
-                  <AvailableVersionCell row={row} resolutionAvailable={!unavailableUpdatePackages.has(row.name)} />
+                  <AvailableVersionCell
+                    row={row}
+                    resolutionAvailable={!unavailableUpdatePackages.has(row.name)}
+                    signInHost={signInHosts?.get(row.name)}
+                  />
                 </td>
                 <td>
                   <SeverityBadge

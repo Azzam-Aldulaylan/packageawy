@@ -4,6 +4,7 @@ import type { PackageRow } from '../../../src/core/types.js';
 import type { UpdateKind } from '../../../src/host/updateClassification.js';
 import type { CurrentVersionTag } from '../../../src/host/versionDisplay.js';
 import { availableVersionDisplay, currentVersionDisplay } from '../../../src/host/versionDisplay.js';
+import { SIGN_IN_CELL_LABEL, registrySignInCellTitle } from '../../../src/host/registrySignIn.js';
 import { StatusBadge } from './StatusBadge.js';
 import { InfoTooltip } from './Tooltip.js';
 
@@ -57,7 +58,23 @@ export function CurrentVersionCell({ row }: { row: PackageRow }): ReactElement {
  * that a user is never told "you're behind" when a plain install already
  * gets them nothing more.
  */
-export function AvailableVersionCell({ row, resolutionAvailable = true }: { row: PackageRow; resolutionAvailable?: boolean }): ReactElement {
+export function AvailableVersionCell({
+  row,
+  resolutionAvailable = true,
+  signInHost,
+}: {
+  row: PackageRow;
+  resolutionAvailable?: boolean;
+  /** Registry host that asked for sign-in for this package, if any. */
+  signInHost?: string | undefined;
+}): ReactElement {
+  if (!resolutionAvailable && signInHost !== undefined) {
+    return (
+      <span className="version-cell__caption" title={registrySignInCellTitle(signInHost)}>
+        {SIGN_IN_CELL_LABEL}
+      </span>
+    );
+  }
   if (!resolutionAvailable) return <span className="version-cell__caption">Unavailable</span>;
   const display = availableVersionDisplay(row.current, row.wanted, row.latest);
 

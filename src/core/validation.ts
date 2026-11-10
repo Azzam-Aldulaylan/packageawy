@@ -175,7 +175,28 @@ export function isScanDataAvailability(value: unknown): value is ScanDataAvailab
   }
   if (!Array.isArray(unavailable) || !unavailable.every((name) => typeof name === 'string' && name !== '')) return false;
   if (new Set(unavailable).size !== unavailable.length) return false;
+  if (!isAbsentOr(value['signInRequired'], (v) => isSignInGroups(v, new Set(unavailable)))) return false;
   return updates === 'complete' ? unavailable.length === 0 : unavailable.length > 0;
+}
+
+/** Each group names a distinct host. Its packages are unavailable ones, each in one group only. */
+function isSignInGroups(value: unknown, unavailable: ReadonlySet<string>): boolean {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  const hosts = new Set<string>();
+  const seen = new Set<string>();
+  return value.every((group: unknown) => {
+    if (!isRecord(group)) return false;
+    const host = group['registryHost'];
+    const packages = group['packages'];
+    if (typeof host !== 'string' || host === '' || hosts.has(host)) return false;
+    hosts.add(host);
+    if (!Array.isArray(packages) || packages.length === 0) return false;
+    return packages.every((name: unknown) => {
+      if (typeof name !== 'string' || !unavailable.has(name) || seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    });
+  });
 }
 
 // ------------------------------------------------------- hygiene findings

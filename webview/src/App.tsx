@@ -11,6 +11,7 @@ import type { HygieneFilterId } from '../../src/host/hygieneFilter.js';
 import { hygieneFilterCounts, hygieneFilterPredicate } from '../../src/host/hygieneFilter.js';
 import { manageRemovalReadyPackage } from '../../src/host/manageRemovalFlow.js';
 import { ADVISORY_CHECK_OFF_TEXT } from '../../src/host/severityDisplay.js';
+import { signInHostsByPackage, updatesSettled } from '../../src/host/registrySignIn.js';
 import type { PageSize } from '../../src/host/pagination.js';
 import { DEFAULT_PAGE_SIZE, paginate } from '../../src/host/pagination.js';
 import type { SummaryFilterId } from '../../src/host/summaryMetrics.js';
@@ -61,6 +62,7 @@ import { ManageDependencyModal } from './components/ManageDependencyModal.js';
 import type { ManageTabId } from './components/ManageDependencyModal.js';
 import { Pagination } from './components/Pagination.js';
 import { PackageTable } from './components/PackageTable.js';
+import { RegistrySignInBanners } from './components/RegistrySignInBanners.js';
 import { RemoveAnalysisModal } from './components/RemoveAnalysisModal.js';
 import { SummaryCards } from './components/SummaryCards.js';
 import { SmartCleanupWorkspace } from './components/SmartCleanupWorkspace.js';
@@ -105,8 +107,10 @@ function requestConfigureAdvisoryCheck(): void {
 function partialErrorText(data: DashboardData): string | null {
   const reasons: string[] = [];
   if (data.availability.updates === 'partial') {
-    const unavailable = data.availability.unavailableUpdatePackages.length;
-    reasons.push(`${unavailable} package update check${unavailable === 1 ? '' : 's'} unavailable`);
+    // Sign-in registries get their own info banner, so only count the rest here.
+    const signIn = (data.availability.signInRequired ?? []).reduce((sum, group) => sum + group.packages.length, 0);
+    const unavailable = data.availability.unavailableUpdatePackages.length - signIn;
+    if (unavailable > 0) reasons.push(`${unavailable} package update check${unavailable === 1 ? '' : 's'} unavailable`);
   }
   if (data.advisoriesError !== undefined) {
     reasons.push(`vulnerability data is unavailable (${data.advisoriesError.code})`);
@@ -1805,7 +1809,7 @@ export function App(): ReactElement {
   const data = message !== undefined && 'data' in message ? message.data : undefined;
   const coreDataIncomplete =
     data !== undefined &&
-    (data.availability.updates === 'partial' || !advisoryFactsSettled(data));
+    (!updatesSettled(data.availability) || !advisoryFactsSettled(data));
 
   // A full packument is fetched only for the dependency whose Manage
   // workspace is open. A fresh dashboard snapshot gets a fresh request id;
@@ -2573,7 +2577,7 @@ function Dashboard({
   const upgradesDisabled =
     status === 'stale' ||
     activeRemove !== null ||
-    data.availability.updates === 'partial' ||
+    !updatesSettled(data.availability) ||
     !advisoryFactsSettled(data);
 
   const metrics = useMemo(() => summaryMetrics(data.rows), [data.rows]);
@@ -2581,6 +2585,7 @@ function Dashboard({
     () => new Set(data.availability.unavailableUpdatePackages),
     [data.availability.unavailableUpdatePackages]
   );
+  const signInHosts = useMemo(() => signInHostsByPackage(data.availability), [data.availability]);
 
   const hygieneFindings = useMemo(
     () => [...data.hygieneFindings, ...cleanupFindings],
@@ -2647,6 +2652,8 @@ function Dashboard({
           Showing partial results: {degraded}.
         </StatusBanner>
       )}
+
+      <RegistrySignInBanners groups={data.availability.signInRequired} />
 
       {data.availability.advisories === 'off' ? (
         <StatusBanner
@@ -2771,6 +2778,7 @@ function Dashboard({
                 <PackageTable
                   rows={pageResult.pageRows}
                   unavailableUpdatePackages={unavailableUpdatePackages}
+                  signInHosts={signInHosts}
                   advisoriesAvailable={data.availability.advisories === 'complete' || data.availability.advisories === 'partial'}
                   advisoriesOff={data.availability.advisories === 'off'}
                   searchQuery={search}

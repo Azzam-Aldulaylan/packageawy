@@ -47,6 +47,7 @@ import type { BuildInfo } from './dashboardData.js';
 import { toHostToWebviewMessage } from './dashboardData.js';
 import { otherPackageManagerMessage } from './packageManagerSupport.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
+import { updatesSettled } from './registrySignIn.js';
 
 export interface MessageSink {
   postMessage(message: HostToWebviewMessage): void;
@@ -151,7 +152,7 @@ function toScanSnapshot(result: {
 /** A project that turned the advisory check off still has complete data for what it asked for. */
 function hasCompleteCoreData(snapshot: ScanSnapshot): boolean {
   const advisories = snapshot.availability.advisories;
-  return snapshot.availability.updates === 'complete' && (advisories === 'complete' || advisories === 'off');
+  return updatesSettled(snapshot.availability) && (advisories === 'complete' || advisories === 'off');
 }
 
 /** The project-specific slice of options that a reload replaces: everything but the fetch machinery. */
