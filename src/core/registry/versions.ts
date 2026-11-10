@@ -39,7 +39,7 @@ export interface CachedResponse {
 
 /**
  * ETag store. Registry data is project-independent, so the adapter should back
- * this with globalState rather than workspaceState.
+ * this with a global store (the platform cache store) rather than workspaceState.
  */
 export interface EtagStore {
   get(key: string): CachedResponse | undefined;

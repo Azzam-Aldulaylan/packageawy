@@ -2338,7 +2338,9 @@ button {
 .manage-tabs__tab {
   --manage-tab-accent: var(--accent-total);
   display: grid;
-  grid-template-columns: 1.35rem minmax(0, 1fr) 0.4rem;
+  /* The label track hugs its text so a status dot sits right after it. */
+  grid-template-columns: 1.35rem minmax(0, max-content) 0.4rem;
+  justify-content: start;
   min-width: 0;
   align-items: center;
   gap: 0.4rem;

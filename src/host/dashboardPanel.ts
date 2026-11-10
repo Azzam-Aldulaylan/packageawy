@@ -123,7 +123,8 @@ export class DashboardPanel {
    * every reload) so ETag caching survives a reload, only the project
    * snapshot (root/manifestText/lockfileText/lockfilePath/registry/cacheKey)
    * is per-controller. `etagStore`/`projectCacheStore` are the persisted
-   * stores: globalState/workspaceState respectively (see the file header on
+   * stores: the platform's cache store (files in VS Code global storage,
+   * globalState elsewhere) and workspaceState respectively (see the file header on
    * the split): constructed once per panel and disposed once in
    * onDidDispose, exactly like `httpClient`/`auditRunner` already were.
    */
@@ -226,7 +227,7 @@ export class DashboardPanel {
         this.channel.postMessage(message);
       },
     };
-    this.etagStore = new PersistentEtagStore(platform.globalState);
+    this.etagStore = new PersistentEtagStore(platform.cacheStore ?? platform.globalState);
     this.projectCacheStore = new PersistentProjectCacheStore(platform.workspaceState);
     this.upgradeCoordinator = new UpgradeAssistantCoordinator({
       platform,
@@ -465,7 +466,8 @@ export class DashboardPanel {
       return;
     }
     if (message.type === 'configure-advisory-check') {
-      this.platform.openSettings(PUBLIC_ADVISORY_CHECK_SETTING);
+      // Opens the scope whose value applies to this project. JetBrains opens its project settings page.
+      this.platform.openSettings(PUBLIC_ADVISORY_CHECK_SETTING, this.controller?.root);
       return;
     }
     if (message.type === 'analyze-remediation') {
