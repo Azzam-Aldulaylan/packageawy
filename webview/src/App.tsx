@@ -80,7 +80,7 @@ import { IconBrand, IconBroom, IconListChecks, IconRefresh, IconSliders } from '
 import type { RemovalImpactState } from './removalImpactState.js';
 import { remediationPlanFromState } from './transitiveRemediationState.js';
 import type { TransitiveFixUiState } from './transitiveRemediationState.js';
-import { dialogsAfterOpenRequest, manageRowAfterSnapshot } from './manageDialogState.js';
+import { dashboardProjectKey, dialogsAfterOpenRequest, manageRowAfterSnapshot } from './manageDialogState.js';
 import { buildSmartCleanupPlan } from './smartCleanupPlanAdapter.js';
 import {
   createSmartCleanupState,
@@ -126,7 +126,7 @@ function partialErrorText(data: DashboardData): string | null {
 }
 
 function smartCleanupProjectKey(data: DashboardData): string {
-  return `${data.project.label}\u0000${data.project.manifestPath}`;
+  return dashboardProjectKey(data.project);
 }
 
 interface SmartCleanupExecutionSnapshot {

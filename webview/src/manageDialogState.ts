@@ -22,6 +22,14 @@ export function manageRowAfterSnapshot(
   return nextRowNames.includes(manageRow) ? manageRow : null;
 }
 
+/**
+ * Which project a snapshot belongs to. Only the host-issued id is unique:
+ * two workspace folders can share a label and a relative manifest path.
+ */
+export function dashboardProjectKey(project: { id: string; label: string; manifestPath: string }): string {
+  return project.id;
+}
+
 export interface DashboardDialogs {
   manageOpen: boolean;
   smartCleanupOpen: boolean;

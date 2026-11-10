@@ -18,6 +18,7 @@ export function upgradeReviewDashboardEffect(
   if (activePackage === null || previous === null || !('data' in incoming)) return 'reset';
   const next = incoming.data;
   if (
+    previous.project.id !== next.project.id ||
     previous.project.label !== next.project.label ||
     previous.project.manifestPath !== next.project.manifestPath ||
     !next.rows.some((row) => row.name === activePackage)

@@ -19,7 +19,7 @@
  * sends can select a candidate outside what this panel itself discovered.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 
 import { NodeAuditRunner } from '../core/audit/npmAudit.js';
@@ -93,7 +93,9 @@ function toProtocolError(cause: unknown): ProtocolError {
 }
 
 function toProjectInfo(candidate: DiscoveredProject): SelectedProjectInfo {
-  return { label: projectCandidateLabel(candidate), manifestPath: candidate.manifestPath };
+  // candidate.id includes the workspace folder URI, so the webview only gets a hash of it.
+  const id = createHash('sha256').update(candidate.id).digest('hex');
+  return { id, label: projectCandidateLabel(candidate), manifestPath: candidate.manifestPath };
 }
 
 export class DashboardPanel {

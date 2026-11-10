@@ -27,7 +27,7 @@ import { UpgradeLock } from '../out/host/upgradeTracker.js';
 const REGISTRY = 'https://registry.npmjs.org';
 const ROOT = '/tmp/project';
 const CACHE_KEY = 'project-a::' + REGISTRY;
-const PROJECT_INFO = { label: 'app', manifestPath: 'package.json' };
+const PROJECT_INFO = { id: 'id:app', label: 'app', manifestPath: 'package.json' };
 const BUILD_INFO = { extensionVersion: '0.0.1', builtAt: '2026-08-01T09:00:00.000Z' };
 
 const json = (body) => ({ status: 200, headers: {}, body: JSON.stringify(body), wireBytes: JSON.stringify(body).length });
@@ -290,7 +290,7 @@ test('a watcher event arriving during a reloadAndScan for a DIFFERENT project (a
     registry: REGISTRY,
   };
   controller.updateProjectSnapshot(
-    { ...newProjectSnapshot, projectInfo: { label: 'other', manifestPath: 'package.json' }, canChangeProject: true, cacheKey: 'project-b::' + REGISTRY },
+    { ...newProjectSnapshot, projectInfo: { id: 'id:other', label: 'other', manifestPath: 'package.json' }, canChangeProject: true, cacheKey: 'project-b::' + REGISTRY },
     generationAtReadStart
   );
   await controller.handleRefresh(recordingSink());
@@ -388,7 +388,7 @@ test('project B changes after B\'s watchers are installed but while B\'s own sca
               registry: REGISTRY,
             };
           },
-          toProjectInfo: () => ({ label: 'b', manifestPath: 'package.json' }),
+          toProjectInfo: () => ({ id: 'id:b', label: 'b', manifestPath: 'package.json' }),
           cacheKeyFor: () => 'project-b::' + REGISTRY,
         },
         generationAtReadStart: generationAtSecondReadStart,
@@ -419,7 +419,7 @@ test('project B changes after B\'s watchers are installed but while B\'s own sca
   }
 
   controller.updateProjectSnapshot(
-    { ...projectBSnapshot, projectInfo: { label: 'b', manifestPath: 'package.json' }, canChangeProject: true, cacheKey: 'project-b::' + REGISTRY },
+    { ...projectBSnapshot, projectInfo: { id: 'id:b', label: 'b', manifestPath: 'package.json' }, canChangeProject: true, cacheKey: 'project-b::' + REGISTRY },
     generationAtReadStart
   );
 
@@ -749,7 +749,7 @@ test('an old A watcher reload starts while B is loading and resolves after B bec
               registry: REGISTRY,
             };
           },
-          toProjectInfo: () => ({ label: 'a', manifestPath: 'package.json' }),
+          toProjectInfo: () => ({ id: 'id:a', label: 'a', manifestPath: 'package.json' }),
           cacheKeyFor: () => CACHE_KEY,
         },
         generationAtReadStart,
@@ -796,7 +796,7 @@ test('an old A watcher reload starts while B is loading and resolves after B bec
       lockfileText: ORIGINAL_LOCKFILE,
       lockfilePath: '/tmp/project-b/package-lock.json',
       registry: REGISTRY,
-      projectInfo: { label: 'b', manifestPath: 'package.json' },
+      projectInfo: { id: 'id:b', label: 'b', manifestPath: 'package.json' },
       canChangeProject: true,
       cacheKey: 'project-b::' + REGISTRY,
     },
@@ -891,7 +891,7 @@ test('an old A watcher reload passes its own isStillCurrent check, then is super
               registry: REGISTRY,
             };
           },
-          toProjectInfo: () => ({ label: 'a', manifestPath: 'package.json' }),
+          toProjectInfo: () => ({ id: 'id:a', label: 'a', manifestPath: 'package.json' }),
           cacheKeyFor: () => CACHE_KEY,
         },
         generationAtReadStart,
@@ -943,7 +943,7 @@ test('an old A watcher reload passes its own isStillCurrent check, then is super
       lockfileText: ORIGINAL_LOCKFILE,
       lockfilePath: '/tmp/project-b/package-lock.json',
       registry: REGISTRY,
-      projectInfo: { label: 'b', manifestPath: 'package.json' },
+      projectInfo: { id: 'id:b', label: 'b', manifestPath: 'package.json' },
       canChangeProject: true,
       cacheKey: 'project-b::' + REGISTRY,
     },

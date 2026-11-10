@@ -25,7 +25,7 @@ test('post-upgrade local facts replace current/range/classification without inve
       wanted: '18.3.1', latest: '19.0.0', advisories: [oldAdvisory], worstSeverity: 'high', upgradeTo: '19.0.0', upgradeReason: 'update',
     }],
     availability: { updates: 'complete', advisories: 'complete', unavailableUpdatePackages: [] },
-    generatedAt: '2026-01-01T00:00:00.000Z', project: { label: 'app', manifestPath: 'package.json' }, canChangeProject: false,
+    generatedAt: '2026-01-01T00:00:00.000Z', project: { id: 'id:app', label: 'app', manifestPath: 'package.json' }, canChangeProject: false,
     hygieneFindings: [], extensionVersion: '0.0.1', builtAt: '2026-01-01T00:00:00.000Z',
   };
   const patched = applyUpgradeResultLocalFacts(data, {

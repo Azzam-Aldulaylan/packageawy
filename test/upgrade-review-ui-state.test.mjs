@@ -21,7 +21,7 @@ const NOW = Date.parse('2026-08-26T12:00:00.000Z');
 
 function reviewSnapshot(overrides = {}) {
   return {
-    project: { label: 'App', manifestPath: 'apps/web/package.json' },
+    project: { id: 'id:App', label: 'App', manifestPath: 'apps/web/package.json' },
     generatedAt: new Date(NOW).toISOString(),
     rows: [{ name: 'next', current: '14.2.35', range: '^14.2.0', dev: false }],
     ...overrides,
@@ -61,8 +61,8 @@ test('project switches, missing packages and terminal dashboard failures reset t
     { status: 'loading' },
     { status: 'fatal-error', error: { code: 'FAILED', message: 'Project unreadable' } },
     { status: 'empty', data: reviewSnapshot({ rows: [] }) },
-    { status: 'ready', data: reviewSnapshot({ project: { label: 'Other app', manifestPath: data.project.manifestPath } }) },
-    { status: 'ready', data: reviewSnapshot({ project: { label: 'App', manifestPath: 'other/package.json' } }) },
+    { status: 'ready', data: reviewSnapshot({ project: { id: 'id:Other app', label: 'Other app', manifestPath: data.project.manifestPath } }) },
+    { status: 'ready', data: reviewSnapshot({ project: { id: 'id:App other', label: 'App', manifestPath: 'other/package.json' } }) },
   ]) {
     assert.equal(upgradeReviewDashboardEffect('next', data, incoming), 'reset');
   }

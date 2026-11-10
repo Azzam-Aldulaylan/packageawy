@@ -8,7 +8,7 @@ const source = readFileSync(join(process.cwd(), 'webview/src/manageDialogState.t
 const javaScript = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
 }).outputText;
-const { manageRowAfterSnapshot, dialogsAfterOpenRequest } = await import(
+const { dashboardProjectKey, manageRowAfterSnapshot, dialogsAfterOpenRequest } = await import(
   `data:text/javascript;base64,${Buffer.from(javaScript).toString('base64')}`
 );
 const app = readFileSync(join(process.cwd(), 'webview/src/App.tsx'), 'utf8');
@@ -32,6 +32,13 @@ test('a package that disappears and comes back does not reopen Manage', () => {
 
 test('switching projects forgets Manage even when the new project has the same package', () => {
   assert.equal(manageRowAfterSnapshot('left-pad', project, 'other\u0000/other/package.json', ['left-pad']), null);
+});
+
+test('two roots with the same label and relative manifest path are different projects', () => {
+  const client = dashboardProjectKey({ id: 'hash-client', label: 'app', manifestPath: 'package.json' });
+  const server = dashboardProjectKey({ id: 'hash-server', label: 'app', manifestPath: 'package.json' });
+  assert.notEqual(client, server);
+  assert.equal(manageRowAfterSnapshot('lodash', client, server, ['lodash']), null);
 });
 
 test('the first snapshot keeps a remembered row that it lists', () => {
