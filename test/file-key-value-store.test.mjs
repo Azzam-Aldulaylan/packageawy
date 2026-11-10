@@ -6,7 +6,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { FileKeyValueStore, migrateStoreKeys } from '../out/host/platform/fileKeyValueStore.js';
+import { createCacheStore, FileKeyValueStore, migrateStoreKeys } from '../out/host/platform/fileKeyValueStore.js';
 import { PersistentEtagStore, REGISTRY_CACHE_STORAGE_KEY } from '../out/core/cache/persistentEtagStore.js';
 
 function tempDir(t) {
@@ -79,4 +79,34 @@ test('the registry cache persists into the file store with the same bounds', asy
   const written = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(REGISTRY_CACHE_STORAGE_KEY)}.json`), 'utf8'));
   assert.equal(written.schemaVersion, 2);
   assert.deepEqual(written.entries.map(([key]) => key), ['https://registry.npmjs.org/left-pad']);
+});
+
+/** A directory that can never be created: its parent is a regular file. */
+function unwritableDir(t) {
+  const root = mkdtempSync(join(tmpdir(), 'packageawy-store-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'blocker'), '');
+  return join(root, 'blocker', 'cache');
+}
+
+test('a failed write rejects, and later writes of the key still run', async (t) => {
+  const store = new FileKeyValueStore(unwritableDir(t));
+  await assert.rejects(store.update('k', 1));
+  await assert.rejects(store.update('k', 2));
+});
+
+test('a failed write during migration keeps the global state cache', async (t) => {
+  const globalState = memento({ [REGISTRY_CACHE_STORAGE_KEY]: collection });
+  await migrateStoreKeys(globalState, new FileKeyValueStore(unwritableDir(t)), [REGISTRY_CACHE_STORAGE_KEY]);
+  assert.deepEqual(globalState.get(REGISTRY_CACHE_STORAGE_KEY), collection);
+});
+
+test('an unwritable storage folder keeps the cache in global state', (t) => {
+  const globalState = memento();
+  const cache = createCacheStore(unwritableDir(t), globalState);
+  assert.equal(cache.fileBacked, false);
+  assert.equal(cache.store, globalState);
+  const writable = createCacheStore(tempDir(t), globalState);
+  assert.equal(writable.fileBacked, true);
+  assert.ok(writable.store instanceof FileKeyValueStore);
 });

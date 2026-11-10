@@ -12,7 +12,7 @@
  * `undefined`. Callers validate what they read anyway.
  */
 
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -43,10 +43,15 @@ export class FileKeyValueStore implements KeyValueStore {
     return value;
   }
 
+  /**
+   * Rejects when the file could not be written, so a caller never treats an
+   * unsaved value as saved. A failed write does not block later writes of
+   * the same key, which still run in order.
+   */
   update(key: string, value: unknown): Promise<void> {
     this.values.set(key, value);
     const previous = this.writes.get(key) ?? Promise.resolve();
-    const next = previous.then(() => this.write(key, value)).catch(() => undefined);
+    const next = previous.catch(() => undefined).then(() => this.write(key, value));
     this.writes.set(key, next);
     return next;
   }
@@ -69,9 +74,30 @@ export class FileKeyValueStore implements KeyValueStore {
 }
 
 /**
+ * The file store at `directory` when it can be written, otherwise
+ * `fallback` (global state), so a read-only or full disk keeps the cache
+ * where it already was.
+ */
+export function createCacheStore(
+  directory: string,
+  fallback: KeyValueStore
+): { store: KeyValueStore; fileBacked: boolean } {
+  try {
+    mkdirSync(directory, { recursive: true });
+    const probe = path.join(directory, `.write-check.${process.pid}`);
+    writeFileSync(probe, '');
+    rmSync(probe, { force: true });
+    return { store: new FileKeyValueStore(directory), fileBacked: true };
+  } catch {
+    return { store: fallback, fileBacked: false };
+  }
+}
+
+/**
  * Moves `keys` from `from` (the old home, usually global state) to `to`.
  * A value already in `to` wins: it is newer than anything left behind.
- * The old key is cleared either way, so this runs only once in effect.
+ * The old key is cleared only once `to` holds the value on disk. When the
+ * write fails the old key stays and the move is tried again next time.
  */
 export async function migrateStoreKeys(
   from: KeyValueStore,
@@ -81,7 +107,11 @@ export async function migrateStoreKeys(
   for (const key of keys) {
     const legacy = from.get(key);
     if (legacy === undefined) continue;
-    if (to.get(key) === undefined) await to.update(key, legacy);
+    try {
+      if (to.get(key) === undefined) await to.update(key, legacy);
+    } catch {
+      continue;
+    }
     await from.update(key, undefined);
   }
 }
