@@ -12,7 +12,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdir, readFile, realpath } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { load as loadYaml } from 'js-yaml';
@@ -182,7 +182,10 @@ async function collectManifestDirs(
     }
     for (const entry of entries) {
       if (entry.name === 'node_modules' || entry.name === '.git') continue;
-      if (entry.isDirectory() || entry.isSymbolicLink()) {
+      // A symlink is walked only when it points at a directory. File links do not shape membership.
+      const isDirectory = entry.isDirectory() || (entry.isSymbolicLink() &&
+        await stat(path.join(real, entry.name)).then((target) => target.isDirectory(), () => false));
+      if (isDirectory) {
         await visit(relative === '' ? entry.name : `${relative}/${entry.name}`, depth + 1);
       }
     }
@@ -264,6 +267,9 @@ export async function readPnpmWorkspaceLayout(input: {
       reasons.push(`The workspace has ${pnpmfile}, whose hooks only a real install runs.`);
     }
   }
+  // pnpm also reads the .npmrc of the project it runs in, which the staged copy runs from the root instead.
+  const memberNpmrc = input.importerId === '.' ? undefined : await readContained(realRoot, `${input.importerId}/${NPMRC}`, reasons);
+  if (memberNpmrc !== undefined) reasons.push(`${input.importerId}/${NPMRC} sets project settings the review does not stage.`, memberNpmrc);
   const npmrc = await readContained(realRoot, NPMRC, reasons);
   const npmrcText = npmrc === undefined ? undefined : stagedNpmrc(npmrc, reasons);
   if (npmrcText !== undefined) files.push({ path: NPMRC, text: npmrcText });

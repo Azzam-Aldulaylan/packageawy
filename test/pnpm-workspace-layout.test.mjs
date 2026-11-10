@@ -185,3 +185,23 @@ test('default pnpmfiles and other manifest formats are unknown and fingerprinted
   await writeFile(path.join(yamlManifest, 'packages/other/package.yaml'), 'name: other\n');
   assert.match((await read(yamlManifest)).unavailableReason, /packages\/other\/package.yaml is a manifest format/);
 });
+
+test('the reviewed member .npmrc is unknown and fingerprinted', async (t) => {
+  const root = await workspace(t);
+  await writeFile(path.join(root, 'apps/web/.npmrc'), 'link-workspace-packages=true\n');
+  const first = await read(root);
+  assert.match(first.unavailableReason, /apps\/web\/\.npmrc/);
+  await writeFile(path.join(root, 'apps/web/.npmrc'), 'link-workspace-packages=false\n');
+  assert.notEqual((await read(root)).fingerprint, first.fingerprint);
+});
+
+test('contained file symlinks, including a linked manifest, keep the layout available', async (t) => {
+  const root = await workspace(t, { dirs: ['apps/web', 'shared-src'] });
+  await writeFile(path.join(root, 'LICENSE'), 'MIT\n');
+  await symlink(path.join(root, 'LICENSE'), path.join(root, 'apps/web/LICENSE'));
+  await mkdir(path.join(root, 'packages/linked'), { recursive: true });
+  await symlink(path.join(root, 'shared-src/package.json'), path.join(root, 'packages/linked/package.json'));
+  const layout = await read(root);
+  assert.equal(layout.unavailableReason, undefined);
+  assert.ok(paths(layout).includes('packages/linked/package.json'));
+});
