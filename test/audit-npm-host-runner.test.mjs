@@ -189,3 +189,28 @@ test('a removed npm-cli.js (node exits 1, stdout empty) is re-resolved on the ne
   await runner.run(process.cwd());
   assert.equal(index, 2);
 });
+
+test('a second scan waiting on the shared lookup can cancel on its own while the first completes', async () => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let resolveCalls = 0;
+  const runner = new ResolvedNpmAuditRunner({
+    platform: 'win32',
+    resolve: async () => {
+      resolveCalls += 1;
+      await gate;
+      return RESOLVED;
+    },
+    createRunner: () => ({ run: async () => ({ stdout: REPORT, exitCode: 0 }) }),
+  });
+  const first = runner.run('/p');
+  const controller = new AbortController();
+  const second = runner.run('/p', controller.signal);
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  // Rejects while the shared lookup is still pending.
+  await assert.rejects(second, { name: 'AbortError' });
+  release();
+  assert.equal((await first).exitCode, 0);
+  assert.equal(resolveCalls, 1);
+});

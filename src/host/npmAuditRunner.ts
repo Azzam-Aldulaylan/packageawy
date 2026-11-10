@@ -101,7 +101,7 @@ export class ResolvedNpmAuditRunner implements AuditRunner {
     const inFlight = this.pending.get(cwd);
     if (inFlight !== undefined) {
       try {
-        return await inFlight;
+        return await raceAbort(inFlight, signal);
       } catch (error) {
         // Another scan's cancel stopped the shared resolution; this one goes on.
         if (signal?.aborted || !isAbortOrTimeout(error)) throw error;
@@ -131,6 +131,29 @@ export class ResolvedNpmAuditRunner implements AuditRunner {
     promise.then(clear, clear);
     return promise;
   }
+}
+
+/**
+ * Waits on a lookup another scan started, but lets this caller's own cancel
+ * end its wait at once. The shared lookup keeps running for the others.
+ */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(abortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
+  });
 }
 
 function abortError(): Error {
