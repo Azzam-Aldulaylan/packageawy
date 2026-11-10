@@ -72,14 +72,15 @@ import type { EligibleRemoval, EligibleUpgrade } from '../core/upgrade/validate.
 import { advisoriesByNameFromRows } from '../core/advisories/attribution.js';
 import { resolveRemediationRequest } from '../core/advisories/remediationRequest.js';
 import type { RemediationRequestRejection } from '../core/advisories/remediationRequest.js';
-import { evaluateSecurityOutcome } from '../core/advisories/securityOutcome.js';
-import { buildVulnerabilityContexts } from '../core/advisories/vulnerabilityContext.js';
+import { auditUpgradeReview } from './upgradeReviewSecurity.js';
+import { requiresSecurityAcknowledgement } from './upgradeSecuritySummary.js';
+import { resolveTrustedAttributedAdvisoryUrl } from '../core/advisories/resolve.js';
+import type { AdvisoryLookupRequest } from '../core/advisories/resolve.js';
 import { PUBLIC_ADVISORY_CHECK_SETTING } from './dashboardController.js';
 import type { DashboardController, MessageSink } from './dashboardController.js';
 import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.js';
 import { createNodeUpgradeTransactionFileAdapter } from './nodeUpgradeTransactionFiles.js';
 import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
-import { combineSecurityOutcomes } from './securityOutcomeBatch.js';
 import { materializeUpgradeSecurityGraph } from './upgradeSecurityGraph.js';
 import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
@@ -199,6 +200,7 @@ export interface RemediationAnalysisMessage extends VerificationOptInRequest {
 }
 
 export interface AnalysisMessage extends VerificationOptInRequest {
+  securityAcknowledged?: boolean;
   analysisId: string;
 }
 
@@ -432,6 +434,7 @@ interface StoredAnalysis {
   compatibilityStatus: CompatibilityStatus;
   /** Set only when planSmartUpgrade found a validated coordinated plan: the only proposal `handleUseSmartPlan` is ever allowed to execute. */
   smartPlanProposal: UpgradeProposal | null;
+  security: SecurityOutcome | null;
   ignoreScripts: boolean;
   verificationScripts: VerificationScript[];
   /** Offered as one-run opt-ins only when `verificationScripts` is empty. */
@@ -1352,29 +1355,6 @@ export class UpgradeAssistantCoordinator {
         requestId,
       });
 
-      // Security's real cost (a resolver-graph materialization) only applies
-      // when there's actually something to evaluate: when none of the
-      // requested packages currently carry advisories, the outcome is
-      // knowable right now, before compatibility even runs. `securityPosted`
-      // short-circuits the deferred, resolver-driven branch further below
-      // once this has already answered the question.
-      const rows = controller.lastResultRows();
-      const securityInputs = eligibilities.flatMap((item) => {
-        const before = rows.find((row) => row.name === item.packageName)?.advisories ?? [];
-        return before.length === 0 ? [] : [{ item, before }];
-      });
-      let securityPosted = false;
-      if (securityInputs.length === 0) {
-        if (this.droppedByCancellation(eligibility.packageName)) return;
-        this.options.sink.postMessage({
-          status: 'upgrade-analysis-partial',
-          requestId,
-          package: eligibility.packageName,
-          section: { kind: 'security', security: null },
-        });
-        securityPosted = true;
-      }
-
       const proposal: UpgradeProposal = {
         requested: {
           packageName: eligibility.packageName,
@@ -1417,6 +1397,7 @@ export class UpgradeAssistantCoordinator {
             // Bound each isolated Upgrade Review resolver step, not the user's
             // confirmed installation. A timeout remains unverified evidence.
             runner: new NodeResolverProcessRunner({ timeoutMs: 120_000 }),
+            retainResolvedGraph: this.publicAdvisoryCheckEnabled(controller.root),
             packageManager: preflightProject.packageManager,
             packageManagerVersion: packageManagerInvocation.version ?? null,
             invocation: packageManagerInvocation,
@@ -1490,7 +1471,7 @@ export class UpgradeAssistantCoordinator {
       const securityGraphPromise = compatibilityResultPromise.then(async (compatibilityResult) => {
         if (
           !compatibilityResult.ok ||
-          securityPosted ||
+          !this.publicAdvisoryCheckEnabled(controller.root) ||
           compatibilityResult.analysis.status === 'conflict' ||
           resolverVerifier === undefined
         ) return undefined;
@@ -1507,25 +1488,17 @@ export class UpgradeAssistantCoordinator {
 
       pendingAnalysisWork.push(securityGraphPromise);
       // Security is published when its graph is ready, not after package inventory.
-      const securityResultPromise = securityGraphPromise.then((proposedSecurityGraph): SecurityOutcome | null => {
-        if (securityPosted || analysisAbort.signal.aborted || this.droppedByCancellation(eligibility.packageName)) return null;
-        const after: Parameters<typeof evaluateSecurityOutcome>[0]['after'] = proposedSecurityGraph === undefined
-          ? 'no-resolver-evidence'
-          : { graph: proposedSecurityGraph, advisoriesByName: advisoriesByNameFromRows(rows) };
-        const combined = combineSecurityOutcomes(securityInputs.map(({ item, before }) =>
-          evaluateSecurityOutcome({ before, targetVersion: item.target, rootPackageName: item.packageName, after })
-        ));
-        const security = combined === null ? null : {
-          ...combined,
-          contexts: buildVulnerabilityContexts({
-            graph, attributedAdvisories: securityInputs.flatMap(({ before }) => before),
-            ...(proposedSecurityGraph === undefined ? {} : { proposed: { graph: proposedSecurityGraph, proposal } }),
-          }),
-        };
-        this.options.sink.postMessage({
-          status: 'upgrade-analysis-partial', requestId, package: eligibility.packageName,
-          section: { kind: 'security', security },
+      const securityResultPromise = securityGraphPromise.then(async (proposedSecurityGraph): Promise<SecurityOutcome> => {
+        const security = await auditUpgradeReview({
+          before: graph, after: proposedSecurityGraph, proposal, client: this.options.httpClient,
+          enabled: () => this.publicAdvisoryCheckEnabled(controller.root), signal: analysisAbort.signal,
         });
+        if (!analysisAbort.signal.aborted && !this.droppedByCancellation(eligibility.packageName)) {
+          this.options.sink.postMessage({
+            status: 'upgrade-analysis-partial', requestId, package: eligibility.packageName,
+            section: { kind: 'security', security },
+          });
+        }
         return security;
       }).then(
         (security) => ({ ok: true as const, security }),
@@ -1571,7 +1544,7 @@ export class UpgradeAssistantCoordinator {
       const { analysis: projectCompatibility, evidence: projectEvidence } = projectResult.result;
       const securityResult = await securityResultPromise;
       if (!securityResult.ok) throw securityResult.cause;
-      const security = securityResult.security;
+      let security = securityResult.security;
       if (this.droppedByCancellation(eligibility.packageName)) return;
 
       let smartPlan: UpgradeAnalysisSmartPlan | null = null;
@@ -1617,6 +1590,23 @@ export class UpgradeAssistantCoordinator {
         // and validated.
         if (planned.outcome === 'found') {
           smartPlanProposal = planned.plan.proposal;
+          // The coordinated proposal includes planner-added dependencies and can
+          // differ from the first reviewed graph. Audit its executable changes.
+          const coordinatedGraph = this.publicAdvisoryCheckEnabled(controller.root)
+            ? await materializeUpgradeSecurityGraph({
+                compatibilityStatus: 'compatible', proposal: smartPlanProposal,
+                materializer: resolverVerifier, signal: analysisAbort.signal,
+              }) : undefined;
+          security = await auditUpgradeReview({
+            before: graph, after: coordinatedGraph, proposal: smartPlanProposal, client: this.options.httpClient,
+            enabled: () => this.publicAdvisoryCheckEnabled(controller.root), signal: analysisAbort.signal,
+          });
+          if (!analysisAbort.signal.aborted && !this.droppedByCancellation(eligibility.packageName)) {
+            this.options.sink.postMessage({
+              status: 'upgrade-analysis-partial', requestId, package: eligibility.packageName,
+              section: { kind: 'security', security },
+            });
+          }
           smartPlan = {
             changes: planned.plan.proposal.changes.map((change) => ({
               packageName: change.packageName,
@@ -1698,6 +1688,7 @@ export class UpgradeAssistantCoordinator {
         proposal,
         compatibilityStatus: analysis.status,
         smartPlanProposal,
+        security,
         ignoreScripts: upgradeConfiguration.ignoreScripts,
         verificationScripts,
         suggestedScriptNames,
@@ -1773,6 +1764,17 @@ export class UpgradeAssistantCoordinator {
       if (this.activeUpgradeAnalysisAbort === analysisAbort) this.activeUpgradeAnalysisAbort = undefined;
       performance.finish({ completed: succeeded });
     }
+  }
+
+  resolveReviewAdvisoryUrl(request: AdvisoryLookupRequest): string | null {
+    const security = this.analysis?.security;
+    if (security == null) return null;
+    return resolveTrustedAttributedAdvisoryUrl([
+      ...security.resolvedAdvisories,
+      ...[...security.remaining, ...(security.introduced ?? [])].map((entry) => ({
+        ...entry, flaggedVersion: entry.resolvedVersion,
+      })),
+    ], request);
   }
 
   async handleConfirmUpgrade(message: AnalysisMessage): Promise<void> {
@@ -3026,7 +3028,7 @@ export class UpgradeAssistantCoordinator {
   private async executeStoredAnalysis(
     analysisId: string,
     wantsSmartPlan: boolean,
-    optIn: VerificationOptInRequest = {}
+    optIn: VerificationOptInRequest & { securityAcknowledged?: boolean } = {}
   ): Promise<void> {
     const stored = this.analysis;
     const now = Date.now();
@@ -3054,6 +3056,14 @@ export class UpgradeAssistantCoordinator {
         this.analysis = undefined;
         await this.releaseReservation(stored.eligibility.packageName);
       }
+      return;
+    }
+    if (requiresSecurityAcknowledgement(stored.security) && optIn.securityAcknowledged !== true) {
+      this.options.sink.postMessage({
+        status: 'upgrade-error', package: stored.eligibility.packageName,
+        error: { code: 'SECURITY_ACKNOWLEDGEMENT_REQUIRED',
+          message: 'Acknowledge the known vulnerabilities added by this upgrade before continuing.' },
+      });
       return;
     }
     if (!this.reserve(stored.eligibility.packageName)) {

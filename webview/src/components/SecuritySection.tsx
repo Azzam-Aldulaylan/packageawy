@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 
+import { IntroducedSecurityFindings } from './IntroducedSecurityFindings.js';
 import { securityOutcomeDisplay } from '../../../src/host/outcomeCopy.js';
 import type { SecurityOutcome } from '../../../src/host/webviewProtocol.js';
 import { IconShield } from '../icons.js';
@@ -7,6 +8,8 @@ import { OutcomeStatus } from './OutcomeStatus.js';
 import { VulnerabilityCard } from './VulnerabilityCard.js';
 
 function overallDetail(security: SecurityOutcome): string | undefined {
+  if (security.checkState === 'off' || security.checkState === 'unavailable') return undefined;
+  if (security.introduced?.length) return `${security.introduced.length} known vulnerabilit${security.introduced.length === 1 ? 'y is' : 'ies are'} added by this upgrade.`;
   const resolvedCount = security.resolvedAdvisories.length;
   const remainingCount = security.remaining.filter((r) => r.status === 'remains').length;
   const unknownCount = security.remaining.filter((r) => r.status === 'unknown').length;
@@ -29,20 +32,6 @@ function overallDetail(security: SecurityOutcome): string | undefined {
   return undefined;
 }
 
-/**
- * `security === null` means this package had no known vulnerabilities
- * before this upgrade at all (see UpgradeAssistantCoordinator: the
- * evaluation only runs when there was something to evaluate): rendered as
- * its real "clean" card, using the same 'not-applicable' status
- * vocabulary `outcomeCopy.ts` already defines. Security spans the result
- * grid because its evidence is the primary post-analysis decision surface.
- *
- * `emphasize` gives the card the same visual weight bump the redesign spec
- * asks for ("Security status should have stronger visual priority than
- * Files/Verification when there is a vulnerability"): set only when a
- * vulnerability actually remains after the upgrade, never for a clean or
- * fully-resolved outcome, which need no extra urgency.
- */
 export function SecuritySection({
   security,
   rootPackageName,
@@ -57,9 +46,13 @@ export function SecuritySection({
   /** No advisory facts exist, so a null outcome must not read as "No known vulnerabilities". */
   advisoriesOff?: boolean;
 }): ReactElement {
-  const display = advisoriesOff && security === null
-    ? { label: 'Security checks are off', className: 'unknown' }
-    : securityOutcomeDisplay(security?.status ?? 'not-applicable');
+  const display = advisoriesOff || security?.checkState === 'off'
+    ? { label: 'Off', className: 'unknown' }
+    : security === null || security.checkState === 'unavailable'
+      ? { label: 'Security check unavailable', className: 'unknown' }
+      : security.introduced?.length
+        ? { label: 'Upgrade adds known vulnerabilities', className: 'remains' }
+        : securityOutcomeDisplay(security.status);
 
   return (
     <section
@@ -72,6 +65,7 @@ export function SecuritySection({
       </h3>
       <OutcomeStatus label={display.label} className={display.className} detail={security === null ? undefined : overallDetail(security)} />
 
+      {security !== null ? <IntroducedSecurityFindings security={security} onOpenAdvisory={onOpenAdvisory} /> : null}
       {security !== null && security.remaining.length > 0 ? (
         <ul className="advisories analysis-card__vulnerabilities">
           {security.remaining.map((entry) => (

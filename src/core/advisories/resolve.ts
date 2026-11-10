@@ -72,6 +72,16 @@ function resolveTrustedReferenceUrl(entry: AttributedAdvisory, reference: string
   return deterministicPublicReferenceUrl(normalized);
 }
 
+/** Review evidence authorizes only advisories and paths actually returned by its check. */
+export function resolveTrustedAttributedAdvisoryUrl(
+  advisories: readonly AttributedAdvisory[], request: AdvisoryLookupRequest
+): string | null {
+  const entry = findAttributedAdvisory(advisories, request);
+  if (entry === undefined || entry.path[0] !== request.package) return null;
+  if (request.reference !== undefined) return resolveTrustedReferenceUrl(entry, request.reference);
+  return isSafeAdvisoryUrl(entry.advisory.url) ? entry.advisory.url : null;
+}
+
 /**
  * `null` covers every failure alike: package not in the last scan, an
  * unrecognized identifier, or a URL that failed the https: check, so callers

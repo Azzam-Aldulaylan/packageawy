@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
 
+import { UpgradeSecurityAcknowledgement, useUpgradeSecurityAcknowledgement } from './UpgradeSecurityAcknowledgement.js';
 import { semanticButtonClassName, upgradeConfirmationAction } from '../../../src/host/actionButtonSemantics.js';
 import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
 import { deriveUpgradeReviewDecision } from '../../../src/host/upgradeReviewDecision.js';
@@ -188,8 +189,8 @@ export function UpgradeAnalysisModal({
   busy: boolean;
   hardStale: boolean;
   now: number;
-  onConfirm: () => void;
-  onUseSmartPlan: () => void;
+  onConfirm: (securityAcknowledged?: boolean) => void;
+  onUseSmartPlan: (securityAcknowledged?: boolean) => void;
   onCancel: () => void;
   onRefresh: () => void;
   onConfigureVerification: () => void;
@@ -198,6 +199,7 @@ export function UpgradeAnalysisModal({
   pendingChanges?: readonly { packageName: string; targetVersion: string }[];
   publisherLtsByPackage?: ReadonlyMap<string, string>;
 }): ReactElement {
+  const consent = useUpgradeSecurityAcknowledgement(analysis);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocused = useRef<Element | null>(null);
@@ -318,6 +320,7 @@ export function UpgradeAnalysisModal({
             publisherLtsByPackage={publisherLtsByPackage}
             advisoriesOff={advisoriesOff}
           />
+          <UpgradeSecurityAcknowledgement consent={consent} />
         </div>
 
         <footer className="modal__footer">
@@ -330,8 +333,8 @@ export function UpgradeAnalysisModal({
             <button
               type="button"
               className={semanticButtonClassName(action.variant)}
-              onClick={action.onClick === 'confirm' ? onConfirm : onUseSmartPlan}
-              disabled={busy || analysis === null || executionBlocked}
+              onClick={() => (action.onClick === 'confirm' ? onConfirm : onUseSmartPlan)(consent.acknowledged)}
+              disabled={busy || analysis === null || executionBlocked || consent.blocked}
             >
               {action.label}
             </button>

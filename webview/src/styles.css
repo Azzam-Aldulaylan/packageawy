@@ -8802,3 +8802,14 @@ button {
   margin-top: 0.15rem;
   color: var(--vscode-descriptionForeground);
 }
+
+.upgrade-security-acknowledgement {
+  align-items: flex-start;
+  margin-top: 1rem;
+  line-height: 1.5;
+}
+
+.upgrade-security-acknowledgement .review-list__checkbox {
+  flex-shrink: 0;
+  margin-top: 0.15rem;
+}

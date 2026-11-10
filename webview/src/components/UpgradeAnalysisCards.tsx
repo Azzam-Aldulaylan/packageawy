@@ -1,5 +1,7 @@
 import type { ReactElement, ReactNode } from 'react';
 
+import { IntroducedSecurityFindings } from './IntroducedSecurityFindings.js';
+import { summarizeUpgradeSecurity } from '../../../src/host/upgradeSecuritySummary.js';
 import type { PackageRow } from '../../../src/core/types.js';
 import type {
   CompatibilityFindingKind,
@@ -290,15 +292,25 @@ export function SecurityOutcomeCard({
   onOpenAdvisory?: ((packageName: string, advisoryId: string | number, path: string[], reference?: string) => void) | undefined;
 }): ReactElement | null {
   if (security === null) return null;
-  const beforeCount = security.resolvedAdvisories.length + security.remaining.length;
+  if (security.checkState === 'off' || security.checkState === 'unavailable') {
+    return <section className="analysis-card"><h3>Security impact</h3>
+      <p>{security.checkState === 'off' ? 'Off' : 'Security check unavailable'}</p></section>;
+  }
+  const summary = summarizeUpgradeSecurity(security);
+  const beforeCount = summary.beforeCount;
   const resolvedCount = security.resolvedAdvisories.length;
-  const remainingCount = security.remaining.filter((entry) => entry.status === 'remains').length;
+  const remainingCount = summary.confirmedRemainingCount;
+  const afterCount = remainingCount + summary.introducedCount;
   const unknownCount = security.remaining.filter((entry) => entry.status === 'unknown').length;
   const remainingEntries = sortAdvisoriesBySeverity(security.remaining);
-  const after = securityOutcomeDisplay(security.status);
+  const after = summary.introducedCount > 0
+    ? { label: 'Upgrade adds known vulnerabilities', className: 'remains' }
+    : securityOutcomeDisplay(security.status);
   const contexts = sortAdvisoriesBySeverity(security.contexts ?? []);
   const subtitle =
-    security.status === 'resolved'
+    summary.introducedCount > 0 ? 'This upgrade adds known vulnerabilities. Review the findings before continuing.'
+      : security.status === 'not-applicable' ? 'No known vulnerabilities were found in this review.'
+      : security.status === 'resolved'
       ? 'This upgrade will improve your security posture.'
       : security.status === 'remains'
         ? resolvedCount > 0
@@ -318,6 +330,7 @@ export function SecurityOutcomeCard({
         </DirectionalButton>
       </div>
       <p className="usage-card__subtitle">{subtitle}</p>
+      <IntroducedSecurityFindings security={security} onOpenAdvisory={onOpenAdvisory} />
       <div className="security-outcome">
         <section className="security-outcome__box" aria-labelledby="security-before-heading">
           <h4 className="security-outcome__label" id="security-before-heading">Before upgrade</h4>
@@ -412,8 +425,8 @@ export function SecurityOutcomeCard({
         </span>
         <section className="security-outcome__box" aria-labelledby="security-after-heading">
           <h4 className="security-outcome__label" id="security-after-heading">After upgrade</h4>
-          <p className={`security-outcome__value${remainingCount === 0 && unknownCount === 0 ? ' security-outcome__value--good' : ''}`}>
-            {remainingCount} vulnerabilit{remainingCount === 1 ? 'y' : 'ies'}
+          <p className={`security-outcome__value${afterCount === 0 && unknownCount === 0 ? ' security-outcome__value--good' : ''}`}>
+            {afterCount} vulnerabilit{afterCount === 1 ? 'y' : 'ies'}
             {unknownCount > 0 ? `, ${unknownCount} undetermined` : ''}
           </p>
           <p className="security-outcome__detail">{after.label}</p>
@@ -439,7 +452,7 @@ export function SecurityOutcomeCard({
                           <VulnerabilityIdentifierLinks
                             identifiers={vulnerabilityIdentifiers(entry.advisory)}
                             onOpen={(identifier) => onOpenAdvisory(
-                              row.name,
+                              entry.path[0] ?? row.name,
                               entry.advisory.id,
                               [...entry.path],
                               identifier
@@ -467,7 +480,7 @@ export function SecurityOutcomeCard({
                         <button
                           type="button"
                           className="advisory__source"
-                          onClick={() => onOpenAdvisory(row.name, entry.advisory.id, [...entry.path])}
+                          onClick={() => onOpenAdvisory(entry.path[0] ?? row.name, entry.advisory.id, [...entry.path])}
                         >
                           View advisory source
                           <IconExternalLink />

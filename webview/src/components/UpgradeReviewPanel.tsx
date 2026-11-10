@@ -1,6 +1,7 @@
 import { memo, useContext, useRef } from 'react';
 import type { ReactElement, RefObject } from 'react';
 
+import { UpgradeSecurityAcknowledgement, useUpgradeSecurityAcknowledgement } from './UpgradeSecurityAcknowledgement.js';
 import type { PackageRow } from '../../../src/core/types.js';
 import { semanticButtonClassName, upgradeConfirmationAction } from '../../../src/host/actionButtonSemantics.js';
 import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
@@ -93,6 +94,8 @@ function upgradeReviewSummary(analysis: UpgradeAnalysisPresentation, coordinated
   if (analysis.security !== null) {
     const security = summarizeUpgradeSecurity(analysis.security);
     resolvedCount = analysis.security.resolvedAdvisories.length;
+    if (security.introducedCount > 0) findings.push(`${security.introducedCount} introduced vulnerabilit${security.introducedCount === 1 ? 'y' : 'ies'}`);
+    if (analysis.security.checkState === 'unavailable') findings.push('Security check unavailable');
     if (security.confirmedRemainingCount > 0) {
       findings.push(`${security.confirmedRemainingCount} ${security.confirmedRemainingCount === 1 ? 'vulnerability that remains' : 'vulnerabilities that remain'}`);
     }
@@ -276,7 +279,7 @@ const UpgradeReviewDetails = memo(function UpgradeReviewDetails({
         {analysis.security !== null ? (
           <SecurityOutcomeCard row={row} security={analysis.security} onChangeTab={onChangeTab} onOpenAdvisory={onOpenAdvisory} />
         ) : (
-          <p className="usage-card__subtitle">Security impact was not assessed for this review. Check the Vulnerabilities tab before upgrading.</p>
+          <p className="usage-card__subtitle">Security check unavailable</p>
         )}
       </UpgradeReviewDisclosure>
       <UpgradeReviewDisclosure
@@ -424,8 +427,8 @@ export function UpgradeReviewPanel({
   advisoriesOff?: boolean;
   onAnalyzeUpgrade: (target: string) => void;
   onTargetChange: (target: string) => void;
-  onConfirm: () => void;
-  onUseSmartPlan: () => void;
+  onConfirm: (securityAcknowledged?: boolean) => void;
+  onUseSmartPlan: (securityAcknowledged?: boolean) => void;
   onCancel: () => void;
   onConfigureVerification: () => void;
   onRefresh: () => void;
@@ -433,6 +436,7 @@ export function UpgradeReviewPanel({
   onOpenAdvisory?: ((packageName: string, advisoryId: string | number, path: string[], reference?: string) => void) | undefined;
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
 }): ReactElement {
+  const consent = useUpgradeSecurityAcknowledgement(analysis);
   const verificationOptIn = useContext(VerificationOptInContext);
   const dependencyRef = useRef<HTMLDetailsElement>(null);
   const projectRef = useRef<HTMLDetailsElement>(null);
@@ -601,6 +605,7 @@ export function UpgradeReviewPanel({
         />
       </div>
 
+      <UpgradeSecurityAcknowledgement consent={consent} />
       <div className="review-panel__footer">
         <button type="button" className="button button--secondary" onClick={onCancel} disabled={busy}>
           Close review
@@ -609,8 +614,8 @@ export function UpgradeReviewPanel({
           <button
             type="button"
             className={semanticButtonClassName(action.variant)}
-            onClick={action.onClick === 'confirm' ? onConfirm : onUseSmartPlan}
-            disabled={busy || executionBlocked}
+            onClick={() => (action.onClick === 'confirm' ? onConfirm : onUseSmartPlan)(consent.acknowledged)}
+            disabled={busy || executionBlocked || consent.blocked}
           >
             {action.label}
           </button>

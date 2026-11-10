@@ -63,7 +63,7 @@ test('unknown dependency checks never become a compatible or safe update', () =>
   assert.equal(decision.caution, true);
   assert.equal(decision.headline.className, 'unknown');
   assert.match(decision.recommendation, /could not be fully verified/);
-  assert.match(decision.recommendation, /Security impact was not assessed/);
+  assert.match(decision.recommendation, /Security check unavailable/);
   assert.doesNotMatch(decision.recommendation, /safe update|compatible update/);
 });
 

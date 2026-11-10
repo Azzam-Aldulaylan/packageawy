@@ -651,7 +651,7 @@ export class DashboardPanel {
    * is nothing worth surfacing as an error either.
    */
   private openAdvisory(message: { package: string; advisoryId: string | number; path: string[]; reference?: string }): void {
-    const url = this.controller?.resolveAdvisoryUrl(message);
+    const url = this.upgradeCoordinator.resolveReviewAdvisoryUrl(message) ?? this.controller?.resolveAdvisoryUrl(message);
     if (url === null || url === undefined) return;
     this.platform.openExternal(url);
   }
