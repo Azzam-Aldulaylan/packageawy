@@ -51,6 +51,7 @@ function UpgradeAnalysisBodyContent({
   onOpenUsageReference,
   onConfigureVerification,
   pendingChanges,
+  publisherLtsByPackage,
   advisoriesOff = false,
 }: {
   packageName: string;
@@ -62,6 +63,7 @@ function UpgradeAnalysisBodyContent({
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
   onConfigureVerification: () => void;
   pendingChanges?: readonly { packageName: string; targetVersion: string }[] | undefined;
+  publisherLtsByPackage?: ReadonlyMap<string, string> | undefined;
 }): ReactElement {
   const decision = analysis === null ? null : deriveUpgradeReviewDecision(
     analysis,
@@ -100,7 +102,7 @@ function UpgradeAnalysisBodyContent({
         />
       ) : null}
 
-      {analysis.changes.length > 1 ? (
+      {analysis.changes.length > 1 || publisherLtsByPackage?.has(packageName) === true ? (
         <section className="analysis-card analysis-card--full" aria-labelledby="analysis-selected-upgrades-heading">
           <h3 className="analysis-card__title" id="analysis-selected-upgrades-heading">Selected upgrades</h3>
           <ol className="smart-plan__changes">
@@ -108,6 +110,9 @@ function UpgradeAnalysisBodyContent({
               <li className="smart-plan__change" key={change.packageName}>
                 <span className="smart-plan__package">{change.packageName}</span>
                 <span className="smart-plan__versions">{change.currentVersion} → {change.targetVersion}</span>
+                {publisherLtsByPackage?.has(change.packageName) === true ? (
+                  <span className="upgrade-target-picker__meta">Publisher LTS {publisherLtsByPackage.get(change.packageName)}</span>
+                ) : null}
               </li>
             ))}
           </ol>
@@ -172,6 +177,7 @@ export function UpgradeAnalysisModal({
   onOpenAdvisory,
   onOpenUsageReference,
   pendingChanges,
+  publisherLtsByPackage,
   advisoriesOff = false,
 }: {
   packageName: string;
@@ -190,6 +196,7 @@ export function UpgradeAnalysisModal({
   onOpenAdvisory: (packageName: string, advisoryId: string | number, path: string[], reference?: string) => void;
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
   pendingChanges?: readonly { packageName: string; targetVersion: string }[];
+  publisherLtsByPackage?: ReadonlyMap<string, string>;
 }): ReactElement {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -308,6 +315,7 @@ export function UpgradeAnalysisModal({
             onOpenUsageReference={onOpenUsageReference}
             onConfigureVerification={onConfigureVerification}
             pendingChanges={pendingChanges}
+            publisherLtsByPackage={publisherLtsByPackage}
             advisoriesOff={advisoriesOff}
           />
         </div>

@@ -1,8 +1,7 @@
 /**
  * Major/minor/patch classification for an available update: purely a
- * display/sort decision, never a substitute for the upgrade-eligibility
- * rules in src/core/upgrade/plan.ts (isMajorUpgrade), which validates
- * host-trusted input for the actual upgrade action. This is UI-only: it
+ * display/sort decision, never a substitute for upgrade eligibility.
+ * Shares its version classifier with the upgrade confirmation. It
  * feeds the "Major" badge and the Updates card's intelligent default sort,
  * and tolerates invalid/missing versions by returning `null` instead of
  * throwing, since a dashboard count must never crash on unexpected data.
@@ -11,11 +10,12 @@
  * webview/src.
  */
 
-import semver from 'semver';
-
 import type { PackageRow } from '../core/types.js';
+import { classifyUpdate } from '../core/version/updateClassification.js';
+import type { UpdateKind } from '../core/version/updateClassification.js';
 
-export type UpdateKind = 'major' | 'minor' | 'patch';
+export { classifyUpdate };
+export type { UpdateKind };
 
 /** Highest tier first: used to rank rows for the Updates card's default sort. */
 export const UPDATE_KIND_RANK: Record<UpdateKind, number> = {
@@ -25,29 +25,15 @@ export const UPDATE_KIND_RANK: Record<UpdateKind, number> = {
 };
 
 /**
- * The target this row's update is measured against: `latest` when it
- * differs from `current` (it's always the highest of the two), falling
- * back to `wanted` for the rarer case where only the in-range version has
- * moved. `null` when there is nothing to classify.
+ * Measure the offered upgrade first, so badges and summary counts describe
+ * the action's actual target. Rows without an action still classify the
+ * available latest/wanted release. `null` when there is nothing to classify.
  */
 export function updateTarget(row: PackageRow): string | null {
   if (row.current === null) return null;
+  if (row.upgradeTo !== null) return row.upgradeTo;
   if (row.latest !== null && row.latest !== row.current) return row.latest;
   if (row.wanted !== null && row.wanted !== row.current) return row.wanted;
-  return null;
-}
-
-/**
- * `null` covers three cases alike: no update, or either version string
- * fails semver validation: a dashboard badge has nothing useful to say in
- * any of them, so all three collapse to "don't classify" rather than three
- * different error paths.
- */
-export function classifyUpdate(current: string, target: string): UpdateKind | null {
-  if (semver.valid(current) === null || semver.valid(target) === null) return null;
-  if (semver.major(current) !== semver.major(target)) return 'major';
-  if (semver.minor(current) !== semver.minor(target)) return 'minor';
-  if (semver.patch(current) !== semver.patch(target)) return 'patch';
   return null;
 }
 
