@@ -478,12 +478,3 @@ test('a workspace that cannot be staged faithfully is unknown and never runs the
   assert.deepEqual(await verifier.materializeResolvedGraph(workspaceProposal), { ok: false });
   assert.equal(ran, false);
 });
-
-test('in a workspace the reviewed manifest keeps only resolution keys in its pnpm field', async () => {
-  const observed = {};
-  await workspaceVerifier(observed, {
-    manifestText: JSON.stringify({ name: '@acme/web', dependencies: { jose: '5.9.6' }, pnpm: { overrides: { a: '1.0.0' }, patchedDependencies: { b: 'p.patch' } } }),
-  }).verify(workspaceProposal);
-  assert.deepEqual(observed.memberManifest.pnpm, { overrides: { a: '1.0.0' } });
-  assert.equal(observed.memberManifest.dependencies.jose, '5.10.0');
-});

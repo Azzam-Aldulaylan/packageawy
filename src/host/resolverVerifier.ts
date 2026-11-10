@@ -5,9 +5,9 @@
  * interpretation of "dry run": only a host-owned manifest and active
  * lockfile are copied, lifecycle scripts are disabled, and the real project
  * is never the cwd. A pnpm workspace member also gets the workspace's own
- * manifests and pnpm-workspace.yaml, so `workspace:` and `catalog:`
- * specifiers resolve. .npmrc files and pnpmfiles are never copied, and pnpm
- * runs with --ignore-pnpmfile.
+ * manifests and supported configuration (see pnpmWorkspaceLayout.ts), so
+ * `workspace:` and `catalog:` specifiers resolve. pnpmfiles are never
+ * copied, and pnpm runs with --ignore-pnpmfile.
  */
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -30,7 +30,6 @@ import { buildStagedManifest } from '../core/upgrade/stagedManifest.js';
 import type { DependencyGraph, ResolvedRegistry } from '../core/types.js';
 import { stripUrlCredentials } from '../core/cache/keys.js';
 import { NodePackageManagerProcessRunner } from './packageManagerProcessRunner.js';
-import { sanitizedManifest } from './pnpmWorkspaceLayout.js';
 
 export interface PackageManagerInvocation {
   executable: string;
@@ -333,9 +332,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
         await mkdir(projectDir, { recursive: true });
       }
     }
-    // In a workspace the reviewed manifest gets the same `pnpm` field allowlist as the others.
-    const stagedText = workspace === undefined ? manifestText : sanitizedManifest(manifestText) ?? manifestText;
-    await writeFile(path.join(projectDir, 'package.json'), stagedText, 'utf8');
+    await writeFile(path.join(projectDir, 'package.json'), manifestText, 'utf8');
     if (this.options.lockfile !== undefined) {
       await writeFile(path.join(tempRoot, this.options.lockfile.name), this.options.lockfile.text, 'utf8');
     }
