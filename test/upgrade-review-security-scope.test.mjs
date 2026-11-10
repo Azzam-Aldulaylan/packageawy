@@ -336,3 +336,18 @@ test('Before evidence stays within the path limit when many unrelated paths exis
   assert.ok(context.paths.every((path) => path.nodes[0].packageName === 'app'));
   assert.deepEqual(context.primaryPath.nodes.map((node) => node.packageName), ['app', 'middle', 'helper']);
 });
+
+test('a target path longer than the protocol allows keeps the finding and drops its path evidence', async () => {
+  const chain = Array.from({ length: 101 }, (_, index) => `link${String(index).padStart(3, '0')}`);
+  const graphFor = (app) => npmGraph({ app, short: '1.0.0' }, [
+    ['node_modules/app', app, { [chain[0]]: '1.0.0' }],
+    ...chain.map((name, index) => [`node_modules/${name}`, '1.0.0', { [chain[index + 1] ?? 'helper']: '1.0.0' }]),
+    ['node_modules/short', '1.0.0', { helper: '1.0.0' }],
+    ['node_modules/helper', '1.0.0'],
+  ]);
+  const response = { helper: [advisory('*', 'high', 'Helper issue')] };
+  const security = await audit(graphFor('1.0.0'), graphFor('2.0.0'), response, single('app', '1.0.0', '2.0.0'));
+  assert.equal(security.beforeCount, 1);
+  assert.equal(security.remaining.length, 1);
+  assert.ok(security.contexts.every((context) => context.paths.every((path) => path.nodes.length <= 100)));
+});

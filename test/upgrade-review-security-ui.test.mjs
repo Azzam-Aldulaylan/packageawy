@@ -125,6 +125,17 @@ for (const [name, Component] of [['embedded', UpgradeReviewPanel], ['standalone'
     assert.doesNotMatch(result.html, /[1-9]\d* known vulnerabilit(y|ies)(?! elsewhere)/);
     assert.equal(result.action.disabled, false);
   });
+  test(`${name} findings that enter or leave the upgrade's reach are summarized consistently`, () => {
+    state.values = [];
+    const entering = inspect(Component, review(false, { status: 'remains', checkState: 'complete', resolvedAdvisories: [],
+      remaining: [finding()], introduced: [], beforeCount: 0 }));
+    assert.doesNotMatch(entering.html, /No known vulnerabilities reported/);
+    state.values = [];
+    const leaving = inspect(Component, review(false, { status: 'resolved', checkState: 'complete', resolvedAdvisories: [],
+      remaining: [], introduced: [], beforeCount: 1 }));
+    assert.match(leaving.html, /[Nn]o longer reached through (this upgrade|it)/);
+    assert.doesNotMatch(leaving.html, /0 vulnerabilities resolved/);
+  });
   test(`${name} unchanged findings, unavailable checks and Off stay visible without acknowledgement`, () => {
     for (const checkState of ['complete', 'unavailable', 'off']) {
       state.values = [];

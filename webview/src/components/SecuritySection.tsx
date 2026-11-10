@@ -16,6 +16,7 @@ function overallDetail(security: SecurityOutcome): string | undefined {
   const unknownCount = security.remaining.filter((r) => r.status === 'unknown').length;
 
   if (security.status === 'resolved') {
+    if (resolvedCount === 0) return 'Known vulnerabilities counted before this upgrade are no longer reached through it.';
     return resolvedCount === 1
       ? '1 vulnerability resolved by this upgrade.'
       : `${resolvedCount} vulnerabilities resolved by this upgrade.`;

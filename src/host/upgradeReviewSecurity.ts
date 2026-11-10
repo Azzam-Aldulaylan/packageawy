@@ -16,10 +16,15 @@ type ContextPath = VulnerabilityContext['paths'][number];
  * Before evidence for an unchanged finding keeps only the paths that start
  * at a target. Filtering never adds paths, so the protocol bound holds. When
  * the bounded enumeration held none, the selected path stands alone and the
- * list is marked truncated.
+ * list is marked truncated. A selected path longer than the protocol allows
+ * leaves the finding counted but without path evidence.
  */
-function targetContext(context: VulnerabilityContext, targetNames: ReadonlySet<string>, selected: ContextPath): VulnerabilityContext {
-  const filtered = context.paths.filter((path) => targetNames.has(path.nodes[0]?.packageName ?? ''));
+const MAX_CONTEXT_PATH_NODES = 100;
+
+function targetContext(context: VulnerabilityContext, targetNames: ReadonlySet<string>, selected: ContextPath): VulnerabilityContext | null {
+  const filtered = context.paths.filter((path) => targetNames.has(path.nodes[0]?.packageName ?? '') &&
+    path.nodes.length <= MAX_CONTEXT_PATH_NODES);
+  if (filtered.length === 0 && selected.nodes.length > MAX_CONTEXT_PATH_NODES) return null;
   const paths = filtered.length > 0 ? filtered : [selected];
   const roots = new Map<string, VulnerabilityContext['directRoots'][number]>();
   for (const path of paths) {
@@ -100,7 +105,8 @@ export async function auditUpgradeReview(input: {
         const node = resolveNodeAlongPath(input.before, entry.path.slice(0, index + 1));
         return { packageName: node?.name ?? entry.path[index] ?? '', version: node?.version ?? null };
       }) };
-      contexts.push(targetContext(context, scope.beforeScope.targetNames, selected));
+      const scopedContext = targetContext(context, scope.beforeScope.targetNames, selected);
+      if (scopedContext !== null) contexts.push(scopedContext);
     }
     const beforeCount = resolvedAdvisories.length + scope.before.length;
     return {
