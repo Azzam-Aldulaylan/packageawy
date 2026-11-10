@@ -505,7 +505,15 @@ export function RemovalReviewPanel({
     const peerBlocked = error.code === 'REQUIRED_PEER_DEPENDENCY';
     return (
       <div className="review-panel removal-review">
-        <section className="analysis-card removal-review__blocked" role="alert" aria-live="assertive">
+        <section
+          className="analysis-card removal-review__blocked"
+          role="alert"
+          aria-live="assertive"
+          aria-labelledby="removal-review-error-heading"
+        >
+          <h3 className="manage-section-heading" id="removal-review-error-heading" tabIndex={-1}>
+            Removal review
+          </h3>
           <OutcomeStatus
             label={peerBlocked ? 'Removal blocked by a peer dependency' : 'Removal analysis failed'}
             className="conflict"

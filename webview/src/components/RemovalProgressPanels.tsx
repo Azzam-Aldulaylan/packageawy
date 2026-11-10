@@ -4,10 +4,15 @@ import type { PackageRow } from '../../../src/core/types.js';
 import type { RemoveProgressPhase, RemoveResultPresentation } from '../../../src/host/webviewProtocol.js';
 import { IconRefresh } from '../icons.js';
 
-/** Which removal view the Manage dialog shows. `review` is the normal Removal review. */
-export type RemovalView = 'review' | 'running' | 'result' | 'error';
+/**
+ * Which removal view the Manage dialog shows. `review` is the normal Removal
+ * review and `review-error` is that review showing a failure, for example
+ * when the project changed before the removal could start.
+ */
+export type RemovalView = 'review' | 'review-error' | 'running' | 'result' | 'error';
 
 const VIEW_HEADING: Record<Exclude<RemovalView, 'review'>, string> = {
+  'review-error': 'removal-review-error-heading',
   running: 'removal-running-heading',
   result: 'removal-result-heading',
   error: 'removal-error-heading',

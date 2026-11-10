@@ -421,7 +421,8 @@ export function ManageDependencyModal({
 
   // When the removal view changes, the control that had focus (for example
   // the Remove button) is gone. Move focus to the new view's heading.
-  const removalView: RemovalView = removalRun === null ? 'review' : removalRun.phase;
+  const removalView: RemovalView =
+    removalRun !== null ? removalRun.phase : removal.error !== null ? 'review-error' : 'review';
   const previousRemovalView = useRef<RemovalView>(removalView);
   useEffect(() => {
     const target = removalViewFocusTarget(previousRemovalView.current, removalView);

@@ -280,6 +280,17 @@ test('focus moves to the heading of each new removal view', () => {
   assert.equal(removalViewFocusTarget('running', 'error'), 'removal-error-heading');
   assert.equal(removalViewFocusTarget('running', 'running'), null);
   assert.equal(removalViewFocusTarget('result', 'review'), null);
+  // A confirmation refused while the package is still listed returns to the review's error.
+  assert.equal(removalViewFocusTarget('running', 'review-error'), 'removal-review-error-heading');
+  assert.equal(removalViewFocusTarget('review-error', 'review-error'), null);
+  const refused = renderManage({
+    removal: {
+      active: true, analysis: null, busy: false,
+      error: { code: 'STALE_SOURCE', message: 'Project files changed before removal could begin. Refresh and try again.' },
+      onAnalyze: noop, onConfirm: noop, onConfigureVerification: noop,
+    },
+  });
+  assert.match(refused, /id="removal-review-error-heading" tabindex="-1"/);
   for (const [view, progress] of [['running', { phase: 'running', progress: null }], ['result', { phase: 'result', result: result('verified', 'passed') }]]) {
     assert.match(renderManage({ removalRun: progress }), new RegExp(`id="removal-${view}-heading" tabindex="-1"`));
   }
