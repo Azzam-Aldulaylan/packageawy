@@ -19,6 +19,9 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - The upgrade review's version list labels **Security fix**, **Publisher LTS** and **Latest stable** versions.
 - A removal started from the Manage dialog shows its progress (Installing, Verifying, Refreshing) and then its result in the dialog: what was removed, the install, dependency files, verification, and whether files were restored.
 - When verification scripts are checked in the upgrade review, the Verification row names them, for example "build, test will run".
+- With vulnerability checks on, upgrade reviews check the proposed dependency tree, including packages with no current advisories. Coordinated upgrade plans are checked too. The review lists added vulnerabilities with package, version and severity, next to the ones it resolves and the ones that remain. If the check cannot run, it reads **Security check unavailable**.
+- When an upgrade would add a high or critical vulnerability, the review asks you to tick an acknowledgement before it can be confirmed.
+- Offered update versions with known vulnerabilities are marked in the Available version cell, on the Overview card and in the upgrade version list, for example "2.3.0 has 3 known vulnerabilities. Highest severity: high."
 
 ### Changed
 
@@ -35,6 +38,8 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - The **Open setting** link on the "Security checks are turned off" banner opens the settings scope that holds the value: folder, workspace or user.
 - The registry cache is stored as files in the extension's storage folder instead of VS Code global state. The existing cache moves over once.
 - npm audit runs the same resolved `node` and npm that upgrades use, without a shell.
+- The **Safe** badge explains that it covers the installed dependency tree.
+- Saved dashboard results from earlier versions are refreshed once after updating, so aliased packages are checked under the right name.
 
 ### Fixed
 
@@ -48,6 +53,8 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - Tab and Shift+Tab stay inside every dialog.
 - The Manage dialog no longer reopens on its own after a removal, a project switch, or a rescan where the package was gone and later came back.
 - Scans and Refresh on Windows no longer print Node's DEP0190 warning.
+- Dashboard vulnerability results and upgrade reviews include installed peer dependencies and their descendants.
+- Changing the vulnerability check setting cancels a transitive fix check in progress and asks you to review the fix again. The dashboard refreshes after active work finishes.
 
 ## [0.9.4] - 2026-11-02
 
