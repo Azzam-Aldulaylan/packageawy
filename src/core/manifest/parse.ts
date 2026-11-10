@@ -129,7 +129,12 @@ export function classifySpecifier(spec: string): {
       : { unresolvable: 'alias', aliasTarget: target };
   }
 
-  if (value.startsWith('http://') || value.startsWith('https://')) {
+  // Any other URL. git+ and ssh protocols are git sources, http(s) points
+  // at a tarball. The scheme is matched case-insensitively, as npm does.
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value)?.[1]?.toLowerCase();
+  if (scheme !== undefined) {
+    if (scheme === 'http' || scheme === 'https') return { unresolvable: 'tarball' };
+    if (scheme === 'ssh' || scheme === 'git' || scheme.startsWith('git+')) return { unresolvable: 'git' };
     return { unresolvable: 'tarball' };
   }
 

@@ -162,3 +162,16 @@ test('the lockfile-only restyle pass never runs scripts or touches node_modules'
     }
   }
 });
+
+test('a second declaration that is any npm dist-tag is upgraded, URL forms are labelled by protocol', async () => {
+  const { isRegistrySpecifier } = await import('../out/core/upgrade/stagedManifest.js');
+  const { classifySpecifier } = await import('../out/core/manifest/parse.js');
+  for (const tag of ['latest', 'next', '_next', '2026next', 'beta-2']) assert.equal(isRegistrySpecifier(tag), true, tag);
+  for (const spec of ['a b', 'x:y', '../local', 'user/repo']) assert.equal(isRegistrySpecifier(spec), false, spec);
+  assert.equal(classifySpecifier('ssh://git@github.com/user/repo.git').unresolvable, 'git');
+  assert.equal(classifySpecifier('git+ftp://example.com/repo.git').unresolvable, 'git');
+  assert.equal(classifySpecifier('git+rsync://example.com/repo.git').unresolvable, 'git');
+  assert.equal(classifySpecifier('HTTPS://example.com/pkg.tgz').unresolvable, 'tarball');
+  assert.equal(classifySpecifier('^1.2.3').unresolvable, undefined);
+  assert.equal(classifySpecifier('latest').unresolvable, undefined);
+});

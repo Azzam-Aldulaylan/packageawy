@@ -60,8 +60,14 @@ const BLOCK_BY_CLASSIFICATION: Record<DependencyClassification, string> = {
   optional: 'optionalDependencies',
 };
 
-/** A plain dist-tag such as `latest` or `next`: no path, URL or protocol characters. */
-const DIST_TAG = /^[a-z][a-z0-9._-]*$/i;
+/**
+ * A dist-tag as npm accepts it: not itself a semver range, and unchanged by
+ * URI encoding (so no spaces, slashes, colons or other path and URL
+ * characters). Examples: `latest`, `next`, `_next`, `2026next`.
+ */
+function isDistTag(value: string): boolean {
+  return value !== '' && semver.validRange(value) === null && encodeURIComponent(value) === value;
+}
 
 /**
  * Allow-list for a second (shadow) declaration that an upgrade rewrites:
@@ -72,7 +78,7 @@ const DIST_TAG = /^[a-z][a-z0-9._-]*$/i;
 export function isRegistrySpecifier(spec: string): boolean {
   const value = spec.trim();
   if (isCatalogSpecifier(value) || classifySpecifier(value).unresolvable !== undefined) return false;
-  return semver.validRange(value) !== null || DIST_TAG.test(value);
+  return semver.validRange(value) !== null || isDistTag(value);
 }
 
 const DEPENDENCY_BLOCKS = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
