@@ -44,6 +44,14 @@ export interface CoordinatedUpgradeArgsOptions extends WorkspaceArgsOptions {
 
 export interface ManifestReconciliationArgsOptions extends WorkspaceArgsOptions {
   ignoreScripts: boolean;
+  /**
+   * Update only the lockfile (npm --package-lock-only, pnpm --lockfile-only).
+   * Used after the installed tree already holds the exact targets and only
+   * the declared specifiers changed (for example 1.2.3 -> ^1.2.3), so the
+   * lockfile keeps the resolved versions and nothing in node_modules or any
+   * lifecycle script runs. Scripts are always ignored in this mode.
+   */
+  lockfileOnly?: boolean;
 }
 
 export interface LockfileReconciliationArgsOptions {
@@ -132,12 +140,13 @@ export function buildManifestReconciliationArgs(
   options: ManifestReconciliationArgsOptions
 ): string[] {
   const args = ['install'];
+  if (options.lockfileOnly === true) args.push(packageManager === 'pnpm' ? '--lockfile-only' : '--package-lock-only');
   // pnpm defaults frozen-lockfile on CI. This command intentionally follows a
   // host-staged manifest change, so the lockfile must be allowed to reconcile
   // even when the extension host itself is running in a CI-like environment.
   if (packageManager === 'pnpm') args.push('--no-frozen-lockfile');
   args.push(...workspaceArgs(packageManager, options));
-  if (options.ignoreScripts) args.push('--ignore-scripts');
+  if (options.ignoreScripts || options.lockfileOnly === true) args.push('--ignore-scripts');
   return args;
 }
 

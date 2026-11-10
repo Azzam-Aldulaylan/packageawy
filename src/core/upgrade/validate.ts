@@ -123,7 +123,7 @@ export function validateUpgradeRequest(
 
   const declared = declaredDependencies.find((d) => d.name === row.name);
   if (declared === undefined) return { ok: false, reason: 'not-declared' };
-  // An upgrade writes an exact version into package.json, which would replace
+  // An upgrade writes a new version into package.json, which would replace
   // the catalog reference. The catalog in pnpm-workspace.yaml owns this version.
   if (declared.catalog === true || isCatalogSpecifier(declared.range)) {
     return { ok: false, reason: 'catalog-specifier' };

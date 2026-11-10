@@ -64,7 +64,7 @@ import {
   selectUpgradeTargetsFromDistTags,
 } from '../core/upgrade/targets.js';
 import { buildStagedManifest, buildStagedManifestForRemoval } from '../core/upgrade/stagedManifest.js';
-import { isMajorUpgrade, requiresManifestReconciliation } from '../core/upgrade/plan.js';
+import { isMajorUpgrade } from '../core/upgrade/plan.js';
 import { stillRequiredBy } from '../core/upgrade/removeImpact.js';
 import { buildPeerRequirementIndex, peerRequirementsFor } from '../core/upgrade/peerRequirement.js';
 import { buildWhyInstalledIndex } from '../core/hygiene/whyInstalled.js';
@@ -110,7 +110,7 @@ import {
   describeRemoveTransactionOutcome,
   describeUpgradeTransactionOutcome,
 } from './upgradeAssistantOutcome.js';
-import { UpgradeExecutionSession } from './upgradeRunner.js';
+import { UpgradeExecutionSession, type UpgradeRunOutcome } from './upgradeRunner.js';
 import { OperationReservation, SourceGenerationGuard } from './operationReservation.js';
 import { runUpgradeTransaction } from './upgradeTransaction.js';
 import type { UpgradeTransactionFileAdapter } from './upgradeTransaction.js';
@@ -3177,59 +3177,73 @@ export class UpgradeAssistantCoordinator {
         source.lockfilePath ??
         path.join(controller.root, source.packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json');
       const allowlistedPaths = [manifestPath, expectedLockfilePath];
-      const usesStagedManifest = requiresManifestReconciliation(proposal.changes);
-      const stagedManifest = usesStagedManifest
-        ? buildStagedManifest(
-            disk.manifestText,
-            proposal.changes.map((change) => ({
-              packageName: change.packageName,
-              target: change.targetVersion,
-              classification: change.classification,
-            }))
-          )
-        : null;
+      // Every upgrade writes package.json itself and then reconciles with a
+      // bare install. `npm install pkg@x` / `pnpm add pkg@x` would apply the
+      // user's save-prefix (turning an exact pin into ^x) and re-sort the
+      // dependency blocks. Pass one stages exact targets so the package
+      // manager resolves exactly the reviewed versions. If a declaration had
+      // a ^ or ~ operator, pass two restores that operator around the target
+      // and updates only the lockfile's recorded specifier.
+      const stagedChanges = proposal.changes.map((change) => ({
+        packageName: change.packageName,
+        target: change.targetVersion,
+        classification: change.classification,
+      }));
+      const stagedManifest = buildStagedManifest(disk.manifestText, stagedChanges);
+      const styledManifest = buildStagedManifest(disk.manifestText, stagedChanges, { rangeStyle: 'preserve' });
 
       const files = await createNodeUpgradeTransactionFileAdapter({
         workspaceRoot: selected.folder.path,
         allowlistedPaths,
       });
 
-      const runParams = {
-        packageName: stored.eligibility.packageName,
-        currentVersion: stored.eligibility.currentVersion,
-        target: stored.eligibility.target,
-        classification: stored.eligibility.classification,
+      const taskTitle = `Packageawy: Upgrade ${stored.eligibility.packageName}`;
+      const prepared = this.session.prepareManifestReconciliation({
         cwd: controller.root,
         importerId: source.importerId,
         ignoreScripts: stored.ignoreScripts,
         packageManager: source.packageManager,
-        coordinatedChanges: proposal.changes.map((change) => ({
-          packageName: change.packageName,
-          target: change.targetVersion,
-          classification: change.classification,
-        })),
-      };
-
-      let executeInstall: () => Promise<Awaited<ReturnType<UpgradeExecutionSession['run']>>>;
-      if (usesStagedManifest) {
-        const prepared = this.session.prepareManifestReconciliation({
-          cwd: controller.root,
-          importerId: source.importerId,
-          ignoreScripts: stored.ignoreScripts,
-          packageManager: source.packageManager,
-        });
-        if (!prepared.ok) {
-          this.options.sink.postMessage({
-            status: 'upgrade-error',
-            package: stored.eligibility.packageName,
-            error: { code: prepared.code, message: prepared.message },
+        taskTitle,
+        taskScope: stored.eligibility.packageName,
+      });
+      const preparedRestyle = styledManifest === stagedManifest
+        ? null
+        : this.session.prepareManifestReconciliation({
+            cwd: controller.root,
+            importerId: source.importerId,
+            ignoreScripts: true,
+            packageManager: source.packageManager,
+            lockfileOnly: true,
+            taskTitle: `${taskTitle} (keep version ranges)`,
+            taskScope: stored.eligibility.packageName,
           });
-          return;
-        }
-        executeInstall = prepared.execute;
-      } else {
-        executeInstall = () => this.session.run(runParams);
+      for (const candidate of [prepared, preparedRestyle]) {
+        if (candidate === null || candidate.ok) continue;
+        this.options.sink.postMessage({
+          status: 'upgrade-error',
+          package: stored.eligibility.packageName,
+          error: { code: candidate.code, message: candidate.message },
+        });
+        return;
       }
+      if (!prepared.ok || (preparedRestyle !== null && !preparedRestyle.ok)) return;
+      const executeInstall = async (): Promise<UpgradeRunOutcome> => {
+        const resolved = await prepared.execute();
+        if (!resolved.ok || preparedRestyle === null) return resolved;
+        const swapped = await files.compareAndSwap(
+          manifestPath,
+          { exists: true, contents: Buffer.from(stagedManifest, 'utf8') },
+          { exists: true, contents: Buffer.from(styledManifest, 'utf8') }
+        );
+        if (swapped !== 'restored') {
+          return {
+            ok: false,
+            code: 'STALE_SOURCE',
+            message: 'package.json changed while the upgrade was installing. The upgrade was not kept.',
+          };
+        }
+        return await preparedRestyle.execute();
+      };
 
       if (!this.sourceGeneration.isCurrent(executionSourceGeneration)) {
         this.options.sink.postMessage({
@@ -3246,15 +3260,11 @@ export class UpgradeAssistantCoordinator {
       const transaction = await runUpgradeTransaction({
         allowlistedPaths,
         files,
-        ...(stagedManifest === null
-          ? {}
-          : {
-              manifestStage: {
-                path: manifestPath,
-                expectedContents: Buffer.from(disk.manifestText, 'utf8'),
-                contents: Buffer.from(stagedManifest, 'utf8'),
-              },
-            }),
+        manifestStage: {
+          path: manifestPath,
+          expectedContents: Buffer.from(disk.manifestText, 'utf8'),
+          contents: Buffer.from(stagedManifest, 'utf8'),
+        },
         install: {
           execute: async () => {
             const outcome = await executeInstall();
