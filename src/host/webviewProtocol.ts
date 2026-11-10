@@ -413,7 +413,7 @@ export interface UpgradeAnalysisPresentation {
 export interface UpgradeTargetOption {
   version: string;
   channel: 'stable' | 'prerelease';
-  labels: Array<'recommended' | 'lts' | 'latest'>;
+  labels: Array<'recommended' | 'lts' | 'latest' | 'security-fix'>;
 }
 
 export interface UpgradeTargetOptions {
@@ -598,11 +598,16 @@ export type SmartCleanupExecutionCapability =
 export type { ProtocolError };
 
 /**
- * the currently selected project. Only ever a display `label` plus a
- * workspace-folder-relative `manifestPath`, never an absolute filesystem
- * path, and never anything beyond what the webview already needs to render.
+ * the currently selected project. Only ever an opaque `id`, a display
+ * `label` and a workspace-folder-relative `manifestPath`, never an absolute
+ * filesystem path, and never anything beyond what the webview already needs to render.
  */
 export interface SelectedProjectInfo {
+  /**
+   * Opaque host-issued identity, unique per discovered project even when two
+   * projects share a label and relative manifest path. A hash, never a path.
+   */
+  id: string;
   /** Workspace-folder name, plus the containing directory when not the folder root. See projectCandidateLabel. */
   label: string;
   /** Workspace-folder-relative POSIX path to package.json. */
@@ -897,7 +902,9 @@ const SCAN_PROGRESS_STAGES: ReadonlySet<string> = new Set<ScanProgressStage>([
 function isSelectedProjectInfo(value: unknown): value is SelectedProjectInfo {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['label', 'manifestPath']) &&
+    hasOnlyKeys(value, ['id', 'label', 'manifestPath']) &&
+    typeof value['id'] === 'string' &&
+    value['id'].length > 0 &&
     typeof value['label'] === 'string' &&
     typeof value['manifestPath'] === 'string'
   );
@@ -2016,7 +2023,7 @@ function isUsageAnalysisResult(value: unknown): value is UsageAnalysisResult {
   );
 }
 
-const UPGRADE_TARGET_LABELS: ReadonlySet<string> = new Set(['recommended', 'lts', 'latest']);
+const UPGRADE_TARGET_LABELS: ReadonlySet<string> = new Set(['recommended', 'lts', 'latest', 'security-fix']);
 
 function isUpgradeTargetOption(value: unknown): value is UpgradeTargetOption {
   if (!isRecord(value) || !hasOnlyKeys(value, ['version', 'channel', 'labels'])) return false;

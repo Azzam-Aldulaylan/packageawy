@@ -460,6 +460,7 @@ export function UpgradeReviewPanel({
       state={targetState}
       selectedVersion={targetVersion}
       fallbackVersion={row.upgradeTo}
+      fallbackReason={row.upgradeReason}
       disabled={busy || disabled}
       onChange={onTargetChange}
     />

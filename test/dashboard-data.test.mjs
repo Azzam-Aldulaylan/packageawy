@@ -27,7 +27,7 @@ const ROW = {
 };
 
 const AT = '2026-08-01T12:00:00.000Z';
-const PROJECT = { label: 'app', manifestPath: 'package.json' };
+const PROJECT = { id: 'id:app', label: 'app', manifestPath: 'package.json' };
 const CAN_CHANGE_PROJECT = false;
 const BUILD_INFO = { extensionVersion: '0.0.1', builtAt: '2026-08-01T09:00:00.000Z' };
 const COMPLETE_AVAILABILITY = { updates: 'complete', advisories: 'complete', unavailableUpdatePackages: [] };
@@ -92,7 +92,7 @@ test('generatedAt defaults to now when not supplied', () => {
 });
 
 test('project, canChangeProject, and buildInfo are carried through exactly as given', () => {
-  const multiProject = { label: 'api: packages/api', manifestPath: 'packages/api/package.json' };
+  const multiProject = { id: 'id:api: packages/api', label: 'api: packages/api', manifestPath: 'packages/api/package.json' };
   const data = toDashboardData(scan(), multiProject, true, BUILD_INFO, AT);
   assert.deepEqual(data.project, multiProject);
   assert.equal(data.canChangeProject, true);

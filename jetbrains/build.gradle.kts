@@ -59,6 +59,16 @@ intellijPlatform {
             VerifyPluginTask.FailureLevel.INVALID_PLUGIN,
         )
     }
+    // Set by the Release workflow. They are only read by signPlugin and publishPlugin,
+    // so build, buildPlugin, runIde and verifyPlugin work without them.
+    signing {
+        certificateChain = providers.environmentVariable("JETBRAINS_CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("JETBRAINS_PRIVATE_KEY")
+        password = providers.environmentVariable("JETBRAINS_PRIVATE_KEY_PASSWORD")
+    }
+    publishing {
+        token = providers.environmentVariable("JETBRAINS_PUBLISH_TOKEN")
+    }
 }
 
 // Runs the plugin in the newest stable WebStorm. Its bundled runtime brings JCEF.

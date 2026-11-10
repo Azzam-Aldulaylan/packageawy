@@ -262,7 +262,7 @@ function runPayloadCase() {
     data: {
       rows,
       generatedAt: '2026-08-19T00:00:00.000Z',
-      project: { label: 'benchmark', manifestPath: 'package.json' },
+      project: { id: 'id:benchmark', label: 'benchmark', manifestPath: 'package.json' },
       canChangeProject: false,
       hygieneFindings: [],
       extensionVersion: '0.0.1',
@@ -408,7 +408,7 @@ async function runDashboardDeliveryCase() {
     httpClient: adapters.client,
     etagStore: etags,
     auditRunner: adapters.auditRunner,
-    projectInfo: { label: 'benchmark', manifestPath: 'package.json' },
+    projectInfo: { id: 'id:benchmark', label: 'benchmark', manifestPath: 'package.json' },
     canChangeProject: false,
     buildInfo: { extensionVersion: '0.0.1', builtAt: '2026-08-19T00:00:00.000Z' },
     projectCacheStore: cache,
