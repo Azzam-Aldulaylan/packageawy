@@ -24,10 +24,18 @@ const bundle = await build({ entryPoints: ['src/host/upgradeAssistantCoordinator
   } }] });
 const { UpgradeAssistantCoordinator } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 
-async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false } = {}) {
+async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false, cancelAt } = {}) {
   const messages = [];
   const posts = [];
   const resolvedManifests = [];
+  let phase;
+  let cancelled;
+  const cancel = async signal => {
+    cancelled = { signal, resolverStarts: resolvedManifests.length };
+    coordinator.handleCancelUpgrade({ analysisId: null });
+    // Let the pending operation observe cancellation before returning evidence.
+    await new Promise(resolve => setImmediate(resolve));
+  };
   const dependencies = { app: '^1.0.0', ...(coordinated || bulk ? { peer: '^1.0.0' } : {}) };
   const packages = { '': { dependencies }, 'node_modules/app': { version: '1.0.0' },
     ...(coordinated || bulk ? { 'node_modules/peer': { version: '1.0.0', ...(coordinated ? { peerDependencies: { app: '^1.0.0' } } : {}) } } : {}) };
@@ -37,9 +45,10 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
     peerPolicy: { strictPeerDeps: true, legacyPeerDeps: false }, packageManager: 'npm' };
   const changes = [{ packageName: 'app', currentVersion: '1.0.0', target: bulk ? '3.0.0' : '2.0.0', classification: 'prod' },
     ...(bulk ? [{ packageName: 'peer', currentVersion: '1.0.0', target: '2.0.0', classification: 'prod' }] : [])];
-  globalThis.__reviewSecurityRunner = { async run(_, args, cwd) {
+  globalThis.__reviewSecurityRunner = { async run(_, args, cwd, signal) {
     const staged = JSON.parse(await readFile(`${cwd}/package.json`, 'utf8'));
     resolvedManifests.push(staged);
+    if (cancelAt === 'resolution' && phase === 'smart-plan') await cancel(signal);
     if (resolverFails) return { exitCode: 1, stdout: '', stderr: 'registry unavailable' };
     if (coordinated && staged.dependencies.peer !== '2.0.0') return { exitCode: 1, stdout: '', stderr: 'ERESOLVE peer dependency' };
     const afterPackages = { '': { dependencies: staged.dependencies } };
@@ -54,13 +63,18 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
     validateBulkUpgradeRequest: () => ({ ok: true, upgrades: changes }) };
   const coordinator = new UpgradeAssistantCoordinator({
     platform: { getSetting: (key, fallback) => key === 'security.publicAdvisoryCheck' ? !off : fallback, findFiles: async () => [] },
-    sink: { postMessage: message => messages.push(message) },
+    sink: { postMessage: message => { messages.push(message); if (message.phase) phase = message.phase; } },
     httpClient: {
-      get: async url => {
+      get: async (url, options) => {
         const name = url.includes('/peer') ? 'peer' : 'app';
         const metadata = version => ({ name, version, exports: './index.js', dependencies: {},
           ...(name === 'peer' && coordinated ? { peerDependencies: { app: version === '1.0.0' ? '^1' : '>=2' } } : {}) });
         const exactVersion = new URL(url).pathname.split('/').at(-1);
+        if (phase === 'smart-plan' && name === 'peer' && !cancelled &&
+            ((cancelAt === 'candidate-metadata' && exactVersion === 'peer') ||
+             (cancelAt === 'target-metadata' && /^\d+\.\d+\.\d+$/.test(exactVersion)))) {
+          await cancel(options?.signal);
+        }
         if (/^\d+\.\d+\.\d+$/.test(exactVersion)) return { status: 200, headers: {}, body: JSON.stringify(metadata(exactVersion)) };
         return { status: 200, headers: {}, body: JSON.stringify({ name, 'dist-tags': { latest: '3.0.0' },
           versions: { '1.0.0': metadata('1.0.0'), '2.0.0': metadata('2.0.0'), '3.0.0': metadata('3.0.0') } }) };
@@ -83,11 +97,24 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
     ? coordinator.handleAnalyzeBulkUpgrade({ requestId: 'review', changes: changes.map(change => ({ package: change.packageName, target: change.target })) })
     : coordinator.handleAnalyzeUpgrade({ requestId: 'review', package: 'app', target: changes[0].target });
   await work;
+  if (cancelAt) return { cancelled, messages, resolvedManifests, coordinator };
   const result = messages.findLast(message => message.status === 'upgrade-analysis');
   assert.ok(result, `expected completed review, got ${JSON.stringify(messages.filter(message => message.status === 'upgrade-error'))}`);
   assert.equal(isHostToWebviewMessage(result), true);
   await coordinator.handleCancelUpgrade({ analysisId: result.analysis.analysisId });
   return { result: result.analysis, messages, posts, resolvedManifests };
+}
+
+for (const cancelAt of ['candidate-metadata', 'target-metadata', 'resolution']) {
+  test(`closing a coordinated review during ${cancelAt} aborts work and starts no further resolvers`, async () => {
+    const { cancelled, messages, resolvedManifests, coordinator } = await analyze({ coordinated: true, cancelAt });
+    assert.ok(cancelled, 'the cancellation point was reached');
+    assert.equal(cancelled.signal?.aborted, true, 'the active metadata request or resolver receives the review abort');
+    assert.equal(resolvedManifests.length, cancelled.resolverStarts, 'no resolver starts after closing');
+    assert.equal(messages.some(message => message.status === 'upgrade-analysis'), false);
+    assert.equal(messages.some(message => message.status === 'upgrade-error'), false);
+    assert.equal(coordinator.isBusy(), false, 'cancellation drains work and releases the reservation');
+  });
 }
 
 test('clean-row coordinator review audits its proposed graph once after compatibility is published', async () => {

@@ -1564,6 +1564,7 @@ export class UpgradeAssistantCoordinator {
         const endSmartPlan = performance.start('smart-plan search');
         const planned = await planSmartUpgrade({
           graph,
+          signal: analysisAbort.signal,
           initialAnalysis: analysis,
           upgradeableDirectDependencies,
           candidateProvider: {

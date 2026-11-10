@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { auditInstalledPeer } from './helpers/installed-peer-security.mjs';
 
 const require = createRequire(import.meta.url);
 const reactUrl = pathToFileURL(require.resolve('react')).href;
@@ -70,6 +71,17 @@ function inspect(Component, analysis) {
 }
 
 for (const [name, Component] of [['embedded', UpgradeReviewPanel], ['standalone', UpgradeAnalysisModal]]) {
+  for (const coordinated of [false, true]) {
+    test(`${name} ${coordinated ? 'coordinated' : 'single'} review displays auto-installed peer findings and requires consent`, async () => {
+      state.values = [];
+      const result = inspect(Component, review(coordinated, await auditInstalledPeer()));
+      assert.match(result.html, /peer@3\.0\.0/);
+      assert.match(result.html, /child@4\.0\.0/);
+      assert.match(result.html, /Transitive dependency/);
+      assert.equal(result.action.disabled, true);
+      assert.equal(result.consent.required, true);
+    });
+  }
   for (const coordinated of [false, true]) {
     test(`${name} ${coordinated ? 'coordinated' : 'single'} review requires consent and resets it when the proposal changes`, () => {
       state.values = [];

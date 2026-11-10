@@ -56,7 +56,7 @@ export function resolveNodeAlongPath(graph: DependencyGraph, path: readonly stri
   let current = directNodes(graph).find((node) => node.name === rootName) ?? null;
   if (current === null) return null;
   for (const name of rest) {
-    current = resolveDependency(graph, current.path, name, ['runtime', 'optional']);
+    current = resolveDependency(graph, current.path, name);
     if (current === null) return null;
   }
   return current;
