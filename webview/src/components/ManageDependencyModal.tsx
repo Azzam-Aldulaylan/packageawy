@@ -3,7 +3,13 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent
 
 import type { PackageRow, Severity } from '../../../src/core/types.js';
 import type { DependencyFinding } from '../../../src/core/hygiene/types.js';
-import type { RemoveAnalysisPresentation, UpgradeAnalysisPresentation, UpgradeResultPresentation } from '../../../src/host/webviewProtocol.js';
+import type {
+  RemoveAnalysisPresentation,
+  RemoveProgressPhase,
+  RemoveResultPresentation,
+  UpgradeAnalysisPresentation,
+  UpgradeResultPresentation,
+} from '../../../src/host/webviewProtocol.js';
 import type { UpgradeAnalysisSections } from '../../../src/host/upgradeAnalysisSections.js';
 import {
   shouldQuarantineUpgradeDerivedData,
@@ -17,6 +23,7 @@ import type { RemovalImpactState } from '../removalImpactState.js';
 import type { TransitiveFixUiState } from '../transitiveRemediationState.js';
 import { OverviewPanel } from './OverviewPanel.js';
 import { PackageIcon } from './PackageIcon.js';
+import { RemovalResultPanel, RemovalRunningPanel } from './RemovalProgressPanels.js';
 import { RemovalReviewPanel } from './RemovalReviewPanel.js';
 import { StatusBadge } from './StatusBadge.js';
 import { UpgradeReviewPanel } from './UpgradeReviewPanel.js';
@@ -63,11 +70,25 @@ interface RemovalReviewState {
   onConfigureVerification: () => void;
 }
 
+/** A removal this dialog started: running, or finished with the host's result. */
+export type ManageRemovalRun =
+  | { phase: 'running'; progress: RemoveProgressPhase | null }
+  | { phase: 'result'; result: RemoveResultPresentation };
+
 /**
  * The Manage dialog footer line. The read-only promise holds only until a
  * change runs from this dialog. After that, say what happened instead.
  */
-export function manageFooterNote(result: UpgradeResultPresentation | null): string | null {
+export function manageFooterNote(
+  result: UpgradeResultPresentation | null,
+  removal: ManageRemovalRun | null = null
+): string | null {
+  if (removal !== null) {
+    if (removal.phase === 'running') return null;
+    return removal.result.outcome === 'rolled-back'
+      ? 'Your dependency files were restored.'
+      : 'Changes were applied to package.json and the lockfile.';
+  }
   if (result === null) {
     return 'Analysis does not modify your project. Registry metadata and the local package manager may be used during analysis.';
   }
@@ -291,6 +312,7 @@ export function ManageDependencyModal({
   upgradeEnrichment,
   upgrade,
   removal,
+  removalRun = null,
   onAnalyzeRemediation,
   onReviewRemediation,
   onApplyRemediation,
@@ -327,6 +349,8 @@ export function ManageDependencyModal({
   upgradeEnrichment: UpgradeEnrichmentUiState | null;
   upgrade: UpgradeReviewState;
   removal: RemovalReviewState;
+  /** Set while a removal started here runs and while its result is shown. */
+  removalRun?: ManageRemovalRun | null;
   onAnalyzeRemediation: (packageName: string) => void;
   onReviewRemediation: (packageName: string, analysisId: string) => void;
   onApplyRemediation: (analysisId: string) => void;
@@ -342,7 +366,7 @@ export function ManageDependencyModal({
   closeLabel?: string;
 }): ReactElement {
   const dialogRef = useRef<HTMLDivElement | null>(null);
-  const footerNote = manageFooterNote(upgradeResult);
+  const footerNote = manageFooterNote(upgradeResult, removalRun);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocused = useRef<Element | null>(null);
 
@@ -519,6 +543,10 @@ export function ManageDependencyModal({
         onOpenUsageReference={onOpenUsageReference}
       />
     );
+  } else if (removalRun?.phase === 'running') {
+    content = <RemovalRunningPanel row={row} progress={removalRun.progress} />;
+  } else if (removalRun?.phase === 'result') {
+    content = <RemovalResultPanel row={row} result={removalRun.result} />;
   } else {
     content = (
       <RemovalReviewPanel
@@ -586,7 +614,7 @@ export function ManageDependencyModal({
                 {closeLabel}
               </DirectionalButton>
             )}
-            <button type="button" className="modal__close" onClick={onClose} ref={closeButtonRef} aria-label={closeLabel} disabled={blockClose}>
+            <button type="button" className="modal__close" onClick={onClose} ref={closeButtonRef} aria-label="Close dialog" disabled={blockClose}>
               <IconX />
             </button>
           </div>
@@ -623,7 +651,7 @@ export function ManageDependencyModal({
             label="Removal review"
             icon={<IconTrash />}
             active={activeTab === 'removal'}
-            dotTone={removal.error !== null ? 'critical' : removal.active ? 'active' : undefined}
+            dotTone={removal.error !== null ? 'critical' : removal.active || removalRun?.phase === 'running' ? 'active' : undefined}
             onSelect={onChangeTab}
           />
         </nav>
@@ -637,7 +665,8 @@ export function ManageDependencyModal({
           {content}
         </div>
 
-        {(activeTab === 'upgrade' && upgrade.analysis !== null) || (activeTab === 'removal' && removal.analysis !== null) ? null : (
+        {(activeTab === 'upgrade' && upgrade.analysis !== null) ||
+        (activeTab === 'removal' && removal.analysis !== null && removalRun === null) ? null : (
           <footer className="modal__footer">
             {footerNote === null ? null : (
               <p className="manage-modal__footer-note">

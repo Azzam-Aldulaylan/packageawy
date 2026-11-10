@@ -247,10 +247,19 @@ function DependencyCheckCard({
           label="Used in source code"
           value={sourceValue}
         />
+        {/* Peer requirements come from the lockfile graph, which is read even
+            when the usage scan is incomplete. A required peer always blocks,
+            so an assessment without peer evidence means none was found. */}
         <DependencyCheckItem
-          tone={!known ? 'unknown' : peerEvidence.length === 0 ? 'ok' : assessment?.status === 'blocked' ? 'blocked' : 'warning'}
+          tone={assessment === undefined ? 'unknown' : peerEvidence.length === 0 ? 'ok' : assessment.status === 'blocked' ? 'blocked' : 'warning'}
           label="Peer dependencies"
-          value={!known ? 'Not checked' : peerEvidence.length === 0 ? 'No conflicts' : `${peerEvidence.length} requirement${peerEvidence.length === 1 ? '' : 's'}`}
+          value={
+            assessment === undefined
+              ? 'Not checked'
+              : peerEvidence.length === 0
+                ? 'No conflicts in the lockfile'
+                : `${peerEvidence.length} requirement${peerEvidence.length === 1 ? '' : 's'}`
+          }
         />
         <DependencyCheckItem
           tone={!known ? 'unknown' : projectEvidence.length === 0 ? 'ok' : 'warning'}

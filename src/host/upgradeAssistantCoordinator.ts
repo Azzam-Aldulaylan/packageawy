@@ -2174,8 +2174,8 @@ export class UpgradeAssistantCoordinator {
     }
   }
 
-  async handleConfirmRemove(message: AnalysisMessage): Promise<void> {
-    await this.executeStoredRemoval(message.analysisId, message);
+  async handleConfirmRemove(message: AnalysisMessage & { resultInDialog?: true }): Promise<void> {
+    await this.executeStoredRemoval(message.analysisId, message, message.resultInDialog === true);
   }
 
   handleCancelRemove(message: CancelRemoveMessage): void {
@@ -3368,7 +3368,11 @@ export class UpgradeAssistantCoordinator {
    * package/version input at all and simply reconciles whatever the host
    * already staged.
    */
-  private async executeStoredRemoval(analysisId: string, optIn: VerificationOptInRequest = {}): Promise<void> {
+  private async executeStoredRemoval(
+    analysisId: string,
+    optIn: VerificationOptInRequest = {},
+    resultInDialog = false
+  ): Promise<void> {
     const stored = this.removal;
     const now = Date.now();
     if (stored === undefined || stored.id !== analysisId || now >= stored.expiresAt) {
@@ -3533,6 +3537,7 @@ export class UpgradeAssistantCoordinator {
             }),
         install: {
           execute: async () => {
+            this.options.sink.postMessage({ status: 'remove-progress', analysisId: stored.id, phase: 'installing' });
             const outcome = await prepared.execute();
             return outcome.ok
               ? { status: 'succeeded' as const }
@@ -3541,6 +3546,7 @@ export class UpgradeAssistantCoordinator {
         },
         verifier: {
           verify: async () => {
+            this.options.sink.postMessage({ status: 'remove-progress', analysisId: stored.id, phase: 'verifying' });
             const checks: Array<{ id: string; status: 'passed' | 'failed'; message?: string }> = [];
             try {
               const appliedManifestText = await readFile(manifestPath, 'utf8');
@@ -3618,6 +3624,9 @@ export class UpgradeAssistantCoordinator {
           ? await captureSmartCleanupRestoreFiles(files, transaction.keptSnapshot)
           : undefined;
 
+      if (!this.options.isDisposed()) {
+        this.options.sink.postMessage({ status: 'remove-progress', analysisId: stored.id, phase: 'refreshing' });
+      }
       // Reload the kept/restored/partial state while the coordinator still owns the project-wide mutation lock.
       // Smart Cleanup also performs one bounded final reread so its report is
       // correlated to the exact source that produced the refreshed snapshot.
@@ -3743,7 +3752,8 @@ export class UpgradeAssistantCoordinator {
             ...keepRestorePoint(),
           },
         });
-        this.options.platform.showInformationMessage(message);
+        // The Manage dialog that started this removal shows the result itself.
+        if (!resultInDialog) this.options.platform.showInformationMessage(message);
       } else if (presentation.kind === 'error') {
         this.options.sink.postMessage({
           status: 'remove-error',
@@ -3766,7 +3776,7 @@ export class UpgradeAssistantCoordinator {
             },
           });
         }
-        this.options.platform.showWarningMessage(presentation.message);
+        if (!resultInDialog) this.options.platform.showWarningMessage(presentation.message);
       }
     } catch (cause) {
       if (!this.options.isDisposed()) {

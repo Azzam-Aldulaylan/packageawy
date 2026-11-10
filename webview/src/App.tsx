@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
+import type { PackageRow } from '../../src/core/types.js';
 import type { DependencyFinding } from '../../src/core/hygiene/types.js';
 import type { DependencyTypeFilter as DependencyTypeFilterValue } from '../../src/host/dependencyTypeFilter.js';
 import { dependencyTypeFilterCounts, dependencyTypeFilterPredicate } from '../../src/host/dependencyTypeFilter.js';
@@ -80,7 +81,18 @@ import { IconBrand, IconBroom, IconListChecks, IconRefresh, IconSliders } from '
 import type { RemovalImpactState } from './removalImpactState.js';
 import { remediationPlanFromState } from './transitiveRemediationState.js';
 import type { TransitiveFixUiState } from './transitiveRemediationState.js';
-import { dashboardProjectKey, dialogsAfterOpenRequest, manageRowAfterSnapshot } from './manageDialogState.js';
+import {
+  beginManageRemoval,
+  dashboardProjectKey,
+  dialogsAfterOpenRequest,
+  manageDialogRow,
+  manageRemovalAfterProgress,
+  manageRemovalAfterResult,
+  manageRemovalAfterSnapshot,
+  manageRemovalHeldPackage,
+  manageRowAfterSnapshot,
+} from './manageDialogState.js';
+import type { ManageRemovalHold } from './manageDialogState.js';
 import { buildSmartCleanupPlan } from './smartCleanupPlanAdapter.js';
 import {
   createSmartCleanupState,
@@ -313,6 +325,15 @@ export function App(): ReactElement {
   // ManageDependencyModal) because Overview's action cards need to
   // switch it from outside the tab they're rendered in.
   const [manageTab, setManageTab] = useState<ManageTabId>('overview');
+  // A removal confirmed from Manage, held until the dialog closes so the
+  // dialog can show progress and the result after the package leaves the
+  // dashboard. See manageDialogState.ts.
+  const [manageRemoval, setManageRemovalState] = useState<ManageRemovalHold<PackageRow> | null>(null);
+  const manageRemovalRef = useRef<ManageRemovalHold<PackageRow> | null>(null);
+  const setManageRemoval = useCallback((next: ManageRemovalHold<PackageRow> | null) => {
+    manageRemovalRef.current = next;
+    setManageRemovalState(next);
+  }, []);
   const [upgradeTargetState, setUpgradeTargetState] = useState<UpgradeTargetLoadState>({ phase: 'idle' });
   const [selectedManageTarget, setSelectedManageTarget] = useState<string | null>(null);
   const nextTargetRequestIdRef = useRef(0);
@@ -592,6 +613,19 @@ export function App(): ReactElement {
         return;
       }
 
+      if (incoming.status === 'remove-progress') {
+        setManageRemoval(manageRemovalAfterProgress(manageRemovalRef.current, incoming.analysisId, incoming.phase));
+        return;
+      }
+
+      if (incoming.status === 'remove-error' && manageRemovalRef.current?.phase === 'running') {
+        // Show the failure in the Removal review that started the removal,
+        // even if a rescan during the run reset the review state.
+        setManageRemoval(null);
+        removeOriginRef.current = 'manage-dependency';
+        setRemoveOrigin('manage-dependency');
+      }
+
       if (incoming.status === 'remove-error') {
         setRemoveBusy(false);
         const smartCleanupRemoval = removeOriginRef.current === 'smart-cleanup';
@@ -688,6 +722,20 @@ export function App(): ReactElement {
           smartCleanupRestoreRef.current = null;
           dispatchSmartCleanup({ type: 'restore-finished' });
         }
+        return;
+      }
+
+      if (incoming.status === 'remove-result' && manageRemovalRef.current?.analysisId === incoming.result.analysisId) {
+        setManageRemoval(manageRemovalAfterResult(manageRemovalRef.current, incoming.result));
+        activeRemoveRef.current = null;
+        removeOriginRef.current = null;
+        setActiveRemove(null);
+        setActiveRemoveChanges([]);
+        setRemoveMatchTags(new Map());
+        setRemoveAnalysis(null);
+        setRemoveBusy(false);
+        setRemoveError(null);
+        setRemoveOrigin(null);
         return;
       }
 
@@ -1110,15 +1158,19 @@ export function App(): ReactElement {
         // package again (files reset outside VS Code) would reopen it.
         const previousData = dashboardDataRef.current;
         const rememberedManageRow = manageRowRef.current;
+        const removalHold = manageRemovalAfterSnapshot(manageRemovalRef.current, smartCleanupProjectKey(incoming.data));
+        if (removalHold !== manageRemovalRef.current) setManageRemoval(removalHold);
         if (
           rememberedManageRow !== null &&
           manageRowAfterSnapshot(
             rememberedManageRow,
             previousData === null ? null : smartCleanupProjectKey(previousData),
             smartCleanupProjectKey(incoming.data),
-            incoming.data.rows.map((row) => row.name)
+            incoming.data.rows.map((row) => row.name),
+            manageRemovalHeldPackage(removalHold)
           ) === null
         ) {
+          setManageRemoval(null);
           manageRowRef.current = null;
           setManageRow(null);
           setManageTab('overview');
@@ -1484,12 +1536,24 @@ export function App(): ReactElement {
   const requestConfirmRemove = useCallback(() => {
     if (removeAnalysis === null) return;
     setRemoveBusy(true);
+    // A removal from the open Manage dialog keeps that dialog on screen and
+    // shows its result there, so the host skips its own notification.
+    const dashboard = dashboardDataRef.current;
+    const manageRowName = manageRowRef.current;
+    const heldRow =
+      removeOrigin === 'manage-dependency' && manageRowName !== null && manageRowName === activeRemove && dashboard !== null
+        ? dashboard.rows.find((candidate) => candidate.name === manageRowName)
+        : undefined;
+    if (heldRow !== undefined && dashboard !== null) {
+      setManageRemoval(beginManageRemoval(heldRow, smartCleanupProjectKey(dashboard), removeAnalysis.analysisId));
+    }
     vscode.postMessage({
       type: 'confirm-remove',
       analysisId: removeAnalysis.analysisId,
+      ...(heldRow === undefined ? {} : { resultInDialog: true as const }),
       ...confirmVerificationFields(removeAnalysis.verification, optInFor(removeAnalysis.analysisId)),
     });
-  }, [removeAnalysis, optInFor]);
+  }, [activeRemove, removeAnalysis, removeOrigin, optInFor, setManageRemoval]);
 
   // Same immediate-client-side-close discipline as requestCancelUpgrade.
   // When this review was opened from Manage (removeOrigin ===
@@ -1663,7 +1727,8 @@ export function App(): ReactElement {
     manageRowRef.current = packageName;
     setManageRow(packageName);
     setManageTab('overview');
-  }, []);
+    if (manageRemovalRef.current?.phase !== 'running') setManageRemoval(null);
+  }, [setManageRemoval]);
 
   // Opening Manage dependency for a package kicks off its usage analysis
   // quietly in the background: no button press needed, and never part of
@@ -1747,6 +1812,7 @@ export function App(): ReactElement {
     if (removeOrigin === 'manage-dependency' && activeRemove !== null) requestCancelRemove();
     manageRowRef.current = null;
     setManageRow(null);
+    setManageRemoval(null);
     upgradeResultRef.current = null;
     setUpgradeResult(null);
     upgradeEnrichmentRef.current = null;
@@ -1804,6 +1870,7 @@ export function App(): ReactElement {
     removeOrigin,
     activeRemove,
     requestCancelRemove,
+    setManageRemoval,
   ]);
 
   // Single-package removal reuses the identical bulk-remove machinery with
@@ -1824,11 +1891,13 @@ export function App(): ReactElement {
           confirmBusy
         )
       ) return;
+      if (manageRemovalRef.current?.phase === 'running') return;
+      setManageRemoval(null);
       setPendingManageRemoval(packageName);
       setRemoveError(null);
       requestAnalyzeRemovalImpact([packageName]);
     },
-    [activeUpgrade, analysis, confirmBusy, requestAnalyzeRemovalImpact, upgradeOrigin]
+    [activeUpgrade, analysis, confirmBusy, requestAnalyzeRemovalImpact, setManageRemoval, upgradeOrigin]
   );
 
   useEffect(() => {
@@ -1889,6 +1958,7 @@ export function App(): ReactElement {
     if (openManageRow !== null) {
       // Same rule as the Manage dialog's own Close: running work keeps it open.
       const manageCloseBlocked =
+        manageRemovalRef.current?.phase === 'running' ||
         removalImpact.phase === 'analyzing' ||
         confirmBusy ||
         removeBusy ||
@@ -2384,8 +2454,13 @@ export function App(): ReactElement {
 
       {manageRow !== null && data !== undefined
         ? (() => {
-            const row = data.rows.find((candidate) => candidate.name === manageRow);
+            const row = manageDialogRow(manageRow, data.rows, manageRemoval);
             if (row === undefined) return null;
+            const heldRemoval = manageRemoval !== null && manageRemoval.row.name === row.name ? manageRemoval : null;
+            const removalRunning = heldRemoval?.phase === 'running';
+            // The removed package is no longer in the project, so nothing
+            // else in this dialog can act on it.
+            const heldRowGone = heldRemoval !== null && !data.rows.some((candidate) => candidate.name === row.name);
             const upgradeActive = upgradeOrigin === 'manage-dependency' && activeUpgrade === row.name;
             const removeActive =
               (removeOrigin === 'manage-dependency' && activeRemove === row.name) || pendingManageRemoval === row.name;
@@ -2400,12 +2475,16 @@ export function App(): ReactElement {
             // coexist. Preserve every other global blocker and
             // keep actual removal/remediation work protected.
             const manageActionsDisabled =
+              removalRunning ||
+              heldRowGone ||
               loading ||
               (activeUpgrade !== null && !embeddedUpgradeCanYield) ||
               remediationBusy ||
               cleanupState.phase === 'analyzing' ||
               (activeRemove !== null && !embeddedRemovalCanYield);
             const manageUpgradeDisabled =
+              removalRunning ||
+              heldRowGone ||
               coreDataIncomplete ||
               loading ||
               cleanupState.phase === 'analyzing' ||
@@ -2431,6 +2510,7 @@ export function App(): ReactElement {
                 advisoriesAvailable={data.availability.advisories === 'complete'}
                 advisoriesOff={data.availability.advisories === 'off'}
                 blockClose={
+                  removalRunning ||
                   removalImpact.phase === 'analyzing' ||
                   confirmBusy ||
                   removeBusy ||
@@ -2475,6 +2555,13 @@ export function App(): ReactElement {
                   onConfirm: requestConfirmRemove,
                   onConfigureVerification: requestConfigureVerification,
                 }}
+                removalRun={
+                  heldRemoval === null
+                    ? null
+                    : heldRemoval.phase === 'result' && heldRemoval.result !== null
+                      ? { phase: 'result', result: heldRemoval.result }
+                      : { phase: 'running', progress: heldRemoval.progress }
+                }
                 onAnalyzeRemediation={requestAnalyzeRemediation}
                 onReviewRemediation={reviewRemediation}
                 onApplyRemediation={requestApplyRemediation}
