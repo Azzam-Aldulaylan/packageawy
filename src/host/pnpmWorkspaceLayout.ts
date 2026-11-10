@@ -121,6 +121,8 @@ function expandBraces(pattern: string, limit = { left: 256 }): string[] | undefi
 
 /** True when every expansion of a pattern is relative and never steps up with `..`. */
 function isContainedPattern(pattern: string): boolean {
+  // Only plain names, `/`, `*`, `?` and brace lists are interpreted. Escapes, classes and extglobs are not.
+  if (!/^[\w@.\-/*?{},]*$/.test(pattern)) return false;
   // Numeric ranges only produce digits. A character range such as {-..0} can produce `.` and `/`, so it is not interpreted.
   const ranges = pattern.match(/\{[^{},]*\.\.[^{},]*\}/g) ?? [];
   if (ranges.some((range) => !/^\{-?\d+\.\.-?\d+(?:\.\.-?\d+)?\}$/.test(range))) return false;
@@ -271,7 +273,7 @@ export async function readPnpmWorkspaceLayout(input: {
   }
   const patterns = Array.isArray(settings['packages']) ? settings['packages'] : [];
   if (patterns.some((pattern) => typeof pattern !== 'string' || !isContainedPattern(pattern.replace(/^!/, '')))) {
-    reasons.push('A workspace package pattern points outside the workspace.');
+    reasons.push('A workspace package pattern points outside the workspace or uses syntax the review does not interpret.');
   }
   if (patterns.some((pattern) => typeof pattern === 'string' && (!/^!(?!\()/.test(pattern) && mayMatchGitDir(pattern)))) {
     reasons.push('A workspace package pattern can select a directory inside .git, which the review does not stage.');

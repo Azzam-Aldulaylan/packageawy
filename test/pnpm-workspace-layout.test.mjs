@@ -114,7 +114,7 @@ test('local specifiers are classified like pnpm and must stay inside the workspa
 test('package patterns that leave the workspace are unknown, in every brace expansion', async (t) => {
   const fine = await workspace(t, { yaml: "packages:\n  - '{apps,packages}/*'\n  - 'packages/p{1..2}'\n" });
   assert.equal((await read(fine)).unavailableReason, undefined);
-  for (const pattern of ['../shared/*', '/abs/*', '!../x', '{.,.}{.,.}/outside/*', '{/,packages/}*', '{a,{b,../c}}/*', '{-..0}{-..0}/outside', '{-..0}git/*', '{a..z}/*']) {
+  for (const pattern of ['../shared/*', '/abs/*', '!../x', '{.,.}{.,.}/outside/*', '{/,packages/}*', '{a,{b,../c}}/*', '{-..0}{-..0}/outside', '{-..0}git/*', '{a..z}/*', '.\\./*', 'apps/\\*', '+(..)/*']) {
     const root = await workspace(t, { yaml: `packages:\n  - 'apps/*'\n  - '${pattern}'\n` });
     assert.match((await read(root)).unavailableReason, /pattern points outside/, pattern);
   }
@@ -225,7 +225,7 @@ test('a bare CR in .npmrc separates lines, and protocols are matched in any case
 test('a package pattern that can select a directory inside .git is unknown', async (t) => {
   for (const pattern of ['.git/*', '.GIT/hidden', '.{git,other}/*', '.g*/*', 'apps/.git/x', '@(.git)/*', '[.]git/*', '!(x)/*']) {
     const root = await workspace(t, { yaml: `packages:\n  - 'apps/*'\n  - '${pattern}'\n` });
-    assert.match((await read(root)).unavailableReason, /inside \.git/, pattern);
+    assert.match((await read(root)).unavailableReason, /inside \.git|pattern points outside/, pattern);
   }
   for (const pattern of ['apps/*', 'packages/**', '.internal/*', '!.git/*']) {
     const root = await workspace(t, { yaml: `packages:\n  - 'apps/*'\n  - '${pattern}'\n` });
