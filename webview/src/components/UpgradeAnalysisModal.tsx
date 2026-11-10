@@ -53,11 +53,13 @@ function UpgradeAnalysisBodyContent({
   onOpenUsageReference,
   onConfigureVerification,
   pendingChanges,
+  advisoriesOff = false,
 }: {
   packageName: string;
   targetVersion: string;
   analyzingPhase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
   analysis: UpgradeAnalysisPresentation | null;
+  advisoriesOff?: boolean;
   onOpenAdvisory: (packageName: string, advisoryId: string | number, path: string[], reference?: string) => void;
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
   onConfigureVerification: () => void;
@@ -125,6 +127,7 @@ function UpgradeAnalysisBodyContent({
           rootPackageName={analysis.package}
           onOpenAdvisory={onOpenAdvisory}
           emphasize={securityNeedsAttention}
+          advisoriesOff={advisoriesOff}
         />
         <VerificationSection
           analysisId={analysis.analysisId}
@@ -171,11 +174,13 @@ export function UpgradeAnalysisModal({
   onOpenAdvisory,
   onOpenUsageReference,
   pendingChanges,
+  advisoriesOff = false,
 }: {
   packageName: string;
   targetVersion: string;
   analyzingPhase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
   analysis: UpgradeAnalysisPresentation | null;
+  advisoriesOff?: boolean;
   busy: boolean;
   hardStale: boolean;
   now: number;
@@ -314,6 +319,7 @@ export function UpgradeAnalysisModal({
             onOpenUsageReference={onOpenUsageReference}
             onConfigureVerification={onConfigureVerification}
             pendingChanges={pendingChanges}
+            advisoriesOff={advisoriesOff}
           />
         </div>
 

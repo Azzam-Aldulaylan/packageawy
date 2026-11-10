@@ -46,6 +46,13 @@ class SettingsStateTest {
     }
 
     @Test
+    fun `the public advisory check is on by default and follows the project value`() {
+        assertTrue(ProjectSettingsState().publicAdvisoryCheck)
+        assertEquals(true, SettingsState().snapshot()["security.publicAdvisoryCheck"])
+        assertEquals(false, SettingsState().snapshot(null, publicAdvisoryCheck = false)["security.publicAdvisoryCheck"])
+    }
+
+    @Test
     fun `project state applies its override only when enabled`() {
         assertNull(ProjectSettingsState().verificationScriptsOverride())
         assertNull(ProjectSettingsState(overrideVerificationScripts = false, verificationScripts = mutableListOf("build")).verificationScriptsOverride())

@@ -36,7 +36,7 @@ import { DEFAULT_EXCLUDED_DIRS, isSameProjectReload, lockfileWatchDirs, projectC
 import { NodeHttpClient } from '../core/registry/http.js';
 import type { PerformanceRecorder } from '../core/performance/measurement.js';
 import { createPerformanceSession } from '../core/performance/measurement.js';
-import { DashboardController } from './dashboardController.js';
+import { DashboardController, PUBLIC_ADVISORY_CHECK_SETTING } from './dashboardController.js';
 import type { BackgroundRefreshOutcome, MessageSink } from './dashboardController.js';
 import type { BuildInfo } from './dashboardData.js';
 import type { ReloadSource } from './fileChangeReload.js';
@@ -127,6 +127,7 @@ export class DashboardPanel {
   private readonly projectCacheStore: PersistentProjectCacheStore;
   private readonly auditRunner = new NodeAuditRunner();
   private readonly backgroundTimer: BackgroundRefreshTimer;
+  private readonly advisorySettingSubscription: Disposable;
   /** Computed once at construction: the same value for every controller/reload this panel session ever builds. See DashboardData's doc for why this exists (confirming a dev's rebuild actually loaded). */
   private readonly buildInfo: BuildInfo;
   /** Set once onDidDispose fires, so an async continuation mid-flight can bail before posting into a gone webview. */
@@ -276,6 +277,11 @@ export class DashboardPanel {
     this.backgroundTimer = new BackgroundRefreshTimer(realTimerScheduler, BACKGROUND_REFRESH_INTERVAL_MS, () => {
       this.onBackgroundTick();
     });
+    // Turning the advisory check on or off changes what a scan sends and
+    // shows, so the open project is scanned again, like a manual Refresh.
+    this.advisorySettingSubscription = platform.onDidChangeSetting(PUBLIC_ADVISORY_CHECK_SETTING, () => {
+      if (!this.disposed) void this.handle({ type: 'refresh' });
+    });
 
     this.channel.onDidReceiveMessage((raw: unknown) => {
       if (!isWebviewToHostMessage(raw)) return;
@@ -305,6 +311,7 @@ export class DashboardPanel {
       this.branchChangeCoordinator.dispose();
       this.fileChangeCoordinator.dispose();
       this.backgroundTimer.dispose();
+      this.advisorySettingSubscription.dispose();
       this.etagStore.dispose();
       this.projectCacheStore.dispose();
       DashboardPanel.current = undefined;
@@ -432,6 +439,10 @@ export class DashboardPanel {
     }
     if (message.type === 'configure-verification') {
       this.upgradeCoordinator.handleConfigureVerification();
+      return;
+    }
+    if (message.type === 'configure-advisory-check') {
+      this.platform.openSettings(PUBLIC_ADVISORY_CHECK_SETTING);
       return;
     }
     if (message.type === 'analyze-remediation') {
@@ -1125,8 +1136,12 @@ export class DashboardPanel {
       ttlMinutesProvider: this.ttlMinutesProvider,
       performanceEnabled: this.performanceEnabled,
       progressEnabled: true,
+      publicAdvisoryCheckEnabled: this.publicAdvisoryCheckEnabled,
     });
   }
+
+  private readonly publicAdvisoryCheckEnabled = (root: string): boolean =>
+    this.platform.getSetting<boolean>(PUBLIC_ADVISORY_CHECK_SETTING, true, root);
 
   private readonly performanceEnabled = (): boolean =>
     this.platform.getSetting<boolean>('debug.performance', false);

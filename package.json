@@ -104,6 +104,12 @@
           "default": [],
           "description": "Package.json script names to run after an install as explicit upgrade verification (for example test, build, or typecheck). No scripts run by default."
         },
+        "packageawy.security.publicAdvisoryCheck": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Check dependencies for known vulnerabilities. Each scan sends the name and installed version of every package in the dependency tree, including private packages, to npm's public advisory service at registry.npmjs.org, sends affected package names to api.github.com for CVE and GHSA identifiers, and runs npm audit. Turn this off to skip these requests for this project or folder. The Vulnerabilities column then reads Off."
+        },
         "packageawy.cacheTtlMinutes": {
           "type": "number",
           "default": 30,

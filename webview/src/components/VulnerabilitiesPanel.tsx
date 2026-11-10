@@ -10,6 +10,7 @@ import {
 } from '../../../src/host/vulnerabilityUiState.js';
 import type { ManageVulnerabilityContext } from '../../../src/host/vulnerabilityUiState.js';
 import { directUpgradeRecommendation } from '../../../src/host/vulnerabilityRecommendation.js';
+import { ADVISORY_CHECK_OFF_TEXT } from '../../../src/host/severityDisplay.js';
 import { remediationPlanFromState } from '../transitiveRemediationState.js';
 import type { TransitiveFixUiState } from '../transitiveRemediationState.js';
 import { IconCheck, IconExternalLink, IconInfo, IconRefresh, IconShield } from '../icons.js';
@@ -264,6 +265,7 @@ export function VulnerabilitiesPanel({
   remediation,
   actionsDisabled,
   advisoriesAvailable,
+  advisoriesOff = false,
   onOpenAdvisory,
   onStartUpgradeReview,
   onAnalyzeRemediation,
@@ -277,6 +279,7 @@ export function VulnerabilitiesPanel({
   remediation: TransitiveFixUiState | undefined;
   actionsDisabled: boolean;
   advisoriesAvailable: boolean;
+  advisoriesOff?: boolean;
   onOpenAdvisory: OpenAdvisoryHandler;
   onStartUpgradeReview: (target: string) => void;
   onAnalyzeRemediation: () => void;
@@ -286,6 +289,15 @@ export function VulnerabilitiesPanel({
   onRetryRemediation: (analysisId: string) => void;
 }): ReactElement {
   const [filter, setFilter] = useState<SeverityFilter>('all');
+
+  if (advisoriesOff) {
+    return (
+      <div className="manage-panel-empty">
+        <IconShield className="manage-panel-empty__icon" />
+        <p>{ADVISORY_CHECK_OFF_TEXT}, so {row.name} was not checked for vulnerabilities.</p>
+      </div>
+    );
+  }
 
   if (!advisoriesAvailable) {
     return (

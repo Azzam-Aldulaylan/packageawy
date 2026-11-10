@@ -75,6 +75,7 @@ import { resolveRemediationRequest } from '../core/advisories/remediationRequest
 import type { RemediationRequestRejection } from '../core/advisories/remediationRequest.js';
 import { evaluateSecurityOutcome } from '../core/advisories/securityOutcome.js';
 import { buildVulnerabilityContexts } from '../core/advisories/vulnerabilityContext.js';
+import { PUBLIC_ADVISORY_CHECK_SETTING } from './dashboardController.js';
 import type { DashboardController, MessageSink } from './dashboardController.js';
 import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.js';
 import { createNodeUpgradeTransactionFileAdapter } from './nodeUpgradeTransactionFiles.js';
@@ -321,6 +322,9 @@ const ANALYSIS_LOOKUP_ERRORS: Record<AnalysisLookupRejection, ProtocolError> = {
   NO_SMART_PLAN: { code: 'NO_SMART_PLAN', message: 'No coordinated upgrade plan was offered for this analysis.' },
   PREFLIGHT_CONFLICT: { code: 'PREFLIGHT_CONFLICT', message: 'Compatibility preflight found blocking peer conflicts.' },
 };
+
+const ADVISORY_CHECK_OFF_MESSAGE = 'Security checks are turned off for this project. Turn them on to check a fix.';
+const ADVISORY_CHECK_OFF: ProtocolError = { code: 'ADVISORY_CHECK_OFF', message: ADVISORY_CHECK_OFF_MESSAGE };
 
 const REMEDIATION_REQUEST_ERRORS: Record<RemediationRequestRejection, ProtocolError> = {
   UNKNOWN_PACKAGE: { code: 'UNKNOWN_PACKAGE', message: 'This package is not part of the current scan.' },
@@ -1887,6 +1891,11 @@ export class UpgradeAssistantCoordinator {
     }
   }
 
+  /** Every path that submits package names for advisories checks this first. */
+  private publicAdvisoryCheckEnabled(root: string): boolean {
+    return this.options.platform.getSetting<boolean>(PUBLIC_ADVISORY_CHECK_SETTING, true, root);
+  }
+
   handleConfigureVerification(): void {
     this.options.platform.openSettings('upgrade.verificationScripts');
   }
@@ -2371,6 +2380,10 @@ export class UpgradeAssistantCoordinator {
       this.options.sink.postMessage({ status: 'remediation-error', package: message.package, error: refusal });
       return;
     }
+    if (!this.publicAdvisoryCheckEnabled(controller.root)) {
+      this.options.sink.postMessage({ status: 'remediation-error', package: message.package, error: ADVISORY_CHECK_OFF });
+      return;
+    }
 
     const eligibility = resolveRemediationRequest(controller.lastResultRows(), message.package);
     if (!eligibility.ok) {
@@ -2552,6 +2565,9 @@ export class UpgradeAssistantCoordinator {
     endMaterialization({ resolved: materialized.ok });
     if (!materialized.ok) {
       throw Object.assign(new Error(materialized.reason), { name: 'RESOLVER_UNAVAILABLE' });
+    }
+    if (!this.publicAdvisoryCheckEnabled(controller.root)) {
+      throw Object.assign(new Error(ADVISORY_CHECK_OFF_MESSAGE), { name: ADVISORY_CHECK_OFF.code });
     }
     const endAdvisories = performance?.start('remediation advisory verification') ?? (() => 0);
     let proposedAdvisories: Map<string, import('../core/types.js').Advisory[]>;
@@ -2793,6 +2809,7 @@ export class UpgradeAssistantCoordinator {
                 packageManager: applied.packageManager,
                 importerId: applied.importerId,
               });
+              if (!this.publicAdvisoryCheckEnabled(applied.root)) throw new Error(ADVISORY_CHECK_OFF_MESSAGE);
               const npmAdvisories = await fetchBulkAdvisories(
                 this.options.httpClient,
                 buildBulkRequestBody(graph),

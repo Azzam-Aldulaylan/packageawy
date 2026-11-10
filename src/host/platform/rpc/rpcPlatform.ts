@@ -97,6 +97,7 @@ export class RpcPlatform implements HostPlatform {
   private readonly headWatches = new Map<number, () => void>();
   private readonly progress = new Map<number, CancellationTokenSource>();
   private readonly processes = new Map<number, ProcessState>();
+  private readonly settingListeners = new Set<{ key: string; listener: () => void }>();
 
   constructor(
     private readonly connection: RpcConnection,
@@ -116,7 +117,11 @@ export class RpcPlatform implements HostPlatform {
       this.trusted = parseDidChangeTrust(params).isWorkspaceTrusted;
     });
     connection.onNotification(Methods.didChangeSettings, (params) => {
+      const previous = this.settings;
       this.settings = { ...parseDidChangeSettings(params).settings };
+      for (const entry of [...this.settingListeners]) {
+        if (JSON.stringify(previous[entry.key]) !== JSON.stringify(this.settings[entry.key])) entry.listener();
+      }
     });
     connection.onNotification(Methods.filesDidChange, (params) => {
       const { watchId, path } = parseFileDidChange(params);
@@ -155,6 +160,12 @@ export class RpcPlatform implements HostPlatform {
     // A value of the wrong type falls back to the default. `0` must never turn ignoreScripts off.
     if (Array.isArray(defaultValue) !== Array.isArray(value) || typeof value !== typeof defaultValue) return defaultValue;
     return value as T;
+  }
+
+  onDidChangeSetting(key: string, listener: () => void): Disposable {
+    const entry = { key, listener };
+    this.settingListeners.add(entry);
+    return { dispose: () => void this.settingListeners.delete(entry) };
   }
 
   async updateWorkspaceSetting(key: string, value: unknown): Promise<void> {

@@ -256,6 +256,7 @@ export function vulnerabilitiesCardValue(
   if (availability.advisories === 'partial') {
     return { count: incompleteCount(metrics.vulnerable), subtitle: 'Install dependencies to complete security checks' };
   }
+  if (availability.advisories === 'off') return { count: 'Off', subtitle: 'Security checks are turned off' };
   return { count: '—', subtitle: 'Advisory data unavailable' };
 }
 
@@ -283,6 +284,10 @@ export function attentionCardValue(metrics: SummaryMetrics, availability: ScanDa
   }
   if (availability.advisories === 'partial') {
     return { count: incompleteCount(metrics.needsAttention), subtitle: 'Install dependencies to complete security checks' };
+  }
+  if (availability.advisories === 'off') {
+    // No advisory facts exist, so only deprecations count here, and that count is exact.
+    return { count: metrics.needsAttention, subtitle: attentionCardSubtitle(metrics) };
   }
   return { count: incompleteCount(metrics.needsAttention), subtitle: 'Advisory data unavailable' };
 }

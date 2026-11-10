@@ -391,6 +391,7 @@ export function UpgradeReviewPanel({
   disabled,
   usage,
   advisoriesAvailable,
+  advisoriesOff = false,
   onAnalyzeUpgrade,
   onTargetChange,
   onConfirm,
@@ -419,6 +420,7 @@ export function UpgradeReviewPanel({
   disabled: boolean;
   usage: UsageRequestState | undefined;
   advisoriesAvailable: boolean;
+  advisoriesOff?: boolean;
   onAnalyzeUpgrade: (target: string) => void;
   onTargetChange: (target: string) => void;
   onConfirm: () => void;
@@ -543,6 +545,7 @@ export function UpgradeReviewPanel({
               targetVersion={targetVersion}
               sections={sections}
               advisoriesAvailable={advisoriesAvailable}
+              advisoriesOff={advisoriesOff}
               onChangeTab={onChangeTab}
           onConfigureVerification={onConfigureVerification}
           onOpenAdvisory={onOpenAdvisory}
@@ -557,7 +560,7 @@ export function UpgradeReviewPanel({
   const expired = upgradeAnalysisFreshness(analysis.analyzedAt, analysis.expiresAt, now) === 'expired';
   const executionBlocked = hardStale || expired;
   const action = upgradeConfirmationAction(coordinated ? analysis : { ...analysis, smartPlan: null });
-  const signals = buildUpgradeReviewSignals(analysis, advisoriesAvailable);
+  const signals = buildUpgradeReviewSignals(analysis, advisoriesAvailable, advisoriesOff);
 
   return withTargetSelector(
     <div className="review-panel">

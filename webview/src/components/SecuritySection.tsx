@@ -48,13 +48,18 @@ export function SecuritySection({
   rootPackageName,
   onOpenAdvisory,
   emphasize,
+  advisoriesOff = false,
 }: {
   security: SecurityOutcome | null;
   rootPackageName: string;
   onOpenAdvisory: (packageName: string, advisoryId: string | number, path: string[], reference?: string) => void;
   emphasize: boolean;
+  /** No advisory facts exist, so a null outcome must not read as "No known vulnerabilities". */
+  advisoriesOff?: boolean;
 }): ReactElement {
-  const display = securityOutcomeDisplay(security?.status ?? 'not-applicable');
+  const display = advisoriesOff && security === null
+    ? { label: 'Security checks are off', className: 'unknown' }
+    : securityOutcomeDisplay(security?.status ?? 'not-applicable');
 
   return (
     <section

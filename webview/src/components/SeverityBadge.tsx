@@ -12,11 +12,13 @@ export function SeverityBadge({
   severity,
   advisoriesAvailable = true,
   checked = true,
+  advisoriesOff = false,
 }: {
   severity: Severity | null;
   advisoriesAvailable?: boolean;
   checked?: boolean;
+  advisoriesOff?: boolean;
 }): ReactElement {
-  const { label, className, reason } = severityDisplay(severity, advisoriesAvailable, checked);
+  const { label, className, reason } = severityDisplay(severity, advisoriesAvailable, checked, advisoriesOff);
   return <span className={`severity severity--${className}`} title={reason} aria-label={reason === undefined ? undefined : `${label}. ${reason}`}>{label}</span>;
 }

@@ -9,13 +9,15 @@ import com.intellij.openapi.project.Project
 import com.intellij.util.messages.Topic
 
 /**
- * Project-level values that override [SettingsState]. Only the verification
- * script list can be overridden, the same value VS Code keeps in the
- * workspace's settings.
+ * Project-level values. The verification script list overrides
+ * [SettingsState], the same value VS Code keeps in the workspace's settings.
+ * The public advisory check is set per project, like VS Code's
+ * resource-scoped `security.publicAdvisoryCheck`.
  */
 data class ProjectSettingsState(
     var overrideVerificationScripts: Boolean = false,
     var verificationScripts: MutableList<String> = mutableListOf(),
+    var publicAdvisoryCheck: Boolean = true,
 ) {
     /** The override to apply, or null when this project uses the IDE-wide value. */
     fun verificationScriptsOverride(): List<String>? = if (overrideVerificationScripts) verificationScripts.toList() else null
@@ -58,7 +60,7 @@ class PackageawyProjectSettings(private val project: Project) : PersistentStateC
     /** Stores [names] as this project's verification scripts. Callers validate them first. */
     fun rememberVerificationScripts(names: List<String>) {
         require(VerificationScriptNames.isValid(names)) { "Invalid verification script names" }
-        update(ProjectSettingsState(overrideVerificationScripts = true, verificationScripts = names.toMutableList()))
+        update(state.copy(overrideVerificationScripts = true, verificationScripts = names.toMutableList()))
     }
 
     companion object {

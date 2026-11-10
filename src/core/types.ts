@@ -88,11 +88,13 @@ export interface VersionInfo {
  * were resolved by this scan. Update metadata fails per package, so its
  * unavailable names are retained instead of collapsing them into null
  * versions that look "up to date". Advisory coverage is partial when the
- * graph contains packages without a resolved version.
+ * graph contains packages without a resolved version. Advisories are 'off'
+ * when the project turned the public advisory check off, so no package names
+ * were sent and no advisory facts exist to show.
  */
 export interface ScanDataAvailability {
   updates: 'complete' | 'partial';
-  advisories: 'complete' | 'partial' | 'unavailable';
+  advisories: 'complete' | 'partial' | 'unavailable' | 'off';
   unavailableUpdatePackages: string[];
 }
 

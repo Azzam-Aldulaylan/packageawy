@@ -10,6 +10,7 @@ import { filterEmptyStateTitle } from '../../src/host/emptyStateCopy.js';
 import type { HygieneFilterId } from '../../src/host/hygieneFilter.js';
 import { hygieneFilterCounts, hygieneFilterPredicate } from '../../src/host/hygieneFilter.js';
 import { manageRemovalReadyPackage } from '../../src/host/manageRemovalFlow.js';
+import { ADVISORY_CHECK_OFF_TEXT } from '../../src/host/severityDisplay.js';
 import type { PageSize } from '../../src/host/pagination.js';
 import { DEFAULT_PAGE_SIZE, paginate } from '../../src/host/pagination.js';
 import type { SummaryFilterId } from '../../src/host/summaryMetrics.js';
@@ -73,7 +74,7 @@ import {
 import type { VerificationOptInSelection, VerificationOptInStore } from './components/VerificationSuggestions.js';
 import type { UpgradeTargetLoadState } from './components/UpgradeTargetSelector.js';
 import type { UsageRequestState } from './components/UsageReferencesPanel.js';
-import { IconBrand, IconBroom, IconListChecks, IconRefresh } from './icons.js';
+import { IconBrand, IconBroom, IconListChecks, IconRefresh, IconSliders } from './icons.js';
 import type { RemovalImpactState } from './removalImpactState.js';
 import { remediationPlanFromState } from './transitiveRemediationState.js';
 import type { TransitiveFixUiState } from './transitiveRemediationState.js';
@@ -90,6 +91,15 @@ import { vscode } from './vscodeApi.js';
 function formatTime(iso: string): string {
   const parsed = new Date(iso);
   return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleTimeString();
+}
+
+/** The project's own choice, so it never counts as missing data. */
+function advisoryFactsSettled(data: DashboardData): boolean {
+  return data.availability.advisories === 'complete' || data.availability.advisories === 'off';
+}
+
+function requestConfigureAdvisoryCheck(): void {
+  vscode.postMessage({ type: 'configure-advisory-check' });
 }
 
 function partialErrorText(data: DashboardData): string | null {
@@ -1795,7 +1805,7 @@ export function App(): ReactElement {
   const data = message !== undefined && 'data' in message ? message.data : undefined;
   const coreDataIncomplete =
     data !== undefined &&
-    (data.availability.updates === 'partial' || data.availability.advisories !== 'complete');
+    (data.availability.updates === 'partial' || !advisoryFactsSettled(data));
 
   // A full packument is fetched only for the dependency whose Manage
   // workspace is open. A fresh dashboard snapshot gets a fresh request id;
@@ -1990,7 +2000,8 @@ export function App(): ReactElement {
     if (smartCleanupMetadata.unavailablePackages.length > 0) {
       partialReasons.push(`exact metadata was unavailable for ${smartCleanupMetadata.unavailablePackages.length} packages`);
     }
-    if (data.availability.advisories !== 'complete') partialReasons.push('security data was unavailable');
+    if (data.availability.advisories === 'off') partialReasons.push('security checks are turned off for this project');
+    else if (data.availability.advisories !== 'complete') partialReasons.push('security data was unavailable');
     if (partialReasons.length > 0) {
       rememberReview();
       dispatchSmartCleanup({
@@ -2339,6 +2350,7 @@ export function App(): ReactElement {
                 upgradeDisabled={manageUpgradeDisabled}
                 updateResolutionAvailable={!data.availability.unavailableUpdatePackages.includes(row.name)}
                 advisoriesAvailable={data.availability.advisories === 'complete'}
+                advisoriesOff={data.availability.advisories === 'off'}
                 blockClose={
                   removalImpact.phase === 'analyzing' ||
                   confirmBusy ||
@@ -2460,6 +2472,7 @@ export function App(): ReactElement {
           onConfigureVerification={requestConfigureVerification}
           onOpenAdvisory={requestOpenAdvisory}
           onOpenUsageReference={requestOpenUsageReference}
+          advisoriesOff={data?.availability.advisories === 'off'}
         />
       ) : null}
 
@@ -2561,7 +2574,7 @@ function Dashboard({
     status === 'stale' ||
     activeRemove !== null ||
     data.availability.updates === 'partial' ||
-    data.availability.advisories !== 'complete';
+    !advisoryFactsSettled(data);
 
   const metrics = useMemo(() => summaryMetrics(data.rows), [data.rows]);
   const unavailableUpdatePackages = useMemo(
@@ -2634,6 +2647,15 @@ function Dashboard({
           Showing partial results: {degraded}.
         </StatusBanner>
       )}
+
+      {data.availability.advisories === 'off' ? (
+        <StatusBanner
+          tone="info"
+          action={{ label: 'Open setting', onClick: requestConfigureAdvisoryCheck, icon: <IconSliders /> }}
+        >
+          {ADVISORY_CHECK_OFF_TEXT}.
+        </StatusBanner>
+      ) : null}
 
       {data.readOnlyReason === undefined ? null : (
         <StatusBanner tone="info">{data.readOnlyReason}</StatusBanner>
@@ -2749,7 +2771,8 @@ function Dashboard({
                 <PackageTable
                   rows={pageResult.pageRows}
                   unavailableUpdatePackages={unavailableUpdatePackages}
-                  advisoriesAvailable={data.availability.advisories !== 'unavailable'}
+                  advisoriesAvailable={data.availability.advisories === 'complete' || data.availability.advisories === 'partial'}
+                  advisoriesOff={data.availability.advisories === 'off'}
                   searchQuery={search}
                   onOpenAdvisory={onOpenAdvisory}
                   sortState={sortState}

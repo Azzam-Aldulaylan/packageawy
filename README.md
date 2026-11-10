@@ -107,7 +107,7 @@ Packageawy reads the project's `.npmrc` and can run your package manager, so it 
 
 The dashboard itself never fetches remote data. Clicking a CVE opens its NVD page and clicking a GHSA opens its GitHub page in your browser.
 
-Package names and versions are still information about your project, so check your organization's policy before scanning private projects.
+Package names and versions are still information about your project, so check your organization's policy before scanning private projects. You can turn off the vulnerability checks, identifier lookups, and fix information for any project with the `packageawy.security.publicAdvisoryCheck` setting.
 
 ## Requirements
 
