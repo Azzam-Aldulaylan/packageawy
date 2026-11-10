@@ -76,19 +76,69 @@ jobs:
       - name: Install
         run: npm ci
 
+      # The test scripts download VS Code into .vscode-test. Cache it per OS,
+      # architecture and VS Code version so a new download happens only when
+      # VS Code ships a release. For stable, ask the update service which
+      # version that is; if it does not answer, key on the ISO week instead.
+      - name: Resolve VS Code version
+        id: vscode
+        shell: bash
+        env:
+          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+        run: |
+          version="$VSCODE_TEST_VERSION"
+          if [ "$version" = stable ]; then
+            version=$(curl -fsSL --retry 2 --max-time 30 https://update.code.visualstudio.com/api/releases/stable \
+              | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { const v = JSON.parse(s)[0]; if (!/^\d+\.\d+\.\d+$/.test(v)) process.exit(1); console.log(v); });') \
+              || version=""
+          fi
+          if [ -n "$version" ]; then
+            key="$version"
+          else
+            version=stable
+            key="stable-$(date -u +%G-W%V)"
+          fi
+          echo "Using VS Code $version, cache key $key"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: .vscode-test/vscode-*
+          key: vscode-${{ runner.os }}-${{ runner.arch }}-${{ steps.vscode.outputs.key }}
+
+      # Its own step so a network error gets one retry while a failing test
+      # below still fails the job. When the cached folder already holds this
+      # version, test-electron uses it and does not go online.
+      - name: Download VS Code
+        shell: bash
+        env:
+          VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
+        run: |
+          for attempt in 1 2; do
+            if node -e 'require("@vscode/test-electron").downloadAndUnzipVSCode(process.env.VSCODE_TEST_VERSION).then((p) => console.log(p), (e) => { console.error(e); process.exit(1); })'; then
+              exit 0
+            fi
+            if [ "$attempt" = 1 ]; then
+              echo "VS Code download failed, retrying in 20 seconds"
+              sleep 20
+            fi
+          done
+          exit 1
+
       # VS Code is an Electron application even though the assertions use its
       # Extension Host API, so Linux needs a virtual display.
       - name: Extension Host lifecycle and watcher tests (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:extension-host
         env:
-          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+          VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
 
       - name: Extension Host lifecycle and watcher tests (Windows)
         if: runner.os == 'Windows'
         run: npm run test:extension-host
         env:
-          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+          VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
 
   # Builds the VSIX once so every smoke run below tests the same archive,
   # the one users would install, instead of a fresh build per runner.
@@ -155,16 +205,66 @@ jobs:
           name: vsix
           path: vsix
 
+      # The test scripts download VS Code into .vscode-test. Cache it per OS,
+      # architecture and VS Code version so a new download happens only when
+      # VS Code ships a release. For stable, ask the update service which
+      # version that is; if it does not answer, key on the ISO week instead.
+      - name: Resolve VS Code version
+        id: vscode
+        shell: bash
+        env:
+          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+        run: |
+          version="$VSCODE_TEST_VERSION"
+          if [ "$version" = stable ]; then
+            version=$(curl -fsSL --retry 2 --max-time 30 https://update.code.visualstudio.com/api/releases/stable \
+              | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { const v = JSON.parse(s)[0]; if (!/^\d+\.\d+\.\d+$/.test(v)) process.exit(1); console.log(v); });') \
+              || version=""
+          fi
+          if [ -n "$version" ]; then
+            key="$version"
+          else
+            version=stable
+            key="stable-$(date -u +%G-W%V)"
+          fi
+          echo "Using VS Code $version, cache key $key"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: .vscode-test/vscode-*
+          key: vscode-${{ runner.os }}-${{ runner.arch }}-${{ steps.vscode.outputs.key }}
+
+      # Its own step so a network error gets one retry while a failing test
+      # below still fails the job. When the cached folder already holds this
+      # version, test-electron uses it and does not go online.
+      - name: Download VS Code
+        shell: bash
+        env:
+          VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
+        run: |
+          for attempt in 1 2; do
+            if node -e 'require("@vscode/test-electron").downloadAndUnzipVSCode(process.env.VSCODE_TEST_VERSION).then((p) => console.log(p), (e) => { console.error(e); process.exit(1); })'; then
+              exit 0
+            fi
+            if [ "$attempt" = 1 ]; then
+              echo "VS Code download failed, retrying in 20 seconds"
+              sleep 20
+            fi
+          done
+          exit 1
+
       - name: VSIX install and dashboard smoke test (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: xvfb-run -a node scripts/integration/run-vsix-smoke.mjs vsix/packageawy-*.vsix
         env:
-          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+          VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
 
       - name: VSIX install and dashboard smoke test (Windows and macOS)
         if: runner.os != 'Linux'
         shell: bash
         run: node scripts/integration/run-vsix-smoke.mjs vsix/packageawy-*.vsix
         env:
-          VSCODE_TEST_VERSION: ${{ matrix.vscode }}
+          VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
