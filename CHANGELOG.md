@@ -4,6 +4,8 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-11
+
 ### Changed
 
 - The dashboard opens faster on a project without saved results. VS Code starts reading the project as soon as the panel opens, exact version pins on the public npm registry are confirmed with one small request instead of the full version list, and fixed versions for vulnerable packages are looked up as soon as the vulnerability results arrive.
@@ -16,7 +18,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Added
 
-- Right-click a `package.json` in the file tree or on its editor tab and choose **Open in Packageawy** to open the dashboard on that project. This works in VS Code and JetBrains IDEs.
+- Right-click a `package.json` in the file tree or on its editor tab and choose **Open in Packageawy** to open the dashboard on that project. This works in VS Code and JetBrains IDEs. Suggested by [@Abdulhakiem](https://github.com/Abdulhakiem).
 - The `packageawy.security.publicAdvisoryCheck` setting turns the vulnerability checks, identifier lookups and npm audit on or off for each project. When it is off, the Vulnerabilities column reads Off. JetBrains IDEs have the same option under the project's Security settings.
 - When no verification scripts are set, reviews for upgrades, removals, and transitive fixes list the project's `typecheck`, `build`, `test`, and `lint` scripts as checkboxes. Checked scripts run after that change, with the same Rollback choice if one fails. Scripts that watch files or start a server are not listed.
 - "Remember for this project" saves the checked scripts as the project's verification scripts. In JetBrains IDEs they appear under Settings, Tools, Packageawy, Project.
@@ -127,6 +129,7 @@ First public pre-release.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
 - Re-reads the project right before every change and refuses to roll back over edits made in the meantime.
 
+[0.9.6]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.6
 [0.9.5]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.5
 [0.9.4]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.4
 [0.9.3]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.3
