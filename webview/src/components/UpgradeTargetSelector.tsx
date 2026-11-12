@@ -3,8 +3,8 @@ import type { ReactElement } from 'react';
 
 import type { UpgradeReason } from '../../../src/core/types.js';
 import type { ProtocolError, UpgradeTargetOptions } from '../../../src/host/webviewProtocol.js';
-import { updateAdvisoryWarning } from '../../../src/host/updateAdvisoryState.js';
-import { UpdateAdvisoryContext } from './UpdateVersionWarning.js';
+import { updateAdvisoryTag, updateAdvisoryWarning } from '../../../src/host/updateAdvisoryState.js';
+import { UpdateAdvisoryContext, UpdateVersionWarning } from './UpdateVersionWarning.js';
 
 export type UpgradeTargetLoadState =
   | { phase: 'loading' }
@@ -42,9 +42,21 @@ export function UpgradeTargetSelector({
   onChange: (version: string) => void;
 }): ReactElement {
   const results = useContext(UpdateAdvisoryContext);
-  const labelWithWarning = (version: string, label: string): string => {
-    const warning = updateAdvisoryWarning(results.find(result => result.name === registryName && result.version === version));
-    return warning === undefined ? label : `${label}. ${warning}`;
+  const resultFor = (version: string) => results.find(result => result.name === registryName && result.version === version);
+  /**
+   * A native select shows plain text only, so a vulnerable option gets a short
+   * tag after its label ("2.3.0 · Latest stable · 3 vulnerabilities (high)")
+   * and the full sentence as its title where the platform shows one. The
+   * selected version's full warning is the triangle beside the list.
+   */
+  const versionOption = (version: string, label: string): ReactElement => {
+    const result = resultFor(version);
+    const tag = updateAdvisoryTag(result);
+    return (
+      <option value={version} key={version} title={updateAdvisoryWarning(result)}>
+        {tag === undefined ? label : `${label} · ${tag}`}
+      </option>
+    );
   };
   const ready = state.phase === 'ready' ? state.targets : null;
   const stable = ready?.options.filter((option) => option.channel === 'stable') ?? [];
@@ -52,6 +64,8 @@ export function UpgradeTargetSelector({
   const usableFallback = state.phase === 'error' || state.phase === 'idle' ? fallbackVersion : null;
   const value = selectedVersion ?? fallbackVersion ?? ready?.recommendedVersion ?? '';
   const selectedIsOutsideCurrentOptions = value !== '' && ready !== null && !ready.options.some((option) => option.version === value);
+  const selectedWarning = registryName !== undefined && value !== '' && state.phase !== 'loading'
+    ? updateAdvisoryWarning(resultFor(value)) : undefined;
   const fallbackLabel = fallbackReason === 'security-fix' ? 'Security fix' : 'dashboard target';
 
   return (
@@ -66,46 +80,45 @@ export function UpgradeTargetSelector({
         </p>
       </div>
       <div className="upgrade-target-picker__control">
-        <select
-          className="upgrade-target-picker__select"
-          id="upgrade-target-version"
-          value={value}
-          disabled={
-            disabled ||
-            state.phase === 'loading' ||
-            (state.phase === 'ready' ? state.targets.options.length === 0 : value === '')
-          }
-          onChange={(event) => onChange(event.currentTarget.value)}
-        >
-          {state.phase === 'loading' ? <option value={value}>Loading published versions…</option> : null}
-          {ready !== null ? (
-            <>
-              {selectedIsOutsideCurrentOptions ? <option value={value}>{labelWithWarning(value, `${value} (${value === fallbackVersion ? fallbackLabel : 'selected target'})`)}</option> : null}
-              {ready.recommendedVersion === null ? <option value="">Select a version…</option> : null}
-              {stable.length > 0 ? (
-                <optgroup label="Stable releases">
-                  {stable.map((option) => (
-                    <option value={option.version} key={option.version}>
-                      {labelWithWarning(option.version, optionLabel(option))}
-                    </option>
-                  ))}
-                </optgroup>
-              ) : null}
-              {prerelease.length > 0 ? (
-                <optgroup label="Prereleases (review carefully)">
-                  {prerelease.map((option) => (
-                    <option value={option.version} key={option.version}>
-                      {labelWithWarning(option.version, optionLabel(option))}
-                    </option>
-                  ))}
-                </optgroup>
-              ) : null}
-            </>
+        <div className="upgrade-target-picker__row">
+          <select
+            className="upgrade-target-picker__select"
+            id="upgrade-target-version"
+            value={value}
+            disabled={
+              disabled ||
+              state.phase === 'loading' ||
+              (state.phase === 'ready' ? state.targets.options.length === 0 : value === '')
+            }
+            onChange={(event) => onChange(event.currentTarget.value)}
+            aria-describedby={selectedWarning === undefined ? undefined : 'upgrade-target-version-warning'}
+          >
+            {state.phase === 'loading' ? <option value={value}>Loading published versions…</option> : null}
+            {ready !== null ? (
+              <>
+                {selectedIsOutsideCurrentOptions ? versionOption(value, `${value} (${value === fallbackVersion ? fallbackLabel : 'selected target'})`) : null}
+                {ready.recommendedVersion === null ? <option value="">Select a version…</option> : null}
+                {stable.length > 0 ? (
+                  <optgroup label="Stable releases">
+                    {stable.map((option) => versionOption(option.version, optionLabel(option)))}
+                  </optgroup>
+                ) : null}
+                {prerelease.length > 0 ? (
+                  <optgroup label="Prereleases (review carefully)">
+                    {prerelease.map((option) => versionOption(option.version, optionLabel(option)))}
+                  </optgroup>
+                ) : null}
+              </>
+            ) : null}
+            {usableFallback !== null ? versionOption(usableFallback, `${usableFallback} (${fallbackLabel})`) : null}
+          </select>
+          {selectedWarning !== undefined && registryName !== undefined ? (
+            <UpdateVersionWarning name={registryName} version={value} />
           ) : null}
-          {usableFallback !== null ? (
-            <option value={usableFallback}>{labelWithWarning(usableFallback, `${usableFallback} (${fallbackLabel})`)}</option>
-          ) : null}
-        </select>
+        </div>
+        {selectedWarning === undefined ? null : (
+          <span className="sr-only" id="upgrade-target-version-warning">{selectedWarning}</span>
+        )}
         {ready?.truncated === true ? (
           <span className="upgrade-target-picker__meta">Showing recent and tagged releases.</span>
         ) : null}

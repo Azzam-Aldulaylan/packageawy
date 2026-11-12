@@ -7,7 +7,6 @@ import { updateAdvisoryWarning } from '../out/host/updateAdvisoryState.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const json = value => ({ status: 200, headers: {}, body: JSON.stringify(value), wireBytes: 1 });
-const warning = { name: 'minimist', version: '1.2.5', status: 'checked', count: 1, highestSeverity: 'high' };
 const manifestText = JSON.stringify({ dependencies: { compat: 'npm:qs@^1.0.0' } });
 const lockfileText = JSON.stringify({ lockfileVersion: 3, packages: {
   '': { dependencies: { compat: 'npm:minimist@^0.2.4' } },
@@ -15,7 +14,7 @@ const lockfileText = JSON.stringify({ lockfileVersion: 3, packages: {
 } });
 
 for (const legacy of [false, true]) {
-  test(`cache restart with differing alias targets ${legacy ? 'leaves legacy versions unchecked' : 'preserves the scanned identity and warning'}`, async t => {
+  test(`cache restart with differing alias targets ${legacy ? 'leaves legacy versions unchecked' : 'preserves the scanned identity without checking non-offered versions'}`, async t => {
     // Serialize at the storage boundary, then create a new store on restart.
     const data = new Map();
     const storage = { get: key => data.get(key), async update(key, value) {
@@ -53,7 +52,11 @@ for (const legacy of [false, true]) {
     assert.equal(dashboard.rows[0].registryName, 'minimist');
     assert.equal(dashboard.rows[0].latest, '1.2.5');
     assert.equal(dashboard.rows[0].worstSeverity, null, 'installed version has no finding');
-    assert.deepEqual(scanned.find(message => message.status === 'update-advisories').results, [warning]);
+    // Alias rows never carry an offered upgrade (pipeline.ts), and only the
+    // offered upgrade is checked, so the latest release is not looked up.
+    assert.equal(dashboard.rows[0].upgradeTo, null);
+    assert.ok(requests.every(request => !request.minimist?.includes('1.2.5')), 'the latest release is not looked up');
+    assert.deepEqual(scanned.filter(message => message.status === 'update-advisories').flatMap(message => message.results), []);
     assert.equal(cache.get('fixture').rows[0].registryName, 'minimist');
     fresh.dispose();
     cache.dispose();
@@ -79,15 +82,10 @@ for (const legacy of [false, true]) {
     assert.equal(replayed[0].data.generatedAt, dashboard.generatedAt);
     assert.equal(replayed[0].data.rows[0].registryName, legacy ? undefined : 'minimist');
     const results = replayed.filter(message => message.status === 'update-advisories').flatMap(message => message.results);
-    if (legacy) {
-      assert.deepEqual(requests, [], 'unknown alias identity sends no offered-version request');
-      assert.deepEqual(replayed[0].data.updateAdvisories, []);
-      assert.deepEqual(results, [], 'unchecked versions have no warning marker');
-    } else {
-      assert.deepEqual(requests, [{ minimist: ['1.2.5'] }]);
-      assert.deepEqual(results, [warning]);
-      assert.ok(updateAdvisoryWarning(results[0]));
-    }
+    assert.deepEqual(requests, [], 'no offered-version request on replay either');
+    assert.deepEqual(replayed[0].data.updateAdvisories, []);
+    assert.deepEqual(results, [], 'unchecked versions have no warning marker');
+    assert.equal(updateAdvisoryWarning(undefined), undefined);
   });
 }
 

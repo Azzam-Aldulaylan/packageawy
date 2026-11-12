@@ -4,6 +4,15 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Changed
+
+- When an upgrade is offered, the Available column shows the version the Upgrade button installs. When latest-version information is available and differs, the latest is shown under it.
+- The upgrade version list shows a short tag for vulnerable versions, for example 3 vulnerabilities (high). The full details for the selected version appear on hover, focus or click on the warning beside the list.
+
+### Fixed
+
+- The vulnerability warning in the Available column now follows the suggested upgrade version. The installed version is no longer marked there.
+
 ## [0.9.6] - 2026-11-11
 
 ### Changed

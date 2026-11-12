@@ -93,14 +93,16 @@ test('current column sorts by semver, invalid/missing versions always last', () 
   ]);
 });
 
-test('available column sorts by latest (falling back to wanted), missing values last', () => {
+test('available column sorts by the shown version (offered upgrade, then latest, then wanted), missing values last', () => {
   const rows = [
     row({ name: 'no-update', latest: '1.0.0', wanted: '1.0.0' }),
     row({ name: 'big-jump', latest: '5.0.0', wanted: '1.0.0' }),
+    row({ name: 'security-fix', latest: '9.0.0', wanted: '1.0.0', upgradeTo: '1.0.5', upgradeReason: 'security-fix' }),
     row({ name: 'unresolved', latest: null, wanted: null }),
   ];
   assert.deepEqual(names(sortRows(rows, { column: 'available', direction: 'desc' }, 'all')), [
     'big-jump',
+    'security-fix',
     'no-update',
     'unresolved',
   ]);

@@ -36,8 +36,8 @@ test('exact-document and packument scans persist equal security snapshots and gr
     assert.equal(controller.validateUpgradeRequest({ package: 'lodash', target: '99.0.0' }).ok, false);
     assert.equal(controller.validateBulkUpgradeRequest(requests).ok, true);
     const updateAdvisories = messages.findLast(m => m.status === 'update-advisories').results;
-    assert.deepEqual(updateAdvisories.find(result => result.name === 'lodash' && result.version === '4.17.20'),
-      { name: 'lodash', version: '4.17.20', status: 'checked', count: 1, highestSeverity: 'high' });
+    assert.equal(updateAdvisories.find(result => result.name === 'lodash' && result.version === '4.17.20'), undefined,
+      'the installed version is not looked up (the Vulnerabilities column covers it)');
     assert.deepEqual(updateAdvisories.find(result => result.name === 'lodash' && result.version === '4.17.21'),
       { name: 'lodash', version: '4.17.21', status: 'checked', count: 0, highestSeverity: null });
     await controller.handleReady({ postMessage: m => messages.push(m) });

@@ -3,19 +3,23 @@ import { fetchBulkAdvisories } from '../core/advisories/bulk.js';
 import type { HttpClient } from '../core/registry/http.js';
 import type { PackageRow, Severity } from '../core/types.js';
 import type { UpdateAdvisoryResult } from './webviewProtocol.js';
-import { updateAdvisoryKey } from './updateAdvisoryState.js';
+import { isInstalledVersion, updateAdvisoryKey } from './updateAdvisoryState.js';
 
 export type UpdateVersionPair = { name: string; version: string };
 const severityRank: Severity[] = ['info', 'low', 'moderate', 'high', 'critical'];
 
+/**
+ * Only the offered upgrade is checked: it is the one version the table
+ * marks. The installed version is skipped (the Vulnerabilities column
+ * covers it), and the upgrade review checks its own version list.
+ */
 export function offeredVersionPairs(rows: readonly PackageRow[]): UpdateVersionPair[] {
   // Older alias rows may lack a registry identity. Leave their versions
   // unchecked until a scan supplies it rather than checking the installed name.
   return rows.filter(row => row.registryName !== undefined ||
     (row.unresolvable !== 'alias' && !row.range.trim().startsWith('npm:')))
-    .flatMap(row => [row.upgradeTo, row.latest, row.wanted]
-    .filter((version): version is string => version !== null)
-    .map(version => ({ name: row.registryName ?? row.name, version })));
+    .flatMap(row => row.upgradeTo === null || isInstalledVersion(row.current, row.upgradeTo) ? []
+      : [{ name: row.registryName ?? row.name, version: row.upgradeTo }]);
 }
 
 /** Panel memory only. One queue shares the bulk client's two-worker budget with picker requests. */
