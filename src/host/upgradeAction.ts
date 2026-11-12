@@ -61,6 +61,40 @@ const UNRESOLVABLE_EXPLANATION: Record<UnresolvableReason, string> = {
   'no-lockfile': 'No lockfile is present, so the installed version is unknown.',
 };
 
+/**
+ * Why the Upgrade review has nothing to offer, and whether a dashboard
+ * refresh could change that. "No newer version" is said only when the
+ * versions were actually compared and none is newer.
+ */
+export function noUpgradeExplanation(
+  row: PackageRow,
+  updateResolutionAvailable: boolean
+): { text: string; refresh: boolean } {
+  if (row.current === null) {
+    if (row.unresolvable === 'no-lockfile') {
+      return { text: `${UNRESOLVABLE_EXPLANATION['no-lockfile']} Install dependencies, then refresh.`, refresh: true };
+    }
+    if (row.unresolvable !== undefined) {
+      // Workspace, file, git, alias and tarball sources: installing again does not make them registry upgrades.
+      return { text: UNRESOLVABLE_EXPLANATION[row.unresolvable], refresh: false };
+    }
+    return {
+      text: `${row.name} is not in the lockfile yet, so there is no installed version to upgrade from. Install dependencies, then refresh.`,
+      refresh: true,
+    };
+  }
+  if (!updateResolutionAvailable || (row.wanted === null && row.latest === null)) {
+    return {
+      text: `Newer versions of ${row.name} could not be checked. The Packageawy log has the reason. Refresh to try again.`,
+      refresh: true,
+    };
+  }
+  if (rowHasUpdate(row)) {
+    return { text: `No safe upgrade target could be determined for ${row.name}.`, refresh: false };
+  }
+  return { text: `No newer version is currently available for ${row.name}.`, refresh: false };
+}
+
 function unavailableReasonText(row: PackageRow): string {
   if (row.current === null) {
     return row.unresolvable !== undefined

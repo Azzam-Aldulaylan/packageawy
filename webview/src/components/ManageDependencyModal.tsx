@@ -67,6 +67,8 @@ interface UpgradeReviewState {
   onRetryTargets?: () => void;
   /** Refreshes the whole dashboard (not this analysis) when the version list needs revalidated data. */
   onRefreshDashboard?: () => void;
+  /** Whether a dashboard refresh is allowed right now (the dashboard's own Refresh rule). */
+  refreshDisabled?: boolean;
 }
 
 interface RemovalReviewState {
@@ -564,6 +566,8 @@ export function ManageDependencyModal({
         onRefresh={upgrade.onRefresh}
         onRetryTargets={upgrade.onRetryTargets}
         onRefreshDashboard={upgrade.onRefreshDashboard}
+        refreshDisabled={upgrade.refreshDisabled ?? upgradeDisabled}
+        updateResolutionAvailable={quarantineDerivedData ? false : updateResolutionAvailable}
         onChangeTab={onChangeTab}
         onOpenAdvisory={onOpenAdvisory}
         onOpenUsageReference={onOpenUsageReference}

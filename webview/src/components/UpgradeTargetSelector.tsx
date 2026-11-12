@@ -45,6 +45,7 @@ export function UpgradeTargetSelector({
   onChange,
   onRetry,
   onRefreshDashboard,
+  refreshDisabled,
 }: {
   state: UpgradeTargetLoadState;
   registryName?: string;
@@ -57,6 +58,11 @@ export function UpgradeTargetSelector({
   onRetry?: () => void;
   /** Refreshes the dashboard; the list reloads after revalidation. */
   onRefreshDashboard?: () => void;
+  /**
+   * Disables the Refresh form of the button (the dashboard's own rule).
+   * Retry keeps `disabled`: it only reloads this read-only list.
+   */
+  refreshDisabled?: boolean;
 }): ReactElement {
   const results = useContext(UpdateAdvisoryContext);
   const resultFor = (version: string) => results.find(result => result.name === registryName && result.version === version);
@@ -158,7 +164,7 @@ export function UpgradeTargetSelector({
                 <button
                   type="button"
                   className="button button--secondary upgrade-target-picker__retry"
-                  disabled={disabled}
+                  disabled={needsRefresh ? (refreshDisabled ?? disabled) : disabled}
                   onClick={retryAction}
                 >
                   {needsRefresh ? 'Refresh' : 'Retry'}
