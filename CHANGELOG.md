@@ -4,14 +4,22 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- A Packageawy log records registry and npm audit failures, to help with troubleshooting. It names the package, the registry host and the kind of failure only. In VS Code, open it with Packageawy: Show Log. In JetBrains IDEs, the lines are in the IDE log.
+
 ### Changed
 
 - When an upgrade is offered, the Available column shows the version the Upgrade button installs. When latest-version information is available and differs, the latest is shown under it.
 - The upgrade version list shows a short tag for vulnerable versions, for example 3 vulnerabilities (high). The full details for the selected version appear on hover, focus or click on the warning beside the list.
+- When the upgrade version list cannot load, it says why (for example, the registry timed out or needs sign-in) and offers Retry, or Refresh when the project changed. If the full list fails, the tagged releases are shown instead.
+- The partial results message says what is missing and what to do, for example No package-lock.json found. Run npm install, then refresh. When update checks fail, it points to the Packageawy log for the reason.
 
 ### Fixed
 
 - The vulnerability warning in the Available column now follows the suggested upgrade version. The installed version is no longer marked there.
+- A registry response saved in the cache that could not be read is now replaced automatically instead of failing every time.
+- When a registry is configured with http://, the Packageawy log now says so instead of reporting a generic failure. Packageawy only connects to registries over https.
 
 ## [0.9.6] - 2026-11-11
 

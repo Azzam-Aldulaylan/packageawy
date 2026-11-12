@@ -47,6 +47,7 @@ import type { BuildInfo } from './dashboardData.js';
 import { toHostToWebviewMessage } from './dashboardData.js';
 import { otherPackageManagerMessage } from './packageManagerSupport.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
+import { diagnosticLine } from '../core/diagnostics.js';
 import { UpdateAdvisories, offeredVersionPairs } from './updateAdvisories.js';
 import type { UpdateVersionPair } from './updateAdvisories.js';
 import type { UpdateAdvisoryContext } from './webviewProtocol.js';
@@ -115,6 +116,8 @@ export interface DashboardControllerOptions {
    * on the next one. Omitted means on.
    */
   publicAdvisoryCheckEnabled?: (root: string) => boolean;
+  /** Troubleshooting log (HostPlatform.log). Receives formatted, safe lines only. */
+  log?: (line: string) => void;
 }
 
 /** Settings key, relative to the `packageawy` section. Resource scoped, so it can differ per workspace folder. */
@@ -141,13 +144,21 @@ function toScanSnapshot(result: {
   availability: ScanSnapshot['availability'];
   advisoriesError?: ProtocolError;
   auditUnavailable?: boolean;
+  auditUnavailableReason?: ScanSnapshot['auditUnavailableReason'];
+  packageManager?: ScanSnapshot['packageManager'];
+  lockfileMissing?: boolean;
   hygieneFindings?: ScanSnapshot['hygieneFindings'];
 }): ScanSnapshot {
   const snapshot: ScanSnapshot = { rows: result.rows, availability: result.availability };
   if (result.advisoriesError !== undefined) {
     snapshot.advisoriesError = { code: result.advisoriesError.code, message: result.advisoriesError.message };
   }
-  if (result.auditUnavailable === true) snapshot.auditUnavailable = true;
+  if (result.auditUnavailable === true) {
+    snapshot.auditUnavailable = true;
+    if (result.auditUnavailableReason !== undefined) snapshot.auditUnavailableReason = result.auditUnavailableReason;
+  }
+  if (result.packageManager !== undefined) snapshot.packageManager = result.packageManager;
+  if (result.lockfileMissing === true) snapshot.lockfileMissing = true;
   if (result.hygieneFindings !== undefined) snapshot.hygieneFindings = result.hygieneFindings;
   return snapshot;
 }
@@ -491,6 +502,21 @@ export class DashboardController {
    * `isEligible()` alone can't tell those two apart, since a cold
    * controller's `eligibleGeneration` is `undefined` in both cases.
    */
+  /** True while a scan is running. Its completion posts a new snapshot. */
+  scanRunning(): boolean {
+    return this.inFlight !== undefined && !this.inFlight.signal.aborted;
+  }
+
+  /**
+   * True when upgrades are blocked and the last finished scan could not check
+   * every package (for example registry timeouts). Only a complete scan grants
+   * eligibility. Callers check scanRunning() first: a newer scan may be on its
+   * way, and a file change since then can also be pending.
+   */
+  lastScanIncomplete(): boolean {
+    return this.lastResult !== undefined && !this.isEligible() && !hasCompleteCoreData(this.lastResult);
+  }
+
   validateUpgradeRequest(request: UpgradeRequestInput): UpgradeEligibility {
     if (this.lastResult === undefined) return { ok: false, reason: 'no-scan-result' };
     if (!this.isEligible()) return { ok: false, reason: 'revalidating' };
@@ -589,6 +615,23 @@ export class DashboardController {
     this.options.projectCacheStore.delete(this.options.cacheKey);
   }
 
+  /**
+   * Lockfile evidence from project resolution, never from npm's output. A
+   * caller that gives no lockfileName falls back to whether lockfile text was read.
+   */
+  private lockfileMissing(): boolean {
+    const name = this.options.lockfileName;
+    return name === null || (name === undefined && this.options.lockfileText === null);
+  }
+
+  /** The project facts the partial results banner words itself from. */
+  private projectFacts(): Pick<ScanSnapshot, 'packageManager' | 'lockfileMissing'> {
+    return {
+      packageManager: this.options.packageManager ?? 'npm',
+      ...(this.lockfileMissing() ? { lockfileMissing: true } : {}),
+    };
+  }
+
   private currentSourceFingerprint(): ProjectSourceFingerprint {
     return computeSourceFingerprint({
       manifestText: this.options.manifestText,
@@ -643,7 +686,10 @@ export class DashboardController {
     // `lastResult` as a ScanSnapshot ever looks at them.
     // Row identities belong to the scanned lockfile, whose alias targets can
     // differ from the manifest. Preserve them exactly on replay.
-    this.lastResult = cached;
+    // The fingerprint matched, so the project facts are the same ones the
+    // snapshot was scanned with. Filling them from the current options lets an
+    // entry written before they were persisted replay the same banner.
+    this.lastResult = { ...cached, ...this.projectFacts() };
     this.lastResultSourceFingerprint = cached.sourceFingerprint;
     this.lastGeneratedAt = cached.generatedAt;
   }
@@ -862,12 +908,13 @@ export class DashboardController {
   }
 
   /** Host-derived picker options share exact-version memory and the bounded request queue. */
-  enrichUpdateVersions(pairs: readonly UpdateVersionPair[], sink: MessageSink): Promise<void> {
+  enrichUpdateVersions(pairs: readonly UpdateVersionPair[], sink: MessageSink, wanted?: () => boolean): Promise<void> {
     const context = this.updateContext;
     if (context === undefined || this.disposed) return Promise.resolve();
     return this.updateAdvisories.enrich(pairs,
       () => !this.disposed && this.updateContext === context,
-      results => sink.postMessage({ status: 'update-advisories', context, results }));
+      results => sink.postMessage({ status: 'update-advisories', context, results }),
+      wanted);
   }
 
   private async run(
@@ -950,8 +997,12 @@ export class DashboardController {
         ? {}
         : { auditRunner: this.options.auditRunner }),
       ...(this.options.packageManager === 'pnpm' ? { auditUnavailableWhenOmitted: false } : {}),
+      ...(this.lockfileMissing() ? { lockfileMissing: true } : {}),
       ...(this.publicAdvisoryCheckEnabled() ? {} : { publicAdvisoryCheck: false }),
       publicAdvisoryCheckEnabled: () => this.publicAdvisoryCheckEnabled(),
+      ...(this.options.log === undefined
+        ? {}
+        : { onDiagnostic: (entry) => this.options.log?.(diagnosticLine(entry)) }),
       ...(this.options.progressEnabled === true
         ? {
             onProgress: (progress) => {
@@ -978,7 +1029,7 @@ export class DashboardController {
       }
 
       const generatedAt = new Date().toISOString();
-      const snapshot = toScanSnapshot(result);
+      const snapshot = toScanSnapshot({ ...result, ...this.projectFacts() });
       this.lastResult = snapshot;
       this.lastResultSourceFingerprint = scanSourceFingerprint;
       this.lastGeneratedAt = generatedAt;
@@ -1045,6 +1096,7 @@ export class DashboardController {
       }
       return { status: 'failed', error: toProtocolError(cause) };
     } finally {
+      if (this.inFlight === controller) this.inFlight = undefined;
       performance.finish({ cancelled: controller.signal.aborted });
     }
   }

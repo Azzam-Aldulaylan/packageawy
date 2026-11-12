@@ -14,7 +14,8 @@
 import semver from 'semver';
 
 import type { AuditRunner } from './audit/npmAudit.js';
-import { runNpmAudit, mapFixAvailableToDirectDependencies } from './audit/npmAudit.js';
+import { runNpmAudit, mapFixAvailableToDirectDependencies, auditUnavailableReasonFor } from './audit/npmAudit.js';
+import type { AuditUnavailableReason, DiagnosticArea } from './diagnostics.js';
 import { worstSeverity, resolveUpgradeTarget } from './advisories/aggregate.js';
 import { advisoryCoverageByRoot, attributeAdvisories } from './advisories/attribution.js';
 import { attachPatchedVersions, distinctFlaggedPackages } from './advisories/remediation.js';
@@ -56,6 +57,12 @@ export interface BuildPackageRowsOptions {
    * registry, so scoped names never reach the default registry.
    */
   resolvedRegistry?: ResolvedRegistry;
+  /**
+   * Called once per failed registry lookup or npm audit run, with allowlisted
+   * codes only, so the host can write a troubleshooting line through
+   * src/core/diagnostics.ts. Never receives raw error messages.
+   */
+  onDiagnostic?: (entry: { area: DiagnosticArea; code: string; packageName?: string; registryUrl?: string }) => void;
   httpClient: HttpClient;
   etagStore: EtagStore;
   /** Omit entirely to skip the optional `npm audit` enrichment. */
@@ -66,6 +73,13 @@ export interface BuildPackageRowsOptions {
    * applicable, currently the pnpm host path.
    */
   auditUnavailableWhenOmitted?: boolean;
+  /**
+   * True when the project has no lockfile its package manager would read
+   * (package-lock.json or npm-shrinkwrap.json for npm, pnpm-lock.yaml for
+   * pnpm). Audit runs with --package-lock-only, so a failure then is reported
+   * as 'no-lockfile' from this evidence rather than guessed from npm's output.
+   */
+  lockfileMissing?: boolean;
   /**
    * Defaults to true. False means the project turned the public advisory
    * check off: no package names go to the bulk advisory endpoint or GitHub,
@@ -105,6 +119,8 @@ export interface BuildPackageRowsResult {
   advisoriesError?: FetchError;
   /** True when no runner was given, or audit failed / returned unparseable output. */
   auditUnavailable?: boolean;
+  /** Why audit was unavailable. Set only alongside `auditUnavailable`. */
+  auditUnavailableReason?: AuditUnavailableReason;
   /**
    * Deprecated findings: deterministic, and
    * therefore cheap enough to compute on every scan (see
@@ -138,6 +154,9 @@ function instrumentEtagStore(store: EtagStore, recorder: PerformanceRecorder): E
     },
     set(key, value) {
       store.set(key, value);
+    },
+    delete(key) {
+      store.delete(key);
     },
   };
 }
@@ -226,14 +245,22 @@ export async function buildPackageRows(
   // then consume its optional fixAvailable enrichment at the original stage.
   const advisoryEnabled = (): boolean => options.publicAdvisoryCheck !== false && (options.publicAdvisoryCheckEnabled?.() ?? true);
   const advisoryCheckOff = !advisoryEnabled();
-  const auditPromise: Promise<{ fixes: Map<string, FixAvailable>; unavailable: boolean }> = (() => {
+  type AuditOutcome = { fixes: Map<string, FixAvailable>; unavailable: boolean; reason?: AuditUnavailableReason };
+  const unavailableAudit = (reason: AuditUnavailableReason): AuditOutcome => ({
+    fixes: new Map<string, FixAvailable>(),
+    unavailable: true,
+    // Without a lockfile, audit cannot run however npm itself failed.
+    reason: options.lockfileMissing === true ? 'no-lockfile' : reason,
+  });
+  const auditPromise: Promise<AuditOutcome> = (() => {
     // npm audit sends the same inventory to the registry, so it follows the advisory setting.
     if (advisoryCheckOff) return Promise.resolve({ fixes: new Map(), unavailable: false });
     if (options.auditRunner === undefined) {
-      return Promise.resolve({
-        fixes: new Map(),
-        unavailable: options.auditUnavailableWhenOmitted ?? true,
-      });
+      return Promise.resolve(
+        options.auditUnavailableWhenOmitted ?? true
+          ? unavailableAudit('failed')
+          : { fixes: new Map(), unavailable: false }
+      );
     }
     options.onProgress?.({ stage: 'npm-audit' });
     const endAudit = recorder.start('npm audit');
@@ -243,7 +270,12 @@ export async function buildPackageRows(
         fixes: mapFixAvailableToDirectDependencies(vulnerabilities, new Set(roots.map((node) => node.name))),
         unavailable: false,
       }))
-      .catch(() => ({ fixes: new Map<string, FixAvailable>(), unavailable: true }))
+      .catch((error: unknown) => {
+        const outcome = unavailableAudit(auditUnavailableReasonFor(error));
+        // A cancelled scan is not a failure worth logging.
+        if (signal?.aborted !== true) options.onDiagnostic?.({ area: 'npm-audit', code: outcome.reason ?? 'failed' });
+        return outcome;
+      })
       .finally(() => {
         endAudit();
       });
@@ -332,6 +364,15 @@ export async function buildPackageRows(
       return;
     }
     unavailableUpdatePackages.push(node.name);
+    if (result?.error.code !== 'CANCELLED' && signal?.aborted !== true) {
+      options.onDiagnostic?.({
+        area: 'update-check',
+        code: result?.error.code ?? 'UNKNOWN',
+        packageName: node.name,
+        // Aliases are fetched under their registry name, so name that registry.
+        registryUrl: registryFor(node.registryName ?? node.name),
+      });
+    }
     const host = result?.error.code === 'REGISTRY_AUTH_REQUIRED' ? result.error.registryHost : undefined;
     if (host !== undefined) {
       const packages = signInPackagesByHost.get(host) ?? [];
@@ -489,6 +530,9 @@ export async function buildPackageRows(
   }
   const result: BuildPackageRowsResult = { rows, availability, hygieneFindings };
   if (advisoriesError !== undefined) result.advisoriesError = advisoriesError;
-  if (auditUnavailable) result.auditUnavailable = true;
+  if (auditUnavailable) {
+    result.auditUnavailable = true;
+    result.auditUnavailableReason = audit.reason ?? 'failed';
+  }
   return result;
 }

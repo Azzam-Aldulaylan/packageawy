@@ -45,6 +45,13 @@ import { analyzeCompatibility, CompatibilityCancelledError } from '../core/compa
 import type { CompatibilityStatus, UpgradeProposal } from '../core/compatibility/types.js';
 import { RegistryPackageMetadataProvider, registryForPackage } from '../core/compatibility/registryMetadataProvider.js';
 import { FetchError } from '../core/registry/http.js';
+import {
+  diagnosticLine,
+  versionListFailureFromEligibility,
+  versionListFailureFromFetch,
+  versionListFailureText,
+} from '../core/diagnostics.js';
+import type { VersionListFailure } from '../core/diagnostics.js';
 import type { HttpClient } from '../core/registry/http.js';
 import { runPool } from '../core/registry/pool.js';
 import { fetchDistTags, fetchPackument } from '../core/registry/versions.js';
@@ -317,6 +324,39 @@ function toProtocolError(cause: unknown): ProtocolError {
   if (cause instanceof FetchError) return { code: cause.code, message: cause.message };
   if (cause instanceof Error) return { code: cause.name, message: cause.message };
   return { code: 'UNKNOWN', message: String(cause) };
+}
+
+/**
+ * Safe version list failure for a thrown error. `fetchCode` is the
+ * allowlisted FetchError code (or 'UNKNOWN') so a caller can write a
+ * diagnostic line without touching the raw error message.
+ */
+export function versionListFetchFailure(
+  cause: unknown,
+  registryUrl?: string
+): { failure: VersionListFailure; fetchCode: string; error: ProtocolError } {
+  const fetchCode = cause instanceof FetchError ? cause.code : 'UNKNOWN';
+  const failure = versionListFailureFromFetch(fetchCode, registryUrl);
+  return { failure, fetchCode, error: { code: failure, message: versionListFailureText(failure, registryUrl) } };
+}
+
+/**
+ * `revalidating` covers three different situations for the user: a scan is
+ * running (the list loads by itself when it ends), the last scan could not
+ * check every package (Refresh scans again), or the project changed.
+ */
+function blockedReason(
+  controller: Pick<DashboardController, 'scanRunning' | 'lastScanIncomplete'>,
+  reason: string
+): string {
+  if (reason !== 'revalidating') return reason;
+  if (controller.scanRunning()) return 'scan-running';
+  return controller.lastScanIncomplete() ? 'incomplete-scan' : reason;
+}
+
+function versionListEligibilityError(reason: string): ProtocolError {
+  const failure = versionListFailureFromEligibility(reason);
+  return { code: failure, message: versionListFailureText(failure) };
 }
 
 const ANALYSIS_LOOKUP_ERRORS: Record<AnalysisLookupRejection, ProtocolError> = {
@@ -620,6 +660,8 @@ export class UpgradeAssistantCoordinator {
   private readonly remediationPlanByPackage = new Map<string, string>();
   private activeUpgradeAnalysisAbort: AbortController | undefined;
   private activeUpgradeAdvisoryAbort: AbortController | undefined;
+  /** The Manage dialog's one in-flight version list load. A newer load, a matching cancel, or disposal aborts it. */
+  private upgradeTargetsLoad: { requestId: string; abort: AbortController } | undefined;
   private advisorySettingsGeneration = 0;
   /** One exact deep inventory is enough to make immediate re-analysis/cache reuse cheap without retaining many large file lists. */
   private readonly targetPackageSurfaceCache = new TargetPackageSurfaceCache();
@@ -707,6 +749,7 @@ export class UpgradeAssistantCoordinator {
   /** Dispose immediately only when no mutation is in flight. */
   disposeWhenIdle(): void {
     this.activeRemediationAbort?.abort();
+    this.upgradeTargetsLoad?.abort.abort();
     this.activeUpgradeAnalysisAbort?.abort();
     if (this.reservation.isMutationBusy) return;
     this.analysis = undefined;
@@ -1026,18 +1069,49 @@ export class UpgradeAssistantCoordinator {
    * packument becomes useful enough to justify its parse cost.
    */
   async handleLoadUpgradeTargets(message: LoadUpgradeTargetsMessage): Promise<void> {
-    const controller = await this.options.ensureController();
-    if (controller === undefined) return;
+    // The dialog shows one package's list at a time, so a newer request
+    // supersedes whatever is still loading.
+    this.upgradeTargetsLoad?.abort.abort();
+    const abort = new AbortController();
+    const load = { requestId: message.requestId, abort };
+    this.upgradeTargetsLoad = load;
+    const abandoned = (): boolean => abort.signal.aborted || this.options.isDisposed();
+    // The record stays after a successful answer so a later cancel (dialog
+    // closed, package switched) can still stop the version checks it started.
+    // A newer load replaces it.
+    const answered = await this.loadUpgradeTargetsFor(message, abort.signal, abandoned);
+    if (!answered && this.upgradeTargetsLoad === load) this.upgradeTargetsLoad = undefined;
+  }
 
-    const row = controller.lastResultRows().find((candidate) => candidate.name === message.package);
-    if (row === undefined || row.current === null || row.upgradeTo === null) {
+  /** Cancels only the matching request, so a late cancel never stops a newer load. */
+  handleCancelUpgradeTargets(message: { requestId: string }): void {
+    if (this.upgradeTargetsLoad?.requestId !== message.requestId) return;
+    this.upgradeTargetsLoad.abort.abort();
+    this.upgradeTargetsLoad = undefined;
+  }
+
+  /** True when a version list was posted and its version checks started. */
+  private async loadUpgradeTargetsFor(
+    message: LoadUpgradeTargetsMessage,
+    signal: AbortSignal,
+    abandoned: () => boolean
+  ): Promise<boolean> {
+    const controller = await this.options.ensureController();
+    if (controller === undefined || abandoned()) return false;
+
+    const postError = (error: ProtocolError): void => {
       this.options.sink.postMessage({
         status: 'upgrade-targets-error',
         package: message.package,
         requestId: message.requestId,
-        error: { code: 'NO_ELIGIBLE_UPGRADE', message: 'No upgrade is currently available for this package.' },
+        error,
       });
-      return;
+    };
+
+    const row = controller.lastResultRows().find((candidate) => candidate.name === message.package);
+    if (row === undefined || row.current === null || row.upgradeTo === null) {
+      postError(versionListEligibilityError(row === undefined ? 'unknown-package' : 'no-eligible-upgrade'));
+      return false;
     }
 
     // Reuse the existing default-target eligibility gate before doing any
@@ -1045,18 +1119,10 @@ export class UpgradeAssistantCoordinator {
     // a current trusted scan without adding a weaker read-only side door.
     const eligibility = controller.validateUpgradeRequest({ package: row.name, target: row.upgradeTo });
     if (!eligibility.ok) {
-      this.options.sink.postMessage({
-        status: 'upgrade-targets-error',
-        package: message.package,
-        requestId: message.requestId,
-        error: describeBulkRejection({
-          ok: false,
-          reason: 'change-rejected',
-          packageName: message.package,
-          changeReason: eligibility.reason,
-        }),
-      });
-      return;
+      postError(versionListEligibilityError(
+        blockedReason(controller, eligibility.reason)
+      ));
+      return false;
     }
 
     this.options.sink.postMessage({
@@ -1064,51 +1130,49 @@ export class UpgradeAssistantCoordinator {
       package: message.package,
       requestId: message.requestId,
     });
+    const registryUrl = registryForPackage(controller.upgradeSource.resolvedRegistry, row.name);
+    let targets: Awaited<ReturnType<typeof loadUpgradeTargets>>;
     try {
-      const source = controller.upgradeSource;
-      const targets = await loadUpgradeTargets(
+      targets = await loadUpgradeTargets(
         this.options.httpClient,
         this.options.etagStore,
-        registryForPackage(source.resolvedRegistry, row.name),
+        registryUrl,
         row.name,
         row.current,
         row.upgradeTo,
-        undefined,
-        row.upgradeReason
+        signal,
+        row.upgradeReason,
+        (code) => this.options.platform.log?.(diagnosticLine({
+          area: 'version-list', code, packageName: row.name, registryUrl, detail: 'fallback-used',
+        }))
       );
-      const stillEligible = controller.validateUpgradeRequest({ package: row.name, target: row.upgradeTo });
-      if (!stillEligible.ok) {
-        this.options.sink.postMessage({
-          status: 'upgrade-targets-error',
-          package: message.package,
-          requestId: message.requestId,
-          error: describeBulkRejection({
-            ok: false,
-            reason: 'change-rejected',
-            packageName: message.package,
-            changeReason: stillEligible.reason,
-          }),
-        });
-        return;
-      }
-      this.options.sink.postMessage({
-        status: 'upgrade-targets',
-        package: message.package,
-        requestId: message.requestId,
-        targets,
-      });
-      void controller.enrichUpdateVersions(targets.options.map(option => ({
-        name: row.registryName ?? row.name, version: option.version,
-      })), this.options.sink);
     } catch (cause) {
-      if (this.options.isDisposed()) return;
-      this.options.sink.postMessage({
-        status: 'upgrade-targets-error',
-        package: message.package,
-        requestId: message.requestId,
-        error: toProtocolError(cause),
-      });
+      if (abandoned()) return false;
+      const failure = versionListFetchFailure(cause, registryUrl);
+      this.options.platform.log?.(diagnosticLine({
+        area: 'version-list', code: failure.fetchCode, packageName: row.name, registryUrl,
+      }));
+      postError(failure.error);
+      return false;
     }
+    if (abandoned()) return false;
+    const stillEligible = controller.validateUpgradeRequest({ package: row.name, target: row.upgradeTo });
+    if (!stillEligible.ok) {
+      postError(versionListEligibilityError(
+        blockedReason(controller, stillEligible.reason)
+      ));
+      return false;
+    }
+    this.options.sink.postMessage({
+      status: 'upgrade-targets',
+      package: message.package,
+      requestId: message.requestId,
+      targets,
+    });
+    void controller.enrichUpdateVersions(targets.options.map(option => ({
+      name: row.registryName ?? row.name, version: option.version,
+    })), this.options.sink, () => !abandoned());
+    return true;
   }
 
   private async publishedTargetsFor(
@@ -1219,7 +1283,8 @@ export class UpgradeAssistantCoordinator {
         this.options.sink.postMessage({
           status: 'upgrade-error',
           package: batch.packageName ?? messages[0]?.package ?? 'unknown',
-          error: toProtocolError(cause),
+          // Raw fetch errors can carry full registry URLs; send a safe reason only.
+          error: versionListFetchFailure(cause).error,
         });
         return;
       }

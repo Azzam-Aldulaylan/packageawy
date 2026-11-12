@@ -39,6 +39,12 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
   }
 
   const platform = new VsCodePlatform(context);
+  context.subscriptions.push(platform);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('packageawy.showLog', () => {
+      platform.showLog();
+    })
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand('packageawy.open', () => {
       showDashboard(context, platform);

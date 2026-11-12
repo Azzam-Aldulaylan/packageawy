@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import type { UpgradeReason } from '../../../src/core/types.js';
 import type { ProtocolError, UpgradeTargetOptions } from '../../../src/host/webviewProtocol.js';
 import { updateAdvisoryTag, updateAdvisoryWarning } from '../../../src/host/updateAdvisoryState.js';
+import { isVersionListFailure, versionListFailureNeedsRefresh, versionListFailureText } from '../../../src/core/diagnostics.js';
 import { UpdateAdvisoryContext, UpdateVersionWarning } from './UpdateVersionWarning.js';
 
 export type UpgradeTargetLoadState =
@@ -11,6 +12,16 @@ export type UpgradeTargetLoadState =
   | { phase: 'ready'; targets: UpgradeTargetOptions }
   | { phase: 'error'; error: ProtocolError }
   | { phase: 'idle' };
+
+/**
+ * The reason line under the list. The host builds the message from the same
+ * allowlisted code, with the registry host name in it, so a known code shows
+ * that message. An unknown code (an older host) gets the generic sentence.
+ */
+export function versionListErrorText(error: ProtocolError): string {
+  if (!isVersionListFailure(error.code)) return versionListFailureText('unknown');
+  return error.message.trim() === '' ? versionListFailureText(error.code) : error.message;
+}
 
 function optionLabel(
   option: UpgradeTargetOptions['options'][number]
@@ -32,6 +43,8 @@ export function UpgradeTargetSelector({
   fallbackReason,
   disabled,
   onChange,
+  onRetry,
+  onRefreshDashboard,
 }: {
   state: UpgradeTargetLoadState;
   registryName?: string;
@@ -40,6 +53,10 @@ export function UpgradeTargetSelector({
   fallbackReason?: UpgradeReason | null;
   disabled: boolean;
   onChange: (version: string) => void;
+  /** Loads the version list again with a new request. */
+  onRetry?: () => void;
+  /** Refreshes the dashboard; the list reloads after revalidation. */
+  onRefreshDashboard?: () => void;
 }): ReactElement {
   const results = useContext(UpdateAdvisoryContext);
   const resultFor = (version: string) => results.find(result => result.name === registryName && result.version === version);
@@ -67,6 +84,11 @@ export function UpgradeTargetSelector({
   const selectedWarning = registryName !== undefined && value !== '' && state.phase !== 'loading'
     ? updateAdvisoryWarning(resultFor(value)) : undefined;
   const fallbackLabel = fallbackReason === 'security-fix' ? 'Security fix' : 'dashboard target';
+  const error = state.phase === 'error' ? state.error : null;
+  // A project-changed or no-upgrade failure would fail the same way again
+  // until the dashboard revalidates, so the button refreshes it instead.
+  const needsRefresh = error !== null && isVersionListFailure(error.code) && versionListFailureNeedsRefresh(error.code);
+  const retryAction = needsRefresh ? onRefreshDashboard : onRetry;
 
   return (
     <section className="upgrade-target-picker" aria-labelledby="upgrade-target-picker-label">
@@ -119,12 +141,30 @@ export function UpgradeTargetSelector({
         {selectedWarning === undefined ? null : (
           <span className="sr-only" id="upgrade-target-version-warning">{selectedWarning}</span>
         )}
-        {ready?.truncated === true ? (
+        {ready?.tagsOnly === true ? (
+          <span className="upgrade-target-picker__meta">
+            Showing tagged releases only. The full version list could not be loaded.
+          </span>
+        ) : ready?.truncated === true ? (
           <span className="upgrade-target-picker__meta">Showing recent and tagged releases.</span>
         ) : null}
-        {state.phase === 'error' ? (
+        {error !== null ? (
           <span className="upgrade-target-picker__meta upgrade-target-picker__meta--warning" role="status">
-            Published versions could not be loaded. The existing dashboard target remains available.
+            {versionListErrorText(error)}
+            {usableFallback !== null ? ' The dashboard target is still available.' : null}
+            {retryAction !== undefined ? (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  className="button button--secondary upgrade-target-picker__retry"
+                  disabled={disabled}
+                  onClick={retryAction}
+                >
+                  {needsRefresh ? 'Refresh' : 'Retry'}
+                </button>
+              </>
+            ) : null}
           </span>
         ) : null}
       </div>

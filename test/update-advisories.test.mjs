@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { FetchError } from '../out/core/registry/http.js';
 import test from 'node:test';
 import { DashboardController } from '../out/host/dashboardController.js';
 import { UpdateAdvisories, offeredVersionPairs } from '../out/host/updateAdvisories.js';
@@ -281,4 +282,28 @@ test('installed version matching tolerates a leading v but keeps prereleases dis
   assert.equal(updateAdvisoryTag({ name: 'a', version: '1.0.0', status: 'checked', count: 1, highestSeverity: 'critical' }), '1 vulnerability (critical)');
   assert.equal(updateAdvisoryTag({ name: 'a', version: '1.0.0', status: 'checked', count: 0, highestSeverity: null }), undefined);
   assert.equal(updateAdvisoryTag({ name: 'a', version: '1.0.0', status: 'unavailable' }), undefined);
+});
+
+test('a scan with failed update checks blocks upgrades as an incomplete scan, and a complete scan clears it', async () => {
+  let failing = true;
+  const f = fixture({ cached: false, get: async (url) => {
+    if (failing) throw new FetchError('TIMEOUT', 'timed out');
+    return json(url.endsWith('/latest') ? { version: '2.0.0' } :
+      { 'dist-tags': { latest: '2.0.0' }, versions: { '1.0.0': { version: '1.0.0' }, '1.1.0': { version: '1.1.0' }, '2.0.0': { version: '2.0.0' } } });
+  } });
+  await f.controller.handleReady(f.sink);
+  await tick();
+  assert.equal(f.controller.scanRunning(), false, 'the finished scan is not reported as running');
+  assert.equal(f.controller.validateUpgradeRequest({ package: 'app', target: '2.0.0' }).ok, false);
+  assert.equal(f.controller.lastScanIncomplete(), true);
+  failing = false;
+  // The dashboard's Refresh: re-read the project, then scan (dashboardPanel reloadAndScan).
+  const generation = f.controller.beginRevalidation();
+  f.controller.updateProjectSnapshot({ manifestText: f.options.manifestText, lockfileText: f.options.lockfileText,
+    lockfilePath: null, root: f.options.root }, generation);
+  await f.controller.refreshInBackground(f.sink);
+  await tick();
+  assert.equal(f.controller.lastScanIncomplete(), false);
+  assert.equal(f.controller.validateUpgradeRequest({ package: 'app', target: '2.0.0' }).ok, true);
+  f.controller.dispose();
 });

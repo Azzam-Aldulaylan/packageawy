@@ -44,6 +44,8 @@ export interface CachedResponse {
 export interface EtagStore {
   get(key: string): CachedResponse | undefined;
   set(key: string, value: CachedResponse): void;
+  /** Drops a cached response, e.g. one whose body turned out to be unreadable. */
+  delete(key: string): void;
 }
 
 export class MemoryEtagStore implements EtagStore {
@@ -53,6 +55,9 @@ export class MemoryEtagStore implements EtagStore {
   }
   set(key: string, value: CachedResponse): void {
     this.entries.set(key, value);
+  }
+  delete(key: string): void {
+    this.entries.delete(key);
   }
 }
 
@@ -66,37 +71,54 @@ function joinUrl(registry: string, path: string): string {
 }
 
 /**
- * GET with conditional-request support.
+ * Core-internal JSON GET with conditional-request support.
  *
  * On 304 the registry sends no body, so the cached copy is returned and
  * `wireBytes` stays at whatever the headers cost: the point of the ETag.
+ * `recovered` identifies a corrupt cached body replaced by a fresh response.
  */
-async function getConditional(
+export async function getConditional(
   client: HttpClient,
   store: EtagStore,
   url: string,
   accept: string,
   signal?: AbortSignal
-): Promise<{ body: string; wireBytes: number; notModified: boolean }> {
+): Promise<{ json: Record<string, unknown>; wireBytes: number; notModified: boolean; recovered: boolean }> {
   const cached = store.get(url);
   const headers: Record<string, string> = { accept };
   if (cached !== undefined) headers['if-none-match'] = cached.etag;
 
-  const response = await client.get(url, signal === undefined ? { headers } : { headers, signal });
+  let response = await client.get(url, signal === undefined ? { headers } : { headers, signal });
+  let wireBytes = response.wireBytes;
+  let recovered = false;
 
   if (response.status === 304) {
     if (cached === undefined) {
       throw new FetchError('NETWORK', `304 for ${url} with nothing cached`);
     }
-    return { body: cached.body, wireBytes: response.wireBytes, notModified: true };
+    try {
+      return { json: parseJson(cached.body, url), wireBytes, notModified: true, recovered: false };
+    } catch (cause) {
+      if (!(cause instanceof FetchError) || cause.code !== 'PARSE_ERROR') throw cause;
+    }
+    // Old persisted entries may predate validation. Drop the broken body even
+    // if the one unconditional recovery request fails, so it cannot poison retries.
+    store.delete?.(url);
+    const recoveryHeaders = { accept };
+    response = await client.get(url, signal === undefined
+      ? { headers: recoveryHeaders }
+      : { headers: recoveryHeaders, signal });
+    wireBytes += response.wireBytes;
+    recovered = true;
   }
 
   if (response.status !== 200) throw registryErrorForStatus(response.status, url);
 
+  const json = parseJson(response.body, url);
   const etag = response.headers['etag'];
   if (etag !== undefined) store.set(url, { etag, body: response.body });
 
-  return { body: response.body, wireBytes: response.wireBytes, notModified: false };
+  return { json, wireBytes, notModified: false, recovered };
 }
 
 function parseJson(body: string, url: string): Record<string, unknown> {
@@ -128,8 +150,7 @@ export async function fetchLatest(
   signal?: AbortSignal
 ): Promise<LatestDoc> {
   const url = joinUrl(registry, `${encodePackageName(name)}/latest`);
-  const { body } = await getConditional(client, store, url, 'application/json', signal);
-  const json = parseJson(body, url);
+  const { json } = await getConditional(client, store, url, 'application/json', signal);
 
   const doc: LatestDoc = {
     version: typeof json['version'] === 'string' ? json['version'] : null,
@@ -160,8 +181,7 @@ export async function fetchDistTags(
   signal?: AbortSignal
 ): Promise<Record<string, string>> {
   const url = joinUrl(registry, `-/package/${encodePackageName(name)}/dist-tags`);
-  const { body } = await getConditional(client, store, url, 'application/json', signal);
-  const json = parseJson(body, url);
+  const { json } = await getConditional(client, store, url, 'application/json', signal);
   const distTags: Record<string, string> = {};
   for (const [tag, value] of Object.entries(json)) {
     if (tag !== '__proto__' && tag !== 'constructor' && tag !== 'prototype' && typeof value === 'string') {
@@ -285,8 +305,7 @@ export async function fetchPackageVersionMetadata(
     throw new FetchError('BAD_URL', 'invalid package name or exact version for metadata lookup');
   }
   const url = joinUrl(registry, `${encodePackageName(name)}/${encodeURIComponent(version)}`);
-  const { body } = await getConditional(client, store, url, 'application/json', signal);
-  const json = parseJson(body, url);
+  const { json } = await getConditional(client, store, url, 'application/json', signal);
 
   const publishedVersion = json['version'];
   if (typeof publishedVersion !== 'string' || publishedVersion !== version) {
@@ -334,8 +353,7 @@ export async function fetchPackument(
   signal?: AbortSignal
 ): Promise<PackumentDoc> {
   const url = joinUrl(registry, encodePackageName(name));
-  const { body } = await getConditional(client, store, url, ABBREVIATED_ACCEPT, signal);
-  const json = parseJson(body, url);
+  const { json } = await getConditional(client, store, url, ABBREVIATED_ACCEPT, signal);
 
   const versionsBlock = json['versions'];
   const versions =

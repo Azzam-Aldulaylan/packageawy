@@ -72,6 +72,10 @@
         "title": "Packageawy: Refresh"
       },
       {
+        "command": "packageawy.showLog",
+        "title": "Packageawy: Show Log"
+      },
+      {
         "command": "packageawy.openPackageJson",
         "title": "Open in Packageawy",
         "category": "Packageawy"

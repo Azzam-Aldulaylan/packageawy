@@ -144,6 +144,7 @@ test('an oversized packument falls back to the compact dist-tags endpoint', asyn
     '16.3.3'
   );
   assert.equal(result.recommendedVersion, '16.3.3');
+  assert.equal(result.tagsOnly, undefined, 'an expected too-large history is not reported as a failure');
   assert.deepEqual(calls, [
     'https://registry.npmjs.org/next',
     'https://registry.npmjs.org/-/package/next/dist-tags',

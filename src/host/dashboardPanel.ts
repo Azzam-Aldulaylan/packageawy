@@ -522,6 +522,10 @@ export class DashboardPanel {
       await this.upgradeCoordinator.handleLoadUpgradeTargets(message);
       return;
     }
+    if (message.type === 'cancel-upgrade-targets') {
+      this.upgradeCoordinator.handleCancelUpgradeTargets(message);
+      return;
+    }
     if (message.type === 'upgrade') {
       await this.upgradeCoordinator.handleAnalyzeUpgrade(message);
       return;
@@ -1413,6 +1417,7 @@ export class DashboardPanel {
       performanceEnabled: this.performanceEnabled,
       progressEnabled: true,
       publicAdvisoryCheckEnabled: this.publicAdvisoryCheckEnabled,
+      log: (line) => this.platform.log?.(line),
     });
   }
 
