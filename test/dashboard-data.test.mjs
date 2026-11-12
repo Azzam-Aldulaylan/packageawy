@@ -66,8 +66,9 @@ test('a FetchError is flattened to a plain code/message pair', () => {
 
   assert.deepEqual(data.advisoriesError, {
     code: 'REGISTRY_5XX',
-    message: 'server error 503: https://registry.npmjs.org',
+    message: 'Vulnerability data could not be loaded (REGISTRY_5XX).',
   });
+  assert.doesNotMatch(JSON.stringify(data.advisoriesError), /https?:/, 'raw messages can carry registry URLs');
   assert.equal(data.advisoriesError instanceof Error, false, 'no Error instance crosses the boundary');
   assert.deepEqual(Object.keys(data.advisoriesError), ['code', 'message'], 'status is not leaked');
   assert.deepEqual(JSON.parse(JSON.stringify(data)), data, 'the whole payload is JSON-safe');
@@ -82,6 +83,34 @@ test('auditUnavailable is copied only when actually true', () => {
   assert.equal(
     toDashboardData(scan(), PROJECT, CAN_CHANGE_PROJECT, BUILD_INFO, AT).auditUnavailable,
     undefined
+  );
+});
+
+test('the audit reason travels with the flag, and a missing reason reads as a generic failure', () => {
+  const timedOut = toDashboardData(
+    scan({ auditUnavailable: true, auditUnavailableReason: 'timeout' }),
+    PROJECT, CAN_CHANGE_PROJECT, BUILD_INFO, AT
+  );
+  assert.equal(timedOut.auditUnavailableReason, 'timeout');
+  const legacy = toDashboardData(scan({ auditUnavailable: true }), PROJECT, CAN_CHANGE_PROJECT, BUILD_INFO, AT);
+  assert.equal(legacy.auditUnavailableReason, 'failed');
+  // A reason without the flag is not a failure to report.
+  const healthy = toDashboardData(scan({ auditUnavailableReason: 'timeout' }), PROJECT, CAN_CHANGE_PROJECT, BUILD_INFO, AT);
+  assert.equal(healthy.auditUnavailableReason, undefined);
+});
+
+test('package manager and lockfile evidence are carried for the banner wording', () => {
+  const data = toDashboardData(
+    scan({ packageManager: 'pnpm', lockfileMissing: true }),
+    PROJECT, CAN_CHANGE_PROJECT, BUILD_INFO, AT
+  );
+  assert.equal(data.packageManager, 'pnpm');
+  assert.equal(data.lockfileMissing, true);
+  const present = toDashboardData(scan({ packageManager: 'npm', lockfileMissing: false }), PROJECT, CAN_CHANGE_PROJECT, BUILD_INFO, AT);
+  assert.equal(present.lockfileMissing, undefined);
+  assert.equal(
+    isHostToWebviewMessage({ status: 'partial-error', data: { ...data, auditUnavailable: true, auditUnavailableReason: 'no-lockfile' } }),
+    true
   );
 });
 

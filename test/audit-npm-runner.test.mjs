@@ -18,6 +18,7 @@ import {
   runNpmAudit,
   AuditUnavailableError,
   DEFAULT_AUDIT_TIMEOUT_MS,
+  auditUnavailableReasonFor,
 } from '../out/core/audit/npmAudit.js';
 
 const FAKE_NPM = fileURLToPath(new URL('./fixtures/fake-npm/npm.cjs', import.meta.url));
@@ -142,5 +143,34 @@ test('a missing npm executable rejects instead of hanging', async () => {
     spawnConfig: { command: path.join(tmpdir(), 'packageawy-no-such-npm') },
     timeoutMs: 10_000,
   });
-  await assert.rejects(runner.run(process.cwd()), { code: 'ENOENT' });
+  const error = await runner.run(process.cwd()).then(() => assert.fail('expected a rejection'), (e) => e);
+  assert.ok(error instanceof AuditUnavailableError);
+  assert.equal(auditUnavailableReasonFor(error), 'npm-not-found');
+});
+
+test('a missing project folder is a generic failure, not a missing npm', async () => {
+  // Node reports this as `spawn <command> ENOENT` too; only the folder check tells them apart.
+  const runner = fakeRunner(['fail'], { timeoutMs: 10_000 });
+  const missingDir = path.join(tmpdir(), `packageawy-no-such-dir-${process.pid}-${Date.now()}`);
+  const error = await runner.run(missingDir).then(() => assert.fail('expected a rejection'), (e) => e);
+  assert.equal(auditUnavailableReasonFor(error), 'failed');
+});
+
+test('audit failures are classified by kind, never by message text', async () => {
+  await withTempDir(async (dir) => {
+    const pidFile = path.join(dir, 'pids.json');
+    const timedOut = await fakeRunner(['hang', pidFile], { timeoutMs: 300 }).run(dir).catch((e) => e);
+    assert.equal(auditUnavailableReasonFor(timedOut), 'timeout');
+
+    const tooLarge = await fakeRunner(['stdout-flood'], { stdoutLimitBytes: 64 * 1024, timeoutMs: 10_000 })
+      .run(dir)
+      .catch((e) => e);
+    assert.equal(auditUnavailableReasonFor(tooLarge), 'failed');
+
+    const badJson = await runNpmAudit(fakeRunner(['fail'], { timeoutMs: 10_000 }), dir).catch((e) => e);
+    assert.equal(auditUnavailableReasonFor(badJson), 'failed');
+  });
+  // A message that merely mentions a timeout is not one.
+  assert.equal(auditUnavailableReasonFor(new Error('npm audit timed out.')), 'failed');
+  assert.equal(auditUnavailableReasonFor(new AuditUnavailableError('npm was not found')), 'failed');
 });

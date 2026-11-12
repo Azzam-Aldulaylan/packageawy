@@ -99,10 +99,15 @@ export class RpcPlatform implements HostPlatform {
   private readonly processes = new Map<number, ProcessState>();
   private readonly settingListeners = new Set<{ key: string; listener: () => void }>();
 
+  /** Troubleshooting lines go to the sidecar's stderr, which the IDE forwards to its log. */
+  log(line: string): void {
+    this.writeLog(line);
+  }
+
   constructor(
     private readonly connection: RpcConnection,
     init: InitializeParams,
-    private readonly log: Log = () => undefined
+    private readonly writeLog: Log = () => undefined
   ) {
     this.folders = init.workspaceFolders;
     this.trusted = init.isWorkspaceTrusted;
@@ -213,7 +218,9 @@ export class RpcPlatform implements HostPlatform {
     const watchId = this.nextId++;
     this.fileWatches.set(watchId, listener);
     this.connection.sendRequest(Methods.filesWatch, { watchId, baseDir, glob }).catch((error: unknown) => {
-      this.log(`files/watch failed for ${baseDir}: ${String(error)}`);
+      // No path or raw error: the IDE log can end up in bug reports.
+      void error;
+      this.writeLog('files/watch failed');
     });
     return {
       dispose: () => {

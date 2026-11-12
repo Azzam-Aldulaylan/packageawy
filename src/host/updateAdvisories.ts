@@ -27,6 +27,8 @@ export class UpdateAdvisories {
   private abort = new AbortController();
   private settled = new Map<string, UpdateAdvisoryResult>();
   private pending = new Set<string>();
+  /** Settled but not yet delivered to anyone who asked (the asker left first). */
+  private unpublished = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
 
   constructor(private readonly client: HttpClient, private readonly enabled: () => boolean) {}
@@ -36,53 +38,82 @@ export class UpdateAdvisories {
     this.abort = new AbortController();
     if (!keepSettled) this.settled.clear();
     this.pending.clear();
+    this.unpublished.clear();
     this.queue = Promise.resolve();
   }
 
   results(): UpdateAdvisoryResult[] { return [...this.settled.values()]; }
 
+  /**
+   * `wanted` lets a caller that no longer needs the answer (a closed version
+   * list) skip its work. Skipped versions are released, and results fetched
+   * for a caller that left are kept but marked unpublished, so the next
+   * caller asking for them (a reopened list) still receives them.
+   */
   enrich(pairs: readonly UpdateVersionPair[],
-    isCurrent: () => boolean, publish: (results: UpdateAdvisoryResult[]) => void): Promise<void> {
+    isCurrent: () => boolean, publish: (results: UpdateAdvisoryResult[]) => void,
+    wanted: () => boolean = () => true): Promise<void> {
     if (!this.enabled() || !isCurrent()) return Promise.resolve();
     const signal = this.abort.signal;
-    const missing = pairs.filter(pair => {
-      const key = updateAdvisoryKey(pair.name, pair.version);
+    const keyOf = (pair: UpdateVersionPair): string => updateAdvisoryKey(pair.name, pair.version);
+    const claim = (): UpdateVersionPair[] => pairs.filter(pair => {
+      const key = keyOf(pair);
       if (this.settled.has(key) || this.pending.has(key)) return false;
       this.pending.add(key);
       return true;
     });
-    if (missing.length === 0) return this.queue;
+    const missing = claim();
+    // Versions another caller is still checking: that caller may leave and
+    // release them, so this caller looks again once its turn comes.
+    const heldElsewhere = pairs.some(pair => this.pending.has(keyOf(pair)) && !missing.includes(pair));
+    const owed = pairs.some(pair => this.unpublished.has(keyOf(pair)));
+    if (missing.length === 0 && !heldElsewhere && !owed) return this.queue;
     const run = async (): Promise<void> => {
       if (signal.aborted || !this.enabled() || !isCurrent()) return;
-      const body: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
-      const valid = missing.filter(pair => semver.valid(pair.version) !== null);
-      for (const { name, version } of valid) (body[name] ??= []).push(version);
-      let results: UpdateAdvisoryResult[];
-      try {
-        // Strict evidence parsing prevents malformed entries/ranges from implying a clean version.
-        const advisories = await fetchBulkAdvisories(this.client, body, signal, this.enabled, true);
-        results = missing.map(pair => {
-          if (semver.valid(pair.version) === null) return { ...pair, status: 'unavailable' };
-          const matching = (advisories.get(pair.name) ?? []).filter(advisory =>
-            semver.satisfies(pair.version, advisory.vulnerableVersions, { includePrerelease: true }));
-          const unique = [...new Map(matching.map(advisory => [advisory.id, advisory])).values()];
-          const highestSeverity = unique.reduce<Severity | null>((highest, advisory) => highest === null ||
-            severityRank.indexOf(advisory.severity) > severityRank.indexOf(highest) ? advisory.severity : highest, null);
-          return { ...pair, status: 'checked', count: unique.length, highestSeverity };
-        });
-      } catch {
-        results = missing.map(pair => ({ ...pair, status: 'unavailable' }));
+      const work = heldElsewhere ? [...missing, ...claim()] : missing;
+      if (!wanted()) {
+        for (const pair of work) this.pending.delete(keyOf(pair));
+        return;
       }
-      if (signal.aborted || !this.enabled() || !isCurrent()) return;
-      for (const result of results) {
-        const key = updateAdvisoryKey(result.name, result.version);
-        this.pending.delete(key);
-        this.settled.set(key, result);
+      if (work.length > 0) {
+        const results = await this.check(work, signal);
+        if (signal.aborted || !this.enabled() || !isCurrent()) return;
+        for (const result of results) {
+          const key = updateAdvisoryKey(result.name, result.version);
+          this.pending.delete(key);
+          this.settled.set(key, result);
+          this.unpublished.add(key);
+        }
       }
+      if (!wanted()) return;
+      if (!pairs.some(pair => this.unpublished.has(keyOf(pair)))) return;
+      // Every settled result goes out in this snapshot, so nothing is owed any more.
+      this.unpublished.clear();
       publish(this.results());
     };
     // Dispatch on a later microtask, after the caller has posted the rows or picker options.
     this.queue = this.queue.then(run);
     return this.queue;
+  }
+
+  private async check(work: readonly UpdateVersionPair[], signal: AbortSignal): Promise<UpdateAdvisoryResult[]> {
+    const body: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
+    const valid = work.filter(pair => semver.valid(pair.version) !== null);
+    for (const { name, version } of valid) (body[name] ??= []).push(version);
+    try {
+      // Strict evidence parsing prevents malformed entries/ranges from implying a clean version.
+      const advisories = await fetchBulkAdvisories(this.client, body, signal, this.enabled, true);
+      return work.map(pair => {
+        if (semver.valid(pair.version) === null) return { ...pair, status: 'unavailable' };
+        const matching = (advisories.get(pair.name) ?? []).filter(advisory =>
+          semver.satisfies(pair.version, advisory.vulnerableVersions, { includePrerelease: true }));
+        const unique = [...new Map(matching.map(advisory => [advisory.id, advisory])).values()];
+        const highestSeverity = unique.reduce<Severity | null>((highest, advisory) => highest === null ||
+          severityRank.indexOf(advisory.severity) > severityRank.indexOf(highest) ? advisory.severity : highest, null);
+        return { ...pair, status: 'checked', count: unique.length, highestSeverity };
+      });
+    } catch {
+      return work.map(pair => ({ ...pair, status: 'unavailable' }));
+    }
   }
 }

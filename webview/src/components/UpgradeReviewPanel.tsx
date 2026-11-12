@@ -403,6 +403,8 @@ export function UpgradeReviewPanel({
   onCancel,
   onConfigureVerification,
   onRefresh,
+  onRetryTargets,
+  onRefreshDashboard,
   onChangeTab,
   onOpenAdvisory,
   onOpenUsageReference,
@@ -432,6 +434,10 @@ export function UpgradeReviewPanel({
   onCancel: () => void;
   onConfigureVerification: () => void;
   onRefresh: () => void;
+  /** Loads the version list again after it failed. */
+  onRetryTargets?: (() => void) | undefined;
+  /** Refreshes the dashboard when the version list failed because the project changed. */
+  onRefreshDashboard?: (() => void) | undefined;
   onChangeTab: (tab: ManageTabId) => void;
   onOpenAdvisory?: ((packageName: string, advisoryId: string | number, path: string[], reference?: string) => void) | undefined;
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
@@ -468,6 +474,8 @@ export function UpgradeReviewPanel({
       fallbackReason={row.upgradeReason}
       disabled={busy || disabled}
       onChange={onTargetChange}
+      {...(onRetryTargets === undefined ? {} : { onRetry: onRetryTargets })}
+      {...(onRefreshDashboard === undefined ? {} : { onRefreshDashboard })}
     />
   );
   const withTargetSelector = (content: ReactElement): ReactElement => (

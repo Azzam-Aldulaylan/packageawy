@@ -15,6 +15,8 @@ import { PersistentProjectCacheStore } from '../out/core/cache/projectCacheStore
 import { deriveProjectCacheKey } from '../out/core/cache/keys.js';
 import { computeSourceFingerprint } from '../out/core/cache/sourceFingerprint.js';
 import { deriveProjectId } from '../out/core/workspace/scan.js';
+import { AuditUnavailableError } from '../out/core/audit/npmAudit.js';
+import { partialResultsText } from '../out/host/partialResultsCopy.js';
 
 const REGISTRY = 'https://registry.npmjs.org';
 const ROOT = '/tmp/project';
@@ -1871,4 +1873,135 @@ test('TTL-stale persisted data with a matching fingerprint remains eligible duri
   );
 
   await readyPromise;
+});
+
+// ------------------------------------------- audit reasons and banner facts
+
+const failingAudit = (reason) => ({
+  async run() {
+    throw new AuditUnavailableError('npm audit failed.', reason);
+  },
+});
+
+test('the audit reason and project facts reach the dashboard and replay identically from the cache', async () => {
+  const projectCacheStore = new PersistentProjectCacheStore(fakeKeyValueStore());
+  const now = Date.now();
+  const options = {
+    projectCacheStore,
+    cacheKey: 'cache-key-audit-reason',
+    ttlMinutesProvider: () => 30,
+    now: () => now,
+    lockfileName: 'package-lock.json',
+    packageManager: 'npm',
+    auditRunner: failingAudit('timeout'),
+  };
+  const sink = recordingSink();
+  await makeController(staticClient('1.0.1'), options).handleReady(sink);
+
+  const fresh = sink.posted.at(-1).data;
+  assert.equal(fresh.auditUnavailable, true);
+  assert.equal(fresh.auditUnavailableReason, 'timeout');
+  assert.equal(fresh.packageManager, 'npm');
+  assert.equal(fresh.lockfileMissing, undefined);
+  assert.equal(partialResultsText(fresh), 'npm audit timed out, so vulnerability fixes are estimated.');
+
+  const persisted = projectCacheStore.get('cache-key-audit-reason');
+  assert.equal(persisted.auditUnavailableReason, 'timeout');
+  assert.equal(persisted.packageManager, 'npm');
+
+  const replaySink = recordingSink();
+  await makeController(throwingClient, options).handleReady(replaySink);
+  const replayed = replaySink.posted[0].data;
+  assert.equal(replayed.auditUnavailableReason, 'timeout');
+  assert.equal(partialResultsText(replayed), partialResultsText(fresh), 'a cached replay shows the same banner');
+});
+
+test('a snapshot persisted before the reason existed replays with current project facts and the generic audit text', async () => {
+  const projectCacheStore = new PersistentProjectCacheStore(fakeKeyValueStore());
+  const now = Date.now();
+  projectCacheStore.set('cache-key-legacy-audit', {
+    rows: [CACHED_ROW],
+    availability: COMPLETE_AVAILABILITY,
+    auditUnavailable: true,
+    generatedAt: new Date(now).toISOString(),
+    lockfilePath: null,
+    sourceFingerprint: SOURCE_FINGERPRINT,
+  });
+  const controller = makeController(throwingClient, {
+    projectCacheStore,
+    cacheKey: 'cache-key-legacy-audit',
+    ttlMinutesProvider: () => 30,
+    now: () => now,
+    lockfileName: 'package-lock.json',
+  });
+  const sink = recordingSink();
+  await controller.handleReady(sink);
+
+  const data = sink.posted[0].data;
+  assert.equal(data.auditUnavailableReason, 'failed');
+  assert.equal(data.packageManager, 'npm');
+  assert.equal(partialResultsText(data), 'npm audit could not run, so vulnerability fixes are estimated.');
+});
+
+test('an npm project without a lockfile reports no-lockfile from project evidence', async () => {
+  const controller = makeController(staticClient('1.0.1'), {
+    lockfileText: null,
+    lockfileName: null,
+    packageManager: 'npm',
+    // npm's own failure would say npm is missing; the lockfile evidence wins.
+    auditRunner: failingAudit('npm-not-found'),
+  });
+  const sink = recordingSink();
+  await controller.handleReady(sink);
+
+  const data = sink.posted.at(-1).data;
+  assert.equal(data.auditUnavailableReason, 'no-lockfile');
+  assert.equal(data.lockfileMissing, true);
+  assert.match(partialResultsText(data), /^No package-lock\.json found\. Run npm install, then refresh\.$/);
+});
+
+test('a pnpm project without a lockfile keeps audit suppressed and names the missing pnpm-lock.yaml', async () => {
+  let auditCalls = 0;
+  const controller = makeController(staticClient('1.0.1'), {
+    lockfileText: null,
+    lockfileName: null,
+    packageManager: 'pnpm',
+    auditRunner: {
+      async run() {
+        auditCalls += 1;
+        throw new Error('npm audit must not run for pnpm');
+      },
+    },
+  });
+  const sink = recordingSink();
+  await controller.handleReady(sink);
+
+  const data = sink.posted.at(-1).data;
+  assert.equal(auditCalls, 0);
+  assert.equal(data.auditUnavailable, undefined, 'pnpm never shows the npm audit warning');
+  assert.equal(data.packageManager, 'pnpm');
+  assert.equal(data.lockfileMissing, true);
+  assert.equal(data.availability.advisories, 'partial', 'versions are unknown without a lockfile');
+  assert.equal(partialResultsText(data), 'No pnpm-lock.yaml found. Run pnpm install, then refresh.');
+});
+
+test('a pnpm project with a lockfile keeps suppressing the audit warning', async () => {
+  const controller = makeController(staticClient('1.0.1'), {
+    lockfileText: JSON.stringify({
+      lockfileVersion: '9.0',
+      importers: { '.': { dependencies: { 'clean-pkg': { specifier: '^1.0.0', version: '1.0.0' } } } },
+      packages: { 'clean-pkg@1.0.0': {} },
+      snapshots: { 'clean-pkg@1.0.0': {} },
+    }),
+    lockfileName: 'pnpm-lock.yaml',
+    packageManager: 'pnpm',
+    auditRunner: failingAudit('failed'),
+  });
+  const sink = recordingSink();
+  await controller.handleReady(sink);
+  assert.equal(sink.statuses.at(-1), 'ready');
+  const data = sink.posted.at(-1).data;
+  assert.equal(data.auditUnavailable, undefined);
+  assert.equal(data.lockfileMissing, undefined);
+  assert.equal(partialResultsText(data), null);
 });

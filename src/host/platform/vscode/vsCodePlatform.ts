@@ -44,6 +44,8 @@ function toVsCodeToken(token: CancellationToken | undefined): {
 }
 
 export class VsCodePlatform implements HostPlatform {
+  /** Created on first use so a session with no failures adds no output channel. */
+  private logChannel: vscode.LogOutputChannel | undefined;
   readonly workspaceState: KeyValueStore;
   readonly globalState: KeyValueStore;
   readonly cacheStore: KeyValueStore;
@@ -59,6 +61,25 @@ export class VsCodePlatform implements HostPlatform {
     if (cache.fileBacked) {
       void migrateStoreKeys(context.globalState, this.cacheStore, [REGISTRY_CACHE_STORAGE_KEY]).catch(() => undefined);
     }
+  }
+
+  log(line: string): void {
+    this.channel().warn(line);
+  }
+
+  /** Opens the Packageawy log (Packageawy: Show Log). */
+  showLog(): void {
+    this.channel().show(true);
+  }
+
+  dispose(): void {
+    this.logChannel?.dispose();
+    this.logChannel = undefined;
+  }
+
+  private channel(): vscode.LogOutputChannel {
+    this.logChannel ??= vscode.window.createOutputChannel('Packageawy', { log: true });
+    return this.logChannel;
   }
 
   workspaceFolders(): readonly WorkspaceFolder[] {

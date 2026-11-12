@@ -29,9 +29,11 @@
  */
 
 import { spawn } from 'node:child_process';
+import { statSync } from 'node:fs';
 
 import semver from 'semver';
 import { terminateProcessTree } from '../async/processTree.js';
+import type { AuditUnavailableReason } from '../diagnostics.js';
 import type { FixAvailable } from '../types.js';
 
 /**
@@ -192,8 +194,13 @@ export class NodeAuditRunner implements AuditRunner {
       // Only a genuine spawn failure (ENOENT: npm isn't on PATH at all) is a
       // rejection. A non-zero exit is the expected outcome. See trap 1 above.
       child.on('error', (error) => {
+        if (child.pid === undefined) {
+          const spawnFailure = classifySpawnFailure(error, cwd);
+          failure ??= spawnFailure;
+          settleWithFailure(spawnFailure);
+          return;
+        }
         failure ??= error;
-        if (child.pid === undefined) settleWithFailure(error);
       });
       child.on('close', (exitCode) => {
         if (failure !== undefined) {
@@ -219,10 +226,47 @@ export interface AuditVulnerability {
 }
 
 export class AuditUnavailableError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly reason: AuditUnavailableReason = 'failed'
+  ) {
     super(message);
     this.name = 'AuditUnavailableError';
   }
+}
+
+/**
+ * Node reports a missing working directory exactly like a missing executable:
+ * `spawn npm ENOENT`, with the command as `path`. Only checking the directory
+ * tells them apart, and telling a user npm is missing when it is the project
+ * folder that vanished would send them to reinstall the wrong thing.
+ */
+function classifySpawnFailure(error: Error, cwd: string): AuditUnavailableError {
+  const code = (error as NodeJS.ErrnoException).code;
+  const npmMissing = code === 'ENOENT' && isDirectory(cwd);
+  return new AuditUnavailableError(
+    npmMissing ? 'npm could not be started for npm audit.' : 'npm audit could not be started.',
+    npmMissing ? 'npm-not-found' : 'failed'
+  );
+}
+
+function isDirectory(dir: string): boolean {
+  try {
+    return statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why an audit run failed, from the error's type and fields only, never its
+ * message text. A missing lockfile is not decided here: the caller knows that
+ * from the project's files, which is more reliable than npm's error output.
+ */
+export function auditUnavailableReasonFor(error: unknown): AuditUnavailableReason {
+  if (error instanceof AuditUnavailableError) return error.reason;
+  if (error instanceof Error && error.name === 'TimeoutError') return 'timeout';
+  return 'failed';
 }
 
 function parseFixAvailable(raw: unknown): FixAvailable | null {

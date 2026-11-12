@@ -63,6 +63,10 @@ interface UpgradeReviewState {
   onConfigureVerification: () => void;
   /** Re-runs analysis for the same row/target: Cancel followed immediately by a fresh Analyze, not a new mechanism. */
   onRefresh: () => void;
+  /** Loads the version list again with a new request after it failed. */
+  onRetryTargets?: () => void;
+  /** Refreshes the whole dashboard (not this analysis) when the version list needs revalidated data. */
+  onRefreshDashboard?: () => void;
 }
 
 interface RemovalReviewState {
@@ -558,6 +562,8 @@ export function ManageDependencyModal({
         onCancel={cancelUpgradeReview}
         onConfigureVerification={upgrade.onConfigureVerification}
         onRefresh={upgrade.onRefresh}
+        onRetryTargets={upgrade.onRetryTargets}
+        onRefreshDashboard={upgrade.onRefreshDashboard}
         onChangeTab={onChangeTab}
         onOpenAdvisory={onOpenAdvisory}
         onOpenUsageReference={onOpenUsageReference}

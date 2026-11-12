@@ -44,6 +44,8 @@ import {
   isScanDataAvailability,
 } from '../core/validation.js';
 import type { ProtocolError } from '../core/validation.js';
+import { isAuditUnavailableReason } from '../core/diagnostics.js';
+import type { AuditUnavailableReason } from '../core/diagnostics.js';
 import { MAX_BULK_REMOVE_CHANGES, MAX_BULK_UPGRADE_CHANGES } from '../core/upgrade/validate.js';
 
 /**
@@ -426,6 +428,8 @@ export interface UpgradeTargetOptions {
   recommendedVersion: string | null;
   options: UpgradeTargetOption[];
   truncated: boolean;
+  /** Only the tagged releases could be loaded (the full version list failed). */
+  tagsOnly?: true;
 }
 
 export interface UpgradeResultChange {
@@ -652,6 +656,12 @@ export interface DashboardData {
   advisoriesError?: ProtocolError;
   /** `npm audit` enrichment was skipped or failed. Upgrade targets are self-computed. */
   auditUnavailable?: boolean;
+  /** Why `auditUnavailable` is set. Missing means a generic failure. */
+  auditUnavailableReason?: AuditUnavailableReason;
+  /** The project's package manager, for wording such as which lockfile to install. */
+  packageManager?: SupportedPackageManager;
+  /** The project has no lockfile at all (package-lock.json, npm-shrinkwrap.json or pnpm-lock.yaml). */
+  lockfileMissing?: boolean;
   /** Set when another package manager owns this project: dependencies are shown and changes stay off. */
   readOnlyReason?: string;
   /** Deprecated findings, computed fresh with every scan. See src/core/hygiene/index.ts. Likely-unused findings are never included here. See 'cleanup-result' below. */
@@ -835,6 +845,8 @@ export type WebviewToHostMessage =
   | { type: 'change-project' }
   /** On-demand, bounded published-version choices for one host-owned direct dependency. */
   | { type: 'load-upgrade-targets'; package: string; requestId: string }
+  /** Stops a version list load the webview no longer needs (dialog closed, package changed, retry). */
+  | { type: 'cancel-upgrade-targets'; requestId: string }
   /** `requestId` is a client-minted correlation nonce for this analysis attempt, never trust/execution surface, never stored on the host's analysis, and never compared against anything. It exists only so the webview can tell which `upgrade-analyzing`/`upgrade-analysis-partial`/`upgrade-analysis` messages belong to this attempt versus a superseded one (e.g. re-analyzing the same package after Cancel). Distinct from `analysisId`, which is host-minted, execution-trusted, and doesn't exist until the analysis completes. */
   | { type: 'upgrade'; package: string; target: string; requestId: string }
   | { type: 'bulk-upgrade'; changes: Array<{ package: string; target: string }>; requestId: string }
@@ -957,6 +969,9 @@ function isDashboardData(value: unknown): value is DashboardData {
     typeof value['canChangeProject'] === 'boolean' &&
     isAbsentOr(value['advisoriesError'], isProtocolError) &&
     isAbsentOr(value['auditUnavailable'], (v) => typeof v === 'boolean') &&
+    isAbsentOr(value['auditUnavailableReason'], isAuditUnavailableReason) &&
+    isAbsentOr(value['packageManager'], (v) => v === 'npm' || v === 'pnpm') &&
+    isAbsentOr(value['lockfileMissing'], (v) => typeof v === 'boolean') &&
     isAbsentOr(value['readOnlyReason'], isNonEmptyString) &&
     Array.isArray(hygieneFindings) &&
     hygieneFindings.every(isDependencyFinding) &&
@@ -1026,6 +1041,9 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   }
   if (type === 'ready' || type === 'refresh' || type === 'change-project') {
     return hasOnlyKeys(value, ['type']);
+  }
+  if (type === 'cancel-upgrade-targets') {
+    return hasOnlyKeys(value, ['type', 'requestId']) && isNonEmptyString(value['requestId']);
   }
   if (type === 'load-upgrade-targets') {
     return (
@@ -2082,7 +2100,7 @@ function isUpgradeTargetOption(value: unknown): value is UpgradeTargetOption {
 }
 
 function isUpgradeTargetOptions(value: unknown): value is UpgradeTargetOptions {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['recommendedVersion', 'options', 'truncated'])) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['recommendedVersion', 'options', 'truncated', 'tagsOnly'])) return false;
   const recommendedVersion = value['recommendedVersion'];
   const options = value['options'];
   return (
@@ -2091,6 +2109,7 @@ function isUpgradeTargetOptions(value: unknown): value is UpgradeTargetOptions {
     options.every(isUpgradeTargetOption) &&
     new Set(options.map((option) => option.version)).size === options.length &&
     typeof value['truncated'] === 'boolean' &&
+    isAbsentOr(value['tagsOnly'], (v) => v === true) &&
     (recommendedVersion === null || options.some((option) => option.version === recommendedVersion))
   );
 }

@@ -136,6 +136,12 @@ export interface FilePosition {
 }
 
 export interface HostPlatform {
+  /**
+   * Writes one troubleshooting line to the host's log (the Packageawy output
+   * channel in VS Code, the IDE log in JetBrains). Lines must come from
+   * src/core/diagnostics.ts's formatter: never raw errors, URLs or paths.
+   */
+  log?(line: string): void;
   workspaceFolders(): readonly WorkspaceFolder[];
   isWorkspaceTrusted(): boolean;
   /**

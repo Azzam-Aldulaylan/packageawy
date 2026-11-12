@@ -12,6 +12,7 @@ import { filterEmptyStateTitle } from '../../src/host/emptyStateCopy.js';
 import type { HygieneFilterId } from '../../src/host/hygieneFilter.js';
 import { hygieneFilterCounts, hygieneFilterPredicate } from '../../src/host/hygieneFilter.js';
 import { manageRemovalReadyPackage } from '../../src/host/manageRemovalFlow.js';
+import { partialResultsText } from '../../src/host/partialResultsCopy.js';
 import { ADVISORY_CHECK_OFF_TEXT } from '../../src/host/severityDisplay.js';
 import { signInHostsByPackage, updatesSettled } from '../../src/host/registrySignIn.js';
 import type { PageSize } from '../../src/host/pagination.js';
@@ -119,26 +120,6 @@ function advisoryFactsSettled(data: DashboardData): boolean {
 
 function requestConfigureAdvisoryCheck(): void {
   vscode.postMessage({ type: 'configure-advisory-check' });
-}
-
-function partialErrorText(data: DashboardData): string | null {
-  const reasons: string[] = [];
-  if (data.availability.updates === 'partial') {
-    // Sign-in registries get their own info banner, so only count the rest here.
-    const signIn = (data.availability.signInRequired ?? []).reduce((sum, group) => sum + group.packages.length, 0);
-    const unavailable = data.availability.unavailableUpdatePackages.length - signIn;
-    if (unavailable > 0) reasons.push(`${unavailable} package update check${unavailable === 1 ? '' : 's'} unavailable`);
-  }
-  if (data.advisoriesError !== undefined) {
-    reasons.push(`vulnerability data is unavailable (${data.advisoriesError.code})`);
-  }
-  if (data.availability.advisories === 'partial') {
-    reasons.push('Install dependencies to check packages with unknown versions');
-  }
-  if (data.auditUnavailable === true) {
-    reasons.push('npm audit could not run, so upgrade targets are self-computed');
-  }
-  return reasons.length === 0 ? null : reasons.join(', ');
 }
 
 function smartCleanupProjectKey(data: DashboardData): string {
@@ -346,6 +327,10 @@ export function App(): ReactElement {
   const [selectedManageTarget, setSelectedManageTarget] = useState<string | null>(null);
   const nextTargetRequestIdRef = useRef(0);
   const activeTargetRequestIdRef = useRef<string | null>(null);
+  // The load the host may still be working on. Cleared once its answer
+  // arrives, so a cancel is only sent for a request that can still be stopped.
+  const pendingTargetRequestIdRef = useRef<string | null>(null);
+  const [targetReloadCount, setTargetReloadCount] = useState(0);
   // Which surface started the currently-active upgrade: 'manage-dependency'
   // (Manage's Upgrade review tab, reviewed inline, never a second dialog) or
   // 'dashboard' (the bulk "Manage dependencies" flow, which still opens the
@@ -492,6 +477,7 @@ export function App(): ReactElement {
 
       if (incoming.status === 'upgrade-targets') {
         if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
+          if (pendingTargetRequestIdRef.current === incoming.requestId) pendingTargetRequestIdRef.current = null;
           setUpgradeTargetState({ phase: 'ready', targets: incoming.targets });
         }
         if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
@@ -505,6 +491,7 @@ export function App(): ReactElement {
 
       if (incoming.status === 'upgrade-targets-error') {
         if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
+          if (pendingTargetRequestIdRef.current === incoming.requestId) pendingTargetRequestIdRef.current = null;
           setUpgradeTargetState({ phase: 'error', error: incoming.error });
         }
         return;
@@ -1271,9 +1258,16 @@ export function App(): ReactElement {
         setConfirmBusy(false);
         setUpgradeError(null);
         setUpgradeOrigin(null);
+        // Reset the whole request lifecycle together, then ask the targets
+        // effect to run again. A repeated snapshot with the same generatedAt
+        // would not rerun it on its own, leaving the list idle with Retry blocked.
+        const previousTargets = activeTargetRequestIdRef.current;
+        if (previousTargets !== null) vscode.postMessage({ type: 'cancel-upgrade-targets', requestId: previousTargets });
         activeTargetRequestIdRef.current = null;
+        pendingTargetRequestIdRef.current = null;
         setUpgradeTargetState({ phase: 'idle' });
         setSelectedManageTarget(null);
+        setTargetReloadCount((count) => count + 1);
       } else if (reviewEffect === 'mark-stale') {
         // Keep the evidence readable. A fresh ready snapshot must not clear
         // this warning or re-authorize a host-revoked analysis.
@@ -1929,8 +1923,14 @@ export function App(): ReactElement {
   // A full packument is fetched only for the dependency whose Manage
   // workspace is open. A fresh dashboard snapshot gets a fresh request id;
   // late responses from the prior snapshot/session are ignored by the
-  // message handler above.
+  // message handler above. Every rerun first cancels a load still in
+  // flight, which covers closing the dialog, switching package and Retry.
   useEffect(() => {
+    // Cancel the previous request even after it answered: the host may still
+    // be checking its versions for vulnerabilities.
+    const previous = activeTargetRequestIdRef.current;
+    pendingTargetRequestIdRef.current = null;
+    if (previous !== null) vscode.postMessage({ type: 'cancel-upgrade-targets', requestId: previous });
     if (manageRow === null) {
       activeTargetRequestIdRef.current = null;
       setUpgradeTargetState({ phase: 'idle' });
@@ -1957,8 +1957,17 @@ export function App(): ReactElement {
 
     const requestId = `targets-${++nextTargetRequestIdRef.current}`;
     activeTargetRequestIdRef.current = requestId;
+    pendingTargetRequestIdRef.current = requestId;
     vscode.postMessage({ type: 'load-upgrade-targets', package: row.name, requestId });
-  }, [data?.generatedAt, manageRow, message?.status]);
+  }, [data?.generatedAt, manageRow, message?.status, targetReloadCount]);
+
+  // Retry reruns the effect above, which cancels the request it replaces and
+  // sends a new request id. Ignored while a load is pending, the same as the
+  // disabled button.
+  const retryUpgradeTargets = useCallback(() => {
+    if (pendingTargetRequestIdRef.current !== null) return;
+    setTargetReloadCount((count) => count + 1);
+  }, []);
   const allHygieneFindings = useMemo(
     () => [...(data?.hygieneFindings ?? []), ...cleanupFindings],
     [data?.hygieneFindings, cleanupFindings]
@@ -2555,6 +2564,8 @@ export function App(): ReactElement {
                       requestRefreshUpgradeAnalysis(row.name, selectedManageTarget);
                     }
                   },
+                  onRetryTargets: retryUpgradeTargets,
+                  onRefreshDashboard: refresh,
                 }}
                 removal={{
                   active: removeActive,
@@ -2740,7 +2751,7 @@ function Dashboard({
   // Availability is independent of freshness: a stale degraded snapshot must
   // say both "refreshing" and which facts are unavailable. Status precedence
   // on the wire must never hide the latter.
-  const degraded = partialErrorText(data);
+  const degraded = partialResultsText(data);
   // Only a convenience: the host independently rejects any upgrade request
   // against stale/revalidating data regardless of what this webview shows
   // (DashboardController.isEligible/beginRevalidation). This just keeps a
@@ -2828,7 +2839,7 @@ function Dashboard({
           tone="warning"
           action={{ label: 'Refresh', onClick: onRefresh, disabled: actionsDisabled, icon: <IconRefresh /> }}
         >
-          Showing partial results: {degraded}.
+          Showing partial results: {degraded}
         </StatusBanner>
       )}
 

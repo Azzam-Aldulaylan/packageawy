@@ -207,6 +207,9 @@ test('upgrade target option requests require a package and correlation id', () =
     isWebviewToHostMessage({ type: 'load-upgrade-targets', package: 'react', requestId: '', target: '19.0.0' }),
     false
   );
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-upgrade-targets', requestId: 'targets-1' }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-upgrade-targets', requestId: '' }), false);
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-upgrade-targets', requestId: 'targets-1', package: 'react' }), false);
 });
 
 // ------------------------------------------------- upgrade requests
@@ -596,6 +599,14 @@ test('upgrade target option messages validate channels, labels, and recommendati
       error: { code: 'NETWORK', message: 'offline' },
     }),
     true
+  );
+  assert.equal(
+    isHostToWebviewMessage({ status: 'upgrade-targets', package: 'react', requestId: 'targets-1', targets: { ...targets, tagsOnly: true } }),
+    true
+  );
+  assert.equal(
+    isHostToWebviewMessage({ status: 'upgrade-targets', package: 'react', requestId: 'targets-1', targets: { ...targets, tagsOnly: false } }),
+    false
   );
 });
 
@@ -1088,6 +1099,9 @@ test('the optional data fields are accepted when present and correct', () => {
         availability: { updates: 'complete', advisories: 'unavailable', unavailableUpdatePackages: [] },
         advisoriesError: { code: 'REGISTRY_5XX', message: 'server error 503' },
         auditUnavailable: true,
+        auditUnavailableReason: 'no-lockfile',
+        packageManager: 'pnpm',
+        lockfileMissing: true,
       },
     }),
     true
@@ -1145,6 +1159,9 @@ test('a malformed DashboardData shell is rejected', () => {
     { ...DATA, advisoriesError: null },
     { ...DATA, advisoriesError: { code: 'X' } },
     { ...DATA, auditUnavailable: 'yes' },
+    { ...DATA, auditUnavailable: true, auditUnavailableReason: 'disk-full' },
+    { ...DATA, packageManager: 'yarn' },
+    { ...DATA, lockfileMissing: 'yes' },
     { ...DATA, availability: undefined },
     { ...DATA, availability: { updates: 'partial', advisories: 'complete', unavailableUpdatePackages: [] } },
     { ...DATA, availability: { updates: 'complete', advisories: 'complete', unavailableUpdatePackages: ['clean-pkg'] } },

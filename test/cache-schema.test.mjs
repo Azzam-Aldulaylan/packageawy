@@ -159,3 +159,16 @@ test('isPersistedEtagCacheCollection accepts well-formed entries without sharing
   );
   assert.equal(isPersistedEtagCacheCollection(null), false);
 });
+
+test('isPersistedProjectCache accepts the audit reason and lockfile facts as optional, validated fields', () => {
+  for (const reason of ['no-lockfile', 'npm-not-found', 'timeout', 'failed']) {
+    assert.equal(isPersistedProjectCache({ ...VALID_ENTRY, auditUnavailable: true, auditUnavailableReason: reason }), true, reason);
+  }
+  assert.equal(isPersistedProjectCache({ ...VALID_ENTRY, packageManager: 'pnpm', lockfileMissing: true }), true);
+  // Written before these fields existed: still valid, so no schema bump is needed.
+  assert.equal(isPersistedProjectCache({ ...VALID_ENTRY, auditUnavailable: true }), true);
+
+  assert.equal(isPersistedProjectCache({ ...VALID_ENTRY, auditUnavailableReason: 'npm exploded' }), false);
+  assert.equal(isPersistedProjectCache({ ...VALID_ENTRY, packageManager: 'yarn' }), false);
+  assert.equal(isPersistedProjectCache({ ...VALID_ENTRY, lockfileMissing: 'yes' }), false);
+});

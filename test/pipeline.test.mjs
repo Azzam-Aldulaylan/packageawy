@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { NodeAuditRunner } from '../out/core/audit/npmAudit.js';
+import { AuditUnavailableError, NodeAuditRunner } from '../out/core/audit/npmAudit.js';
 import { PerformanceSession } from '../out/core/performance/measurement.js';
 import { buildPackageRows } from '../out/core/pipeline.js';
 import { MemoryEtagStore } from '../out/core/registry/versions.js';
@@ -289,6 +289,7 @@ test('with no audit runner the self-computed fallback still finds a fix', async 
   const result = await buildPackageRows(baseOptions(client));
 
   assert.equal(result.auditUnavailable, true);
+  assert.equal(result.auditUnavailableReason, 'failed');
   assert.equal(rowFor(result, 'minimatch').upgradeTo, '3.1.5', 'highest in-range non-vulnerable');
   assert.equal(rowFor(result, 'minimatch').upgradeReason, 'security-fix');
   assert.equal(rowFor(result, 'clean-pkg').upgradeTo, '1.0.1', 'a healthy package still offers its own general update');
@@ -312,6 +313,7 @@ test('a deliberately not-applicable audit runner does not degrade otherwise comp
   const result = await buildPackageRows(baseOptions(client, { auditUnavailableWhenOmitted: false }));
 
   assert.equal(result.auditUnavailable, undefined);
+  assert.equal(result.auditUnavailableReason, undefined);
   assert.equal(result.availability.updates, 'complete');
   assert.equal(result.availability.advisories, 'complete');
 });
@@ -324,6 +326,8 @@ test('garbage on audit stdout degrades to the same fallback', async () => {
   );
 
   assert.equal(result.auditUnavailable, true);
+  // npm's own words are never read: with a lockfile on disk this is a plain failure.
+  assert.equal(result.auditUnavailableReason, 'failed');
   assert.equal(rowFor(result, 'minimatch').upgradeTo, '3.1.5');
 });
 
@@ -338,8 +342,38 @@ test('an audit runner that fails to spawn is not fatal', async () => {
   const result = await buildPackageRows(baseOptions(client, { auditRunner: runner }));
 
   assert.equal(result.auditUnavailable, true);
+  assert.equal(result.auditUnavailableReason, 'failed', 'an unclassified error is a generic failure');
   assert.equal(result.rows.length, 2);
   assert.equal(rowFor(result, 'minimatch').upgradeTo, '3.1.5');
+});
+
+test('a classified audit failure carries its reason into the result', async () => {
+  const client = fakeClient(LATEST_ROUTES, json({}));
+  const runner = {
+    async run() {
+      throw new AuditUnavailableError('npm could not be located for npm audit.', 'npm-not-found');
+    },
+  };
+  const result = await buildPackageRows(baseOptions(client, { auditRunner: runner }));
+  assert.equal(result.auditUnavailable, true);
+  assert.equal(result.auditUnavailableReason, 'npm-not-found');
+});
+
+test('a missing lockfile, from project evidence, outranks how npm failed', async () => {
+  const client = fakeClient(LATEST_ROUTES, json({}));
+  const runner = {
+    async run() {
+      throw new AuditUnavailableError('npm could not be located for npm audit.', 'npm-not-found');
+    },
+  };
+  const result = await buildPackageRows(baseOptions(client, { auditRunner: runner, lockfileMissing: true }));
+  assert.equal(result.auditUnavailableReason, 'no-lockfile');
+
+  const working = await buildPackageRows(
+    baseOptions(client, { auditRunner: fakeAuditRunner(JSON.stringify({ vulnerabilities: {} }), 0), lockfileMissing: true })
+  );
+  assert.equal(working.auditUnavailable, undefined, 'evidence alone never marks a working audit unavailable');
+  assert.equal(working.auditUnavailableReason, undefined);
 });
 
 test('a hanging npm audit times out and the rows still render', async () => {
@@ -358,6 +392,7 @@ test('a hanging npm audit times out and the rows still render', async () => {
     const result = await buildPackageRows(baseOptions(client, { root: dir, auditRunner: runner }));
 
     assert.equal(result.auditUnavailable, true);
+    assert.equal(result.auditUnavailableReason, 'timeout');
     assert.equal(result.rows.length, 2);
     assert.equal(rowFor(result, 'minimatch').upgradeTo, '3.1.5');
   } finally {
@@ -852,4 +887,22 @@ test('scan instrumentation reports request kinds and scan-local packument reuse 
   assert.equal(report.metadata['packument requests for patched version'], 1);
   assert.equal(report.metadata['scan-local packument hits'], 2);
   assert.equal(Object.values(report.metadata).some((value) => String(value).includes(REGISTRY)), false);
+});
+
+test('failed update checks and audit runs report allowlisted diagnostics only', async () => {
+  const client = fakeClient(
+    { [`${REGISTRY}/clean-pkg/latest`]: LATEST_ROUTES[`${REGISTRY}/clean-pkg/latest`] },
+    json({})
+  );
+  const runner = {
+    async run() {
+      throw new AuditUnavailableError('npm audit failed at /Users/someone/secret-path?token=abc', 'timeout');
+    },
+  };
+  const entries = [];
+  await buildPackageRows(baseOptions(client, { auditRunner: runner, onDiagnostic: (entry) => entries.push(entry) }));
+  assert.deepEqual(entries.find((entry) => entry.area === 'update-check'),
+    { area: 'update-check', code: 'REGISTRY_404', packageName: 'minimatch', registryUrl: REGISTRY });
+  assert.deepEqual(entries.find((entry) => entry.area === 'npm-audit'), { area: 'npm-audit', code: 'timeout' });
+  assert.doesNotMatch(JSON.stringify(entries), /secret-path|token/);
 });
