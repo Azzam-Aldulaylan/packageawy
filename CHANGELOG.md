@@ -4,7 +4,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
-## [0.9.7] - 2026-11-14
+## [0.9.7] - 2026-11-12
 
 ### Added
 
