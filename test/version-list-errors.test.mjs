@@ -226,13 +226,15 @@ function controllableClient() {
   };
 }
 
-function harness({ client, ensureController, eligibility = () => ({ ok: true }), rows = [row()], registryUrl = REGISTRY } = {}) {
+function harness({ client, ensureController, eligibility = () => ({ ok: true }), rows = [row()], registryUrl = REGISTRY, scanIncomplete = false, scanRunning = false } = {}) {
   const posted = [];
   const enriched = [];
   let disposed = false;
   const controller = {
     lastResultRows: () => rows,
     validateUpgradeRequest: eligibility,
+    lastScanIncomplete: () => scanIncomplete,
+    scanRunning: () => scanRunning,
     enrichUpdateVersions: async (pairs) => { enriched.push(pairs); },
     upgradeSource: { resolvedRegistry: { url: registryUrl, source: 'npmrc', scoped: {} } },
   };
@@ -285,6 +287,24 @@ for (const [reason, failure] of [['revalidating', 'project-changed'], ['stale-ta
     assert.equal(client.requests.length, 0);
   });
 }
+
+test('upgrades blocked by an incomplete scan say so and offer Refresh, not "project changed"', async () => {
+  const h = harness({ eligibility: () => ({ ok: false, reason: 'revalidating' }), scanIncomplete: true });
+  await h.coordinator.handleLoadUpgradeTargets(load('1'));
+  assert.equal(h.posted.at(-1).error.code, 'scan-incomplete');
+  assert.match(h.posted.at(-1).error.message, /last scan could not check every package/);
+  const html = renderToStaticMarkup(createElement(UpgradeTargetSelector, {
+    state: { phase: 'error', error: h.posted.at(-1).error }, selectedVersion: null, fallbackVersion: '2.0.0',
+    disabled: false, onChange: () => {}, onRetry: () => {}, onRefreshDashboard: () => {},
+  }));
+  assert.match(html, /button--secondary upgrade-target-picker__retry[^>]*>Refresh</, 'a visible Refresh button');
+});
+
+test('a blocked request while a scan runs says the list loads when it finishes', async () => {
+  const h = harness({ eligibility: () => ({ ok: false, reason: 'revalidating' }), scanRunning: true, scanIncomplete: true });
+  await h.coordinator.handleLoadUpgradeTargets(load('1'));
+  assert.equal(h.posted.at(-1).error.code, 'checking', 'a running scan wins over an older incomplete one');
+});
 
 test('a package that left the scan is reported as a project change', async () => {
   const h = harness({ rows: [] });

@@ -15,8 +15,13 @@ test('fetch codes map to version list failures, http registries get their own re
   assert.equal(versionListFailureFromFetch('SomethingElse'), 'unknown');
 });
 
-test('eligibility rejections map to project-changed or no-upgrade', () => {
-  for (const reason of ['revalidating', 'stale-target', 'no-scan-result']) {
+test('eligibility rejections map to checking, scan-incomplete, project-changed or no-upgrade', () => {
+  assert.equal(versionListFailureFromEligibility('scan-running'), 'checking');
+  assert.equal(versionListFailureFromEligibility('revalidating'), 'project-changed');
+  assert.equal(versionListFailureFromEligibility('incomplete-scan'), 'scan-incomplete');
+  assert.equal(versionListFailureNeedsRefresh('scan-incomplete'), true);
+  assert.equal(versionListFailureNeedsRefresh('checking'), false);
+  for (const reason of ['stale-target', 'no-scan-result']) {
     assert.equal(versionListFailureFromEligibility(reason), 'project-changed');
   }
   assert.equal(versionListFailureFromEligibility('NO_ELIGIBLE_UPGRADE'), 'no-upgrade');
@@ -27,7 +32,7 @@ test('eligibility rejections map to project-changed or no-upgrade', () => {
 test('texts name only the registry host, never paths, queries or credentials', () => {
   const url = 'https://user:secret@npm.corp.example/repo/token-abc123/?auth=xyz';
   for (const failure of ['timeout', 'network', 'registry-error', 'sign-in', 'rate-limited', 'not-found', 'bad-data',
-    'insecure-registry', 'project-changed', 'no-upgrade', 'unknown']) {
+    'insecure-registry', 'project-changed', 'checking', 'scan-incomplete', 'no-upgrade', 'unknown']) {
     assert.ok(isVersionListFailure(failure));
     const text = versionListFailureText(failure, url);
     assert.doesNotMatch(text, /secret|token-abc123|auth=|user|\/repo/);

@@ -340,6 +340,20 @@ export function versionListFetchFailure(
   return { failure, fetchCode, error: { code: failure, message: versionListFailureText(failure, registryUrl) } };
 }
 
+/**
+ * `revalidating` covers three different situations for the user: a scan is
+ * running (the list loads by itself when it ends), the last scan could not
+ * check every package (Refresh scans again), or the project changed.
+ */
+function blockedReason(
+  controller: Pick<DashboardController, 'scanRunning' | 'lastScanIncomplete'>,
+  reason: string
+): string {
+  if (reason !== 'revalidating') return reason;
+  if (controller.scanRunning()) return 'scan-running';
+  return controller.lastScanIncomplete() ? 'incomplete-scan' : reason;
+}
+
 function versionListEligibilityError(reason: string): ProtocolError {
   const failure = versionListFailureFromEligibility(reason);
   return { code: failure, message: versionListFailureText(failure) };
@@ -1105,7 +1119,9 @@ export class UpgradeAssistantCoordinator {
     // a current trusted scan without adding a weaker read-only side door.
     const eligibility = controller.validateUpgradeRequest({ package: row.name, target: row.upgradeTo });
     if (!eligibility.ok) {
-      postError(versionListEligibilityError(eligibility.reason));
+      postError(versionListEligibilityError(
+        blockedReason(controller, eligibility.reason)
+      ));
       return false;
     }
 
@@ -1142,7 +1158,9 @@ export class UpgradeAssistantCoordinator {
     if (abandoned()) return false;
     const stillEligible = controller.validateUpgradeRequest({ package: row.name, target: row.upgradeTo });
     if (!stillEligible.ok) {
-      postError(versionListEligibilityError(stillEligible.reason));
+      postError(versionListEligibilityError(
+        blockedReason(controller, stillEligible.reason)
+      ));
       return false;
     }
     this.options.sink.postMessage({

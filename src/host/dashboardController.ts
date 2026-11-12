@@ -502,6 +502,21 @@ export class DashboardController {
    * `isEligible()` alone can't tell those two apart, since a cold
    * controller's `eligibleGeneration` is `undefined` in both cases.
    */
+  /** True while a scan is running. Its completion posts a new snapshot. */
+  scanRunning(): boolean {
+    return this.inFlight !== undefined && !this.inFlight.signal.aborted;
+  }
+
+  /**
+   * True when upgrades are blocked and the last finished scan could not check
+   * every package (for example registry timeouts). Only a complete scan grants
+   * eligibility. Callers check scanRunning() first: a newer scan may be on its
+   * way, and a file change since then can also be pending.
+   */
+  lastScanIncomplete(): boolean {
+    return this.lastResult !== undefined && !this.isEligible() && !hasCompleteCoreData(this.lastResult);
+  }
+
   validateUpgradeRequest(request: UpgradeRequestInput): UpgradeEligibility {
     if (this.lastResult === undefined) return { ok: false, reason: 'no-scan-result' };
     if (!this.isEligible()) return { ok: false, reason: 'revalidating' };
@@ -1081,6 +1096,7 @@ export class DashboardController {
       }
       return { status: 'failed', error: toProtocolError(cause) };
     } finally {
+      if (this.inFlight === controller) this.inFlight = undefined;
       performance.finish({ cancelled: controller.signal.aborted });
     }
   }

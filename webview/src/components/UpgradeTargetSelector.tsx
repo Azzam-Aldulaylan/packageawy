@@ -157,7 +157,7 @@ export function UpgradeTargetSelector({
                 {' '}
                 <button
                   type="button"
-                  className="button button--subtle upgrade-target-picker__retry"
+                  className="button button--secondary upgrade-target-picker__retry"
                   disabled={disabled}
                   onClick={retryAction}
                 >

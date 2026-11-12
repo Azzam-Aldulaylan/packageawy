@@ -20,6 +20,8 @@ export type VersionListFailure =
   | 'bad-data'
   | 'insecure-registry'
   | 'project-changed'
+  | 'checking'
+  | 'scan-incomplete'
   | 'no-upgrade'
   | 'unknown';
 
@@ -33,6 +35,8 @@ const VERSION_LIST_FAILURES: ReadonlySet<string> = new Set<VersionListFailure>([
   'bad-data',
   'insecure-registry',
   'project-changed',
+  'checking',
+  'scan-incomplete',
   'no-upgrade',
   'unknown',
 ]);
@@ -114,6 +118,10 @@ export function versionListFailureFromFetch(code: string, registryUrl?: string):
 /** Maps an upgrade eligibility rejection (src/core/upgrade/validate.ts) to a version list failure. */
 export function versionListFailureFromEligibility(reason: string): VersionListFailure {
   switch (reason) {
+    case 'scan-running':
+      return 'checking';
+    case 'incomplete-scan':
+      return 'scan-incomplete';
     case 'revalidating':
     case 'stale-target':
     case 'no-scan-result':
@@ -151,6 +159,10 @@ export function versionListFailureText(failure: VersionListFailure, registryUrl?
       return `${host ?? 'The registry'} uses http. Packageawy only connects to registries over https.`;
     case 'project-changed':
       return 'The project changed. Refresh the dashboard, then try again.';
+    case 'checking':
+      return 'The dashboard is still checking the project. The list loads when it finishes.';
+    case 'scan-incomplete':
+      return 'Upgrades are paused because the last scan could not check every package. Refresh to scan again.';
     case 'no-upgrade':
       return 'No upgrade is available for this package any more.';
     case 'unknown':
@@ -160,7 +172,7 @@ export function versionListFailureText(failure: VersionListFailure, registryUrl?
 
 /** Whether Retry should refresh the dashboard first instead of reloading the list. */
 export function versionListFailureNeedsRefresh(failure: VersionListFailure): boolean {
-  return failure === 'project-changed' || failure === 'no-upgrade';
+  return failure === 'project-changed' || failure === 'no-upgrade' || failure === 'scan-incomplete';
 }
 
 /** Codes that may appear in a log line or a user-facing error. Anything else becomes UNKNOWN. */
