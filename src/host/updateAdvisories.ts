@@ -29,9 +29,17 @@ export class UpdateAdvisories {
   private pending = new Set<string>();
   /** Settled but not yet delivered to anyone who asked (the asker left first). */
   private unpublished = new Set<string>();
+  /** Always settles: a failing job never blocks the jobs queued after it. */
   private queue: Promise<void> = Promise.resolve();
+  /** Bumped by clear(), so a job failing after a clear does not touch the new state. */
+  private generation = 0;
 
-  constructor(private readonly client: HttpClient, private readonly enabled: () => boolean) {}
+  constructor(
+    private readonly client: HttpClient,
+    private readonly enabled: () => boolean,
+    /** Told about an unexpected failure inside a job. Must not throw; a throw is ignored. */
+    private readonly report: (error: unknown) => void = () => undefined
+  ) {}
 
   clear(keepSettled = false): void {
     this.abort.abort();
@@ -40,6 +48,7 @@ export class UpdateAdvisories {
     this.pending.clear();
     this.unpublished.clear();
     this.queue = Promise.resolve();
+    this.generation += 1;
   }
 
   results(): UpdateAdvisoryResult[] { return [...this.settled.values()]; }
@@ -68,9 +77,12 @@ export class UpdateAdvisories {
     const heldElsewhere = pairs.some(pair => this.pending.has(keyOf(pair)) && !missing.includes(pair));
     const owed = pairs.some(pair => this.unpublished.has(keyOf(pair)));
     if (missing.length === 0 && !heldElsewhere && !owed) return this.queue;
+    const generation = this.generation;
+    let claimed = missing;
     const run = async (): Promise<void> => {
       if (signal.aborted || !this.enabled() || !isCurrent()) return;
       const work = heldElsewhere ? [...missing, ...claim()] : missing;
+      claimed = work;
       if (!wanted()) {
         for (const pair of work) this.pending.delete(keyOf(pair));
         return;
@@ -87,13 +99,36 @@ export class UpdateAdvisories {
       }
       if (!wanted()) return;
       if (!pairs.some(pair => this.unpublished.has(keyOf(pair)))) return;
-      // Every settled result goes out in this snapshot, so nothing is owed any more.
-      this.unpublished.clear();
       publish(this.results());
+      // Every settled result went out in that snapshot, so nothing is owed any
+      // more. Cleared only after a publish that did not throw.
+      this.unpublished.clear();
+    };
+    const guarded = async (): Promise<void> => {
+      try {
+        await run();
+      } catch (error) {
+        // Release this job's claims so a later caller can check those versions.
+        // Skipped when clear() ran in between (for example wanted() threw, and
+        // the panel cleared and a new caller claimed the same version before
+        // this catch ran): those keys now belong to the new state.
+        if (this.generation === generation) {
+          for (const pair of claimed) {
+            const key = keyOf(pair);
+            if (!this.settled.has(key)) this.pending.delete(key);
+          }
+        }
+        try {
+          this.report(error);
+        } catch {
+          // The reporter must not break the queue either.
+        }
+      }
     };
     // Dispatch on a later microtask, after the caller has posted the rows or picker options.
-    this.queue = this.queue.then(run);
-    return this.queue;
+    const task = this.queue.then(guarded);
+    this.queue = task.catch(() => undefined);
+    return task;
   }
 
   private async check(work: readonly UpdateVersionPair[], signal: AbortSignal): Promise<UpdateAdvisoryResult[]> {

@@ -265,7 +265,8 @@ export class DashboardController {
 
   constructor(options: DashboardControllerOptions) {
     this.options = options;
-    this.updateAdvisories = new UpdateAdvisories(options.httpClient, () => this.publicAdvisoryCheckEnabled());
+    this.updateAdvisories = new UpdateAdvisories(options.httpClient, () => this.publicAdvisoryCheckEnabled(),
+      () => this.options.log?.(diagnosticLine({ area: 'version-advisories', code: 'UNKNOWN' })));
     this.declaredDependencies = DashboardController.parseDeclaredDependencies(options.manifestText);
   }
 
