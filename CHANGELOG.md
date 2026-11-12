@@ -20,6 +20,8 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - The vulnerability warning in the Available column now follows the suggested upgrade version. The installed version is no longer marked there.
 - A registry response saved in the cache that could not be read is now replaced automatically instead of failing every time.
 - When a registry is configured with http://, the Packageawy log now says so instead of reporting a generic failure. Packageawy only connects to registries over https.
+- The upgrade review no longer says there is no newer version when the version check failed or the package has no installed version. It says what happened, and offers Refresh where trying again can help.
+- The Updates card no longer reads Up to date when some packages were not checked, for example in a project without a lockfile.
 
 ## [0.9.6] - 2026-11-11
 

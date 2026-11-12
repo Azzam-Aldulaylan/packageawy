@@ -274,3 +274,47 @@ for (const count of [1, 2]) {
     assert.equal((html.match(/class="smart-plan__versions">1\.0\.0 → 3\.0\.0/g) ?? []).length, count);
   });
 }
+
+function noUpgrade(rowOverrides, panelOverrides = {}) {
+  const html = renderToStaticMarkup(createElement(UpgradeReviewPanel, {
+    row: { name: 'lodash', current: '4.17.20', wanted: '4.17.20', latest: '4.17.20', range: '4.17.20', upgradeTo: null, upgradeReason: null, advisories: [], worstSeverity: null, ...rowOverrides },
+    active: false, targetVersion: null, targetState: { phase: 'idle' }, analyzingPhase: null, analysis: null, sections: {}, hardStale: false, now, busy: false, error: null, disabled: false, usage: undefined, advisoriesAvailable: true,
+    onAnalyzeUpgrade: noop, onTargetChange: noop, onConfirm: noop, onUseSmartPlan: noop, onCancel: noop, onConfigureVerification: noop, onRefresh: noop, onChangeTab: noop,
+    onRefreshDashboard: noop,
+    ...panelOverrides,
+  }));
+  return html;
+}
+
+test('"No newer version" is only said when versions were actually compared', () => {
+  const upToDate = noUpgrade({});
+  assert.match(upToDate, /No newer version is currently available for lodash\./);
+  assert.doesNotMatch(upToDate, />Refresh</);
+
+  const offline = noUpgrade({ wanted: null, latest: null }, { updateResolutionAvailable: false });
+  assert.match(offline, /Newer versions of lodash could not be checked\. The Packageawy log has the reason\./);
+  assert.match(offline, /button--secondary[^>]*>Refresh</);
+  assert.doesNotMatch(offline, /No newer version/);
+
+  const failedOnly = noUpgrade({}, { updateResolutionAvailable: false });
+  assert.match(failedOnly, /could not be checked/, 'a failed check in the last scan wins over stale cached versions');
+
+  const noLockfile = noUpgrade({ current: null, wanted: null, latest: null, unresolvable: 'no-lockfile' });
+  assert.match(noLockfile, /No lockfile is present, so the installed version is unknown\. Install dependencies, then refresh\./);
+  assert.match(noLockfile, />Refresh</);
+
+  const missingEntry = noUpgrade({ current: null, wanted: '4.17.21', latest: '4.17.21' });
+  assert.match(missingEntry, /lodash is not in the lockfile yet, so there is no installed version to upgrade from\./);
+  assert.doesNotMatch(missingEntry, /not checked/, 'versions may well have been fetched');
+
+  const link = noUpgrade({ current: null, wanted: null, latest: null, unresolvable: 'workspace-link' });
+  assert.match(link, /linked from a workspace package, not installed from the registry\./);
+  assert.doesNotMatch(link, /Install dependencies|>Refresh</, 'installing cannot make a workspace link upgradeable');
+
+  const guard = noUpgrade({ current: '2.0.0', wanted: '2.1.0', latest: '1.9.0' });
+  assert.match(guard, /No safe upgrade target could be determined for lodash\./);
+  assert.doesNotMatch(guard, /No newer version/);
+
+  const busy = noUpgrade({ wanted: null, latest: null }, { updateResolutionAvailable: false, disabled: true });
+  assert.match(busy, /<button[^>]*disabled=""[^>]*>Refresh</, 'Refresh follows the dialog\'s disabled state');
+});

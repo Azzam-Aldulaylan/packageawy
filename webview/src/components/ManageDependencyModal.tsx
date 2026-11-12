@@ -564,6 +564,7 @@ export function ManageDependencyModal({
         onRefresh={upgrade.onRefresh}
         onRetryTargets={upgrade.onRetryTargets}
         onRefreshDashboard={upgrade.onRefreshDashboard}
+        updateResolutionAvailable={quarantineDerivedData ? false : updateResolutionAvailable}
         onChangeTab={onChangeTab}
         onOpenAdvisory={onOpenAdvisory}
         onOpenUsageReference={onOpenUsageReference}
