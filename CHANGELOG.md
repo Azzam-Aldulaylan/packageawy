@@ -4,6 +4,8 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-11-12
+
 ### Added
 
 - A Packageawy log records registry and npm audit failures, to help with troubleshooting. It names the package, the registry host and the kind of failure only. In VS Code, open it with Packageawy: Show Log. In JetBrains IDEs, the lines are in the IDE log.
@@ -148,6 +150,7 @@ First public pre-release.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
 - Re-reads the project right before every change and refuses to roll back over edits made in the meantime.
 
+[0.9.7]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.7
 [0.9.6]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.6
 [0.9.5]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.5
 [0.9.4]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.4
