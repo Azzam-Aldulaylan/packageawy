@@ -228,3 +228,79 @@ test('FileState equality is exact for bytes and distinguishes missing from empty
   assert.equal(fileStatesEqual(missing, missing), true);
   assert.equal(fileStatesEqual(missing, { exists: true, contents: new Uint8Array() }), false);
 });
+
+test('only the on-disk spelling is allowlisted, and requests are matched through the realpath', async (t) => {
+  const root = await workspaceFixture(t);
+  await mkdir(path.join(root, 'Member'));
+  const manifest = path.join(root, 'Member', 'package.json');
+  await writeFile(manifest, 'before');
+  const variant = path.join(root, 'member', 'PACKAGE.json');
+  if (!(await stat(variant).then(() => true, () => false))) {
+    t.skip('this volume is case-sensitive, so other spellings are other files');
+    return;
+  }
+  const adapter = await createNodeUpgradeTransactionFileAdapter({ workspaceRoot: root, allowlistedPaths: [manifest] });
+  // A request in another spelling resolves to the allowlisted file, which is what gets read.
+  assert.deepEqual(Buffer.from((await adapter.read(variant)).contents).toString(), 'before');
+  await assert.rejects(adapter.read(path.join(root, 'Member', 'other.json')), { code: 'PATH_NOT_ALLOWLISTED' });
+  // An allowlist entry or a folder spelled differently from the disk is refused.
+  await assert.rejects(
+    createNodeUpgradeTransactionFileAdapter({ workspaceRoot: root, allowlistedPaths: [variant] }),
+    { code: 'PATH_OUTSIDE_WORKSPACE' }
+  );
+});
+
+test('a differently spelled prefix cannot skip the symbolic link check (Windows rules)', async () => {
+  const win = path.win32;
+  const missing = (target) => Object.assign(new Error(`ENOENT ${target}`), { code: 'ENOENT' });
+  // One directory C:\workspace on a volume that ignores case, with `linked` a link to `real` inside it.
+  const entries = new Map([
+    ['c:\\', { link: false }],
+    ['c:\\workspace', { link: false }],
+    ['c:\\workspace\\real', { link: false }],
+    ['c:\\workspace\\real\\package-lock.json', { link: false }],
+    ['c:\\workspace\\linked', { link: true }],
+  ]);
+  const realpaths = new Map([
+    ['c:\\', 'C:\\'],
+    ['c:\\workspace', 'C:\\workspace'],
+    ['c:\\workspace\\real', 'C:\\workspace\\real'],
+    ['c:\\workspace\\real\\package-lock.json', 'C:\\workspace\\real\\package-lock.json'],
+    ['c:\\workspace\\linked', 'C:\\workspace\\real'],
+  ]);
+  const key = (target) => win.normalize(target).toLowerCase();
+  const checks = {
+    path: win,
+    lstat: async (target) => {
+      const entry = entries.get(key(target));
+      if (entry === undefined) throw missing(target);
+      return { isSymbolicLink: () => entry.link };
+    },
+    realpath: async (target) => {
+      const tail = [];
+      let current = key(target);
+      // Resolve the deepest known prefix, then append the rest, like the real call.
+      while (!realpaths.has(current)) {
+        if (win.dirname(current) === current) throw missing(target);
+        tail.unshift(win.basename(current));
+        current = win.dirname(current);
+      }
+      if (tail.length > 0 && !entries.has(key(win.join(current, ...tail)))) throw missing(target);
+      return win.join(realpaths.get(current), ...tail);
+    },
+  };
+  const options = (allowlisted) => ({ workspaceRoot: 'C:\\workspace', allowlistedPaths: [allowlisted] });
+  // The review's repro: a case-variant prefix with a link below it.
+  await assert.rejects(
+    createNodeUpgradeTransactionFileAdapter(options('C:\\WORKSPACE\\linked\\package-lock.json'), checks),
+    (error) => error instanceof UpgradeTransactionPathError
+  );
+  // The link spelled normally is a link.
+  await assert.rejects(
+    createNodeUpgradeTransactionFileAdapter(options('C:\\workspace\\linked\\package-lock.json'), checks),
+    { code: 'SYMLINK_NOT_ALLOWED' }
+  );
+  // A canonical path still passes, and so does a lockfile that does not exist yet.
+  await createNodeUpgradeTransactionFileAdapter(options('C:\\workspace\\real\\package-lock.json'), checks);
+  await createNodeUpgradeTransactionFileAdapter(options('C:\\workspace\\real\\new-lock.json'), checks);
+});

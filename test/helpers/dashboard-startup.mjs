@@ -56,7 +56,7 @@ export function seed(controller, { age = 0, incomplete = false } = {}) {
   const source = controller.upgradeSource;
   controller.options.projectCacheStore.set(controller.options.cacheKey, {
     rows: [row], generatedAt: new Date(Date.now() - age).toISOString(), lockfilePath: source.lockfilePath,
-    sourceFingerprint: computeSourceFingerprint(source),
+    sourceFingerprint: computeSourceFingerprint({ ...source, mutationTargetIdentity: source.mutationTarget?.identity }),
     availability: incomplete ? { updates: 'partial', advisories: 'complete', unavailableUpdatePackages: ['clean-pkg'] } : availability,
   });
 }

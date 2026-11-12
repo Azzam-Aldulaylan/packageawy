@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { OperationReservation, SourceGenerationGuard } from '../out/host/operationReservation.js';
+import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 // The coordinator only reads settings from the platform in these paths.
 const platform = { getSetting: (_key, fallback) => fallback };
@@ -118,6 +119,7 @@ test('a host source change terminates a real in-flight Upgrade analysis exactly 
     etagStore: {},
     ensureController: async () => ({
       lastResultRows: () => [],
+      upgradeSource: { mutationTarget: resolvedTarget('/workspace') },
       validateBulkUpgradeRequest: () => ({
         ok: true,
         upgrades: [{ packageName: 'dep', currentVersion: '1.0.0', target: '2.0.0', classification: 'major' }],
@@ -181,6 +183,7 @@ test('a webview remount abandons an in-flight read-only review without publishin
     etagStore: {},
     ensureController: async () => ({
       lastResultRows: () => [],
+      upgradeSource: { mutationTarget: resolvedTarget('/workspace') },
       validateBulkUpgradeRequest: () => ({
         ok: true,
         upgrades: [{ packageName: 'dep', currentVersion: '1.0.0', target: '2.0.0', classification: 'major' }],
@@ -236,7 +239,7 @@ for (const flow of ['single', 'bulk']) for (const [current, target, upgradeReaso
       },
       etagStore: { get: () => undefined, set: () => {} },
       ensureController: async () => ({
-        upgradeSource: { resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} } },
+        upgradeSource: { resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} }, mutationTarget: resolvedTarget('/workspace') },
         lastResultRows: () => [{ name: 'pkg', current, upgradeTo: target, upgradeReason }],
         validateBulkUpgradeRequest: requests => {
           validatedRequests.push(requests);
@@ -295,6 +298,7 @@ test('publisher LTS lookup uses bounded registry concurrency', async () => {
     ensureController: async () => ({
       upgradeSource: {
         resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} },
+        mutationTarget: resolvedTarget('/workspace'),
       },
       lastResultRows: () => rows,
       validateBulkUpgradeRequest: (requests) => {
@@ -344,6 +348,7 @@ test('cancel-remove with a null id cancels a pending project load and releases w
     registry: 'https://registry.npmjs.org/',
     packageManager: 'npm',
     importerId: '.',
+    mutationTarget: resolvedTarget('/workspace'),
   };
   const coordinator = new UpgradeAssistantCoordinator({
     platform,
@@ -412,6 +417,7 @@ test('Smart Cleanup removal is capability-gated and rechecks host usage evidence
     resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
     packageManager: 'npm',
     importerId: '.',
+    mutationTarget: resolvedTarget('/workspace'),
   };
 
   const makeCoordinator = ({ importerId = '.', evidenceCurrent = () => true } = {}) => {
@@ -505,6 +511,7 @@ test('bulk removal preflight blocks a required peer unless its direct owner is i
     registry: 'https://registry.npmjs.org/',
     packageManager: 'npm',
     importerId: '.',
+    mutationTarget: resolvedTarget('/workspace'),
   };
 
   async function run(changes) {

@@ -140,7 +140,7 @@ Package names and versions are still information about your project, so check yo
 ## Requirements
 
 - VS Code 1.90 or newer, on desktop, or a JetBrains IDE 2026.1 or newer with a JCEF-enabled runtime.
-- In JetBrains IDEs, Node.js. Packageawy uses the Node.js interpreter configured in the IDE, or `node` on PATH.
+- In JetBrains IDEs, Node.js. Packageawy requires a stable Node.js release: 18.17.x through 18.x, or 20.5.0 or newer. It uses the Node.js interpreter configured in the IDE, or `node` on PATH.
 - An npm or pnpm project. For pnpm, a lockfile from pnpm 9 or newer.
 - Registry sign-in stays with your package manager. Packageawy never reads or stores auth tokens.
 

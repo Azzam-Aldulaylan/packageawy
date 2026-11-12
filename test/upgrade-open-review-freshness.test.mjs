@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { UpgradeAssistantCoordinator } from '../out/host/upgradeAssistantCoordinator.js';
 import { collectProjectCompatibilityEvidence } from '../out/host/projectCompatibility/projectEvidenceCollector.js';
+import { refusedTarget, resolvedTarget } from './helpers/mutation-target.mjs';
 
 // Exercise the real coordinator and source-evidence collector without an
 // editor, network requests, or writes to a user's project.
@@ -59,6 +60,7 @@ async function fixture() {
     lockfileText: '{"lockfileVersion":3}', lockfilePath: '/workspace/package-lock.json',
     registry: 'https://registry.npmjs.org/', packageManager: 'npm', importerId: '.',
     peerPolicy: {}, resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
+    mutationTarget: resolvedTarget('/workspace'),
   };
   const evidence = await collectProjectCompatibilityEvidence({ ...selected, platform, manifestText: snapshot.manifestText, packageName: 'next' });
   assert.equal(evidence.imports.length, 1, 'fixture must collect the real source import');
@@ -165,6 +167,25 @@ test('a failed background reread is contained and does not falsely report change
   await f.coordinator.checkOpenAnalysisFreshness();
   assert.deepEqual(f.messages, []);
   assert.equal(f.coordinator.analysis, f.stored);
+});
+
+test('a moved mutation target revokes the completed review', async () => {
+  const f = await fixture();
+  f.snapshot.mutationTarget = resolvedTarget('/workspace', { targetRoot: '/', importerId: 'workspace' });
+  f.coordinator.handleDependencySourceChanged();
+  await f.coordinator.checkOpenAnalysisFreshness();
+  assert.deepEqual(f.messages, [{ status: 'upgrade-analysis-stale', analysisId: 'review-1' }]);
+  assert.equal(f.coordinator.isBusy(), false);
+});
+
+test('a refusal that appears before confirm is reported as itself and nothing runs', async () => {
+  const f = await fixture();
+  const reason = 'Dependency changes would write outside this opened folder. Open the workspace root to enable changes.';
+  f.snapshot.mutationTarget = refusedTarget('OUTSIDE_FOLDER', reason);
+  await f.coordinator.handleConfirmUpgrade({ analysisId: f.stored.id });
+  assert.deepEqual(f.messages.filter(message => message.status === 'upgrade-error').map(message => message.error),
+    [{ code: 'CHANGES_UNAVAILABLE', message: reason }]);
+  assert.equal(f.coordinator.isBusy(), false);
 });
 
 test('confirm during the debounce window still rejects changed dependency contents', async () => {

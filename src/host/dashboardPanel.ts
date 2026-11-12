@@ -45,6 +45,7 @@ import { OPEN_MANIFEST_BUSY_MESSAGE, OPEN_MANIFEST_UNAVAILABLE_MESSAGE, findProj
 import { pickProject } from './projectPicker.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
 import { discoverProjects, loadProject } from './projectResolution.js';
+import { targetFingerprintField } from './mutationTarget.js';
 import { CancellationTokenSource } from './platform/cancellation.js';
 import type { Disposable, HostPlatform, WebviewChannel } from './platform/hostPlatform.js';
 import { reconcileProjectCandidates } from './projectReconciliation.js';
@@ -280,8 +281,10 @@ export class DashboardPanel {
       mutationRoot: () => {
         const controller = this.controller;
         if (controller === undefined) return undefined;
-        const lockfilePath = controller.upgradeSource.lockfilePath;
-        return lockfilePath === null ? controller.root : path.dirname(lockfilePath);
+        // The resolved target's root, so sibling members of one workspace
+        // share one lock. A refused project cannot start a change.
+        const resolution = controller.upgradeSource.mutationTarget;
+        return resolution?.ok === true ? resolution.target.root : undefined;
       },
       getSmartCleanupDeprecationEvidence: () => this.smartCleanupMetadataCoordinator.currentDeprecationEvidence(),
       isDisposed: () => this.disposed,
@@ -1293,6 +1296,7 @@ export class DashboardPanel {
       lockfilePath: confirmed.lockfilePath,
       packageManager: confirmed.packageManager,
       importerId: confirmed.importerId,
+      ...targetFingerprintField(confirmed.mutationTarget),
     });
     if (!sourceFingerprintsMatch(evidence.sourceFingerprint, confirmedSourceFingerprint)) return undefined;
 
@@ -1607,6 +1611,7 @@ export class DashboardPanel {
       importerId: project.importerId,
       lockfileName: project.lockfileName,
       otherPackageManager: project.otherPackageManager ?? null,
+      mutationTarget: project.mutationTarget,
       registry: project.registry,
       resolvedRegistry: project.resolvedRegistry,
       peerPolicy: project.peerPolicy,
@@ -1878,8 +1883,16 @@ export class DashboardPanel {
       this.lockfileWatchers.push(
         this.platform.watchFiles(dirPath, '{package-lock.json,npm-shrinkwrap.json,pnpm-lock.yaml}', onLockfileEvent)
       );
+      // Everything the mutation target is resolved from, at every level
+      // inside the folder: an ancestor package.json can start or stop
+      // claiming this project as a workspace member, and settings or a
+      // pnpmfile can move the lockfile. The project's own package.json and
+      // .npmrc already have watchers above.
+      const targetInputs = dir === candidate.dir
+        ? '{pnpm-workspace.yaml,pnpm-workspace.yml,.pnpmfile.cjs,.pnpmfile.mjs}'
+        : '{package.json,.npmrc,pnpm-workspace.yaml,pnpm-workspace.yml,.pnpmfile.cjs,.pnpmfile.mjs}';
       this.configurationWatchers.push(
-        this.platform.watchFiles(dirPath, 'pnpm-workspace.yaml', onConfigurationEvent)
+        this.platform.watchFiles(dirPath, targetInputs, onConfigurationEvent)
       );
     }
   }

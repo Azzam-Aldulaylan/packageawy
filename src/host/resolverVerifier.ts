@@ -359,7 +359,10 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
               classification: change.classification,
             }))
           );
-    const lockfileName = this.options.packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json';
+    // Read back the file npm actually writes: a shrinkwrap written here is
+    // updated in place, and package-lock.json would not exist.
+    const lockfileName = this.options.packageManager === 'pnpm' ? 'pnpm-lock.yaml'
+      : this.options.lockfile?.name ?? 'package-lock.json';
     const tempRoot = await mkdtemp(path.join(tmpdir(), 'packageawy-security-outcome-'));
     try {
       await writeFile(path.join(tempRoot, 'package.json'), stagedManifest, 'utf8');

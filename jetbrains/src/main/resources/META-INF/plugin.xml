@@ -10,7 +10,7 @@
       <li>Review each upgrade before it runs, with compatibility and security checks.</li>
       <li>Remove packages safely, with a preview of what depends on them.</li>
     </ul>
-    Requires Node.js. Packageawy uses the Node.js interpreter configured in the IDE, or <code>node</code> on PATH.
+    Packageawy requires a stable Node.js release: 18.17.x through 18.x, or 20.5.0 or newer. Packageawy uses the Node.js interpreter configured in the IDE, or <code>node</code> on PATH.
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

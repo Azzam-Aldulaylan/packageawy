@@ -324,3 +324,29 @@ test('targeted transitive remediation refuses a package-manager manifest mutatio
   assert.equal(result.ok, false);
   assert.match(result.reason, /unexpectedly changed package\.json/);
 });
+
+test('materializeResolvedGraph reads back the npm-shrinkwrap.json it staged, not a package-lock.json', async () => {
+  const manifestText = JSON.stringify({ dependencies: { 'left-pad': '^1.3.0' } }, null, 2);
+  const shrinkwrap = (version) => JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/left-pad': { version } } });
+  const verifier = new IsolatedResolverVerifier({
+    packageManager: 'npm', packageManagerVersion: '10.0.0',
+    invocation: { executable: '/trusted/node', prefixArgs: ['/trusted/npm-cli.js'] },
+    manifestText,
+    lockfile: { name: 'npm-shrinkwrap.json', text: shrinkwrap('1.2.0') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    runner: {
+      async run(_invocation, _args, cwd) {
+        const { writeFile } = await import('node:fs/promises');
+        // npm updates the shrinkwrap in place and writes no package-lock.json.
+        await writeFile(`${cwd}/npm-shrinkwrap.json`, shrinkwrap('1.3.0'));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    },
+  });
+  const result = await verifier.materializeResolvedGraph({
+    requested: { packageName: 'left-pad', currentVersion: '1.2.0', targetVersion: '1.2.0', classification: 'prod' },
+    changes: [],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.graph.nodes.get('node_modules/left-pad').version, '1.3.0');
+});

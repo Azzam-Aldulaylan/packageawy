@@ -1,16 +1,12 @@
-import { realpathSync } from 'node:fs';
-import path from 'node:path';
+import { lockKey } from './pathIdentity.js';
 
-/** One spelling per directory, so a symlinked or differently cased path still finds the same lock. */
+/**
+ * One spelling per directory, so a symlinked or differently cased path still
+ * finds the same lock. Case is always folded, which can only make two
+ * windows wait on each other.
+ */
 export function canonicalProjectRoot(root: string): string {
-  const resolved = path.resolve(root);
-  let canonical = resolved;
-  try {
-    canonical = realpathSync.native(resolved);
-  } catch {
-    // A missing directory keeps its resolved spelling.
-  }
-  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+  return lockKey(root);
 }
 
 /**

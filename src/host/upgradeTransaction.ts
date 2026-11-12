@@ -219,6 +219,14 @@ export interface UpgradeTransactionOptions {
   verifier?: UpgradeVerifier;
   /** Defaults to rollback when omitted. */
   verificationFailureDecider?: VerificationFailureDecider;
+  /**
+   * Called right before any automatic restore. A message refuses the
+   * restore: the files are left as they are and every one is reported as a
+   * failed restore with that message. The host resolves its mutation target
+   * again here, so a topology or settings change during the install never
+   * lets a restore write a file the package manager no longer owns.
+   */
+  beforeRestore?: () => Promise<string | null>;
   signal?: AbortSignal;
 }
 
@@ -515,9 +523,21 @@ function withOwnedStates(
 
 async function rollback(
   entries: readonly ExpectedEntry[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  beforeRestore?: () => Promise<string | null>
 ): Promise<RollbackResult> {
   const results: RollbackFileResult[] = [];
+  if (beforeRestore !== undefined && entries.length > 0) {
+    let refusal: string | null;
+    try {
+      refusal = await beforeRestore();
+    } catch (cause) {
+      refusal = errorMessage(cause);
+    }
+    if (refusal !== null) {
+      return { status: 'failed', files: entries.map((entry) => ({ path: entry.snapshot.path, status: 'failed', message: refusal })) };
+    }
+  }
 
   for (const entry of entries) {
     if ('captureError' in entry) {
@@ -705,7 +725,7 @@ export async function runUpgradeTransaction(
       const rolledBack =
         expectedAfterStage.length === 0
           ? { status: 'not-needed' as const }
-          : await rollback(expectedAfterStage, options.files);
+          : await rollback(expectedAfterStage, options.files, options.beforeRestore);
       return {
         completion:
           rolledBack.status === 'not-needed'
@@ -745,7 +765,7 @@ export async function runUpgradeTransaction(
         retentionDecision: 'not-needed',
       };
     }
-    const rolledBack = await rollback(expectedAfterStage, options.files);
+    const rolledBack = await rollback(expectedAfterStage, options.files, options.beforeRestore);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -774,7 +794,7 @@ export async function runUpgradeTransaction(
   const expected = withOwnedStates(await captureExpectedStates(snapshot.entries, options.files), owned);
 
   if (install.status !== 'succeeded') {
-    const rolledBack = await rollback(expected, options.files);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: install.status === 'cancelled' || cancelled(options.signal) ? 'cancelled' : 'install-failed',
@@ -792,7 +812,7 @@ export async function runUpgradeTransaction(
   }
 
   if (cancelled(options.signal)) {
-    const rolledBack = await rollback(expected, options.files);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -826,7 +846,7 @@ export async function runUpgradeTransaction(
   const verification = await executeVerification(options.verifier);
 
   if (cancelled(options.signal) || verification.status === 'cancelled') {
-    const rolledBack = await rollback(expected, options.files);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -875,7 +895,7 @@ export async function runUpgradeTransaction(
     };
   }
 
-  const rolledBack = await rollback(expected, options.files);
+  const rolledBack = await rollback(expected, options.files, options.beforeRestore);
   return {
     completion: completionAfterRollback(rolledBack),
     reason: cancelled(options.signal) ? 'cancelled' : 'verification-failed',

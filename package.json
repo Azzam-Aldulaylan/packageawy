@@ -204,6 +204,7 @@
     "typescript-eslint": "^8.72.2"
   },
   "dependencies": {
+    "ini": "^5.0.0",
     "js-yaml": "^4.3.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
