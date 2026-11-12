@@ -407,6 +407,7 @@ export function UpgradeReviewPanel({
   onRetryTargets,
   onRefreshDashboard,
   updateResolutionAvailable = true,
+  refreshDisabled,
   onChangeTab,
   onOpenAdvisory,
   onOpenUsageReference,
@@ -442,6 +443,12 @@ export function UpgradeReviewPanel({
   onRefreshDashboard?: (() => void) | undefined;
   /** False when this package's update check failed in the last scan. */
   updateResolutionAvailable?: boolean;
+  /**
+   * Disables the Refresh buttons (the dashboard's own rule). Separate from
+   * `disabled`: upgrades are disabled after an incomplete scan, which is
+   * exactly when Refresh is needed. Retry keeps `disabled`.
+   */
+  refreshDisabled?: boolean;
   onChangeTab: (tab: ManageTabId) => void;
   onOpenAdvisory?: ((packageName: string, advisoryId: string | number, path: string[], reference?: string) => void) | undefined;
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
@@ -477,6 +484,7 @@ export function UpgradeReviewPanel({
       fallbackVersion={row.upgradeTo}
       fallbackReason={row.upgradeReason}
       disabled={busy || disabled}
+      {...(refreshDisabled === undefined ? {} : { refreshDisabled })}
       onChange={onTargetChange}
       {...(onRetryTargets === undefined ? {} : { onRetry: onRetryTargets })}
       {...(onRefreshDashboard === undefined ? {} : { onRefreshDashboard })}
@@ -515,7 +523,7 @@ export function UpgradeReviewPanel({
           <p className="review-panel__empty-versions">{row.current ?? row.range}</p>
           <p className="review-panel__empty-status">{noUpgrade.text}</p>
           {noUpgrade.refresh && onRefreshDashboard !== undefined ? (
-            <button type="button" className="button button--secondary" disabled={disabled} onClick={onRefreshDashboard}>
+            <button type="button" className="button button--secondary" disabled={refreshDisabled ?? disabled} onClick={onRefreshDashboard}>
               Refresh
             </button>
           ) : null}

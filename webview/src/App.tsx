@@ -2566,6 +2566,9 @@ export function App(): ReactElement {
                   },
                   onRetryTargets: retryUpgradeTargets,
                   onRefreshDashboard: refresh,
+                  // The dashboard's own Refresh rule, not the upgrade actions' rule: an
+                  // incomplete scan disables upgrades, and Refresh is how it is fixed.
+                  refreshDisabled: actionsDisabled,
                 }}
                 removal={{
                   active: removeActive,

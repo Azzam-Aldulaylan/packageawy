@@ -318,3 +318,43 @@ test('"No newer version" is only said when versions were actually compared', () 
   const busy = noUpgrade({ wanted: null, latest: null }, { updateResolutionAvailable: false, disabled: true });
   assert.match(busy, /<button[^>]*disabled=""[^>]*>Refresh</, 'Refresh follows the dialog\'s disabled state');
 });
+
+test('Refresh stays usable when upgrades are disabled by an incomplete scan', () => {
+  // Found on Windows: the dialog disables upgrade actions after an incomplete
+  // scan, and Refresh followed that rule, so the one way out was disabled.
+  const html = noUpgrade({ wanted: null, latest: null }, { updateResolutionAvailable: false, disabled: true, refreshDisabled: false });
+  assert.match(html, /<button type="button" class="button button--secondary">Refresh</);
+  const blocked = noUpgrade({ wanted: null, latest: null }, { updateResolutionAvailable: false, disabled: false, refreshDisabled: true });
+  assert.match(blocked, /<button[^>]*disabled=""[^>]*>Refresh</, 'a running change still blocks Refresh');
+  const scanIncomplete = renderToStaticMarkup(createElement(UpgradeReviewPanel, {
+    row: { name: 'lodash', current: '4.17.20', wanted: '4.17.21', latest: '4.17.21', range: '4.17.20', upgradeTo: '4.17.21', upgradeReason: 'update', advisories: [], worstSeverity: null },
+    active: false, targetVersion: '4.17.21', analyzingPhase: null, analysis: null, sections: {}, hardStale: false, now, busy: false, error: null, usage: undefined, advisoriesAvailable: true,
+    targetState: { phase: 'error', error: { code: 'scan-incomplete', message: 'Upgrades are paused because the last scan could not check every package. Refresh to scan again.' } },
+    disabled: true, refreshDisabled: false,
+    onAnalyzeUpgrade: noop, onTargetChange: noop, onConfirm: noop, onUseSmartPlan: noop, onCancel: noop, onConfigureVerification: noop, onRefresh: noop, onChangeTab: noop,
+    onRetryTargets: noop, onRefreshDashboard: noop,
+  }));
+  assert.match(scanIncomplete, /upgrade-target-picker__retry"[^>]*>Refresh</);
+  assert.doesNotMatch(scanIncomplete, /upgrade-target-picker__retry" disabled/, 'the version list Refresh is enabled too');
+});
+
+test('the dialog uses the dashboard Refresh rule for its Refresh buttons', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const app = await readFile(new URL('../webview/src/App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /onRefreshDashboard: refresh,[\s\S]{0,200}refreshDisabled: actionsDisabled,/);
+});
+
+test('version list Retry keeps the upgrade rule, only its Refresh form uses the dashboard rule', () => {
+  const render = (error, panel) => renderToStaticMarkup(createElement(UpgradeReviewPanel, {
+    row: { name: 'lodash', current: '4.17.20', wanted: '4.17.21', latest: '4.17.21', range: '4.17.20', upgradeTo: '4.17.21', upgradeReason: 'update', advisories: [], worstSeverity: null },
+    active: false, targetVersion: '4.17.21', analyzingPhase: null, analysis: null, sections: {}, hardStale: false, now, busy: false, error: null, usage: undefined, advisoriesAvailable: true,
+    targetState: { phase: 'error', error }, onAnalyzeUpgrade: noop, onTargetChange: noop, onConfirm: noop, onUseSmartPlan: noop, onCancel: noop,
+    onConfigureVerification: noop, onRefresh: noop, onChangeTab: noop, onRetryTargets: noop, onRefreshDashboard: noop, ...panel,
+  }));
+  const timeout = { code: 'timeout', message: 'Could not reach registry.npmjs.org in time.' };
+  // A finished review keeps the dashboard's actions disabled, but Retry only reloads this list.
+  assert.match(render(timeout, { disabled: false, refreshDisabled: true }), /upgrade-target-picker__retry">Retry</);
+  assert.match(render(timeout, { disabled: true, refreshDisabled: false }), /upgrade-target-picker__retry" disabled="">Retry</);
+  const incomplete = { code: 'scan-incomplete', message: 'Upgrades are paused because the last scan could not check every package. Refresh to scan again.' };
+  assert.match(render(incomplete, { disabled: false, refreshDisabled: true }), /upgrade-target-picker__retry" disabled="">Refresh</, 'Refresh is blocked while a change runs');
+});
