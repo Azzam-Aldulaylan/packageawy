@@ -186,7 +186,7 @@ export function safeDiagnosticCode(code: string): string {
   return DIAGNOSTIC_CODES.has(code) ? code : 'UNKNOWN';
 }
 
-export type DiagnosticArea = 'version-list' | 'update-check' | 'npm-audit' | 'registry-cache';
+export type DiagnosticArea = 'version-list' | 'update-check' | 'npm-audit' | 'registry-cache' | 'version-advisories';
 
 /**
  * One log line, e.g.

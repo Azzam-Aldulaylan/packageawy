@@ -4,6 +4,10 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- Vulnerability checks for update versions keep working after an internal error, instead of stopping until the dashboard is refreshed.
+
 ## [0.9.7] - 2026-11-12
 
 ### Added
