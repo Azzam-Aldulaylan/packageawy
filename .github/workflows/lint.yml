@@ -1,0 +1,29 @@
+name: Lint
+
+# Called by ci.yml and release.yml before any build, test or publish job, so
+# a floating promise or an unused declaration stops the run early. Both
+# hosts are gated: the JetBrains sidecar is built from the same source.
+on:
+  workflow_call:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # noUnusedLocals and noUnusedParameters are on in the tsconfig files.
+      - name: Typecheck
+        run: npm run typecheck

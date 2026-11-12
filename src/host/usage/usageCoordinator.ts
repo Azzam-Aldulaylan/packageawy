@@ -825,7 +825,7 @@ export class UsageAnalysisCoordinator {
     // This path has no foreground caller to receive a rejection. Background
     // refresh errors are intentionally quiet, but must never become an
     // unhandled promise rejection in the extension host.
-    void this.runPendingBackgroundRefresh().catch(() => undefined);
+    this.runPendingBackgroundRefresh().catch(() => undefined);
   }
 
   /**

@@ -1,3 +1,5 @@
+import { fireAndForget } from '../core/fireAndForget.js';
+
 export interface BranchTimerScheduler {
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(handle: unknown): void;
@@ -11,6 +13,8 @@ export const realBranchTimerScheduler: BranchTimerScheduler = {
 export interface BranchChangeCoordinatorOptions {
   isMutationBusy(): boolean;
   reconcile(generation: number): Promise<void>;
+  /** Hears about a failure that escaped reconciliation. Reconcile reports its own expected failures. */
+  onError?(error: unknown): void;
 }
 
 /** Pure debounce/serialization for genuine Git HEAD changes. */
@@ -70,7 +74,9 @@ export class BranchChangeCoordinator {
     if (this.timer !== undefined) this.scheduler.clearTimeout(this.timer);
     this.timer = this.scheduler.setTimeout(() => {
       this.timer = undefined;
-      void this.run();
+      fireAndForget(this.run(), (error) => {
+        this.options.onError?.(error);
+      });
     }, delayMs);
   }
 

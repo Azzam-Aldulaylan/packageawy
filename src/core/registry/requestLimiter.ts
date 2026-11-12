@@ -1,6 +1,8 @@
 import { FetchError } from './http.js';
 import type { HttpClient } from './http.js';
 import { DEFAULT_CONCURRENCY } from './pool.js';
+import { runtimeFailureLine } from '../diagnostics.js';
+import { fireAndForget } from '../fireAndForget.js';
 
 /** One scan's metadata GET budget. Slots cover transport only, never callers. */
 export function limitMetadataRequests(client: HttpClient, limit = DEFAULT_CONCURRENCY): HttpClient {
@@ -47,7 +49,10 @@ export function limitMetadataRequests(client: HttpClient, limit = DEFAULT_CONCUR
             return;
           }
           active += 1;
-          void (async () => {
+          // The request settles through resolve or reject. Only starting the
+          // next queued request in `finally` can still throw. This module has
+          // no host log, so that lands on the console with a safe line.
+          fireAndForget((async () => {
             try {
               resolve(await client.get(url, options));
             } catch (cause) {
@@ -57,7 +62,9 @@ export function limitMetadataRequests(client: HttpClient, limit = DEFAULT_CONCUR
               const next = queue.values().next().value;
               next?.();
             }
-          })();
+          })(), (error) => {
+            console.error(`Packageawy ${runtimeFailureLine('request-limiter', error)}`);
+          });
         };
         if (signal?.aborted === true) {
           cancelled();

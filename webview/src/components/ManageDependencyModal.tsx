@@ -47,7 +47,6 @@ interface UpgradeReviewState {
   targetState: UpgradeTargetLoadState;
   /** True exactly when this row's upgrade is the one App.tsx currently has loaded. */
   active: boolean;
-  analyzingPhase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
   analysis: UpgradeAnalysisPresentation | null;
   /** Per-section progressive state, rendered while `analysis` is still null. See src/host/upgradeAnalysisSections.ts. */
   sections: UpgradeAnalysisSections;
@@ -546,7 +545,6 @@ export function ManageDependencyModal({
         active={upgrade.active}
         targetVersion={upgrade.targetVersion}
         targetState={upgrade.targetState}
-        analyzingPhase={upgrade.analyzingPhase}
         analysis={upgrade.analysis}
         sections={upgrade.sections}
         hardStale={upgrade.hardStale}

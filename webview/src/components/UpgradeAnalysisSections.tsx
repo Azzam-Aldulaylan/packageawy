@@ -298,7 +298,7 @@ export function UpgradeAnalysisSections({
               <CoordinatedUpgradePlanCard requestedChanges={overview.value.changes} smartPlan={smartPlan.value} compatibility={compatibility.value} />
             ) : compatibility.status === 'complete' && compatibility.value.status === 'conflict' ? (
               <CoordinationUnavailableCard row={row} changes={overview.value.changes} />
-            ) : <SimpleUpgradePlanCard row={row} changes={overview.value.changes} />
+            ) : <SimpleUpgradePlanCard changes={overview.value.changes} />
           ) : <SectionPlaceholder label={smartPlan.status === 'loading' ? PHASE_LABEL['smart-plan'] : 'Waiting for compatibility results…'} />}
         </UpgradeReviewDisclosure>
 

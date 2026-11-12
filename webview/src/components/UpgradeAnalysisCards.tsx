@@ -176,10 +176,8 @@ export function CompatibilityCheckCard({
  * no coordinated search was needed.
  */
 export function SimpleUpgradePlanCard({
-  row,
   changes,
 }: {
-  row: PackageRow;
   changes: UpgradeAnalysisPresentation['changes'];
 }): ReactElement {
   const steps = changes;

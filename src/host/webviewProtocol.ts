@@ -32,6 +32,7 @@ import type {
 } from '../core/types.js';
 import type { DependencyFinding } from '../core/hygiene/types.js';
 import type { DependencyReference, DependencyUsageResult } from '../core/usage/types.js';
+import { RUNTIME_ERROR_CODE, RUNTIME_ERROR_TEXT } from '../core/diagnostics.js';
 import {
   isAbsentOr,
   isAdvisory,
@@ -690,6 +691,12 @@ export type HostToWebviewMessage =
   | { status: 'stale'; data: DashboardData }
   | { status: 'partial-error'; data: DashboardData }
   | { status: 'fatal-error'; error: ProtocolError }
+  /**
+   * An internal error was caught. The dashboard stays and the banner stays
+   * until the panel closes. The code and text are fixed (see
+   * src/core/diagnostics.ts), so nothing from the error itself reaches here.
+   */
+  | { status: 'runtime-error'; code: typeof RUNTIME_ERROR_CODE; message: typeof RUNTIME_ERROR_TEXT }
   | { status: 'upgrade-targets-loading'; package: string; requestId: string }
   | { status: 'upgrade-targets'; package: string; requestId: string; targets: UpgradeTargetOptions }
   | { status: 'upgrade-targets-error'; package: string; requestId: string; error: ProtocolError }
@@ -930,7 +937,32 @@ export type WebviewToHostMessage =
    * path or line number the webview constructed itself. See
    * src/host/usage/usageReferenceStore.ts for the trust boundary.
    */
-  | { type: 'open-usage-reference'; usageId: string; referenceIndex: number };
+  | { type: 'open-usage-reference'; usageId: string; referenceIndex: number }
+  /** Shows the Packageawy log from the internal error banner. Carries nothing else. */
+  | { type: 'show-log' };
+
+/**
+ * Every webview message that can start writing dependency files. After an
+ * internal error the host refuses these and keeps answering the rest.
+ * Smart Cleanup executes through `confirm-remove`. `smart-cleanup-remove`
+ * and `upgrade` only prepare a review. A test fails when a new message type
+ * is added without being placed here or in its read-only list.
+ */
+export const CHANGE_STARTING_MESSAGE_TYPES = [
+  'confirm-upgrade',
+  'use-smart-plan',
+  'confirm-remove',
+  'confirm-remediation',
+  'restore-smart-cleanup',
+] as const;
+
+export type ChangeStartingMessage = Extract<WebviewToHostMessage, { type: typeof CHANGE_STARTING_MESSAGE_TYPES[number] }>;
+
+const CHANGE_STARTING_TYPES: ReadonlySet<string> = new Set(CHANGE_STARTING_MESSAGE_TYPES);
+
+export function isChangeStartingMessage(message: WebviewToHostMessage): message is ChangeStartingMessage {
+  return CHANGE_STARTING_TYPES.has(message.type);
+}
 
 const DATA_STATUSES: ReadonlySet<string> = new Set(['empty', 'ready', 'stale', 'partial-error']);
 const SCAN_PROGRESS_STAGES: ReadonlySet<string> = new Set<ScanProgressStage>([
@@ -1039,7 +1071,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (type === 'rendered') {
     return hasOnlyKeys(value, ['type', 'generatedAt']) && isNonEmptyString(value['generatedAt']);
   }
-  if (type === 'ready' || type === 'refresh' || type === 'change-project') {
+  if (type === 'ready' || type === 'refresh' || type === 'change-project' || type === 'show-log') {
     return hasOnlyKeys(value, ['type']);
   }
   if (type === 'cancel-upgrade-targets') {
@@ -2211,6 +2243,10 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'fatal-error') {
     return hasOnlyKeys(value, ['status', 'error']) && isProtocolError(value['error']);
+  }
+  if (status === 'runtime-error') {
+    return hasOnlyKeys(value, ['status', 'code', 'message']) &&
+      value['code'] === RUNTIME_ERROR_CODE && value['message'] === RUNTIME_ERROR_TEXT;
   }
   if (status === 'upgrade-targets-loading') {
     return (

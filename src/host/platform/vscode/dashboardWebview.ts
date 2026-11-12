@@ -20,6 +20,8 @@ import * as vscode from 'vscode';
 import { DashboardPanel } from '../../dashboardPanel.js';
 import { OPEN_MANIFEST_UNAVAILABLE_MESSAGE, resolveManifestTarget } from '../../openManifestTarget.js';
 import type { HostPlatform, WebviewChannel } from '../hostPlatform.js';
+import { runtimeFailureLine } from '../../../core/diagnostics.js';
+import { fireAndForget } from '../../../core/fireAndForget.js';
 
 const VIEW_TYPE = 'packageawy';
 const TITLE = 'Packageawy';
@@ -66,10 +68,14 @@ function buildHtml(webview: vscode.Webview, extensionUri: vscode.Uri, performanc
 </html>`;
 }
 
-function createChannel(panel: vscode.WebviewPanel, context: vscode.ExtensionContext): WebviewChannel {
+function createChannel(panel: vscode.WebviewPanel, context: vscode.ExtensionContext, platform: HostPlatform): WebviewChannel {
   return {
     postMessage: (message) => {
-      void panel.webview.postMessage(message);
+      // Straight to the log, never back through the webview: reporting a
+      // broken channel over that same channel would only fail again.
+      fireAndForget(panel.webview.postMessage(message), (error) => {
+        platform.log?.(runtimeFailureLine('webview-delivery', error));
+      });
     },
     onDidReceiveMessage: (listener) => panel.webview.onDidReceiveMessage(listener, null, context.subscriptions),
     onDidDispose: (listener) => panel.onDidDispose(listener, null, context.subscriptions),
@@ -166,7 +172,7 @@ export function showDashboard(context: vscode.ExtensionContext, platform: HostPl
   panel.webview.html = buildHtml(panel.webview, context.extensionUri, performanceDebug, performanceDebug || integrationTestMode, Date.now());
   watchDevBuild(panel, context, performanceEnabled, integrationTestMode);
 
-  DashboardPanel.create(platform, createChannel(panel, context), {
+  DashboardPanel.create(platform, createChannel(panel, context, platform), {
     extensionVersion: String(context.extension.packageJSON['version'] ?? 'unknown'),
     integrationTestMode,
     speculativeStartup: true,

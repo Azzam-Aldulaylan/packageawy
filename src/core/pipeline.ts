@@ -300,7 +300,7 @@ export async function buildPackageRows(
       for (const name of knownFlaggedPackages) {
         // Keep the original promise in the map, including failures. Only the
         // patched-version stage consumes its result and reports progress.
-        void loadPackument(name, 'patched version', signal).catch(() => {});
+        loadPackument(name, 'patched version', signal).catch(() => {});
       }
       advisoriesByName = await enrichAdvisoriesWithGitHubIdentifiers(httpClient, etagStore, npmAdvisories, signal);
     } catch (cause) {

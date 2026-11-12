@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The only manual entry point for the JetBrains build too, so lint runs first.
+  workflow_dispatch:
 
 # A new push to the same branch makes an in-flight run obsolete.
 concurrency:
@@ -11,7 +13,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+
+  # Called rather than triggered on its own, so it waits for lint like the
+  # VS Code jobs below.
+  jetbrains:
+    needs: lint
+    uses: ./.github/workflows/jetbrains.yml
+
   check:
+    needs: lint
     # Windows is not optional here: the lockfile parser handles path separators,
     # and npm resolves to npm.cmd on win32. Both are real bug sources.
     strategy:
@@ -58,6 +70,7 @@ jobs:
         run: npm run package
 
   extension-host:
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
@@ -200,6 +213,7 @@ jobs:
   # Builds the VSIX once so every smoke run below tests the same archive,
   # the one users would install, instead of a fresh build per runner.
   package-vsix:
+    needs: lint
     runs-on: ubuntu-latest
 
     steps:

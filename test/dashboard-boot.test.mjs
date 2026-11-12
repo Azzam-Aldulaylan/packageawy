@@ -36,6 +36,8 @@ function open({ performance = false, mode = 1, testFlag = false } = {}) {
         reveal: () => false, create: (_platform, _channel, options) => { createdOptions = options; },
       } };
       if (name.endsWith('/openManifestTarget.js')) return {};
+      if (name.endsWith('/core/diagnostics.js')) return { runtimeFailureLine: () => 'runtime: failed' };
+      if (name.endsWith('/core/fireAndForget.js')) return { fireAndForget() {} };
       throw new Error(name);
     },
   });

@@ -298,7 +298,7 @@ const UpgradeReviewDetails = memo(function UpgradeReviewDetails({
         ) : analysis.compatibility.status === 'conflict' ? (
           <CoordinationUnavailableCard row={row} changes={analysis.changes} />
         ) : (
-          <SimpleUpgradePlanCard row={row} changes={analysis.changes} />
+          <SimpleUpgradePlanCard changes={analysis.changes} />
         )}
       </UpgradeReviewDisclosure>
       <UpgradeReviewDisclosure
@@ -386,7 +386,6 @@ export function UpgradeReviewPanel({
   active,
   targetVersion,
   targetState,
-  analyzingPhase,
   analysis,
   sections,
   hardStale,
@@ -417,7 +416,6 @@ export function UpgradeReviewPanel({
   /** The upgrade target this row currently offers, or null when none is available. */
   targetVersion: string | null;
   targetState: UpgradeTargetLoadState;
-  analyzingPhase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
   analysis: UpgradeAnalysisPresentation | null;
   /** Per-section progressive state, rendered while `analysis` is still null. See src/host/upgradeAnalysisSections.ts. */
   sections: UpgradeAnalysisSectionsState;

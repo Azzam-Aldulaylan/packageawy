@@ -56,7 +56,10 @@ import type { SmartCleanupFinalRefreshEvidence } from './smartCleanupCompletionR
 import { USAGE_FILE_WATCH_GLOB } from './usage/workspaceFiles.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
 import type { WebviewToHostMessage } from './webviewProtocol.js';
-import { isWebviewToHostMessage } from './webviewProtocol.js';
+import { isChangeStartingMessage, isWebviewToHostMessage } from './webviewProtocol.js';
+import { RUNTIME_ERROR_CODE, RUNTIME_ERROR_TEXT, runtimeFailureLine } from '../core/diagnostics.js';
+import type { RuntimeFailureContext } from '../core/diagnostics.js';
+import { fireAndForget } from '../core/fireAndForget.js';
 
 /** Spec's fixed background-refresh cadence: independent of the configurable `cacheTtlMinutes`, which only decides whether a given tick actually needs to do anything (see DashboardController.needsBackgroundRefresh). */
 const BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
@@ -146,6 +149,14 @@ export class DashboardPanel {
   private readonly buildInfo: BuildInfo;
   /** Set once onDidDispose fires, so an async continuation mid-flight can bail before posting into a gone webview. */
   private disposed = false;
+  /**
+   * Set by the first internal error caught at an entry point. From then on
+   * the host refuses new changes, read-only messages keep working, and the
+   * banner stays until the panel closes. A new panel starts without it.
+   */
+  private runtimeFailed = false;
+  /** Set once with runtimeFailed. Watchers, timers and scheduled scans stay off for this panel's life. */
+  private backgroundStopped = false;
   private advisorySettingRefreshPending = false;
   /** The candidate a plain refresh (or a post-upgrade reload) re-reads: set on selection, untouched by refresh itself. */
   private selectedProject: DiscoveredProject | undefined;
@@ -210,6 +221,7 @@ export class DashboardPanel {
     {
       isMutationBusy: () => this.upgradeCoordinator.isMutationBusy(),
       reconcile: (generation) => this.reconcileAfterGitHeadChange(generation),
+      onError: (error) => this.reportRuntimeFailure('branch-reconcile', error),
     },
     FILE_EVENT_DEBOUNCE_MS
   );
@@ -275,13 +287,17 @@ export class DashboardPanel {
       onMutationLockReleased: () => {
         // A setting change queued while this or another panel's change held
         // the project lock runs now that the lock is free.
-        void this.flushAdvisorySettingRefresh();
+        fireAndForget(this.flushAdvisorySettingRefresh(), this.onBackgroundError('advisory-setting-refresh'));
         if (this.branchChangeCoordinator.hasPending) {
           this.branchChangeCoordinator.mutationReleased();
           return;
         }
-        if (this.automaticUsageReleased) void this.usageCoordinator.runPendingBackgroundRefresh();
+        if (this.automaticUsageReleased && !this.backgroundStopped) {
+          fireAndForget(this.usageCoordinator.runPendingBackgroundRefresh(), this.onBackgroundError('usage-refresh', false));
+        }
       },
+      changesPaused: () => this.runtimeFailed,
+      reportBackgroundFailure: (context, error, fence) => this.reportRuntimeFailure(context, error, fence),
       performanceEnabled: this.performanceEnabled,
       storeProjectCompatibilityReferences: (packageName, references, folder) =>
         this.usageCoordinator.storeProjectCompatibilityReferences(packageName, references, folder),
@@ -316,12 +332,13 @@ export class DashboardPanel {
       this.upgradeCoordinator.handleAdvisorySettingChanged();
       this.controller?.handleAdvisorySettingChanged(this.sink);
       this.advisorySettingRefreshPending = true;
-      void this.flushAdvisorySettingRefresh();
+      fireAndForget(this.flushAdvisorySettingRefresh(), this.onBackgroundError('advisory-setting-refresh'));
     });
 
     this.channel.onDidReceiveMessage((raw: unknown) => {
       if (!isWebviewToHostMessage(raw)) return;
-      void this.handle(raw);
+      // handle() catches and reports its own failures. This only sees what escapes that.
+      fireAndForget(this.handle(raw), this.onBackgroundError('webview-message'));
     });
 
     this.channel.onDidDispose(() => {
@@ -379,7 +396,19 @@ export class DashboardPanel {
     const existing = DashboardPanel.current;
     if (existing === undefined) return false;
     existing.channel.reveal();
-    void existing.openManifest(manifestPath);
+    fireAndForget(existing.openManifest(manifestPath), existing.onBackgroundError('open-manifest'));
+    return true;
+  }
+
+  /**
+   * The sidecar's last resort for a rejection nothing handled. Pauses changes
+   * in the open panel, stops its background work and shows the banner.
+   * False when no panel is open.
+   */
+  static reportRuntimeFailure(context: RuntimeFailureContext, error: unknown): boolean {
+    const current = DashboardPanel.current;
+    if (current === undefined) return false;
+    current.reportRuntimeFailure(context, error);
     return true;
   }
 
@@ -433,23 +462,104 @@ export class DashboardPanel {
   }
 
   private async flushAdvisorySettingRefresh(): Promise<void> {
-    if (!this.advisorySettingRefreshPending || this.disposed ||
+    if (!this.advisorySettingRefreshPending || this.disposed || this.backgroundStopped ||
         this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
     this.advisorySettingRefreshPending = false;
     await this.handle({ type: 'refresh' });
   }
 
+  /**
+   * The one entry point for webview messages. It never rejects: a failure in
+   * the message or in the refresh after it is logged and pauses changes.
+   * The two are caught separately so both are logged when both fail.
+   */
   private async handle(message: WebviewToHostMessage): Promise<void> {
     if (message.type === 'rendered') {
       this.recordIntegrationTestMessage({ direction: 'inbound', message });
       return;
     }
+    if (this.runtimeFailed && isChangeStartingMessage(message)) {
+      this.upgradeCoordinator.refuseChangeAfterFailure(message);
+      return;
+    }
     try {
       await this.handleMessage(message);
-    } finally {
+    } catch (error) {
+      this.reportRuntimeFailure('webview-message', error);
+    }
+    try {
       // Setting changes retain one refresh until the active operation settles.
       await this.flushAdvisorySettingRefresh();
+    } catch (error) {
+      this.reportRuntimeFailure('refresh-after-message', error);
     }
+  }
+
+  /**
+   * Logs an unexpected failure. With `fence`, it also pauses changes, stops
+   * background work and shows the banner, once. A transaction that already
+   * started is left to finish and release normally.
+   */
+  private reportRuntimeFailure(context: RuntimeFailureContext, error: unknown, fence = true): void {
+    try {
+      this.platform.log?.(runtimeFailureLine(context, error));
+    } catch {
+      // The log itself failed. The banner below is all that is left.
+    }
+    if (!fence || this.disposed || this.runtimeFailed) return;
+    this.runtimeFailed = true;
+    try {
+      this.stopBackgroundWork();
+    } catch (stopError) {
+      try {
+        this.platform.log?.(runtimeFailureLine('background-refresh', stopError));
+      } catch {
+        // As above.
+      }
+    }
+    this.postRuntimeError();
+  }
+
+  private onBackgroundError(context: RuntimeFailureContext, fence = true): (error: unknown) => undefined {
+    return (error) => {
+      this.reportRuntimeFailure(context, error, fence);
+    };
+  }
+
+  private postRuntimeError(): void {
+    try {
+      this.sink.postMessage({ status: 'runtime-error', code: RUNTIME_ERROR_CODE, message: RUNTIME_ERROR_TEXT });
+    } catch (error) {
+      try {
+        this.platform.log?.(runtimeFailureLine('webview-delivery', error));
+      } catch {
+        // As above.
+      }
+    }
+  }
+
+  /**
+   * Called once on failure. Turns off everything that would start work on
+   * its own: watchers, the refresh timer, the Git HEAD watcher (including a
+   * setup still pending), the setting subscription, branch reconciliation
+   * and queued file reloads. The controller, caches and a running
+   * transaction stay: only closing the panel disposes those.
+   */
+  private stopBackgroundWork(): void {
+    if (this.backgroundStopped) return;
+    this.backgroundStopped = true;
+    this.disposeWatchers();
+    this.gitWatcherSetupGeneration += 1;
+    this.gitHeadWatcher?.dispose();
+    this.gitHeadWatcher = undefined;
+    this.gitWatchedProjectPath = undefined;
+    this.backgroundTimer.dispose();
+    this.advisorySettingSubscription.dispose();
+    this.advisorySettingRefreshPending = false;
+    this.branchChangeCoordinator.dispose();
+    this.fileChangeCoordinator.stop();
+    this.automaticUsagePending = false;
+    this.automaticUsageForce = false;
   }
 
   private recordIntegrationTestMessage(event:
@@ -477,6 +587,8 @@ export class DashboardPanel {
           this.automaticUsageReleased = true;
           if (this.automaticUsagePending) this.requestAutomaticUsageRefresh();
         }
+        // A reloaded webview starts without the banner. Put it back.
+        if (this.runtimeFailed) this.postRuntimeError();
       }
       return;
     }
@@ -547,7 +659,7 @@ export class DashboardPanel {
       return;
     }
     if (message.type === 'cancel-upgrade') {
-      this.upgradeCoordinator.handleCancelUpgrade(message);
+      await this.upgradeCoordinator.handleCancelUpgrade(message);
       return;
     }
     if (message.type === 'bulk-remove') {
@@ -563,11 +675,15 @@ export class DashboardPanel {
       return;
     }
     if (message.type === 'cancel-remove') {
-      this.upgradeCoordinator.handleCancelRemove(message);
+      await this.upgradeCoordinator.handleCancelRemove(message);
       return;
     }
     if (message.type === 'restore-smart-cleanup') {
       await this.upgradeCoordinator.handleRestoreSmartCleanup(message);
+      return;
+    }
+    if (message.type === 'show-log') {
+      this.platform.showLog?.();
       return;
     }
     if (message.type === 'configure-verification') {
@@ -1196,7 +1312,7 @@ export class DashboardPanel {
       });
       return;
     }
-    void controller.refreshInBackground(this.sink, 'local-mutation').then((outcome) => {
+    fireAndForget(controller.refreshInBackground(this.sink, 'local-mutation').then((outcome) => {
       if (this.disposed) return;
       const current = this.mutationEnrichment;
       const terminalOutcome = current === lifecycle ? outcome : { status: 'superseded' as const };
@@ -1212,7 +1328,7 @@ export class DashboardPanel {
       });
       if (terminalOutcome.status !== 'succeeded' || this.controller !== controller) return;
       this.requestAutomaticUsageRefresh({ force: true });
-    });
+    }), this.onBackgroundError('background-refresh', false));
   }
 
   /** Replays only the exact failed/cancelled lifecycle named by the webview. */
@@ -1223,14 +1339,14 @@ export class DashboardPanel {
   }
 
   private requestAutomaticUsageRefresh(options: { force?: boolean } = {}): void {
-    if (this.disposed) return;
+    if (this.disposed || this.backgroundStopped) return;
     this.automaticUsagePending = true;
     this.automaticUsageForce ||= options.force === true;
     if (!this.automaticUsageReleased) return;
     const force = this.automaticUsageForce;
     this.automaticUsagePending = false;
     this.automaticUsageForce = false;
-    void this.usageCoordinator.requestBackgroundUsageRefresh({ force });
+    fireAndForget(this.usageCoordinator.requestBackgroundUsageRefresh({ force }), this.onBackgroundError('usage-refresh', false));
   }
 
   private async settleStartupPreparation(): Promise<void> {
@@ -1447,13 +1563,14 @@ export class DashboardPanel {
   };
 
   private onBackgroundTick(): void {
-    if (this.disposed || this.controller === undefined || this.upgradeCoordinator.isBusy()) return;
+    if (this.disposed || this.backgroundStopped || this.controller === undefined || this.upgradeCoordinator.isBusy()) return;
     if (!this.controller.needsBackgroundRefresh()) return;
     const controller = this.controller;
-    void controller.refreshInBackground(this.sink, 'time').then((outcome) => {
+    // A failed timed refresh keeps the last table. It is logged, and the next tick tries again.
+    fireAndForget(controller.refreshInBackground(this.sink, 'time').then((outcome) => {
       if (outcome.status !== 'succeeded' || this.disposed || this.controller !== controller) return;
       this.requestAutomaticUsageRefresh();
-    });
+    }), this.onBackgroundError('background-refresh', false));
   }
 
   private disposeWatchers(): void {
@@ -1476,24 +1593,26 @@ export class DashboardPanel {
   }
 
   private setupGitHeadWatcher(manifestPath: string): void {
+    if (this.backgroundStopped) return;
     if (this.gitWatchedProjectPath === manifestPath && this.gitHeadWatcher !== undefined) return;
     this.gitHeadWatcher?.dispose();
     this.gitHeadWatcher = undefined;
     this.gitWatchedProjectPath = manifestPath;
     this.gitWatcherSetupGeneration += 1;
     const setupGeneration = this.gitWatcherSetupGeneration;
-    void this.platform.watchGitHead(manifestPath, () => this.onGitHeadChanged()).then((watcher) => {
-      if (this.disposed || setupGeneration !== this.gitWatcherSetupGeneration) {
+    // Branch changes then go unnoticed until the panel reopens. Logged only.
+    fireAndForget(this.platform.watchGitHead(manifestPath, () => this.onGitHeadChanged()).then((watcher) => {
+      if (this.disposed || this.backgroundStopped || setupGeneration !== this.gitWatcherSetupGeneration) {
         watcher?.dispose();
         return;
       }
       this.gitHeadWatcher = watcher;
       if (watcher === undefined) this.gitWatchedProjectPath = undefined;
-    });
+    }), this.onBackgroundError('git-watcher', false));
   }
 
   private onGitHeadChanged(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.backgroundStopped) return;
     this.branchProjectPickerCancellation?.cancel();
     // Supersede an in-flight reload immediately. The debounced reconciliation
     // below owns the first snapshot that may become authoritative on this HEAD.
@@ -1598,7 +1717,7 @@ export class DashboardPanel {
     // HEAD events cancel the ordinary file debounce. Revalidate retained
     // upgrade evidence against the reconciled project as well, even when only
     // source/config contents (not dependency versions) changed on this branch.
-    void this.upgradeCoordinator.checkOpenAnalysisFreshness();
+    fireAndForget(this.upgradeCoordinator.checkOpenAnalysisFreshness(), this.onBackgroundError('freshness-check', false));
   }
 
   /**
@@ -1619,6 +1738,8 @@ export class DashboardPanel {
    * codebase controls, ever appear in the glob pattern itself.
    */
   private setupFileWatchers(candidate: DiscoveredProject, manifestPath: string): void {
+    // After a failure, a read-only refresh must not bring the watchers back.
+    if (this.backgroundStopped) return;
     this.disposeWatchers();
     this.projectCompatibilitySourceGeneration += 1;
     this.setupGitHeadWatcher(manifestPath);
@@ -1645,7 +1766,7 @@ export class DashboardPanel {
       }
       this.projectCompatibilityInvalidationTimer = setTimeout(() => {
         this.projectCompatibilityInvalidationTimer = undefined;
-        void this.upgradeCoordinator.checkOpenAnalysisFreshness();
+        fireAndForget(this.upgradeCoordinator.checkOpenAnalysisFreshness(), this.onBackgroundError('freshness-check', false));
         if (!this.branchChangeCoordinator.hasPending) {
           this.requestAutomaticUsageRefresh();
         }
@@ -1688,7 +1809,7 @@ export class DashboardPanel {
    * though the host has already revoked eligibility for it.
    */
   private onWatchedFileEvent(kind: FileChangeKind): void {
-    if (this.disposed) return;
+    if (this.disposed || this.backgroundStopped) return;
     this.controller?.beginRevalidation();
     this.controller?.announceRevalidating(this.sink);
     this.smartCleanupSourceGeneration += 1;
@@ -1699,11 +1820,11 @@ export class DashboardPanel {
     if (this.invalidationTimer !== undefined) clearTimeout(this.invalidationTimer);
     this.invalidationTimer = setTimeout(() => {
       this.invalidationTimer = undefined;
-      void this.fileChangeCoordinator.flush();
+      fireAndForget(this.fileChangeCoordinator.flush(), this.onBackgroundError('file-reload'));
       // A watcher event only requests revalidation. Compare the retained
       // review's exact dependency and consumed source evidence before showing
       // a stale warning. No-op saves must not revoke completed results.
-      void this.upgradeCoordinator.checkOpenAnalysisFreshness();
+      fireAndForget(this.upgradeCoordinator.checkOpenAnalysisFreshness(), this.onBackgroundError('freshness-check', false));
     }, FILE_EVENT_DEBOUNCE_MS);
   }
 
@@ -1769,7 +1890,9 @@ export class DashboardPanel {
         sink: this.sink,
         source: this.reloadSource,
         generationAtReadStart,
-        isStillCurrent: () => !this.disposed && generation === this.reloadGeneration && candidate === this.selectedProject,
+        // A failure that lands while the disk read is in flight must not start a scan.
+        isStillCurrent: () => !this.disposed && !this.backgroundStopped &&
+          generation === this.reloadGeneration && candidate === this.selectedProject,
       });
     } catch {
       // Can't re-read the project right now (e.g. its manifest was deleted

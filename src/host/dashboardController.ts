@@ -47,7 +47,8 @@ import type { BuildInfo } from './dashboardData.js';
 import { toHostToWebviewMessage } from './dashboardData.js';
 import { otherPackageManagerMessage } from './packageManagerSupport.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
-import { diagnosticLine } from '../core/diagnostics.js';
+import { diagnosticLine, runtimeFailureLine } from '../core/diagnostics.js';
+import { fireAndForget } from '../core/fireAndForget.js';
 import { UpdateAdvisories, offeredVersionPairs } from './updateAdvisories.js';
 import type { UpdateVersionPair } from './updateAdvisories.js';
 import type { UpdateAdvisoryContext } from './webviewProtocol.js';
@@ -905,7 +906,10 @@ export class DashboardController {
   }
 
   private enrichOfferedVersions(sink: MessageSink): void {
-    void this.enrichUpdateVersions(offeredVersionPairs(this.lastResult?.rows ?? []), sink);
+    // Badges arrive after the table. A failure keeps the table as it is and is logged.
+    fireAndForget(this.enrichUpdateVersions(offeredVersionPairs(this.lastResult?.rows ?? []), sink), (error) => {
+      this.options.log?.(runtimeFailureLine('update-advisories', error));
+    });
   }
 
   /** Host-derived picker options share exact-version memory and the bounded request queue. */
