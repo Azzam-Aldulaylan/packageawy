@@ -82,7 +82,7 @@ test('fresh-cache restart enriches after replay and keeps age and upgrade eligib
   assert.ok(f.events.indexOf('ready') < f.events.indexOf('request'));
   await tick();
   assert.equal(updates(f).length, 1);
-  assert.deepEqual(f.requests, [{ app: ['2.0.0', '1.1.0'] }]);
+  assert.deepEqual(f.requests, [{ app: ['2.0.0'] }], 'only the offered upgrade is checked');
   const later = [];
   await f.controller.handleReady({ postMessage: message => later.push(message) });
   assert.deepEqual(later[0].data.updateAdvisories, updates(f)[0].results);
@@ -171,8 +171,8 @@ test('exact versions, invalid versions, aliases and ranges stay separate', async
     requested.push(JSON.parse(body)); return json({ real: [raw('>=2 <3')] });
   } }, () => true);
   let results;
-  const pairs = offeredVersionPairs([{ ...row, name: 'alias', registryName: 'real', latest: '3.0.0', wanted: '2.0.0' }]);
-  await memory.enrich([...pairs, { name: 'real', version: '^2' }], () => true, value => { results = value; });
+  const pairs = offeredVersionPairs([{ ...row, name: 'alias', registryName: 'real', upgradeTo: '2.0.0' }]);
+  await memory.enrich([...pairs, { name: 'real', version: '3.0.0' }, { name: 'real', version: '^2' }], () => true, value => { results = value; });
   assert.deepEqual(requested, [{ real: ['2.0.0', '3.0.0'] }]);
   assert.equal(results.find(result => result.version === '2.0.0').count, 1);
   assert.equal(results.find(result => result.version === '3.0.0').count, 0);
@@ -257,3 +257,28 @@ for (const response of [{ status: 200, body: '{' }, { status: 503, body: '' }]) 
     f.controller.dispose();
   });
 }
+
+test('only the offered upgrade is checked, never the installed version', () => {
+  assert.deepEqual(offeredVersionPairs([row]), [{ name: 'app', version: '2.0.0' }]);
+  assert.deepEqual(offeredVersionPairs([{ ...row, upgradeTo: null, upgradeReason: null }]), [], 'no offer, no lookup');
+  assert.deepEqual(offeredVersionPairs([{ ...row, current: '2.0.0', upgradeTo: 'v2.0.0' }]), [], 'installed version is skipped');
+  assert.deepEqual(offeredVersionPairs([{ ...row, current: null }]), [{ name: 'app', version: '2.0.0' }]);
+  assert.deepEqual(offeredVersionPairs([{ ...row, name: 'compat', range: 'npm:app@^2', unresolvable: 'alias' }]), [],
+    'legacy alias rows without a registry identity stay unchecked');
+  assert.deepEqual(offeredVersionPairs([{ ...row, name: 'compat', registryName: 'app' }]), [{ name: 'app', version: '2.0.0' }]);
+});
+
+test('installed version matching tolerates a leading v but keeps prereleases distinct', async () => {
+  const { isInstalledVersion, updateAdvisoryTag } = await import('../out/host/updateAdvisoryState.js');
+  assert.equal(isInstalledVersion('1.2.3', 'v1.2.3'), true);
+  assert.equal(isInstalledVersion('1.2.3-beta.1', '1.2.3-beta.2'), false);
+  assert.equal(isInstalledVersion('1.2.3', '1.2.4'), false);
+  assert.equal(isInstalledVersion('not-a-version', 'not-a-version'), true);
+  assert.equal(isInstalledVersion('not-a-version', '1.2.3'), false);
+  assert.equal(isInstalledVersion(null, '1.2.3'), false);
+  assert.equal(isInstalledVersion(undefined, '1.2.3'), false);
+  assert.equal(updateAdvisoryTag({ name: 'a', version: '1.0.0', status: 'checked', count: 3, highestSeverity: 'high' }), '3 vulnerabilities (high)');
+  assert.equal(updateAdvisoryTag({ name: 'a', version: '1.0.0', status: 'checked', count: 1, highestSeverity: 'critical' }), '1 vulnerability (critical)');
+  assert.equal(updateAdvisoryTag({ name: 'a', version: '1.0.0', status: 'checked', count: 0, highestSeverity: null }), undefined);
+  assert.equal(updateAdvisoryTag({ name: 'a', version: '1.0.0', status: 'unavailable' }), undefined);
+});

@@ -141,7 +141,7 @@ function UpgradeCard({
           <span className="manage-action-card__version">{row.current ?? row.range}</span>
           <span className="manage-action-card__version-arrow" aria-hidden="true">→</span>
           <span className="manage-action-card__version manage-action-card__version--target">{state.target}</span>
-          <UpdateVersionWarning name={row.registryName ?? row.name} version={state.target} />
+          <UpdateVersionWarning name={row.registryName ?? row.name} version={state.target} current={row.current} />
         </div>
         <p className="manage-action-card__badges">
           {state.kind === 'security-fix' ? (

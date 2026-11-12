@@ -1121,8 +1121,8 @@ button {
   font-weight: 500;
 }
 
-/* The strong, primary target: the value the redesign wants a user's eye
-   drawn to first when Wanted and Latest disagree. */
+/* The strong, primary target: the offered upgrade, emphasised when the
+   latest release is a different version shown underneath. */
 .version-cell__value--primary {
   font-size: 1.05em;
   font-weight: 600;
@@ -6598,6 +6598,18 @@ button {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+.upgrade-target-picker__row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.upgrade-target-picker__row .upgrade-target-picker__select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .upgrade-target-picker__select {

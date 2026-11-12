@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { UpdateAdvisoryResult } from '../../../src/host/webviewProtocol.js';
-import { updateAdvisoryWarning } from '../../../src/host/updateAdvisoryState.js';
+import { isInstalledVersion, updateAdvisoryWarning } from '../../../src/host/updateAdvisoryState.js';
 import { IconAlertTriangle } from '../icons.js';
 import { InfoTooltip } from './Tooltip.js';
 
@@ -11,9 +11,17 @@ export function useUpdateVersionWarning(name: string, version: string | null): s
   return updateAdvisoryWarning(results.find(result => result.name === name && result.version === version));
 }
 
-export function UpdateVersionWarning({ name, version }: { name: string; version: string | null }) {
+/**
+ * Warning triangle for a version the user may upgrade to. `current` is the
+ * row's installed version: results are shared by registry name and version
+ * across alias rows, so this per-row guard keeps the installed version
+ * unmarked (its findings are in the Vulnerabilities column).
+ */
+export function UpdateVersionWarning({ name, version, current }: {
+  name: string; version: string | null; current?: string | null;
+}) {
   const warning = useUpdateVersionWarning(name, version);
-  if (warning === undefined) return null;
+  if (warning === undefined || isInstalledVersion(current, version)) return null;
   return <InfoTooltip className="update-version-warning" label={warning} content={<p>{warning}</p>}
     icon={<IconAlertTriangle />} />;
 }

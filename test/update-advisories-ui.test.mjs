@@ -27,13 +27,49 @@ const render = (Component, props, results = [result()]) => renderToStaticMarkup(
   { value: results }, createElement(Component, props)));
 const plural = '2.3.0 has 3 known vulnerabilities. Highest severity: high.';
 
-test('Available cell marks the exact offered versions with accessible tooltip text', () => {
-  const html = render(AvailableVersionCell, { row }, [result(), result('1.1.0', 1)]);
+test('Available cell marks only the offered upgrade, not the within-range or installed version', () => {
+  const html = render(AvailableVersionCell, { row }, [result(), result('1.1.0', 1), result('1.0.0', 2)]);
   assert.match(html, /class="[^"]*update-version-warning/);
-  assert.ok(html.includes(`aria-label="${plural}"`));
-  assert.match(html, /aria-label="1.1.0 has 1 known vulnerability. Highest severity: high\."/);
-  assert.equal(render(AvailableVersionCell, { row: { ...row, wanted: row.latest } }).split(`aria-label="${plural}"`).length - 1, 1,
-    'a collapsed version has a single warning');
+  assert.equal(html.split(`aria-label="${plural}"`).length - 1, 1, 'one warning, on the offered version');
+  assert.doesNotMatch(html, /1\.1\.0|1\.0\.0 has|Within current range/);
+});
+
+test('an offered version that is not the latest is shown with its warning and the latest underneath', () => {
+  const axios = { ...row, name: 'axios', current: '0.21.1', wanted: '0.21.1', latest: '1.21.1', upgradeTo: '0.21.4',
+    upgradeReason: 'security-fix' };
+  const html = render(AvailableVersionCell, { row: axios }, [
+    { name: 'axios', version: '0.21.4', status: 'checked', count: 23, highestSeverity: 'high' },
+    { name: 'axios', version: '1.21.1', status: 'checked', count: 1, highestSeverity: 'low' },
+    { name: 'axios', version: '0.21.1', status: 'checked', count: 24, highestSeverity: 'critical' }]);
+  assert.ok(html.includes('aria-label="0.21.4 has 23 known vulnerabilities. Highest severity: high."'));
+  assert.match(html, /version-cell__value--primary">0\.21\.4</);
+  assert.match(html, />Latest: 1\.21\.1</);
+  assert.doesNotMatch(html, /1\.21\.1 has|0\.21\.1 has/, 'only the offered version is marked');
+});
+
+test('rows with no offered upgrade show the latest version without a warning', () => {
+  const html = render(AvailableVersionCell, { row: { ...row, upgradeTo: null, upgradeReason: null } });
+  assert.match(html, />2\.3\.0</);
+  assert.doesNotMatch(html, /update-version-warning|known vulnerabilit/);
+});
+
+test('alias rows sharing one result only warn where the version is not installed', () => {
+  const results = [result()];
+  assert.ok(render(AvailableVersionCell, { row: { ...row, name: 'a1', registryName: 'app' } }, results).includes(plural));
+  assert.doesNotMatch(render(AvailableVersionCell, { row: { ...row, name: 'a2', registryName: 'app', current: '2.3.0' } }, results),
+    /update-version-warning/);
+});
+
+test('missing registry metadata still shows an offered security fix with its warning', () => {
+  const unavailable = render(AvailableVersionCell, { row, resolutionAvailable: false });
+  assert.match(unavailable, />2\.3\.0</);
+  assert.ok(unavailable.includes(plural));
+  assert.match(unavailable, />Unavailable</);
+  const signIn = render(AvailableVersionCell, { row, resolutionAvailable: false, signInHost: 'npm.example.com' });
+  assert.ok(signIn.includes(plural));
+  assert.match(signIn, /title="[^"]*npm\.example\.com/);
+  const noOffer = render(AvailableVersionCell, { row: { ...row, upgradeTo: null, upgradeReason: null }, resolutionAvailable: false });
+  assert.doesNotMatch(noOffer, /2\.3\.0|update-version-warning/);
 });
 
 test('Overview upgrade target has the same warning and keeps its requested target', () => {
@@ -51,17 +87,41 @@ const picker = { registryName: 'app', state: { phase: 'ready', targets: { recomm
     { version: '3.0.0-beta.1', labels: [], channel: 'prerelease' }] } },
   selectedVersion: '1.9.0', fallbackVersion: '2.3.0', disabled: false, onChange: noop };
 
-test('native picker uses visible option text for warnings, including LTS and prereleases', () => {
+test('picker options show a short tag after the version and the selected version gets the warning beside the list', () => {
   const html = render(UpgradeTargetSelector, picker, [result(), result('1.9.0', 1), result('3.0.0-beta.1', 1)]);
-  assert.match(html, /<option value="1.9.0" selected="">1.9.0 · Publisher LTS. 1.9.0 has 1 known vulnerability. Highest severity: high\.<\/option>/);
-  assert.ok(html.includes(`2.3.0 · Latest stable. ${plural}</option>`));
-  assert.match(html, />3.0.0-beta.1. 3.0.0-beta.1 has 1 known vulnerability. Highest severity: high\.<\/option>/);
+  assert.match(html, /<option value="1.9.0" title="1.9.0 has 1 known vulnerability. Highest severity: high." selected="">1.9.0 · Publisher LTS · 1 vulnerability \(high\)<\/option>/);
+  assert.match(html, />2.3.0 · Latest stable · 3 vulnerabilities \(high\)<\/option>/);
+  assert.match(html, />3.0.0-beta.1 · 1 vulnerability \(high\)<\/option>/);
+  assert.doesNotMatch(html, /\. 2\.3\.0 has|Publisher LTS\. /, 'no long sentence inside option text');
+  assert.match(html, /aria-describedby="upgrade-target-version-warning"/);
+  assert.match(html, /id="upgrade-target-version-warning">1.9.0 has 1 known vulnerability/);
+  assert.match(html, /upgrade-target-picker__row[\s\S]*<\/select>[\s\S]*update-version-warning/);
+});
+
+test('picker warning follows fallback, recommended and outside-the-list selections', () => {
+  const ready = picker.state;
+  const fallback = render(UpgradeTargetSelector, { ...picker, selectedVersion: null }, [result()]);
+  assert.match(fallback, /aria-describedby="upgrade-target-version-warning"/);
+  assert.ok(fallback.includes(`id="upgrade-target-version-warning">${plural}`));
+  const recommended = render(UpgradeTargetSelector, { ...picker, selectedVersion: null, fallbackVersion: null }, [result()]);
+  assert.ok(recommended.includes(`id="upgrade-target-version-warning">${plural}`));
+  const outside = render(UpgradeTargetSelector, { ...picker, selectedVersion: '2.2.0', state: ready },
+    [{ ...result('2.2.0', 2) }]);
+  assert.match(outside, />2.2.0 \(selected target\) · 2 vulnerabilities \(high\)</);
+  assert.match(outside, /id="upgrade-target-version-warning">2.2.0 has 2 known vulnerabilities/);
+  const errorFallback = render(UpgradeTargetSelector, { ...picker, selectedVersion: null,
+    state: { phase: 'error', error: { code: 'x', message: 'y' } } }, [result()]);
+  assert.match(errorFallback, />2.3.0 \(dashboard target\) · 3 vulnerabilities \(high\)</);
+  const loading = render(UpgradeTargetSelector, { ...picker, state: { phase: 'loading' } }, [result('1.9.0', 1)]);
+  assert.doesNotMatch(loading, /aria-describedby|update-version-warning/);
 });
 
 for (const results of [[], [result('2.3.0', 0)], [{ name: 'app', version: '2.3.0', status: 'unavailable' }], [result('2.2.0')]]) {
   test(`pending, clean, unavailable and other versions make no warning claim: ${JSON.stringify(results)}`, () => {
     assert.doesNotMatch(render(AvailableVersionCell, { row }, results), /update-version-warning|known vulnerabilit|Safe/);
-    assert.doesNotMatch(render(UpgradeTargetSelector, picker, results), /known vulnerabilit|Safe/);
+    assert.doesNotMatch(render(UpgradeTargetSelector, picker, results), /known vulnerabilit|vulnerabilities \(|Safe|aria-describedby/);
+    assert.doesNotMatch(render(UpgradeTargetSelector, { ...picker, selectedVersion: '2.3.0' }, results),
+      /known vulnerabilit|vulnerabilities \(|Safe|aria-describedby/, 'checked on the selected version itself');
   });
 }
 

@@ -11,6 +11,7 @@ import semver from 'semver';
 import type { PackageRow, Severity } from '../core/types.js';
 import type { SummaryFilterId } from './summaryMetrics.js';
 import { UPDATE_KIND_RANK, classifyRowUpdate } from './updateClassification.js';
+import { availablePrimaryVersion } from './versionDisplay.js';
 
 export type SortColumn = 'package' | 'current' | 'available' | 'vulnerabilities' | 'type';
 export type SortDirection = 'asc' | 'desc';
@@ -78,9 +79,9 @@ function compareVersions(a: string | null, b: string | null): number {
   return semver.compare(a as string, b as string);
 }
 
-/** The single version this row's "Available" column represents, for sorting purposes only. */
+/** The version this row's "Available" column shows, so sorting matches the table. */
 function availableSortValue(row: PackageRow): string | null {
-  return row.latest ?? row.wanted ?? null;
+  return availablePrimaryVersion(row);
 }
 
 const COLUMN_COMPARATORS: Record<SortColumn, (a: PackageRow, b: PackageRow) => number> = {
