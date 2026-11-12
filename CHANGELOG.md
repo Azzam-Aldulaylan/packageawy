@@ -9,6 +9,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - Vulnerability checks for update versions keep working after an internal error, instead of stopping until the dashboard is refreshed.
 - An internal error in Packageawy no longer fails silently. The dashboard stays open and shows one message with a Show Log button. Upgrades, removals and fixes are paused until you close and reopen the Packageawy panel (Restart in JetBrains IDEs), and a change that was already running is allowed to finish. Refresh and reviews keep working.
 - Opening a file, a link or Settings from Packageawy now says so when the editor could not open it, and the Packageawy log records the failure.
+- An install or check that finishes immediately no longer leaves the project waiting and locked in VS Code.
 
 ## [0.9.7] - 2026-11-12
 

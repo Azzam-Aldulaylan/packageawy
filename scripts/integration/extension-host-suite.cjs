@@ -64,6 +64,64 @@ async function dispatchAfterRevalidation(api, message, completed) {
   return { result: undefined, observed };
 }
 
+/** The promise's value, or 'timeout' when it takes longer than `milliseconds`. */
+async function within(promise, milliseconds) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A task that exits at once, subscribed to only after VS Code reported the
+ * exit, still reports it through the real adapter.
+ */
+async function checkEarlyTaskExit(api, cwd) {
+  const nodePath = process.env['PACKAGEAWY_NODE_PATH'];
+  assert.ok(nodePath && path.isAbsolute(nodePath), 'The launcher did not pass an absolute Node path.');
+  const title = 'Packageawy: early exit probe';
+  let observed;
+  const exitObserved = new Promise((resolve) => {
+    observed = vscode.tasks.onDidEndTaskProcess((event) => {
+      if (event.execution.task.name === title) resolve(event.exitCode);
+    });
+  });
+  try {
+    const running = await api.runProcessForTest({
+      executable: nodePath,
+      args: ['-e', 'process.exit(0)'],
+      cwd,
+      title,
+      scope: 'early-exit-probe',
+    });
+    assert.equal(
+      await within(exitObserved, HOST_TIMEOUT_MS),
+      0,
+      'VS Code did not report the probe task exit.'
+    );
+    let subscription;
+    const reported = new Promise((resolve) => {
+      subscription = running.onDidExit(resolve);
+    });
+    try {
+      assert.equal(
+        await within(reported, 5_000),
+        0,
+        'An exit that happened before subscribing was not reported.'
+      );
+    } finally {
+      subscription.dispose();
+    }
+  } finally {
+    observed.dispose();
+  }
+}
+
 async function run() {
   const packageManager = process.env['PACKAGEAWY_FIXTURE_MANAGER'];
   const fixtureRoot = process.env['PACKAGEAWY_FIXTURE_ROOT'];
@@ -82,6 +140,7 @@ async function run() {
   assert.ok(extension, 'Packageawy extension was not loaded by the test host.');
   const api = await extension.activate();
   assert.ok(api && api.dashboard, 'The Extension Host test API was not returned during test activation.');
+  await checkEarlyTaskExit(api, fixtureRoot);
 
   const firstStarted = performance.now();
   await vscode.commands.executeCommand('packageawy.open');

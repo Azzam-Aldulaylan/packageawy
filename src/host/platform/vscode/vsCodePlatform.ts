@@ -46,9 +46,98 @@ function toVsCodeToken(token: CancellationToken | undefined): {
   };
 }
 
+/**
+ * The exit of one task Packageawy started. Subscribed before the task starts,
+ * so an exit that arrives before executeTask resolves is kept, and replayed
+ * to a caller that subscribes after the process already ended.
+ */
+class TaskRun {
+  private native: vscode.Disposable | undefined;
+  private execution: vscode.TaskExecution | undefined;
+  /** Exits seen before startup resolved. Which one is ours is only known after. */
+  private readonly early = new Map<vscode.TaskExecution, { exitCode: number | undefined }>();
+  private exit: { exitCode: number | undefined } | undefined;
+  private disposed = false;
+  private readonly listeners = new Set<(exitCode: number | undefined) => void>();
+  private readonly replays = new Set<ReturnType<typeof setTimeout>>();
+
+  constructor() {
+    // onDidEndTaskProcess fires for every task in the workspace, so events are matched by execution.
+    this.native = vscode.tasks.onDidEndTaskProcess((event) => {
+      if (this.execution === undefined) {
+        if (!this.early.has(event.execution)) this.early.set(event.execution, { exitCode: event.exitCode });
+        return;
+      }
+      if (event.execution === this.execution) this.finish(event.exitCode);
+    });
+  }
+
+  started(execution: vscode.TaskExecution): void {
+    if (this.disposed) return;
+    this.execution = execution;
+    const early = this.early.get(execution);
+    this.early.clear();
+    if (early !== undefined) this.finish(early.exitCode);
+  }
+
+  onDidExit(listener: (exitCode: number | undefined) => void): Disposable {
+    if (this.disposed) return { dispose: () => undefined };
+    const exit = this.exit;
+    if (exit !== undefined) {
+      // Never synchronously: callers assign the returned disposable after subscribing.
+      const handle = setTimeout(() => {
+        this.replays.delete(handle);
+        if (!this.disposed) listener(exit.exitCode);
+      }, 0);
+      this.replays.add(handle);
+      return {
+        dispose: () => {
+          clearTimeout(handle);
+          this.replays.delete(handle);
+        },
+      };
+    }
+    // A wrapper per subscription, so the same function subscribed twice is called twice.
+    const entry = (exitCode: number | undefined): void => listener(exitCode);
+    this.listeners.add(entry);
+    return { dispose: () => this.listeners.delete(entry) };
+  }
+
+  /** Stops listening for exits. The process itself is never terminated here. */
+  stopObserving(): void {
+    this.native?.dispose();
+    this.native = undefined;
+    this.early.clear();
+  }
+
+  /** Platform teardown: no callback runs after this, including replays already scheduled. */
+  dispose(): void {
+    this.disposed = true;
+    this.stopObserving();
+    this.listeners.clear();
+    for (const handle of this.replays) clearTimeout(handle);
+    this.replays.clear();
+  }
+
+  private finish(exitCode: number | undefined): void {
+    if (this.exit !== undefined) return;
+    this.exit = { exitCode };
+    this.stopObserving();
+    const listeners = [...this.listeners];
+    this.listeners.clear();
+    // A subscriber may dispose the platform, and then the rest must not run.
+    for (const listener of listeners) {
+      if (this.disposed) return;
+      listener(exitCode);
+    }
+  }
+}
+
 export class VsCodePlatform implements HostPlatform {
   /** Created on first use so a session with no failures adds no output channel. */
   private logChannel: vscode.LogOutputChannel | undefined;
+  /** Every task run until the platform is disposed, so teardown can stop late callbacks. */
+  private readonly taskRuns = new Set<TaskRun>();
   readonly workspaceState: KeyValueStore;
   readonly globalState: KeyValueStore;
   readonly cacheStore: KeyValueStore;
@@ -78,6 +167,8 @@ export class VsCodePlatform implements HostPlatform {
   dispose(): void {
     this.logChannel?.dispose();
     this.logChannel = undefined;
+    for (const run of this.taskRuns) run.dispose();
+    this.taskRuns.clear();
   }
 
   private channel(): vscode.LogOutputChannel {
@@ -231,15 +322,19 @@ export class VsCodePlatform implements HostPlatform {
       panel: vscode.TaskPanelKind.Dedicated,
       clear: true,
     };
-    const started = await vscode.tasks.executeTask(task);
-    return {
-      // onDidEndTaskProcess fires for every task in the workspace, so filter to this one.
-      onDidExit: (listener) =>
-        vscode.tasks.onDidEndTaskProcess((event) => {
-          if (event.execution !== started) return;
-          listener(event.exitCode);
-        }),
-    };
+    // Listening starts before the task does: a process that exits before
+    // executeTask resolves, or before the caller subscribes, is still seen.
+    const run = new TaskRun();
+    this.taskRuns.add(run);
+    let started: vscode.TaskExecution;
+    try {
+      started = await vscode.tasks.executeTask(task);
+    } catch (error) {
+      run.stopObserving();
+      throw error;
+    }
+    run.started(started);
+    return { onDidExit: (listener) => run.onDidExit(listener) };
   }
 
   openFile(filePath: string, position?: FilePosition): void {
