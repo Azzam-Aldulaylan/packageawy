@@ -252,7 +252,11 @@ export class VsCodePlatform implements HostPlatform {
   }
 
   openExternal(url: string): void {
-    fireAndForget(vscode.env.openExternal(vscode.Uri.parse(url)), this.reportEditorActionFailure('open-link'));
+    // VS Code reports a link it could not open as a resolved false, not only as a rejection.
+    const reportFailure = this.reportEditorActionFailure('open-link');
+    fireAndForget(vscode.env.openExternal(vscode.Uri.parse(url)).then((opened) => {
+      if (!opened) reportFailure(new Error('The editor did not open the link.'));
+    }), reportFailure);
   }
 
   openSettings(key: string, resourcePath?: string): void {

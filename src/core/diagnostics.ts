@@ -285,6 +285,10 @@ export const RUNTIME_ERROR_TEXT =
 export const RUNTIME_ERROR_WITHOUT_PANEL_TEXT =
   'Packageawy hit an internal error. The Packageawy log has the details.';
 
+/** Ends a request whose handler hit that internal error, next to the banner. */
+export const INTERNAL_REQUEST_FAILURE_TEXT =
+  'This request stopped because of an internal error. The Packageawy log has the details.';
+
 /** Code the host attaches to a change it refused because of the failure above. */
 export const CHANGES_PAUSED_CODE = 'CHANGES_PAUSED';
 

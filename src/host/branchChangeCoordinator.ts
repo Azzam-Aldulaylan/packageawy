@@ -87,8 +87,15 @@ export class BranchChangeCoordinator {
     const generation = this.generation;
     try {
       await this.options.reconcile(generation);
-    } catch {
-      // Host reconciliation reports its recoverable state.
+    } catch (error) {
+      // The host handles expected failures (discovery, a missing project)
+      // inside reconcile. Anything that still escapes is unexpected and is
+      // reported, and a later HEAD change can still schedule another run.
+      try {
+        this.options.onError?.(error);
+      } catch {
+        // The reporter must not stop the reschedule below.
+      }
     } finally {
       this.running = false;
       if (!this.disposed && this.pending && generation !== this.generation) this.schedule(0);

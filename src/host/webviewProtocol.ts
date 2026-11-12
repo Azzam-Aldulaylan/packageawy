@@ -697,6 +697,12 @@ export type HostToWebviewMessage =
    * src/core/diagnostics.ts), so nothing from the error itself reaches here.
    */
   | { status: 'runtime-error'; code: typeof RUNTIME_ERROR_CODE; message: typeof RUNTIME_ERROR_TEXT }
+  /**
+   * A load or refresh failed while stale rows were on screen. Sent for every
+   * such failure, unlike the one banner, so each one ends the refreshing
+   * indicator. The rows stay stale. Carries nothing else.
+   */
+  | { status: 'refresh-failed' }
   | { status: 'upgrade-targets-loading'; package: string; requestId: string }
   | { status: 'upgrade-targets'; package: string; requestId: string; targets: UpgradeTargetOptions }
   | { status: 'upgrade-targets-error'; package: string; requestId: string; error: ProtocolError }
@@ -2244,6 +2250,7 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   if (status === 'fatal-error') {
     return hasOnlyKeys(value, ['status', 'error']) && isProtocolError(value['error']);
   }
+  if (status === 'refresh-failed') return hasOnlyKeys(value, ['status']);
   if (status === 'runtime-error') {
     return hasOnlyKeys(value, ['status', 'code', 'message']) &&
       value['code'] === RUNTIME_ERROR_CODE && value['message'] === RUNTIME_ERROR_TEXT;

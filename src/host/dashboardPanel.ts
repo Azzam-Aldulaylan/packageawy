@@ -57,15 +57,21 @@ import { USAGE_FILE_WATCH_GLOB } from './usage/workspaceFiles.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
 import type { WebviewToHostMessage } from './webviewProtocol.js';
 import { isChangeStartingMessage, isWebviewToHostMessage } from './webviewProtocol.js';
-import { RUNTIME_ERROR_CODE, RUNTIME_ERROR_TEXT, runtimeFailureLine } from '../core/diagnostics.js';
+import { INTERNAL_REQUEST_FAILURE_TEXT, RUNTIME_ERROR_CODE, RUNTIME_ERROR_TEXT, runtimeFailureLine } from '../core/diagnostics.js';
 import type { RuntimeFailureContext } from '../core/diagnostics.js';
 import { fireAndForget } from '../core/fireAndForget.js';
+import { failedRequestSettlement } from './failedRequestSettlement.js';
 
 /** Spec's fixed background-refresh cadence: independent of the configurable `cacheTtlMinutes`, which only decides whether a given tick actually needs to do anything (see DashboardController.needsBackgroundRefresh). */
 const BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
 /** Coalesces a burst of filesystem events (e.g. an editor's atomic save, which can fire delete+create in quick succession) into a single invalidation + rescan. */
 const FILE_EVENT_DEBOUNCE_MS = 300;
 const MAX_INTEGRATION_TEST_MESSAGES = 160;
+
+type DashboardViewStatus = 'loading' | 'empty' | 'ready' | 'stale' | 'partial-error' | 'fatal-error';
+const DASHBOARD_VIEW_STATUSES: ReadonlySet<string> = new Set<DashboardViewStatus>([
+  'loading', 'empty', 'ready', 'stale', 'partial-error', 'fatal-error',
+]);
 
 export type DashboardPanelIntegrationTestEvent = {
   sequence: number;
@@ -158,6 +164,8 @@ export class DashboardPanel {
   /** Set once with runtimeFailed. Watchers, timers and scheduled scans stay off for this panel's life. */
   private backgroundStopped = false;
   private advisorySettingRefreshPending = false;
+  /** What the webview's main view last received, so a failed load or refresh can be ended without dropping rows. */
+  private shownDashboardStatus: DashboardViewStatus | undefined;
   /** The candidate a plain refresh (or a post-upgrade reload) re-reads: set on selection, untouched by refresh itself. */
   private selectedProject: DiscoveredProject | undefined;
   /**
@@ -246,6 +254,9 @@ export class DashboardPanel {
     this.sink = {
       postMessage: (message) => {
         if (this.disposed || !this.deliveryReady) return;
+        if (DASHBOARD_VIEW_STATUSES.has(message.status)) {
+          this.shownDashboardStatus = message.status as DashboardViewStatus;
+        }
         this.recordIntegrationTestMessage({ direction: 'outbound', message });
         if (this.performanceEnabled()) {
           const performance = createPerformanceSession('Packageawy webview message', true);
@@ -482,10 +493,13 @@ export class DashboardPanel {
       this.upgradeCoordinator.refuseChangeAfterFailure(message);
       return;
     }
+    // Read before the handler runs: confirming or retrying consumes the review it names.
+    const changeTarget = this.requestTarget(message);
     try {
       await this.handleMessage(message);
     } catch (error) {
       this.reportRuntimeFailure('webview-message', error);
+      this.settleFailedRequest(message, changeTarget);
     }
     try {
       // Setting changes retain one refresh until the active operation settles.
@@ -518,6 +532,72 @@ export class DashboardPanel {
       }
     }
     this.postRuntimeError();
+  }
+
+  /** The package a message about stored state is about, for answering it if its handler fails. */
+  private requestTarget(message: WebviewToHostMessage): string | undefined {
+    if (isChangeStartingMessage(message) || message.type === 'retry-remediation') {
+      return this.upgradeCoordinator.requestTarget(message);
+    }
+    if (message.type === 'retry-upgrade-enrichment') {
+      return this.mutationEnrichment?.refreshId === message.refreshId ? this.mutationEnrichment.packageName : undefined;
+    }
+    return undefined;
+  }
+
+  /** Ends the webview's loading or busy state for the request that failed. */
+  private settleFailedRequest(message: WebviewToHostMessage, changeTarget: string | undefined): void {
+    if (message.type === 'ready' || message.type === 'refresh') {
+      this.settleFailedLoad(message.type);
+      return;
+    }
+    // A retry that failed to start can be retried again.
+    if (message.type === 'retry-upgrade-enrichment' && this.mutationEnrichment?.refreshId === message.refreshId) {
+      this.mutationEnrichment = { ...this.mutationEnrichment, state: 'failed' };
+    }
+    const answer = failedRequestSettlement(message, changeTarget);
+    if (answer === undefined) return;
+    try {
+      this.sink.postMessage(answer);
+    } catch (error) {
+      try {
+        this.platform.log?.(runtimeFailureLine('webview-delivery', error));
+      } catch {
+        // As above.
+      }
+    }
+  }
+
+  /**
+   * Ends a load or refresh whose handler failed. With nothing to show (first
+   * load, or `loading` replaced the view) it sends the existing fatal error
+   * with Retry. Rows on screen, including `stale` ones, get nothing more
+   * than the banner: replaying an old snapshot would pass it off as a
+   * finished scan. The webview ends its own refreshing indicator when the
+   * banner arrives and keeps the rows marked stale.
+   */
+  private settleFailedLoad(type: 'ready' | 'refresh'): void {
+    // A failed ready must still open delivery, or nothing below arrives.
+    if (type === 'ready') {
+      this.deliveryReady = true;
+      if (this.runtimeFailed) this.postRuntimeError();
+    }
+    const shown = this.shownDashboardStatus;
+    try {
+      if (shown === 'stale') {
+        // Every failure, not only the first: a retry announces stale again.
+        this.sink.postMessage({ status: 'refresh-failed' });
+        return;
+      }
+      if (shown !== undefined && shown !== 'loading' && shown !== 'fatal-error') return;
+      this.sink.postMessage({ status: 'fatal-error', error: { code: RUNTIME_ERROR_CODE, message: INTERNAL_REQUEST_FAILURE_TEXT } });
+    } catch (error) {
+      try {
+        this.platform.log?.(runtimeFailureLine('webview-delivery', error));
+      } catch {
+        // As above.
+      }
+    }
   }
 
   private onBackgroundError(context: RuntimeFailureContext, fence = true): (error: unknown) => undefined {
@@ -558,6 +638,7 @@ export class DashboardPanel {
     this.advisorySettingRefreshPending = false;
     this.branchChangeCoordinator.dispose();
     this.fileChangeCoordinator.stop();
+    this.usageCoordinator.stopBackground();
     this.automaticUsagePending = false;
     this.automaticUsageForce = false;
   }
@@ -1328,7 +1409,15 @@ export class DashboardPanel {
       });
       if (terminalOutcome.status !== 'succeeded' || this.controller !== controller) return;
       this.requestAutomaticUsageRefresh({ force: true });
-    }), this.onBackgroundError('background-refresh', false));
+    }), (error) => {
+      // Logged only, but the webview is showing this refresh as running: end it
+      // as failed so Retry comes back.
+      this.reportRuntimeFailure('background-refresh', error, false);
+      if (this.disposed || this.mutationEnrichment !== lifecycle) return;
+      this.mutationEnrichment = { ...lifecycle, state: 'failed' };
+      const answer = failedRequestSettlement({ type: 'retry-upgrade-enrichment', refreshId }, packageName);
+      if (answer !== undefined) this.sink.postMessage(answer);
+    });
   }
 
   /** Replays only the exact failed/cancelled lifecycle named by the webview. */

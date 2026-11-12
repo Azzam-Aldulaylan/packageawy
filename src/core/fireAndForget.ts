@@ -30,17 +30,17 @@ function reportSafely(onError: (error: unknown) => undefined, error: unknown): v
     return;
   }
   // The type says undefined, but a handler written as `async` still compiles
-  // where a cast slipped in. Observe its rejection rather than lose it.
-  if (isThenable(returned)) {
+  // where a cast slipped in. Promise.resolve adopts whatever came back without
+  // this code reading `.then` itself: a throwing `then` getter becomes a
+  // rejection here, observed like any other.
+  if (returned === undefined) return;
+  try {
     Promise.resolve(returned).then(undefined, (handlerError: unknown) => {
       lastResort(handlerError);
     });
+  } catch (adoptError) {
+    lastResort(adoptError);
   }
-}
-
-function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return (typeof value === 'object' || typeof value === 'function') && value !== null &&
-    typeof (value as { then?: unknown }).then === 'function';
 }
 
 function lastResort(error: unknown): void {

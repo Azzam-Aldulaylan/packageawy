@@ -57,6 +57,7 @@ import {
 import type { RuntimeFailureContext, VersionListFailure } from '../core/diagnostics.js';
 import { fireAndForget } from '../core/fireAndForget.js';
 import type { ChangeStartingMessage } from './webviewProtocol.js';
+import { failedRequestSettlement } from './failedRequestSettlement.js';
 import type { HttpClient } from '../core/registry/http.js';
 import { runPool } from '../core/registry/pool.js';
 import { fetchDistTags, fetchPackument } from '../core/registry/versions.js';
@@ -805,33 +806,30 @@ export class UpgradeAssistantCoordinator {
    * Nothing is reserved or consumed, so the review stays as it was.
    */
   refuseChangeAfterFailure(message: ChangeStartingMessage): void {
-    const error = { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT };
+    const answer = failedRequestSettlement(message, this.requestTarget(message),
+      { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT });
+    if (answer !== undefined) this.options.sink.postMessage(answer);
+  }
+
+  /**
+   * The package or review key a message about a stored review is about.
+   * Read before the handler runs, because confirming or retrying consumes
+   * the review. Undefined when a remediation plan id is unknown: there is no
+   * row to answer, as today.
+   */
+  requestTarget(message: ChangeStartingMessage | { type: 'retry-remediation'; analysisId: string }): string | undefined {
     switch (message.type) {
+      case 'retry-remediation':
+        return this.remediationPlans.get(message.analysisId)?.packageName;
       case 'confirm-upgrade':
-      case 'use-smart-plan': {
-        const stored = this.analysis?.id === message.analysisId ? this.analysis : undefined;
-        this.options.sink.postMessage({ status: 'upgrade-error', package: stored?.eligibility.packageName ?? 'unknown', error });
-        return;
-      }
-      case 'confirm-remove': {
-        const stored = this.removal?.id === message.analysisId ? this.removal : undefined;
-        this.options.sink.postMessage({ status: 'remove-error', package: stored?.reservationKey ?? 'unknown', error });
-        return;
-      }
+      case 'use-smart-plan':
+        return this.analysis?.id === message.analysisId ? this.analysis.eligibility.packageName : 'unknown';
+      case 'confirm-remove':
+        return this.removal?.id === message.analysisId ? this.removal.reservationKey : 'unknown';
       case 'restore-smart-cleanup':
-        this.options.sink.postMessage({
-          status: 'remove-error',
-          package: this.smartCleanupRestore?.reservationKey ?? 'Smart Cleanup',
-          error,
-        });
-        return;
-      case 'confirm-remediation': {
-        const stored = this.remediationPlans.get(message.analysisId);
-        // An unknown plan id is ignored today too. There is no row to answer.
-        if (stored === undefined) return;
-        this.options.sink.postMessage({ status: 'remediation-error', package: stored.packageName, error });
-        return;
-      }
+        return this.smartCleanupRestore?.reservationKey ?? 'Smart Cleanup';
+      case 'confirm-remediation':
+        return this.remediationPlans.get(message.analysisId)?.packageName;
     }
   }
 
@@ -1161,8 +1159,16 @@ export class UpgradeAssistantCoordinator {
     // The record stays after a successful answer so a later cancel (dialog
     // closed, package switched) can still stop the version checks it started.
     // A newer load replaces it.
-    const answered = await this.loadUpgradeTargetsFor(message, abort.signal, abandoned);
-    if (!answered && this.upgradeTargetsLoad === load) this.upgradeTargetsLoad = undefined;
+    let answered = false;
+    try {
+      answered = await this.loadUpgradeTargetsFor(message, abort.signal, abandoned);
+    } catch (error) {
+      // The panel answers the request. Stop what this load started and drop it.
+      abort.abort();
+      throw error;
+    } finally {
+      if (!answered && this.upgradeTargetsLoad === load) this.upgradeTargetsLoad = undefined;
+    }
   }
 
   /** Cancels only the matching request, so a late cancel never stops a newer load. */
