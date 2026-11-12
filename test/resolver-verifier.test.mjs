@@ -6,6 +6,7 @@ import {
   buildResolverArgs,
   buildTransitiveRemediationMaterializationArgs,
   IsolatedResolverVerifier,
+  isolatedRelativePath,
 } from '../out/host/resolverVerifier.js';
 
 const proposal = {
@@ -20,9 +21,12 @@ test('npm resolver argv is fixed, script-free, lockfile-free, and policy-aware',
   ]);
 });
 
-test('pnpm resolver argv confines writes to temp and never enables lifecycle scripts', () => {
+test('pnpm resolver argv confines writes to temp and never enables lifecycle scripts or pnpmfiles', () => {
   assert.deepEqual(buildResolverArgs('pnpm', 'https://registry.npmjs.org', { strictPeerDeps: false, legacyPeerDeps: false }), [
-    'install', '--ignore-scripts', '--lockfile=false', '--reporter=silent', '--registry=https://registry.npmjs.org',
+    'install', '--ignore-scripts', '--ignore-pnpmfile', '--lockfile=false', '--loglevel=error', '--registry=https://registry.npmjs.org',
+  ]);
+  assert.deepEqual(buildLockfileMaterializationArgs('pnpm', 'https://registry.npmjs.org', { strictPeerDeps: false, legacyPeerDeps: false }), [
+    'install', '--lockfile-only', '--ignore-scripts', '--ignore-pnpmfile', '--loglevel=error', '--registry=https://registry.npmjs.org',
   ]);
 });
 
@@ -323,4 +327,154 @@ test('targeted transitive remediation refuses a package-manager manifest mutatio
   const result = await verifier.materializeTransitiveRemediation(['websocket-driver']);
   assert.equal(result.ok, false);
   assert.match(result.reason, /unexpectedly changed package\.json/);
+});
+
+const workspaceLock = (joseVersion) => [
+  "lockfileVersion: '9.0'",
+  '',
+  'importers:',
+  '',
+  '  .: {}',
+  '',
+  '  apps/web:',
+  '    dependencies:',
+  "      '@acme/shared':",
+  '        specifier: workspace:*',
+  '        version: link:../../packages/shared',
+  '      jose:',
+  `        specifier: ${joseVersion}`,
+  `        version: ${joseVersion}`,
+  '',
+  '  packages/shared: {}',
+  '',
+  'packages:',
+  '',
+  `  jose@${joseVersion}:`,
+  '    resolution: {integrity: sha512-test}',
+  '',
+  'snapshots:',
+  '',
+  `  jose@${joseVersion}: {}`,
+  '',
+].join('\n');
+
+const workspaceProposal = {
+  requested: { packageName: 'jose', currentVersion: '5.9.6', targetVersion: '5.10.0', classification: 'prod' },
+  changes: [{ packageName: 'jose', currentVersion: '5.9.6', targetVersion: '5.10.0', classification: 'prod' }],
+};
+
+function workspaceVerifier(observed, options = {}) {
+  return new IsolatedResolverVerifier({
+    packageManager: 'pnpm', packageManagerVersion: '9.15.1',
+    invocation: { executable: '/trusted/pnpm', prefixArgs: [] },
+    manifestText: JSON.stringify({ name: '@acme/web', dependencies: { '@acme/shared': 'workspace:*', jose: '5.9.6' } }),
+    lockfile: { name: 'pnpm-lock.yaml', text: workspaceLock('5.9.6') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    workspace: {
+      importerId: 'apps/web',
+      files: [
+        { path: 'pnpm-workspace.yaml', text: "packages:\n  - 'apps/*'\n  - 'packages/*'\n" },
+        { path: 'package.json', text: JSON.stringify({ name: 'acme', private: true }) },
+        { path: 'packages/shared/package.json', text: JSON.stringify({ name: '@acme/shared' }) },
+      ],
+    },
+    runner: {
+      async run(_invocation, args, cwd) {
+        const { readFile, readdir, writeFile } = await import('node:fs/promises');
+        observed.args = args;
+        observed.rootEntries = (await readdir(cwd)).sort();
+        observed.workspaceYaml = await readFile(`${cwd}/pnpm-workspace.yaml`, 'utf8');
+        observed.siblingManifest = JSON.parse(await readFile(`${cwd}/packages/shared/package.json`, 'utf8'));
+        observed.memberManifest = JSON.parse(await readFile(`${cwd}/apps/web/package.json`, 'utf8'));
+        observed.lockfileAtRoot = await readFile(`${cwd}/pnpm-lock.yaml`, 'utf8');
+        if (args.includes('--lockfile-only')) await writeFile(`${cwd}/pnpm-lock.yaml`, workspaceLock('5.10.0'));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    },
+    ...options,
+  });
+}
+
+test('a pnpm workspace member resolves inside a rebuilt workspace, so workspace: dependencies are found', async () => {
+  const observed = {};
+  const verifier = workspaceVerifier(observed, { retainResolvedGraph: true });
+  const verification = await verifier.verify(workspaceProposal);
+  assert.equal(verification.status, 'compatible');
+  assert.deepEqual(observed.rootEntries, ['apps', 'package.json', 'packages', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']);
+  assert.match(observed.workspaceYaml, /packages\/\*/);
+  assert.equal(observed.siblingManifest.name, '@acme/shared');
+  assert.equal(observed.memberManifest.dependencies.jose, '5.10.0');
+  assert.equal(observed.memberManifest.dependencies['@acme/shared'], 'workspace:*');
+  assert.equal(observed.lockfileAtRoot, workspaceLock('5.9.6'));
+  assert.ok(observed.args.includes('--ignore-pnpmfile'));
+
+  const materialized = await verifier.materializeResolvedGraph(workspaceProposal);
+  assert.equal(materialized.ok, true);
+  const jose = [...materialized.graph.nodes.values()].find((node) => node.name === 'jose' && node.direct);
+  assert.equal(jose?.version, '5.10.0');
+});
+
+test('a pnpm workspace member keeps the lockfile when verifying, rather than a full fresh install', async () => {
+  const observed = {};
+  const verification = await workspaceVerifier(observed).verify(workspaceProposal);
+  assert.equal(verification.status, 'compatible');
+  assert.ok(observed.args.includes('--lockfile-only'));
+  assert.ok(!observed.args.includes('--lockfile=false'));
+});
+
+test('the security materialization of a pnpm workspace member reads the member importer', async () => {
+  const observed = {};
+  const materialized = await workspaceVerifier(observed).materializeResolvedGraph(workspaceProposal);
+  assert.equal(materialized.ok, true);
+  const direct = [...materialized.graph.nodes.values()].filter((node) => node.direct).map((node) => node.name).sort();
+  assert.deepEqual(direct, ['@acme/shared', 'jose']);
+});
+
+test('workspace paths that escape the temporary directory are refused', () => {
+  for (const unsafe of ['../outside', 'apps/../../outside', '/etc', 'apps//web', './apps', 'C:/x', 'apps\\web', '']) {
+    assert.throws(() => isolatedRelativePath('/tmp/root', unsafe), /unsafe workspace path/);
+  }
+  assert.equal(isolatedRelativePath('/tmp/root', 'apps/web'), '/tmp/root/apps/web');
+});
+
+test('a workspace run that leaves the reviewed member out of the lockfile is not reported as compatible', async () => {
+  const verifier = new IsolatedResolverVerifier({
+    packageManager: 'pnpm', packageManagerVersion: '9.15.1',
+    invocation: { executable: '/trusted/pnpm', prefixArgs: [] },
+    manifestText: JSON.stringify({ name: '@acme/web', dependencies: { jose: '5.9.6' } }),
+    lockfile: { name: 'pnpm-lock.yaml', text: workspaceLock('5.9.6') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    retainResolvedGraph: true,
+    workspace: { importerId: 'apps/web', files: [{ path: 'pnpm-workspace.yaml', text: '{"packages":[]}\n' }] },
+    runner: {
+      async run(_invocation, _args, cwd) {
+        const { writeFile } = await import('node:fs/promises');
+        await writeFile(`${cwd}/pnpm-lock.yaml`, "lockfileVersion: '9.0'\nimporters:\n  .: {}\n");
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    },
+  });
+  const verification = await verifier.verify(workspaceProposal);
+  assert.equal(verification.status, 'unknown');
+  assert.equal(verification.code, 'RESOLVER_FAILED');
+  assert.deepEqual(await verifier.materializeResolvedGraph(workspaceProposal), { ok: false });
+});
+
+test('a workspace that cannot be staged faithfully is unknown and never runs the package manager', async () => {
+  let ran = false;
+  const verifier = new IsolatedResolverVerifier({
+    packageManager: 'pnpm', packageManagerVersion: '9.15.1',
+    invocation: { executable: '/trusted/pnpm', prefixArgs: [] },
+    manifestText: JSON.stringify({ name: '@acme/web', dependencies: { jose: '5.9.6' } }),
+    lockfile: { name: 'pnpm-lock.yaml', text: workspaceLock('5.9.6') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    retainResolvedGraph: true,
+    workspace: { importerId: 'apps/web', files: [], unavailableReason: 'The workspace has more packages than the review can stage.' },
+    runner: { async run() { ran = true; return { exitCode: 0, stdout: '', stderr: '' }; } },
+  });
+  const verification = await verifier.verify(workspaceProposal);
+  assert.equal(verification.status, 'unknown');
+  assert.match(verification.explanation, /more packages than the review can stage/);
+  assert.deepEqual(await verifier.materializeResolvedGraph(workspaceProposal), { ok: false });
+  assert.equal(ran, false);
 });

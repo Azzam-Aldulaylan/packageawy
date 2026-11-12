@@ -82,6 +82,8 @@ import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.j
 import { createNodeUpgradeTransactionFileAdapter } from './nodeUpgradeTransactionFiles.js';
 import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
 import { materializeUpgradeSecurityGraph } from './upgradeSecurityGraph.js';
+import { readPnpmWorkspaceLayout } from './pnpmWorkspaceLayout.js';
+import type { PnpmWorkspaceLayout } from './pnpmWorkspaceLayout.js';
 import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
 import { loadProject } from './projectResolution.js';
@@ -355,6 +357,23 @@ function projectCompatibilityFingerprint(project: ResolvedProject, evidenceFinge
   ].join(':');
 }
 
+/** The pnpm workspace staged around the reviewed project, or undefined for a single project. */
+function readReviewWorkspaceLayout(project: ResolvedProject, signal?: AbortSignal): Promise<PnpmWorkspaceLayout | undefined> {
+  if (project.packageManager !== 'pnpm' || project.lockfileText === null) return Promise.resolve(undefined);
+  return readPnpmWorkspaceLayout({
+    lockfileRoot: project.lockfileRoot,
+    importerId: project.importerId,
+    manifestText: project.manifestText,
+    ...(signal === undefined ? {} : { signal }),
+  });
+}
+
+/** Workspace files the review resolved against must still match, like the manifest and lockfile. */
+async function reviewWorkspaceStillMatches(project: ResolvedProject, fingerprint: string | null | undefined): Promise<boolean> {
+  const current = await readReviewWorkspaceLayout(project).catch(() => undefined);
+  return (current?.fingerprint ?? null) === (fingerprint ?? null);
+}
+
 function resolvedProjectSourceMatches(left: ResolvedProject, right: ResolvedProject): boolean {
   return left.root === right.root &&
     left.manifestText === right.manifestText &&
@@ -441,6 +460,8 @@ interface StoredAnalysis {
   suggestedScriptNames: string[];
   /** Source/config evidence consumed by project compatibility, re-read before execution. */
   projectCompatibilityEvidenceFingerprint: string | null;
+  /** Hash of the pnpm workspace files staged for the resolver, null for a single project. */
+  workspaceLayoutFingerprint: string | null;
   expiresAt: number;
 }
 
@@ -1409,6 +1430,8 @@ export class UpgradeAssistantCoordinator {
               }
             : null;
       endToolchain({ available: packageManagerInvocation !== null });
+      const workspaceLayout = await readReviewWorkspaceLayout(preflightProject, analysisAbort.signal);
+      if (analysisAbort.signal.aborted) return;
       const resolverVerifier = packageManagerInvocation !== null
         ? new IsolatedResolverVerifier({
             // Bound each isolated Upgrade Review resolver step, not the user's
@@ -1430,6 +1453,7 @@ export class UpgradeAssistantCoordinator {
             registry: preflightProject.registry,
             resolvedRegistry: preflightProject.resolvedRegistry,
             policy: preflightProject.peerPolicy,
+            ...(workspaceLayout === undefined ? {} : { workspace: workspaceLayout }),
           })
         : undefined;
       const metadataProvider = new RegistryPackageMetadataProvider(
@@ -1684,7 +1708,8 @@ export class UpgradeAssistantCoordinator {
           observedFingerprint: finalProjectEvidence?.evidenceFingerprint ?? null,
         }) ||
         finalDiskSnapshot === null ||
-        !resolvedProjectSourceMatches(finalDiskSnapshot, preflightProject)
+        !resolvedProjectSourceMatches(finalDiskSnapshot, preflightProject) ||
+        !await reviewWorkspaceStillMatches(finalDiskSnapshot, workspaceLayout?.fingerprint ?? null)
       ) {
         this.options.sink.postMessage({
           status: 'upgrade-error',
@@ -1740,6 +1765,7 @@ export class UpgradeAssistantCoordinator {
         suggestedScriptNames,
         projectCompatibilityEvidenceFingerprint:
           projectEvidence.evidenceFingerprint === 'unavailable' ? null : projectEvidence.evidenceFingerprint,
+        workspaceLayoutFingerprint: workspaceLayout?.fingerprint ?? null,
         expiresAt,
       };
 
@@ -1875,7 +1901,9 @@ export class UpgradeAssistantCoordinator {
     // Failed reads do not prove changed files. Execution still fails closed on
     // its mandatory reread. A later watcher event can retry this advisory check.
     if (!isCurrent() || disk === null) return;
-    let matches = resolvedProjectSourceMatches(disk, stored.snapshot);
+    let matches = resolvedProjectSourceMatches(disk, stored.snapshot) &&
+      await reviewWorkspaceStillMatches(disk, stored.workspaceLayoutFingerprint);
+    if (!isCurrent()) return;
     if (matches && stored.projectCompatibilityEvidenceFingerprint !== null) {
       const evidence = await collectProjectCompatibilityEvidence({
         platform: this.options.platform,
@@ -3168,7 +3196,8 @@ export class UpgradeAssistantCoordinator {
       // and repeat the host-owned eligibility check immediately before the
       // snapshot. The stored analysis is never execution authority.
       const disk = await this.projectLoader(selected);
-      const sourceStillMatches = disk.root === controller.root && resolvedProjectSourceMatches(disk, stored.snapshot);
+      const sourceStillMatches = disk.root === controller.root && resolvedProjectSourceMatches(disk, stored.snapshot) &&
+        await reviewWorkspaceStillMatches(disk, stored.workspaceLayoutFingerprint);
       const rechecked = controller.validateBulkUpgradeRequest(
         stored.requests,
         stored.publishedTargetsByPackage
