@@ -150,13 +150,13 @@ test('severity cells read Off, never Safe, when the check is off', () => {
     for (const checked of [true, false]) {
       const display = severityDisplay(severity, false, checked, true);
       assert.equal(display.label, 'Off');
-      assert.notEqual(display.label, 'Safe');
+      assert.notEqual(display.label, 'No known vulnerabilities');
       assert.equal(display.className, 'info');
       assert.equal(display.reason, 'Security checks are turned off for this project');
     }
   }
   // Unchanged when the check is on.
-  assert.equal(severityDisplay(null).label, 'Safe');
+  assert.equal(severityDisplay(null).label, 'No known vulnerabilities');
   assert.equal(severityDisplay(null, false).label, 'Unavailable');
 });
 

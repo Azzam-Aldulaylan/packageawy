@@ -7,6 +7,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 ### Changed
 
 - Packageawy now finds the lockfile your package manager will write, including the workspace root's, and uses it for every change and rollback.
+- The Vulnerabilities column now reads No known vulnerabilities instead of Safe, which is exactly what was checked.
 
 ### Fixed
 

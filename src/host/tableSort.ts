@@ -95,7 +95,7 @@ const COLUMN_COMPARATORS: Record<SortColumn, (a: PackageRow, b: PackageRow) => n
 /**
  * Whether a row has no sortable value at all for a column: a missing
  * current/available version, never a "worst" position on some real scale
- * (a clean `worstSeverity: null` row is a legitimate, sortable "Safe", not
+ * (a clean `worstSeverity: null` row is a legitimate, sortable "No known vulnerabilities", not
  * empty). Only these two columns need this: their rows must stay pinned
  * after every real value in both directions, which a plain sign flip on
  * the base comparator cannot express: negating "always last" for a

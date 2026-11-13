@@ -1189,6 +1189,11 @@ button {
 }
 /* Safe: a calm, subtle green, never louder than an actual vulnerability. */
 .severity--none {
+  /* The longest label ("No known vulnerabilities") may wrap to two lines
+     rather than spill into the next column. */
+  white-space: normal;
+  max-width: 100%;
+  line-height: 1.2;
   border-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 55%, var(--vscode-panel-border, transparent));
   color: var(--vscode-charts-green, #89d185);
   font-weight: 500;
