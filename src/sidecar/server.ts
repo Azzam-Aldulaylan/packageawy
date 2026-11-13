@@ -6,6 +6,7 @@
 
 import type { Readable, Writable } from 'node:stream';
 
+import { projectMutationLocks } from '../host/projectMutationLock.js';
 import { DashboardPanel } from '../host/dashboardPanel.js';
 import type { HostToWebviewMessage } from '../host/webviewProtocol.js';
 import { JsonRpcConnection, ErrorCodes, ResponseError } from '../host/platform/rpc/jsonRpc.js';
@@ -13,7 +14,7 @@ import type { InitializeResult } from '../host/platform/rpc/protocol.js';
 import { Methods } from '../host/platform/rpc/protocol.js';
 import { RpcPlatform } from '../host/platform/rpc/rpcPlatform.js';
 import { RpcWebviewChannel } from '../host/platform/rpc/rpcWebviewChannel.js';
-import { parseInitialize, parseOpenManifest, parseWebviewMessage } from '../host/platform/rpc/validation.js';
+import { parseInitialize, parseOpenManifest, parseWebviewMessage, parseRestart } from '../host/platform/rpc/validation.js';
 
 export const SERVER_NAME = 'packageawy-sidecar';
 
@@ -60,6 +61,36 @@ export function startSidecar(options: SidecarOptions): JsonRpcConnection {
     if (channel === undefined || channel.isDisposed) channel = openDashboard(current);
     channel.receive(message);
   };
+
+  // Admission closes synchronously before discovery can yield to a new change.
+  const restartStatus = async (sessionId: string): Promise<import('../host/platform/rpc/protocol.js').RestartResult | null> => {
+    if (!projectMutationLocks.matchesRestart(sessionId)) return null;
+    let state = projectMutationLocks.restartState();
+    if (state === 'idle') {
+      try {
+        if (platform === undefined) state = 'unknown';
+        else {
+          const { findRecoveryTargets } = await import('../host/recovery/targetDiscovery.js');
+          if ((await findRecoveryTargets(platform)).length > 0) state = 'unknown';
+        }
+      } catch { state = 'unknown'; }
+    }
+    if (!projectMutationLocks.matchesRestart(sessionId)) return null;
+    const current = projectMutationLocks.restartState();
+    return { sessionId, state: current === 'idle' ? state : current };
+  };
+  connection.onRequest(Methods.restartPrepare, (params) => {
+    const { sessionId } = parseRestart(params);
+    if (!projectMutationLocks.prepareRestart(sessionId)) return null;
+    return restartStatus(sessionId);
+  });
+  connection.onRequest(Methods.restartCommit, async (params) => {
+    const { sessionId } = parseRestart(params);
+    const result = await restartStatus(sessionId);
+    if (result?.state === 'idle') projectMutationLocks.commitRestart(sessionId);
+    return result;
+  });
+  connection.onNotification(Methods.restartCancel, (params) => projectMutationLocks.cancelRestart(parseRestart(params).sessionId));
 
   connection.onRequest(Methods.initialize, (params): InitializeResult => {
     if (platform !== undefined) throw new ResponseError(ErrorCodes.InvalidRequest, 'Already initialized');

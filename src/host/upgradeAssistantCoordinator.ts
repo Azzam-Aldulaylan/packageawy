@@ -689,13 +689,17 @@ export class UpgradeAssistantCoordinator {
   readonly recovery: RecoveryCoordinator;
   private canonicalRootCache: { root: string; key: string } | undefined;
   private readonly stopListeningForSharedRelease: () => void;
+  private stopListeningForTask: (() => void) | undefined;
 
   constructor(private readonly options: UpgradeAssistantCoordinatorOptions) {
     this.session = new UpgradeExecutionSession(options.platform);
     this.mutationLocks = options.mutationLocks ?? projectMutationLocks;
     this.recovery = new RecoveryCoordinator({
       platform: options.platform, locks: this.mutationLocks,
-      target: () => this.recoveryTarget(), post: (message) => options.sink.postMessage(message),
+      target: () => this.recoveryTarget(), post: (message) => {
+        if (message.status === 'dependency-task' && message.state !== 'idle') this.observeSharedTask();
+        options.sink.postMessage(message);
+      },
       removed: () => options.reloadFinalState(),
     });
     this.reservation = new OperationReservation({
@@ -705,7 +709,7 @@ export class UpgradeAssistantCoordinator {
       flushDeferredChanges: () => options.flushDeferredChanges(),
       resumePendingBackground: () => options.onMutationLockReleased?.(),
       isDisposed: () => options.isDisposed(),
-      dispose: () => this.session.dispose(),
+      dispose: () => { this.stopListeningForTask?.(); this.session.dispose(); },
       log: (line) => options.platform.log?.(line),
     });
     this.projectLoader = options.loadProject ?? ((candidate) => loadProject(options.platform, candidate));
@@ -728,6 +732,30 @@ export class UpgradeAssistantCoordinator {
           .then(() => this.options.onMutationLockReleased?.()),
         this.onBackgroundError('deferred-changes', true)
       );
+    });
+  }
+
+  private reportDependencyTask(state: import('./webviewProtocol.js').DependencyTaskState): void {
+    // A status update to a closed or broken view must not interrupt its writer.
+    try {
+      const handle = this.reservation.held;
+      const key = handle?.journal === undefined ? this.currentMutationRootKey() : canonicalProjectRoot(handle.journal.storage.target.root);
+      if (handle !== undefined && key !== undefined) this.mutationLocks.reportTaskState(key, handle, state);
+      this.options.sink.postMessage({ status: 'dependency-task', state });
+    } catch (error) { this.onBackgroundError('webview-message', false)(error); }
+  }
+
+  private observeSharedTask(): void {
+    // Only a panel that discovers another running writer needs this listener.
+    // Ordinary activation and the first scan do not allocate task observers.
+    if (this.stopListeningForTask !== undefined) return;
+    // A reopened panel observes the original task's status timer, even when
+    // the coordinator that launched it is detached from its closed view.
+    this.stopListeningForTask = this.mutationLocks.onDidChangeTask((key, holder, state) => {
+      if (this.options.isDisposed()) { this.stopListeningForTask?.(); return; }
+      if (key !== this.currentMutationRootKey() || this.reservation.issued(holder)) return;
+      this.options.sink.postMessage({ status: 'dependency-task', state });
+      if (state === 'idle') fireAndForget(this.recovery.inspect(), this.onBackgroundError('deferred-changes', false));
     });
   }
 
@@ -849,11 +877,21 @@ export class UpgradeAssistantCoordinator {
     }
   }
 
+  private async withAdmission(status: 'upgrade-error' | 'remove-error' | 'remediation-error', packageName: string, run: () => Promise<void>): Promise<void> {
+    const done = this.mutationLocks.trackPending();
+    if (done === undefined) {
+      this.options.sink.postMessage({ status, package: packageName, error: { code: 'OPERATION_IN_PROGRESS', message: RECOVERY_MESSAGES.restart } });
+      return;
+    }
+    try { await run(); } finally { done(); }
+  }
+
   private reserve(packageName: string): OwnerHandle | ReservationRefusal {
     // Any new analysis or dependency change supersedes a kept cleanup's restore point.
     // The shared project lock is taken with the reservation, keyed by the
     // resolved target's lock key, and held by the returned handle until that
     // handle ends it, after install, verification, and rollback.
+    this.session.observeTaskState(state => this.reportDependencyTask(state));
     return this.reservation.reserve(packageName, this.currentMutationRootKey());
   }
 
@@ -1237,11 +1275,11 @@ export class UpgradeAssistantCoordinator {
    * executing anything.
    */
   async handleAnalyzeUpgrade(message: UpgradeMessage): Promise<void> {
-    await this.handleAnalyzeUpgradeRequests(message.requestId, [{ package: message.package, target: message.target }]);
+    await this.withAdmission('upgrade-error', message.package, () => this.handleAnalyzeUpgradeRequests(message.requestId, [{ package: message.package, target: message.target }]));
   }
 
   async handleAnalyzeBulkUpgrade(message: BulkUpgradeMessage): Promise<void> {
-    await this.handleAnalyzeUpgradeRequests(message.requestId, message.changes);
+    await this.withAdmission('upgrade-error', message.changes[0]?.package ?? 'unknown', () => this.handleAnalyzeUpgradeRequests(message.requestId, message.changes));
   }
 
   private async handleAnalyzeUpgradeRequests(
@@ -2025,6 +2063,10 @@ export class UpgradeAssistantCoordinator {
     message: BulkRemoveMessage,
     smartCleanup?: SmartCleanupRemovalContext
   ): Promise<void> {
+    await this.withAdmission('remove-error', message.changes[0]?.package ?? 'unknown', () => this.analyzeBulkRemove(message, smartCleanup));
+  }
+
+  private async analyzeBulkRemove(message: BulkRemoveMessage, smartCleanup?: SmartCleanupRemovalContext): Promise<void> {
     this.dropExpiredAnalysis();
     this.dropExpiredRemoval();
 
@@ -2341,6 +2383,10 @@ export class UpgradeAssistantCoordinator {
    * with a final advisory reread and compare-and-swap rollback.
    */
   async handleAnalyzeRemediation(message: RemediationMessage): Promise<void> {
+    await this.withAdmission('remediation-error', message.package, () => this.startRemediationAnalysis(message));
+  }
+
+  private async startRemediationAnalysis(message: RemediationMessage): Promise<void> {
     if (this.activeRemediationAbort !== undefined) {
       this.options.sink.postMessage({
         status: 'remediation-error',
@@ -2366,6 +2412,10 @@ export class UpgradeAssistantCoordinator {
   }
 
   async handleAnalyzeRemediations(message: RemediationBatchMessage): Promise<void> {
+    await this.withAdmission('remediation-error', message.packages[0] ?? 'unknown', () => this.startRemediationBatch(message));
+  }
+
+  private async startRemediationBatch(message: RemediationBatchMessage): Promise<void> {
     if (this.activeRemediationAbort !== undefined) {
       this.options.sink.postMessage({
         status: 'remediation-batch-error',
@@ -2617,6 +2667,7 @@ export class UpgradeAssistantCoordinator {
       registry: preflightProject.registry,
       resolvedRegistry: preflightProject.resolvedRegistry,
       policy: preflightProject.peerPolicy,
+      runner: new NodeResolverProcessRunner({ timeoutMs: 120_000 }),
     });
     const targetNames = [...new Set(targetAdvisories.map((entry) => entry.flaggedPackage))].sort();
     const endMaterialization = performance?.start('remediation graph materialization') ?? (() => 0);
@@ -2638,7 +2689,7 @@ export class UpgradeAssistantCoordinator {
     );
     endMaterialization({ resolved: materialized.ok });
     if (!materialized.ok) {
-      throw Object.assign(new Error(materialized.reason), { name: 'RESOLVER_UNAVAILABLE' });
+      throw Object.assign(new Error(materialized.reason), { name: materialized.code ?? 'RESOLVER_UNAVAILABLE' });
     }
     if (!this.publicAdvisoryCheckEnabled(controller.root)) {
       throw Object.assign(new Error(ADVISORY_CHECK_OFF_MESSAGE), { name: ADVISORY_CHECK_OFF.code });

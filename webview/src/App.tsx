@@ -43,6 +43,7 @@ import {
 import type { UpgradeEnrichmentUiState } from '../../src/host/upgradeReviewUiState.js';
 import type {
   DashboardData,
+  DependencyTaskState,
   HostToWebviewMessage,
   RemoveAnalysisPresentation,
   RecoveryPresentation,
@@ -56,6 +57,9 @@ import { sameUpdateAdvisoryContext } from '../../src/host/updateAdvisoryState.js
 import { UpdateAdvisoryContext } from './components/UpdateVersionWarning.js';
 import type { UpgradeAnalysisSections } from '../../src/host/upgradeAnalysisSections.js';
 import { applyPartialSection, markPhaseLoading, WAITING_UPGRADE_ANALYSIS_SECTIONS } from '../../src/host/upgradeAnalysisSections.js';
+import { DependencyChangeContext, DependencyChangeStatus } from './components/DependencyChangeStatus.js';
+import { dependencyChangesBlocked, isUnknownChangeMessage } from '../../src/host/dependencyChangePresentation.js';
+import { RECOVERY_MESSAGES } from '../../src/host/recoveryCopy.js';
 import { RecoveryScreen } from './components/RecoveryScreen.js';
 import { DashboardToolbar } from './components/DashboardToolbar.js';
 import { DependencyEmptyState } from './components/DependencyEmptyState.js';
@@ -153,6 +157,8 @@ export function App(): ReactElement {
   const [recovery, setRecovery] = useState<RecoveryPresentation | null>(null);
   const [recoveryEntries, setRecoveryEntries] = useState<Array<{ id: string; label: string }>>([]);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [dependencyTask, setDependencyTask] = useState<DependencyTaskState>('idle');
+  const recoveryBlocked = dependencyChangesBlocked(recovery);
   // Per-analysis choices among host-suggested verification scripts. Keyed by
   // host-issued analysis id, so a new review always starts unchecked.
   const [verificationOptIns, setVerificationOptIns] = useState<ReadonlyMap<string, VerificationOptInSelection>>(
@@ -462,11 +468,16 @@ export function App(): ReactElement {
         return;
       }
       const incoming = event.data;
+      if (incoming.status === 'dependency-task') { setDependencyTask(incoming.state); return; }
+      if (isUnknownChangeMessage(incoming)) {
+        setDependencyTask('idle');
+        setRecovery({ state: 'blocked', message: RECOVERY_MESSAGES.blocked, files: [], claim: null, canApply: false, canDismiss: false });
+      }
       if (incoming.status === 'recovery-entries') { setRecoveryEntries(incoming.entries); return; }
       if (incoming.status === 'recovery') {
         setRecovery(incoming.recovery);
         if (incoming.recovery.state === 'none') setRecoveryOpen(false);
-        else setRecoveryOpen(true);
+        if (incoming.recovery.state !== 'running') setDependencyTask('idle');
         return;
       }
 
@@ -651,7 +662,7 @@ export function App(): ReactElement {
         return;
       }
 
-      if (incoming.status === 'remove-error' && manageRemovalRef.current?.phase === 'running') {
+      if (incoming.status === 'remove-error' && incoming.error.code !== 'OUTCOME_UNKNOWN' && manageRemovalRef.current?.phase === 'running') {
         // Show the failure in the Manage dialog that started the removal,
         // even if a rescan during the run reset the review state or the
         // package already left the project.
@@ -666,6 +677,7 @@ export function App(): ReactElement {
 
       if (incoming.status === 'remove-error') {
         setRemoveBusy(false);
+        if (incoming.error.code === 'OUTCOME_UNKNOWN') setManageRemoval(null);
         const smartCleanupRemoval = removeOriginRef.current === 'smart-cleanup';
         // Same shared-lock discipline as upgrade-error: reused directly
         // since UPGRADE_IN_PROGRESS is the one code both flows post when the
@@ -684,7 +696,9 @@ export function App(): ReactElement {
           setRemoveError({ package: incoming.package, code: incoming.error.code, message: incoming.error.message });
         }
         if (smartCleanupRemoval) {
-          if (incoming.error.code === 'STALE_SOURCE' || incoming.error.code === 'STALE_ANALYSIS') {
+          if (incoming.error.code === 'OUTCOME_UNKNOWN') {
+            dispatchSmartCleanup({ type: 'execution-unknown' });
+          } else if (incoming.error.code === 'STALE_SOURCE' || incoming.error.code === 'STALE_ANALYSIS') {
             dispatchSmartCleanup({ type: 'source-stale', message: incoming.error.message });
           } else if (
             incoming.error.code !== 'ROLLBACK_CONFLICT' &&
@@ -970,6 +984,10 @@ export function App(): ReactElement {
       }
 
       if (incoming.status === 'remediation-error') {
+        if (incoming.error.code === 'OUTCOME_UNKNOWN') {
+          setRemediationByPackage(previous => { const next = new Map(previous); next.delete(incoming.package); return next; });
+          return;
+        }
         setRemediationByPackage((previous) => {
           const next = new Map(previous);
           next.set(
@@ -2367,6 +2385,7 @@ export function App(): ReactElement {
     (state) => state.phase === 'analyzing' || state.phase === 'applying'
   );
   const actionsDisabled =
+    recoveryBlocked ||
     loading ||
     activeUpgrade !== null ||
     activeRemove !== null ||
@@ -2378,6 +2397,7 @@ export function App(): ReactElement {
   }
 
   return (
+    <DependencyChangeContext.Provider value={{ task: dependencyTask, blocked: recoveryBlocked, message: recovery?.message ?? RECOVERY_MESSAGES.blocked, retryDiscovery: recovery?.state === 'discovery-error', openRecovery: () => { if (recovery?.state !== 'discovery-error') setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
     <UpdateAdvisoryContext.Provider value={data?.availability.advisories === 'off' ? [] : data?.updateAdvisories ?? []}>
     <VerificationOptInContext.Provider value={verificationOptInStore}>
     <main className="dashboard">
@@ -2397,16 +2417,15 @@ export function App(): ReactElement {
         {data !== undefined ? <DependencySearch value={search} onChange={handleSearchChange} /> : null}
       </header>
 
-      {recoveryEntries.map(entry => (
+      {manageRow === null && !smartCleanupOpen && activeUpgrade === null && activeRemove === null ? <DependencyChangeStatus /> : null}
+      {recovery?.state === 'running' && dependencyTask !== 'still-running' && manageRow === null && !smartCleanupOpen && activeUpgrade === null && activeRemove === null ? (
+        <StatusBanner tone="info">{recovery.message}</StatusBanner>
+      ) : null}
+      {recoveryEntries.length > 1 ? recoveryEntries.map(entry => (
         <StatusBanner key={entry.id} tone="warning" action={{ label: 'Start recovery', onClick: () => { setRecovery(null); setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery', id: entry.id }); } }}>
           Saved recovery files: {entry.label}
         </StatusBanner>
-      ))}
-      {recovery !== null && recovery.state !== 'none' && (recoveryEntries.length === 0 || recovery.state === 'discovery-error') ? (
-        <StatusBanner tone={recovery.state === 'discovery-error' ? 'error' : 'warning'} action={{ label: recovery.state === 'discovery-error' ? 'Retry discovery' : 'Start recovery', onClick: () => { if (recovery.state !== 'discovery-error') setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
-          {recovery.message}
-        </StatusBanner>
-      ) : null}
+      )) : null}
       {loading ? (
         <DependencyLoadingState
           stage={scanProgress?.stage}
@@ -2537,6 +2556,7 @@ export function App(): ReactElement {
             // coexist. Preserve every other global blocker and
             // keep actual removal/remediation work protected.
             const manageActionsDisabled =
+              recoveryBlocked ||
               removalRunning ||
               heldRowGone ||
               loading ||
@@ -2545,6 +2565,7 @@ export function App(): ReactElement {
               cleanupState.phase === 'analyzing' ||
               (activeRemove !== null && !embeddedRemovalCanYield);
             const manageUpgradeDisabled =
+              recoveryBlocked ||
               removalRunning ||
               heldRowGone ||
               coreDataIncomplete ||
@@ -2725,6 +2746,7 @@ export function App(): ReactElement {
     </main>
     </VerificationOptInContext.Provider>
     </UpdateAdvisoryContext.Provider>
+    </DependencyChangeContext.Provider>
   );
 }
 

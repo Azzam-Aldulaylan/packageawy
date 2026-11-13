@@ -697,7 +697,10 @@ export interface RecoveryChoice {
   approveDeletion: boolean;
 }
 
+export type DependencyTaskState = 'running' | 'still-running' | 'idle';
+
 export type HostToWebviewMessage =
+  | { status: 'dependency-task'; state: DependencyTaskState }
   | { status: 'recovery-entries'; entries: Array<{ id: string; label: string }> }
   | { status: 'recovery'; recovery: RecoveryPresentation }
   | { status: 'update-advisories'; context: UpdateAdvisoryContext; results: UpdateAdvisoryResult[] }
@@ -2258,6 +2261,8 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   const status = value['status'];
   if (typeof status !== 'string') return false;
 
+  if (status === 'dependency-task') return hasOnlyKeys(value, ['status', 'state']) &&
+    ['running', 'still-running', 'idle'].includes(value['state'] as string);
   if (status === 'recovery-entries') return hasOnlyKeys(value, ['status', 'entries']) &&
     Array.isArray(value['entries']) && value['entries'].length <= 1000 && value['entries'].every((entry: unknown) =>
       isRecord(entry) && hasOnlyKeys(entry, ['id', 'label']) && isRecoveryHash(entry['id']) && typeof entry['label'] === 'string');

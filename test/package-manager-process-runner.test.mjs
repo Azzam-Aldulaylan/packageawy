@@ -10,6 +10,15 @@ import { analyzeCompatibility } from '../out/core/compatibility/preflight.js';
 const invocation = { executable: process.execPath, prefixArgs: [] };
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function expectStopped(pid) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { process.kill(pid, 0); }
+    catch (error) { if (error.code === 'ESRCH') return; throw error; }
+    await pause(5);
+  }
+  assert.fail(`process ${pid} survived forced termination`);
+}
+
 async function readyFile(filename) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
@@ -49,7 +58,7 @@ test('resolver pre-cancellation prevents even attempting to spawn an unavailable
     { name: 'AbortError' });
 });
 
-test('resolver cancellation forcibly terminates a SIGTERM-ignoring child before rejecting', async () => {
+test('resolver cancellation forces termination of a SIGTERM-ignoring child and bounds settlement', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'packageawy-resolver-process-'));
   const controller = new AbortController();
   const runner = new NodeResolverProcessRunner({ timeoutMs: 5000, terminationGraceMs: 50 });
@@ -61,7 +70,7 @@ test('resolver cancellation forcibly terminates a SIGTERM-ignoring child before 
     const pid = Number(await readyFile(path.join(directory, 'pid')));
     controller.abort();
     await rejection;
-    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    await expectStopped(pid);
   } finally {
     controller.abort();
     await Promise.allSettled([pending, rejection]);
@@ -83,9 +92,8 @@ test('resolver cancellation also stops a descendant holding the inherited output
     await readyFile(path.join(directory, 'descendant'));
     controller.abort();
     await rejection;
-    assert.throws(() => process.kill(leaderPid, 0), { code: 'ESRCH' });
-    // Returning proves all inherited stdout/stderr handles closed, including
-    // the descendant's. A child-only kill would leave this promise hanging.
+    await expectStopped(leaderPid);
+    // Settlement does not depend on inherited output handles closing.
   } finally {
     controller.abort();
     await Promise.allSettled([pending, rejection]);
@@ -93,7 +101,7 @@ test('resolver cancellation also stops a descendant holding the inherited output
   }
 });
 
-test('isolated resolver cleanup happens after cancelled child closure', async () => {
+test('isolated resolver cleanup follows bounded cancellation settlement', async () => {
   let directory;
   let pid;
   const controller = new AbortController();
@@ -115,7 +123,6 @@ test('isolated resolver cleanup happens after cancelled child closure', async ()
       ready();
       try { return await pending; }
       finally {
-        assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
         await access(path.join(cwd, 'package.json'));
       }
     } },
@@ -125,6 +132,7 @@ test('isolated resolver cleanup happens after cancelled child closure', async ()
   await running;
   controller.abort();
   await rejection;
+  await expectStopped(pid);
   await assert.rejects(access(directory), { code: 'ENOENT' });
 });
 

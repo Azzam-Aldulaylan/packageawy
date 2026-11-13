@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef } from 'react';
+import { useContext, useEffect, useId, useRef } from 'react';
+import { DependencyChangeContext, DependencyChangeStatus } from './DependencyChangeStatus.js';
 import type { Dispatch, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
 
 import type { RemoveAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
@@ -61,6 +62,7 @@ const PHASE_TITLE: Record<SmartCleanupState['phase'], string> = {
   complete: 'Cleanup complete',
   'cancelled-rolled-back': 'Cleanup cancelled and restored',
   incomplete: 'Cleanup needs attention',
+  unknown: 'Smart Cleanup',
   failed: 'Cleanup analysis could not finish',
 };
 
@@ -688,12 +690,13 @@ function ConfirmationView({
 }
 
 function ExecutionView({ state }: { state: SmartCleanupState }): ReactElement {
+  const change = useContext(DependencyChangeContext);
   const progress = state.execution;
   const value = progress === null || progress.total === 0 ? 0 : Math.round((progress.completed / progress.total) * 100);
   return (
     <div className="smart-cleanup-execution" aria-busy="true">
       <div className="smart-cleanup-execution__mark"><IconBroom /></div>
-      <p>{state.phase === 'rolling-back' ? state.message : progress?.currentLabel ?? 'Preparing cleanup…'}</p>
+      {change.task !== 'still-running' && !change.blocked ? <p>{state.phase === 'rolling-back' ? state.message : progress?.currentLabel ?? 'Preparing cleanup…'}</p> : null}
       <progress max={100} value={value} aria-label="Cleanup progress">{value}%</progress>
       <span>{state.phase === 'rolling-back' ? 'Keep this workspace open while files are restored.' : `${progress?.completed ?? 0} of ${progress?.total ?? 0} actions completed`}</span>
       <p className="smart-cleanup-mutation-lock-note">Close is unavailable while project files are changing. It becomes available when cleanup or restoration finishes.</p>
@@ -1093,6 +1096,7 @@ export function SmartCleanupWorkspace({
         {!canClose ? <p className="sr-only" id="smart-cleanup-close-reason">Wait for cleanup or restoration to finish before closing.</p> : null}
 
         <div className="smart-cleanup-body">
+          <DependencyChangeStatus />
           {state.phase === 'analyzing' ? <AnalysisView state={state} /> : null}
           {showReview ? (
             <>
@@ -1124,6 +1128,9 @@ export function SmartCleanupWorkspace({
         </div>
 
         <footer className="smart-cleanup-footer">
+          {state.phase === 'unknown' ? (
+            <button type="button" className="button button--secondary" onClick={onClose}>Close</button>
+          ) : null}
           {state.phase === 'analyzing' ? (
             <button type="button" className="button button--secondary" onClick={onCancelAnalysis}>Cancel analysis</button>
           ) : null}

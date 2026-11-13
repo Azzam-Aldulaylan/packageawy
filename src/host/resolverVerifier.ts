@@ -316,7 +316,8 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
         tempRoot
       );
     } finally {
-      await rm(tempRoot, { recursive: true, force: true });
+      // A surviving descendant may keep temp files busy. Cleanup is best effort.
+      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
@@ -394,7 +395,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     } catch {
       return { ok: false };
     } finally {
-      await rm(tempRoot, { recursive: true, force: true });
+      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
@@ -409,7 +410,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     signal?: AbortSignal
   ): Promise<
     | { ok: true; graph: DependencyGraph; beforeGraph: DependencyGraph; lockfileText: string }
-    | { ok: false; reason: string }
+    | { ok: false; reason: string; code?: 'RESOLVER_TIMEOUT' }
   > {
     if (this.options.lockfile === undefined) {
       return { ok: false, reason: 'A supported active lockfile is required for an automatic transitive fix.' };
@@ -453,6 +454,9 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
       });
       return { ok: true, graph, beforeGraph, lockfileText };
     } catch (cause) {
+      if (cause instanceof Error && cause.name === 'TimeoutError') {
+        return { ok: false, code: 'RESOLVER_TIMEOUT', reason: 'Transitive fix analysis reached its 120 second limit. Project files were not changed.' };
+      }
       return {
         ok: false,
         reason: signal?.aborted === true
@@ -460,7 +464,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
           : cause instanceof Error ? cause.message : String(cause),
       };
     } finally {
-      await rm(tempRoot, { recursive: true, force: true });
+      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 }

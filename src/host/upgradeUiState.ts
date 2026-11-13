@@ -102,5 +102,5 @@ export function upgradeErrorClearsActiveState(code: string): boolean {
  * failure worth surfacing.
  */
 export function upgradeErrorIsUserVisible(code: string): boolean {
-  return code !== 'CANCELLED' && code !== 'UPGRADE_IN_PROGRESS';
+  return code !== 'CANCELLED' && code !== 'UPGRADE_IN_PROGRESS' && code !== 'OUTCOME_UNKNOWN';
 }

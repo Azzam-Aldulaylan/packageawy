@@ -184,3 +184,146 @@ for (const targeted of [true, false]) {
     assert.equal(error.params.message.error.code, 'NoProjectFoundError');
   });
 }
+
+const { projectMutationLocks: restartLocks, canonicalProjectRoot } = await import('../out/host/projectMutationLock.js');
+const { randomUUID } = await import('node:crypto');
+
+async function restartSession(t) {
+  const s = session(); const id = randomUUID();
+  t.after(() => { restartLocks.cancelRestart(id); s.close(); });
+  await s.request('initialize', { workspaceFolders: [], isWorkspaceTrusted: false });
+  return { s, id };
+}
+
+test('restart prepare and commit require the same session and keep admission closed until cancel', async t => {
+  const { s, id } = await restartSession(t);
+  assert.deepEqual((await s.request('restart/prepare', { sessionId: id })).result, { sessionId: id, state: 'idle' });
+  assert.equal(restartLocks.tryAcquire('/restart-new-change', {}), null);
+  assert.equal(restartLocks.trackPending(), undefined);
+  assert.equal((await s.request('restart/commit', { sessionId: randomUUID() })).result, null);
+  assert.equal((await s.request('restart/prepare', { sessionId: randomUUID() })).result, null);
+  s.notify('restart/cancel', { sessionId: randomUUID() });
+  assert.deepEqual((await s.request('restart/commit', { sessionId: id })).result, { sessionId: id, state: 'idle' });
+  assert.equal(restartLocks.admissionClosed, true, 'commit never reopens admission');
+  s.notify('restart/cancel', { sessionId: id });
+  await s.request('unknown/method', {});
+  const owner = {}; const key = restartLocks.tryAcquire('/restart-new-change', owner);
+  assert.notEqual(key, null); restartLocks.release(key, owner);
+});
+
+for (const state of ['mutating', 'unknown', 'retained', 'recovery']) test(`restart sees detached ${state} holders without a dashboard`, async t => {
+  const { s, id } = await restartSession(t);
+  const holder = { state }; const key = restartLocks.tryAcquire('/restart-detached', holder);
+  t.after(() => restartLocks.release(key, holder));
+  const expected = state === 'mutating' ? 'busy' : 'unknown';
+  assert.equal((await s.request('restart/prepare', { sessionId: id })).result.state, expected);
+  assert.equal((await s.request('restart/commit', { sessionId: id })).result.state, expected);
+});
+
+test('restart includes pending acquisition before the coordinator has a holder', async t => {
+  const { makeProject, makeCoordinator, blocker } = await import('./helpers/removal-project.mjs');
+  const project = await makeProject(t);
+  const held = blocker();
+  const f = makeCoordinator(project, { mutationLocks: restartLocks });
+  f.state.holdRead = held.wait;
+  const pending = f.coordinator.handleAnalyzeBulkRemove({ changes: [{ package: 'react' }] });
+  await held.arrived;
+  const { s, id } = await restartSession(t);
+  assert.equal((await s.request('restart/prepare', { sessionId: id })).result.state, 'busy');
+  held.release(); await pending;
+  assert.equal(f.messages.at(-1).error.code, 'UPGRADE_IN_PROGRESS');
+  assert.equal((await s.request('restart/commit', { sessionId: id })).result.state, 'idle');
+});
+
+test('disconnect during prepare never reopens admission on a timer', async t => {
+  const { s, id } = await restartSession(t);
+  await s.request('restart/prepare', { sessionId: id });
+  s.close(); await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.tick(60_000);
+  assert.equal(restartLocks.admissionClosed, true);
+  assert.equal(restartLocks.tryAcquire('/restart-after-disconnect', {}), null);
+});
+
+test('restart refuses saved unknown journals even without a local holder', async t => {
+  const { recoveryFixture } = await import('./helpers/recovery.mjs');
+  const f = await recoveryFixture(t); const journal = await f.prepare(); await journal.unknown('missing task result');
+  const s = session(); const id = randomUUID();
+  t.after(() => { restartLocks.cancelRestart(id); s.close(); });
+  await s.request('initialize', { workspaceFolders: [{ id: f.root, path: f.root, name: 'fixture' }], isWorkspaceTrusted: false });
+  assert.equal((await s.request('restart/prepare', { sessionId: id })).result.state, 'unknown');
+});
+
+test('restart request validators reject invalid sessions without closing admission', async t => {
+  const { s } = await restartSession(t);
+  for (const params of [{}, { sessionId: 'old' }, { sessionId: randomUUID(), extra: true }, { sessionId: 42 }]) {
+    assert.equal((await s.request('restart/prepare', params)).error.code, ErrorCodes.InvalidParams);
+    assert.equal((await s.request('restart/commit', params)).error.code, ErrorCodes.InvalidParams);
+    s.notify('restart/cancel', params);
+  }
+  await s.request('unknown/method', {});
+  assert.equal(restartLocks.admissionClosed, false);
+});
+
+test('a reviewed change attempted between idle prepare and commit is refused until matching cancel', async t => {
+  const { makeProject, makeCoordinator, review } = await import('./helpers/removal-project.mjs');
+  const project = await makeProject(t);
+  const f = makeCoordinator(project, { mutationLocks: restartLocks, mutationRoot: () => project.root });
+  f.coordinator.session.invocationResolver = () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' });
+  const analysisId = await review(f);
+  const { s, id } = await restartSession(t);
+  assert.equal((await s.request('restart/prepare', { sessionId: id })).result.state, 'idle');
+  await f.coordinator.handleConfirmRemove({ analysisId });
+  assert.deepEqual(f.commands, []);
+  assert.equal(f.messages.at(-1).error.code, 'UPGRADE_IN_PROGRESS');
+  assert.equal((await s.request('restart/commit', { sessionId: id })).result.state, 'idle');
+  s.notify('restart/cancel', { sessionId: id }); await s.request('unknown/method', {});
+  await f.coordinator.handleConfirmRemove({ analysisId });
+  assert.deepEqual(f.commands, ['install']);
+  const key = canonicalProjectRoot(project.root);
+  restartLocks.release(key, restartLocks.holderOf(key));
+});
+
+test('restart includes a recovery claim waiting for target resolution', async t => {
+  const { RecoveryCoordinator } = await import('../out/host/recovery/coordinator.js');
+  let resolveTarget;
+  const target = new Promise(resolve => { resolveTarget = resolve; });
+  const warnings = [];
+  const recovery = new RecoveryCoordinator({ platform: { showWarningMessage: message => warnings.push(message) }, locks: restartLocks,
+    target: () => target, post() {}, removed: async () => {} });
+  const pending = recovery.start(true, null);
+  const { s, id } = await restartSession(t);
+  assert.equal((await s.request('restart/prepare', { sessionId: id })).result.state, 'busy');
+  resolveTarget(undefined); await pending;
+  assert.equal((await s.request('restart/commit', { sessionId: id })).result.state, 'idle');
+  await recovery.start(true, null);
+  assert.match(warnings.at(-1), /Cannot restart/);
+});
+
+for (const committed of [false, true]) test(`restart ignores late prepares for a ${committed ? 'committed' : 'canceled'} session`, async t => {
+  const { s, id } = await restartSession(t);
+  await s.request('restart/prepare', { sessionId: id });
+  if (committed) {
+    assert.equal((await s.request('restart/commit', { sessionId: id })).result.state, 'idle');
+    assert.equal((await s.request('restart/prepare', { sessionId: id })).result, null);
+    assert.equal(restartLocks.admissionClosed, true);
+  }
+  s.notify('restart/cancel', { sessionId: id });
+  await s.request('unknown/method', {});
+  assert.equal((await s.request('restart/prepare', { sessionId: id })).result, null);
+  assert.equal(restartLocks.admissionClosed, false);
+  const fresh = randomUUID();
+  t.after(() => restartLocks.cancelRestart(fresh));
+  assert.equal((await s.request('restart/prepare', { sessionId: fresh })).result.state, 'idle');
+  assert.equal((await s.request('restart/prepare', { sessionId: id })).result, null);
+  assert.equal(restartLocks.matchesRestart(fresh), true);
+});
+
+test('restart retirement history retains the latest 256 sessions without growing forever', async () => {
+  const { ProjectMutationLocks } = await import('../out/host/projectMutationLock.js');
+  const locks = new ProjectMutationLocks();
+  for (let i = 0; i < 300; i++) { assert.equal(locks.prepareRestart(String(i)), true); locks.cancelRestart(String(i)); }
+  assert.equal(locks.retiredRestartSessions.size, 256);
+  for (let i = 44; i < 300; i++) assert.equal(locks.prepareRestart(String(i)), false);
+  assert.equal(locks.admissionClosed, false);
+});

@@ -31,6 +31,7 @@ import type { Disposable, HostPlatform } from './platform/hostPlatform.js';
 import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
 import type { PackageManagerInvocation } from './resolverVerifier.js';
 import { PendingUpgradeRuns, UpgradeLock, isSuccessfulExitCode } from './upgradeTracker.js';
+import type { DependencyTaskState } from './webviewProtocol.js';
 import type { VerificationExecutionResult } from './upgradeTransaction.js';
 import { buildVerificationScriptArgs } from './verificationPolicy.js';
 import type { VerificationScript } from './verificationPolicy.js';
@@ -130,6 +131,8 @@ const DISPOSED_OUTCOME: UpgradeRunOutcome = {
   message: 'The task result was not observed.',
 };
 
+export const STILL_RUNNING_THRESHOLD_MS = 10_000;
+
 /**
  * Tracks the panel-wide upgrade lock and in-flight task-completion listeners
  * for one panel. One instance per DashboardPanel. `dispose()` from the
@@ -145,8 +148,15 @@ export class UpgradeExecutionSession {
   constructor(
     private readonly platform: HostPlatform,
     /** Test seam. Production resolves the real npm or pnpm for `cwd`. */
-    private readonly invocationResolver?: (cwd: string, packageManager: 'npm' | 'pnpm') => PackageManagerInvocation | null
+    private readonly invocationResolver?: (cwd: string, packageManager: 'npm' | 'pnpm') => PackageManagerInvocation | null,
+    private onTaskState?: (state: DependencyTaskState) => void
   ) {}
+
+  /** The coordinator installs this only when a user requests a change. */
+  observeTaskState(listener: (state: DependencyTaskState) => void): void {
+    this.onTaskState = listener;
+  }
+
 
   /**
    * Reserves the panel's single upgrade slot for `packageName` for the whole
@@ -444,6 +454,9 @@ export class UpgradeExecutionSession {
     };
 
     await this.journal?.record(taskName, 'intent');
+    this.onTaskState?.('running');
+    // This timer only explains the wait. Visible writers have no deadline.
+    const stillRunning = setTimeout(() => this.onTaskState?.('still-running'), STILL_RUNNING_THRESHOLD_MS);
     const outcome = await new Promise<UpgradeRunOutcome>((resolve) => {
       let settled = false;
       // A Disposable only stops future events: disposing the
@@ -498,6 +511,8 @@ export class UpgradeExecutionSession {
         }
       ).catch((error: unknown) => finish({ ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: error instanceof Error ? error.message : String(error) }));
     });
+    clearTimeout(stillRunning);
+    this.onTaskState?.('idle');
     if (outcome.ok || outcome.status !== 'unknown') {
       try { await this.journal?.record(taskName, 'finished'); }
       catch { return { ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: 'The task result could not be recorded.' }; }

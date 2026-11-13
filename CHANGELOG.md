@@ -6,6 +6,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Added
 
+- A long dependency change now shows Still running, explaining why Packageawy waits for the package manager before allowing another change or a rollback.
 - If VS Code or a JetBrains IDE closes during a dependency change, Packageawy now keeps a recovery record in the project and offers to restore each file the next time you open it.
 
 ### Changed
@@ -18,6 +19,9 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Fixed
 
+- Transitive fix analysis now stops after two minutes if the isolated package manager is still working, including children that keep its output open, and reports that project files were not changed.
+- A dependency change whose result was lost now shows the same blocked message in the dashboard and reviews, including Smart Cleanup, with a button to open recovery and no unverified restoration claims.
+- Restart in JetBrains IDEs now waits for the engine to confirm that no dependency change is running or has an unknown outcome, blocks new changes during that check, and ignores repeated requests from finished restart attempts.
 - Changing package.json or the lockfile while a scan is running no longer lets the dashboard reuse the older results as if they were current.
 - In a workspace where the lockfile sits above the opened folder, changes are now turned off with the reason shown, instead of rewriting a file Packageawy could not restore.
 - Vulnerability checks for update versions keep working after an internal error, instead of stopping until the dashboard is refreshed.

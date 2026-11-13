@@ -1,3 +1,5 @@
+import { useContext } from 'react';
+import { DependencyChangeContext } from './DependencyChangeStatus.js';
 import type { ReactElement } from 'react';
 
 import type { PackageRow } from '../../../src/core/types.js';
@@ -62,15 +64,16 @@ export function RemovalRunningPanel({
   row: PackageRow;
   progress: RemoveProgressPhase | null;
 }): ReactElement {
+  const change = useContext(DependencyChangeContext);
   const steps = removalProgressSteps(progress);
   const current = steps.find((step) => step.status === 'running');
   return (
     <div className="upgrade-tab removal-running">
       <section className="analysis-card analysis-card--full" aria-labelledby="removal-running-heading">
         <h3 className="analysis-card__title" id="removal-running-heading" tabIndex={-1}>Removing {row.name}</h3>
-        <p className="analysis-card__pending-label" role="status" aria-live="polite">
+        {change.task !== 'still-running' && !change.blocked ? <p className="analysis-card__pending-label" role="status" aria-live="polite">
           <IconRefresh className="banner__icon--spin" aria-hidden="true" /> {current?.running ?? 'Working'}…
-        </p>
+        </p> : null}
         <ul className="verification-steps">
           {steps.map((step) => (
             <li className="verification-steps__item" key={step.label}>
