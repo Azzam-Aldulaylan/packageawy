@@ -68,7 +68,7 @@ for (const stage of ['displace', 'install']) test(`failure fences rollback renam
   let paused = false;
   journal.storage.safeAbsolute = async name => {
     const value = await safeAbsolute(name);
-    const match = stage === 'displace' ? /displaced\/[^/]+\.bin$/.test(name) : name === f.manifest && journal.data.files[0].progress === 'displaced';
+    const match = stage === 'displace' ? /displaced[\\/][^\\/]+\.bin$/.test(name) : name === f.manifest && journal.data.files[0].progress === 'displaced';
     if (!paused && match) { paused = true; await hold.wait(); }
     return value;
   };
