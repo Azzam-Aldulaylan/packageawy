@@ -113,7 +113,7 @@ test('POSIX timeout kills the process group after an exited leader leaves a desc
   let leaderPid; let descendantPid;
   t.after(async () => {
     for (const pid of [leaderPid, descendantPid]) if (pid) { try { process.kill(pid, 'SIGKILL'); } catch {} }
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const descendant = 'process.on("SIGTERM",()=>{});require("node:fs").writeFileSync("descendant",String(process.pid));setInterval(()=>{},1000)';
   const leader = `require('node:fs').writeFileSync('leader',String(process.pid));require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',1,2]}).unref();`;

@@ -224,7 +224,7 @@ test('real runner timeout forces termination of an uncooperative process with bo
     ], temporaryRoot);
     await assert.rejects(pending, { name: 'TimeoutError' });
     await assertChildStopped(Number(await readFile(path.join(temporaryRoot, 'pid'), 'utf8')));
-  } finally { await rm(temporaryRoot, { recursive: true, force: true }); }
+  } finally { await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
 test('real runner cancellation forces termination and bounds settlement', async () => {
@@ -247,7 +247,7 @@ test('real runner cancellation forces termination and bounds settlement', async 
     await rejection;
     assert.ok(pid, 'child reached readiness');
     await assertChildStopped(pid);
-  } finally { await rm(temporaryRoot, { recursive: true, force: true }); }
+  } finally { await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
 test('real runner rejects oversized output with bounded settlement', async () => {

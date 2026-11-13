@@ -396,7 +396,7 @@ test('a hanging npm audit times out and the rows still render', async () => {
     assert.equal(result.rows.length, 2);
     assert.equal(rowFor(result, 'minimatch').upgradeTo, '3.1.5');
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
