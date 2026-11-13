@@ -1,10 +1,15 @@
+import { lockKey } from './pathIdentity.js';
+import { RECOVERY_MESSAGES } from './recoveryCopy.js';
+import { RecoveryLock } from './recoveryLock.js';
+import type { RecoveryJournal } from './recovery/journal.js';
+import { RecoveryError, type RecoveryTarget } from './recovery/model.js';
 import type { ProjectMutationLocks } from './projectMutationLock.js';
 import type { TransactionCompletion } from './upgradeTransaction.js';
 
-/** A known end of a change. Recorded on the handle; the recovery journal will use it. */
+/** Settlement reported by the transaction. Unknown outcomes retain ownership. */
 export type CompletionResult = TransactionCompletion;
 
-export type OwnerHandleState = 'reserved' | 'mutating' | 'released' | 'completed' | 'unknown';
+export type OwnerHandleState = 'reserved' | 'mutating' | 'released' | 'completed' | 'unknown' | 'retained' | 'transferred';
 
 export interface ReservationRefusal {
   readonly ok: false;
@@ -28,8 +33,12 @@ export interface OwnerHandle {
   readonly settled: boolean;
   /** The known end passed to `complete`, once it was called. */
   readonly result: CompletionResult | undefined;
-  /** Files may change only after this returns true. False on a settled or already mutating handle. */
-  beginMutation(): boolean;
+  /** A durable prepared journal is the authority to change project files. */
+  readonly journal: RecoveryJournal | undefined;
+  readonly refusal: string | undefined;
+  /** Files may change only after this returns true. */
+  beginMutation(target: RecoveryTarget): Promise<boolean>;
+  transferToRecovery(claimToken: string): RecoveryLock | undefined;
   /** Ends a reservation that never began a mutation. Refused once a mutation began. */
   releaseReadOnly(): Promise<boolean>;
   /** A known end, whether or not a mutation began. Releases the reservation. */
@@ -58,6 +67,8 @@ class Handle implements OwnerHandle {
   readonly ok = true;
   state: OwnerHandleState = 'reserved';
   result: CompletionResult | undefined;
+  journal: RecoveryJournal | undefined;
+  refusal: string | undefined;
   /** The key the project lock registry stored this handle under, or undefined for a project without a resolved target. */
   lockKey: string | undefined;
 
@@ -69,13 +80,41 @@ class Handle implements OwnerHandle {
   ) {}
 
   get settled(): boolean {
-    return this.state === 'released' || this.state === 'completed' || this.state === 'unknown';
+    return ['released', 'completed', 'unknown', 'retained', 'transferred'].includes(this.state);
   }
 
-  beginMutation(): boolean {
+  async beginMutation(target: RecoveryTarget): Promise<boolean> {
     if (this.state !== 'reserved') return this.ignored('beginMutation');
+    const key = lockKey(target.root);
+    if (this.lockKey === undefined) {
+      const acquired = this.owner.locks.tryAcquire(target.root, this);
+      if (acquired === null) { this.refusal = RECOVERY_MESSAGES.blocked; return false; }
+      this.lockKey = acquired;
+    }
+    if (this.lockKey !== key) { this.refusal = RECOVERY_MESSAGES.unsafe; return false; }
+    // Hold admission across the asynchronous bootstrap, including a panel close.
     this.state = 'mutating';
-    return true;
+    try {
+      // Ordinary activation and scans never need journal filesystem machinery.
+      const { prepareJournal } = await import('./recovery/journal.js');
+      this.journal = await prepareJournal(target);
+      return true;
+    } catch (error) {
+      this.refusal = error instanceof RecoveryError ? error.message : RECOVERY_MESSAGES.blocked;
+      this.state = 'reserved';
+      return false;
+    }
+  }
+
+  transferToRecovery(claimToken: string): RecoveryLock | undefined {
+    if ((this.state !== 'unknown' && this.state !== 'retained') || this.lockKey === undefined) {
+      this.ignored('transferToRecovery');
+      return undefined;
+    }
+    const lock = new RecoveryLock(this.owner.locks, this.lockKey, claimToken, async () => { await this.settle(this, 'completed'); });
+    if (!this.owner.locks.transfer(this.lockKey, this, lock)) return undefined;
+    this.state = 'transferred';
+    return lock;
   }
 
   async releaseReadOnly(): Promise<boolean> {
@@ -85,7 +124,19 @@ class Handle implements OwnerHandle {
 
   async complete(result: CompletionResult): Promise<boolean> {
     if (this.settled) return this.ignored('complete');
+    if (result === 'unknown') { this.markUnknown('The task result was not observed.'); return false; }
     this.result = result;
+    if (this.journal !== undefined) {
+      try {
+        if (!await this.journal.finish(result, this.journal.data.operation === 'cleanup' && result === 'kept')) {
+          this.state = 'retained';
+          return false;
+        }
+      } catch (error) {
+        this.markUnknown(error instanceof Error ? error.message : String(error));
+        return false;
+      }
+    }
     return this.settle(this, 'completed');
   }
 
@@ -112,6 +163,8 @@ export class OperationReservation {
   private current: Handle | undefined;
 
   constructor(private readonly options: OperationReservationOptions) {}
+
+  get locks(): ProjectMutationLocks { return this.options.locks; }
 
   /**
    * Takes the panel slot and, when the project has a resolved target, the
@@ -146,7 +199,7 @@ export class OperationReservation {
 
   /** Mutating, or settled as unknown: dependency files may be changing or in doubt. */
   get isMutationBusy(): boolean {
-    return this.current?.state === 'mutating' || this.current?.state === 'unknown';
+    return this.current !== undefined && ['mutating', 'unknown', 'retained', 'transferred'].includes(this.current.state);
   }
 
   /** Whether a lock holder found in the shared registry is one of this panel's handles. */

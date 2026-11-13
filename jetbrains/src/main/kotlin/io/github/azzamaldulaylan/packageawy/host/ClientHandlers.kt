@@ -17,6 +17,8 @@ import java.util.Base64
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Registers every client side handler of the protocol in hostPlatform.ts on
@@ -32,6 +34,32 @@ class ClientHandlers(
 ) : AutoCloseable {
     private val fileWatches = ConcurrentHashMap<String, AutoCloseable>()
     private val headWatches = ConcurrentHashMap<String, AutoCloseable>()
+    private val processes = ConcurrentHashMap<Long, ProcessStop>()
+
+    private class ProcessStop : AutoCloseable {
+        private val requested = AtomicBoolean(false)
+        private val handle = AtomicReference<AutoCloseable?>()
+
+        fun attach(stop: AutoCloseable) {
+            handle.set(stop)
+            // Termination may arrive while the host is still starting the process.
+            if (requested.get()) handle.getAndSet(null)?.close()
+        }
+
+        override fun close() {
+            requested.set(true)
+            handle.getAndSet(null)?.close()
+        }
+    }
+
+    private fun Params.processId(): Long {
+        val value = raw("processId")
+        if (value == null || !value.isJsonPrimitive || !value.asJsonPrimitive.isNumber) Params.invalid("processId must be a safe positive integer")
+        val id = runCatching { value.asBigDecimal.toBigIntegerExact().longValueExact() }.getOrNull()
+            ?: Params.invalid("processId must be a safe positive integer")
+        if (id <= 0 || id > 9007199254740991L) Params.invalid("processId must be a safe positive integer")
+        return id
+    }
 
     fun register() {
         request("storage/update") { p ->
@@ -160,7 +188,7 @@ class ClientHandlers(
         }
 
         request("process/start") { p ->
-            val processId = p.id("processId")
+            val processId = p.processId()
             val start = ProcessStart(
                 executable = p.string("executable"),
                 args = p.stringList("args"),
@@ -168,14 +196,24 @@ class ClientHandlers(
                 title = p.string("title"),
                 scope = p.string("scope"),
             )
+            val slot = ProcessStop()
+            // Reserve before launch so a duplicate can never replace a live stop handle.
+            if (processes.putIfAbsent(processId, slot) != null) Params.invalid("processId is already active")
             try {
-                host.startProcess(start) { exitCode ->
+                val stop = host.startProcess(start) { exitCode ->
+                    processes.remove(processId, slot)
                     connection.sendNotification("process/didExit", mapOf("processId" to processId, "exitCode" to exitCode))
                 }
+                slot.attach(stop)
             } catch (e: Exception) {
+                processes.remove(processId, slot)
                 throw ResponseError(ErrorCodes.INTERNAL_ERROR, e.message ?: "Could not start ${start.executable}")
             }
             null
+        }
+
+        notification("process/terminate") { p ->
+            processes.remove(p.processId())?.close()
         }
 
         notification("window/openFile") { p ->
@@ -202,6 +240,7 @@ class ClientHandlers(
         for (watch in fileWatches.values + headWatches.values) runCatching { watch.close() }
         fileWatches.clear()
         headWatches.clear()
+        processes.clear()
     }
 
     private fun request(method: String, handle: (Params) -> JsonElement?) {

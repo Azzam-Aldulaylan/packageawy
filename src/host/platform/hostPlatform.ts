@@ -46,7 +46,8 @@
  *   runs the process in its own console so the user sees live output. The
  *   request fails if the process cannot start. The client then sends a
  *   `process/didExit` notification with the exit code, or null when none
- *   was observed.
+ *   was observed. A late start after teardown is stopped with a
+ *   `process/terminate` notification carrying that process id.
  * - `openFile`, `openExternal` and `openSettings` are `window/openFile`,
  *   `window/openExternal` and `window/openSettings` notifications.
  * - `updateWorkspaceSetting` is a `settings/update` request with the key and
@@ -136,6 +137,7 @@ export interface FilePosition {
 }
 
 export interface HostPlatform {
+  readonly hostKind?: 'vscode' | 'jetbrains';
   /**
    * Writes one troubleshooting line to the host's log (the Packageawy output
    * channel in VS Code, the IDE log in JetBrains). Lines must come from

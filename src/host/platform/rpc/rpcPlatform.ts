@@ -1,5 +1,6 @@
 /** HostPlatform over the sidecar's JSON-RPC connection. See ../hostPlatform.ts for the protocol. */
 
+import { isRecoveryPath } from '../../../core/workspace/scan.js';
 import { readFile, stat } from 'node:fs/promises';
 import { readFileChunks } from '../fileChunks.js';
 
@@ -41,10 +42,11 @@ import {
   parseFileDidChange,
   parseIdParam,
   parseProcessDidExit,
+  validateProcessId,
 } from './validation.js';
 
 /** The connection surface RpcPlatform uses. JsonRpcConnection satisfies it. */
-export type RpcConnection = Pick<JsonRpcConnection, 'sendRequest' | 'sendNotification' | 'onNotification'>;
+export type RpcConnection = Pick<JsonRpcConnection, 'sendRequest' | 'sendNotification' | 'onNotification'> & Partial<Pick<JsonRpcConnection, 'onClose'>>;
 
 type Log = (message: string) => void;
 
@@ -89,6 +91,7 @@ function callSoon(listener: () => void): Disposable {
 
 export class RpcPlatform implements HostPlatform {
   readFileChunks = readFileChunks;
+  readonly hostKind = 'jetbrains';
   readonly workspaceState: KeyValueStore;
   readonly globalState: KeyValueStore;
 
@@ -96,6 +99,9 @@ export class RpcPlatform implements HostPlatform {
   private trusted: boolean;
   private settings: Record<string, unknown>;
   private nextId = 1;
+  private disposed = false;
+  private resolveTeardown: () => void = () => undefined;
+  private readonly teardown = new Promise<void>((resolve) => { this.resolveTeardown = resolve; });
   private readonly fileWatches = new Map<number, (filePath: string) => void>();
   private readonly headWatches = new Map<number, () => void>();
   private readonly progress = new Map<number, CancellationTokenSource>();
@@ -112,6 +118,7 @@ export class RpcPlatform implements HostPlatform {
     init: InitializeParams,
     private readonly writeLog: Log = () => undefined
   ) {
+    connection.onClose?.(() => this.dispose());
     this.folders = init.workspaceFolders;
     this.trusted = init.isWorkspaceTrusted;
     this.settings = { ...init.settings };
@@ -133,7 +140,7 @@ export class RpcPlatform implements HostPlatform {
     });
     connection.onNotification(Methods.filesDidChange, (params) => {
       const { watchId, path } = parseFileDidChange(params);
-      this.fileWatches.get(watchId)?.(path);
+      if (!isRecoveryPath(path)) this.fileWatches.get(watchId)?.(path);
     });
     connection.onNotification(Methods.gitDidChangeHead, (params) => {
       this.headWatches.get(parseIdParam(params, 'watchId'))?.();
@@ -339,7 +346,8 @@ export class RpcPlatform implements HostPlatform {
   }
 
   async runProcess(request: ProcessRequest): Promise<RunningProcess> {
-    const processId = this.nextId++;
+    if (this.disposed) throw new Error('The platform is disposed.');
+    const processId = validateProcessId(this.nextId++);
     const state: ProcessState = { exited: false, exitCode: undefined, listeners: new Set() };
     // Registered before the request so an early exit is not lost.
     this.processes.set(processId, state);
@@ -352,10 +360,21 @@ export class RpcPlatform implements HostPlatform {
       scope: request.scope,
     };
     try {
-      await this.connection.sendRequest(Methods.processStart, params);
+      // A missing start response must not prevent teardown from reporting
+      // lost observation. Keep handling late replies to stop orphaned work.
+      await Promise.race([
+        this.connection.sendRequest(Methods.processStart, params).then(() => {
+          if (this.disposed) this.connection.sendNotification(Methods.processTerminate, { processId });
+        }),
+        this.teardown,
+      ]);
     } catch (error) {
       this.processes.delete(processId);
-      throw error;
+      if (!this.disposed) throw error;
+    }
+    if (this.disposed) {
+      state.exited = true;
+      state.exitCode = undefined;
     }
     return {
       onDidExit: (listener) => {
@@ -364,6 +383,17 @@ export class RpcPlatform implements HostPlatform {
         return { dispose: () => state.listeners.delete(listener) };
       },
     };
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.resolveTeardown();
+    for (const state of this.processes.values()) {
+      state.exited = true; state.exitCode = undefined;
+      for (const listener of [...state.listeners]) listener(undefined);
+      state.listeners.clear();
+    }
+    this.processes.clear();
   }
 
   openFile(filePath: string, position?: FilePosition): void {

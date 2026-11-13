@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.api.assertThrows
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
@@ -57,8 +58,8 @@ class ClientHandlersTest {
     private fun call(method: String, params: Any?): JsonElement? = sidecar.sendRequest(method, params).get(5, TimeUnit.SECONDS)
 
     private fun errorOf(method: String, params: Any?): Int {
-        val error = runCatching { call(method, params) }.exceptionOrNull()
-        return ((error as ExecutionException).cause as ResponseError).code
+        val error = assertThrows<ExecutionException> { call(method, params) }
+        return (error.cause as ResponseError).code
     }
 
     private fun nextEvent(): String = host.events.poll(5, TimeUnit.SECONDS) ?: error("No event")
@@ -210,20 +211,57 @@ class ClientHandlersTest {
         call(
             "process/start",
             mapOf(
-                "processId" to "p1", "executable" to java, "args" to listOf("-version"), "cwd" to dir.toString(),
+                "processId" to 1, "executable" to java, "args" to listOf("-version"), "cwd" to dir.toString(),
                 "title" to "t", "scope" to "s",
             ),
         )
         val (method, params) = notifications.poll(30, TimeUnit.SECONDS)!!
         assertEquals("process/didExit", method)
-        assertEquals("p1", params!!.asJsonObject["processId"].asString)
+        assertEquals(1L, params!!.asJsonObject["processId"].asLong)
         assertEquals(0, params.asJsonObject["exitCode"].asInt)
+    }
+
+    @Test
+    fun `terminate stops only the matching late process once`() {
+        host.holdProcess = true
+        for (id in listOf(1, 2)) {
+            call("process/start", mapOf("processId" to id, "executable" to "npm", "args" to listOf("install"),
+                "cwd" to dir.toString(), "title" to "t", "scope" to "p$id"))
+            assertEquals("process:npm:install:p$id", nextEvent())
+        }
+        sidecar.sendNotification("process/terminate", mapOf("processId" to 1))
+        assertEquals("process-stopped:p1", nextEvent())
+        sidecar.sendNotification("process/terminate", mapOf("processId" to 1))
+        sidecar.sendNotification("process/terminate", mapOf("processId" to 2))
+        assertEquals("process-stopped:p2", nextEvent())
+    }
+
+    @Test
+    fun `process ids reject coercion and duplicate active launches`() {
+        host.holdProcess = true
+        fun start(id: Any) = mapOf("processId" to id, "executable" to "npm", "args" to listOf("install"),
+            "cwd" to dir.toString(), "title" to "t", "scope" to "p$id")
+        call("process/start", start(1))
+        assertEquals("process:npm:install:p1", nextEvent())
+        for (id in listOf(1.9, "1", 0, -1, 9007199254740992L, true)) {
+            assertEquals(ErrorCodes.INVALID_PARAMS, errorOf("process/start", start(id)), id.toString())
+            sidecar.sendNotification("process/terminate", mapOf("processId" to id))
+        }
+        assertEquals(ErrorCodes.INVALID_PARAMS, errorOf("process/start", start(1)))
+        // A request after the notifications is a barrier on the connection's reader.
+        call("process/start", start(9007199254740991L))
+        assertEquals("process:npm:install:p9007199254740991", nextEvent())
+        assertTrue(host.events.isEmpty())
+        sidecar.sendNotification("process/terminate", mapOf("processId" to 1))
+        assertEquals("process-stopped:p1", nextEvent())
+        call("process/start", start(1))
+        assertEquals("process:npm:install:p1", nextEvent())
     }
 
     @Test
     fun `process start failure is an error response`() {
         host.failProcessStart = true
-        val params = mapOf("processId" to "p", "executable" to "x", "args" to listOf<String>(), "cwd" to dir.toString(), "title" to "t", "scope" to "s")
+        val params = mapOf("processId" to 1, "executable" to "x", "args" to listOf<String>(), "cwd" to dir.toString(), "title" to "t", "scope" to "s")
         assertEquals(ErrorCodes.INTERNAL_ERROR, errorOf("process/start", params))
     }
 

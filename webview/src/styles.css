@@ -8841,3 +8841,34 @@ button {
   margin: 0;
   color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
 }
+
+.recovery {
+  max-width: 76ch;
+  margin: 24px auto;
+  padding: 0 24px 32px;
+  color: var(--vscode-foreground);
+}
+.recovery__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.recovery__heading h1 { margin: 0; font-size: 1.5rem; }
+.recovery p { line-height: 1.6; }
+.recovery__warning { color: var(--vscode-foreground); }
+.recovery__confirmation, .recovery__choices { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; margin: 24px 0; }
+.recovery label { display: flex; gap: 8px; align-items: baseline; line-height: 1.5; }
+.recovery input { flex-shrink: 0; accent-color: var(--vscode-focusBorder); }
+.recovery__file { border: 1px solid var(--vscode-panel-border); margin: 24px 0; padding: 16px; min-width: 0; }
+.recovery__file legend { font-weight: 600; overflow-wrap: anywhere; padding: 0 6px; }
+.recovery__comparison { margin: 0; }
+.recovery__comparison div { margin: 0 0 12px; }
+.recovery__comparison dt { font-weight: 600; }
+.recovery__comparison dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.recovery button:focus-visible, .recovery input:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+@media (max-width: 480px) { .recovery { padding: 0 12px 24px; } .recovery__heading { align-items: flex-start; } }
+
+.recovery__contents summary { cursor: pointer; padding: 8px 0; }
+.recovery__contents h2 { font-size: 1rem; margin: 16px 0 8px; }
+.recovery__contents pre { overflow: auto; max-height: 20rem; padding: 12px; background: var(--vscode-textCodeBlock-background); color: var(--vscode-foreground); font-size: 0.9em; tab-size: 2; }

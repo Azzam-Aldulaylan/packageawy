@@ -148,11 +148,15 @@ test('(b) an edit made while pass two fails is kept', async () => {
   }));
 });
 
-test('(c) an edit made before pass one throws is kept', async () => {
-  await assertEditKept(runWithEdit({
+test('(c) an exception after dispatch is unknown and never restores either file', async () => {
+  const { result, files } = runWithEdit({
     resolve: async (files, edit) => { lockWrite(files); edit(); throw new Error('spawn failed'); },
     restyle: async () => ({ ok: true }),
-  }));
+  });
+  const outcome = await result;
+  assert.equal(outcome.completion, 'unknown');
+  assert.equal(outcome.rollback.status, 'not-needed');
+  assert.equal(text(await files.read('/p/package-lock.json')), 'new-lock');
 });
 
 test('(d) an edit made during successful passes is kept when verification then rolls back', async () => {

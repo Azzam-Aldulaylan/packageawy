@@ -1,7 +1,7 @@
 /**
  * VS Code task exits are never lost: an exit that lands before executeTask
  * resolves, or before the caller subscribes, is still reported once, only to
- * the run it belongs to, and platform disposal stops every later callback.
+ * the run it belongs to, and platform disposal settles undelivered results as unknown exactly once.
  */
 
 import assert from 'node:assert/strict';
@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
+import { makeProject, makeCoordinator, review } from './helpers/removal-project.mjs';
+import { ProjectMutationLocks, canonicalProjectRoot } from '../out/host/projectMutationLock.js';
 import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 /** The fake for the current test. The vscode module below delegates to it. */
@@ -35,6 +37,8 @@ function fakeTasks() {
 }
 
 const vscode = {
+  RelativePattern: class {},
+  workspace: {},
   ProcessExecution: class {
     constructor(process, args, options) {
       Object.assign(this, { process, args, options });
@@ -283,7 +287,7 @@ test('a startup that throws or rejects removes the listener and passes the error
   assert.deepEqual(listening, [1, 1], 'exits were observed while each start was pending');
 });
 
-test('disposing the platform during startup stops observing, and a later startup reports nothing', async (t) => {
+test('disposing the platform during startup reports an unknown result after startup resolves', async (t) => {
   const timers = trackTimers(t);
   const { tasks, platform } = setup();
   const starting = platform.runProcess(REQUEST);
@@ -295,12 +299,12 @@ test('disposing the platform during startup stops observing, and a later startup
   const { calls } = record(await starting);
   tasks.end(execution, 0);
   await settle();
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, [undefined]);
   assert.equal(tasks.native.size, 0);
   assert.equal(timers.size, 0);
 });
 
-test('disposing the platform after startup drops attached listeners', async (t) => {
+test('disposing the platform after startup reports a lost result to attached listeners', async (t) => {
   const timers = trackTimers(t);
   const { tasks, platform } = setup();
   const starting = platform.runProcess(REQUEST);
@@ -313,12 +317,12 @@ test('disposing the platform after startup drops attached listeners', async (t) 
   tasks.end(execution, 0);
   const late = record(running);
   await settle();
-  assert.deepEqual(calls, []);
-  assert.deepEqual(late.calls, []);
+  assert.deepEqual(calls, [undefined]);
+  assert.deepEqual(late.calls, [undefined]);
   assert.equal(timers.size, 0);
 });
 
-test('disposing the platform after a replay was scheduled cancels it', async (t) => {
+test('disposing the platform settles a queued replay as unknown', async (t) => {
   const timers = trackTimers(t);
   const { tasks, platform } = setup();
   const starting = platform.runProcess(REQUEST);
@@ -331,11 +335,11 @@ test('disposing the platform after a replay was scheduled cancels it', async (t)
   platform.dispose();
   assert.equal(timers.size, 0, 'the replay was cancelled');
   await settle();
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, [undefined]);
   assert.equal(tasks.native.size, 0);
 });
 
-test('a subscriber that disposes the platform stops the remaining ones', async () => {
+test('a subscriber that disposes the platform settles the remaining ones as unknown', async () => {
   const { tasks, platform } = setup();
   const starting = platform.runProcess(REQUEST);
   const execution = {};
@@ -349,10 +353,10 @@ test('a subscriber that disposes the platform stops the remaining ones', async (
   running.onDidExit((exitCode) => calls.push(['second', exitCode]));
   tasks.end(execution, 0);
   await settle();
-  assert.deepEqual(calls, [['first', 0]]);
+  assert.deepEqual(calls, [['first', 0], ['second', undefined]]);
 });
 
-test('a finished run with every replay cancelled is still silenced by platform disposal', async (t) => {
+test('a fresh subscription after disposal reports loss of observation', async (t) => {
   const timers = trackTimers(t);
   const { tasks, platform } = setup();
   const starting = platform.runProcess(REQUEST);
@@ -368,7 +372,7 @@ test('a finished run with every replay cancelled is still silenced by platform d
   platform.dispose();
   const after = record(running);
   await settle();
-  assert.deepEqual([first.calls, second.calls, after.calls], [[], [], []]);
+  assert.deepEqual([first.calls, second.calls, after.calls], [[], [], [undefined]]);
   assert.equal(timers.size, 0, 'nothing is scheduled');
   assert.equal(tasks.native.size, 0, 'nothing is observed');
 });
@@ -445,7 +449,7 @@ test('an install that exits before VS Code says it started still settles the cha
     loadProject: read,
     changesPaused: () => false,
   });
-  await coordinator.handleAnalyzeSmartCleanupRemove({ requestId: 'cleanup', removalRequestId: 'impact', packages: ['react'] });
+  await coordinator.handleAnalyzeBulkRemove({ changes: [{ package: 'react' }] });
   const analysis = messages.findLast((message) => message.status === 'remove-analysis');
   assert.ok(analysis, 'the removal review was posted');
 
@@ -464,4 +468,92 @@ test('an install that exits before VS Code says it started still settles the cha
   assert.equal(coordinator.isMutationBusy(), false);
   assert.equal(tasks.native.size, 0);
   platform.dispose();
+});
+
+test('VS Code drops recovery watcher events before invoking invalidation callbacks', () => {
+  const callbacks = [];
+  vscode.RelativePattern = class {};
+  vscode.Uri.file = fsPath => ({ fsPath });
+  vscode.workspace.createFileSystemWatcher = () => ({
+    onDidChange: listener => callbacks.push(listener), onDidCreate: listener => callbacks.push(listener), onDidDelete: listener => callbacks.push(listener), dispose() {},
+  });
+  const { platform } = setup();
+  const changed = [];
+  platform.watchFiles('/work', '**/*', file => changed.push(file));
+  for (const listener of callbacks) {
+    listener({ fsPath: '/work/.packageawy-recovery/backups/package.json' });
+    listener({ fsPath: '/work/package.json' });
+  }
+  assert.deepEqual(changed, ['/work/package.json', '/work/package.json', '/work/package.json']);
+  platform.dispose();
+});
+
+
+test('disposal with an early-exit replay pending settles the real execution and owner as unknown', async t => {
+  const project = await makeProject(t);
+  const { tasks, platform } = setup();
+  const locks = new ProjectMutationLocks();
+  tasks.executeTask = async () => { const execution = {}; tasks.end(execution, 0); return execution; };
+  const f = makeCoordinator(project, { mutationLocks: locks, mutationRoot: () => project.root,
+    platform: { getSetting: (_key, fallback) => fallback, isWorkspaceTrusted: () => true, showWarningMessage() {},
+      runProcess: async request => {
+        const run = await platform.runProcess(request);
+        return { onDidExit(listener) { const subscription = run.onDidExit(listener); platform.dispose(); return subscription; } };
+      } },
+  });
+  f.coordinator.session.invocationResolver = () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' });
+  const analysisId = await review(f);
+  let timeout;
+  const result = await Promise.race([f.coordinator.handleConfirmRemove({ analysisId }).then(() => 'settled'),
+    new Promise(resolve => { timeout = setTimeout(() => resolve('pending'), 2000); })]);
+  clearTimeout(timeout);
+  assert.equal(result, 'settled');
+  const owner = locks.holderOf(canonicalProjectRoot(project.root));
+  assert.equal(owner.state, 'unknown');
+  assert.equal(owner.journal.data.outcome, 'unknown');
+  await settle();
+  assert.equal(owner.state, 'unknown');
+});
+
+for (const lateReply of ['resolve', 'reject']) test(`pending VS Code startup disposal settles the owner before a late ${lateReply}`, async t => {
+  const project = await makeProject(t);
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const locks = new ProjectMutationLocks();
+  let reached;
+  const launching = new Promise(resolve => { reached = resolve; });
+  const executeTask = tasks.executeTask;
+  tasks.executeTask = task => { const pending = executeTask(task); reached(); return pending; };
+  const f = makeCoordinator(project, { mutationLocks: locks, mutationRoot: () => project.root,
+    platform: { getSetting: (_key, fallback) => fallback, isWorkspaceTrusted: () => true, showWarningMessage() {},
+      runProcess: request => platform.runProcess(request) },
+  });
+  f.coordinator.session.invocationResolver = () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' });
+  const analysisId = await review(f);
+  const confirming = f.coordinator.handleConfirmRemove({ analysisId }).then(() => 'settled');
+  await launching;
+  const owner = locks.holderOf(canonicalProjectRoot(project.root));
+  assert.equal(owner.state, 'mutating');
+  platform.dispose();
+  let timeout;
+  try {
+    assert.equal(await Promise.race([confirming,
+      new Promise(resolve => { timeout = setTimeout(() => resolve('pending'), 2000); })]), 'settled');
+  } finally { clearTimeout(timeout); }
+  assert.equal(owner.state, 'unknown');
+  assert.equal(owner.journal.data.outcome, 'unknown');
+  assert.equal(tasks.native.size, 0);
+  const before = await readFile(project.manifestPath);
+  const sequence = owner.journal.data.sequence;
+  let terminated = 0;
+  const execution = { terminate() { terminated += 1; } };
+  if (lateReply === 'resolve') tasks.starts[0].resolve(execution);
+  else tasks.starts[0].reject(new Error('late launch failure'));
+  tasks.end(execution, 0);
+  await settle();
+  assert.equal(terminated, lateReply === 'resolve' ? 1 : 0);
+  assert.equal(owner.state, 'unknown');
+  assert.equal(owner.journal.data.sequence, sequence);
+  assert.deepEqual(await readFile(project.manifestPath), before);
+  await assert.rejects(platform.runProcess(REQUEST), /disposed/);
 });

@@ -18,6 +18,7 @@ class FakeHost : HostServices {
     var pickAnswer: Int? = null
     var holdQuickPick = false
     var failProcessStart = false
+    var holdProcess = false
     var hasRepository = true
     var trusted = true
     val openWatches = CopyOnWriteArrayList<String>()
@@ -42,13 +43,16 @@ class FakeHost : HostServices {
         return result
     }
 
-    override fun startProcess(request: ProcessStart, onExit: (Int?) -> Unit) {
+    override fun startProcess(request: ProcessStart, onExit: (Int?) -> Unit): AutoCloseable {
         if (failProcessStart) throw IllegalStateException("no such executable")
         events.add("process:${request.executable}:${request.args.joinToString(" ")}:${request.scope}")
+        if (holdProcess) return AutoCloseable { events.add("process-stopped:${request.scope}") }
+        val process = ProcessBuilder(listOf(request.executable) + request.args).start()
         Thread {
-            val code = ProcessBuilder(listOf(request.executable) + request.args).start().waitFor()
+            val code = process.waitFor()
             onExit(code)
         }.start()
+        return AutoCloseable { process.destroy() }
     }
 
     override fun openFile(path: String, line: Int?, column: Int?) {

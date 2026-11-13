@@ -107,7 +107,7 @@ const NODE_CHECKS: TransactionPathChecks = {
  * above the folder are allowed (/tmp on macOS, a home directory alias), so
  * only a link whose parent resolves to the folder or below it is refused.
  */
-async function assertSafeCanonicalPath(
+export async function assertSafeCanonicalPath(
   checks: TransactionPathChecks,
   canonicalRoot: string,
   candidate: string

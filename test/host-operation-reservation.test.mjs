@@ -1,3 +1,4 @@
+import { recoveryFixture } from './helpers/recovery.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -48,22 +49,24 @@ for (const exit of ['cancel', 'analysis-failure', 'controller-unavailable']) {
   });
 }
 
-test('read-only review ownership is not mutation ownership', () => {
+test('read-only review ownership is not mutation ownership', async t => {
+  const f = await recoveryFixture(t);
   const { lifecycle } = fixture();
-  const handle = lifecycle.reserve('pkg', '/workspace');
+  const handle = lifecycle.reserve('pkg', f.root);
   assert.equal(lifecycle.isMutationBusy, false);
-  assert.equal(handle.beginMutation(), true);
+  assert.equal(await handle.beginMutation(f.target), true);
   assert.equal(lifecycle.isMutationBusy, true);
 });
 
-test('a remounted webview releases abandoned read-only ownership but never a mutation', async () => {
+test('a remounted webview releases abandoned read-only ownership but never a mutation', async t => {
+  const f = await recoveryFixture(t);
   const readOnly = fixture();
   readOnly.lifecycle.reserve('review', '/workspace');
   assert.equal(await readOnly.lifecycle.held.releaseReadOnly(), true);
   assert.deepEqual(readOnly.calls, ['release:review', 'flush', 'resume']);
 
   const mutation = fixture();
-  mutation.lifecycle.reserve('install', '/workspace').beginMutation();
+  await mutation.lifecycle.reserve('install', f.root).beginMutation(f.target);
   assert.equal(await mutation.lifecycle.held.releaseReadOnly(), false);
   assert.deepEqual(mutation.calls, []);
 });

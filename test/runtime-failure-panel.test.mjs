@@ -24,6 +24,7 @@ function makePanel(platformOverrides = {}) {
   let disposeChannel;
   const store = { get: () => undefined, update: async () => {} };
   const platform = {
+    workspaceFolders: () => [],
     getSetting: (_key, fallback) => fallback,
     globalState: store,
     workspaceState: store,
@@ -169,6 +170,7 @@ test('every webview message type is classified as change-starting or read-only',
   // CHANGE_STARTING_MESSAGE_TYPES (webviewProtocol.ts) and are refused after
   // an internal error.
   const readOnly = new Set([
+    'inspect-recovery', 'start-recovery', 'apply-recovery', 'dismiss-recovery',
     'ready', 'rendered', 'refresh', 'change-project', 'load-upgrade-targets', 'cancel-upgrade-targets', 'upgrade',
     'bulk-upgrade', 'bulk-remove', 'smart-cleanup-remove', 'open-advisory', 'cancel-upgrade', 'retry-upgrade-enrichment',
     'cancel-remove', 'configure-verification', 'configure-advisory-check', 'analyze-remediation', 'cancel-remediation',

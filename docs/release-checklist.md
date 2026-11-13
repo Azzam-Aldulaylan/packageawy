@@ -84,3 +84,17 @@ The same steps can be done by hand from the repository root:
 - [ ] Linux: npm or pnpm project, refresh, and one review.
 
 Note the VS Code version, operating system, package manager, and VSIX SHA-256 in the release notes.
+
+## Dependency recovery, each release candidate
+
+Use throwaway projects. Run each check in VS Code and a JetBrains IDE on both macOS and Windows, and record the host, OS and package manager.
+
+- [ ] Kill the editor during an install, reopen the project and check that dependency changes stay blocked and no file restores by itself.
+- [ ] Disconnect while an install is still running. Check that its unknown result keeps the recovery folder and lock. Stop the install before confirming recovery.
+- [ ] Open the same project in two windows, including one window in each host. Only one dependency change can acquire the recovery folder.
+- [ ] Start recovery after confirming all writers stopped. Check the running-install race warning, default Keep current choices, backup/current contents and explicit deletion approval.
+- [ ] Edit a dependency file after reviewing recovery choices. Applying the old choices must stop and keep saved files. Retry from the current contents.
+- [ ] Interrupt recovery after a displacement. Reopen, check the recorded progress and confirm that nothing resumes automatically and the displaced contents remain saved.
+- [ ] Close recovery without dismissal. Saved files and the lock remain. Remove saved files and unlock only after reviewing the result.
+- [ ] Interrupt dismissal, reopen in a fresh editor process and finish the remaining cleanup after the stop confirmation.
+- [ ] Leave a `takeover` folder behind. Packageawy must refuse to remove it and explain how to remove it by hand after closing other windows.

@@ -51,7 +51,7 @@ export interface UpgradeRunParams {
   }[];
 }
 
-export type UpgradeRunOutcome = { ok: true } | { ok: false; code: string; message: string };
+export type UpgradeRunOutcome = { ok: true } | { ok: false; status?: 'unknown'; code: string; message: string };
 
 /**
  * Host-owned inputs for reconciling an already-staged package.json. No
@@ -125,8 +125,9 @@ export function npmFindsWorkspaceRoot(version: string | undefined): boolean {
 
 const DISPOSED_OUTCOME: UpgradeRunOutcome = {
   ok: false,
-  code: 'DISPOSED',
-  message: 'The dashboard panel was closed.',
+  status: 'unknown',
+  code: 'OUTCOME_UNKNOWN',
+  message: 'The task result was not observed.',
 };
 
 /**
@@ -139,6 +140,7 @@ export class UpgradeExecutionSession {
   private readonly lock = new UpgradeLock();
   private readonly listeners = new Set<Disposable>();
   private readonly pendingRuns = new PendingUpgradeRuns();
+  journal: { record(step: string, phase: 'intent' | 'finished'): Promise<void> } | undefined;
 
   constructor(
     private readonly platform: HostPlatform,
@@ -371,6 +373,7 @@ export class UpgradeExecutionSession {
         `Packageawy: Verify ${script.scriptName}`,
         `${params.packageManager} run ${script.scriptName}`
       );
+      if (!outcome.ok && outcome.status === 'unknown') return { status: 'unknown', checks, message: outcome.message };
       if (cancelled()) return { status: 'cancelled', checks };
       if (!outcome.ok) {
         checks.push({ id: script.id, status: 'failed', message: outcome.message });
@@ -440,7 +443,8 @@ export class UpgradeExecutionSession {
       scope: packageName,
     };
 
-    return await new Promise<UpgradeRunOutcome>((resolve) => {
+    await this.journal?.record(taskName, 'intent');
+    const outcome = await new Promise<UpgradeRunOutcome>((resolve) => {
       let settled = false;
       // A Disposable only stops future events: disposing the
       // onDidExit listener below does not, by itself, resolve this
@@ -460,18 +464,19 @@ export class UpgradeExecutionSession {
         resolve(outcome);
       };
 
-      this.platform.runProcess(request).then(
+      Promise.resolve().then(() => this.platform.runProcess(request)).then(
         (started) => {
           // dispose() already settled this run (DISPOSED) while runProcess
           // was still pending: don't register a listener for a session that
           // is already torn down. The process itself keeps running regardless,
           // we simply stop caring about its outcome from here.
           if (settled) return;
-          const disposable = started.onDidExit((exitCode) => {
-            disposable.dispose();
-            this.listeners.delete(disposable);
+          let disposable: Disposable | undefined;
+          disposable = started.onDidExit((exitCode) => {
+            disposable?.dispose();
+            if (disposable !== undefined) this.listeners.delete(disposable);
             finish(
-              isSuccessfulExitCode(exitCode)
+              exitCode === undefined ? { ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: 'The task result was not observed.' } : isSuccessfulExitCode(exitCode)
                 ? { ok: true }
                 : {
                     ok: false,
@@ -480,17 +485,24 @@ export class UpgradeExecutionSession {
                   }
             );
           });
-          this.listeners.add(disposable);
+          if (settled) disposable.dispose();
+          else this.listeners.add(disposable);
         },
         (error: unknown) => {
           finish({
             ok: false,
-            code: 'TASK_START_FAILED',
+            status: 'unknown',
+            code: 'OUTCOME_UNKNOWN',
             message: error instanceof Error ? error.message : String(error),
           });
         }
-      );
+      ).catch((error: unknown) => finish({ ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: error instanceof Error ? error.message : String(error) }));
     });
+    if (outcome.ok || outcome.status !== 'unknown') {
+      try { await this.journal?.record(taskName, 'finished'); }
+      catch { return { ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: 'The task result could not be recorded.' }; }
+    }
+    return outcome;
   }
 
   dispose(): void {

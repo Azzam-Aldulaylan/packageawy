@@ -1,3 +1,4 @@
+import { recoveryFixture, choices } from './helpers/recovery.mjs';
 /**
  * Owner handles: only the handle a reservation returned can end it, each
  * handle is single-use, and a late call from a finished flow can never end
@@ -58,7 +59,7 @@ test('a stale handle cannot end another owner reservation, even for the same pac
 
   assert.equal(await first.releaseReadOnly(), false);
   assert.equal(await first.complete('kept'), false);
-  assert.equal(first.beginMutation(), false);
+  assert.equal(await first.beginMutation(), false);
   assert.equal(first.markUnknown('late result'), false);
 
   assert.equal(reservation.held, second);
@@ -69,11 +70,14 @@ test('a stale handle cannot end another owner reservation, even for the same pac
   assert.ok(logs.every((line) => line.startsWith('Ignored ') && line.includes('released reservation for left-pad')));
 });
 
-test('settling twice is a logged no-op', async () => {
+test('settling twice is a logged no-op', async t => {
+  const f = await recoveryFixture(t);
+  const KEY = f.root;
+  const LOCK = canonicalProjectRoot(KEY);
   const { reservation, locks, calls, logs } = panel();
   const handle = reservation.reserve('react', KEY);
-  assert.equal(handle.beginMutation(), true);
-  assert.equal(handle.beginMutation(), false, 'a mutation begins once');
+  assert.equal(await handle.beginMutation(f.target), true);
+  assert.equal(await handle.beginMutation(f.target), false, 'a mutation begins once');
   assert.equal(await handle.releaseReadOnly(), false, 'a mutation is never released as read-only');
   assert.equal(reservation.isMutationBusy, true);
   assert.equal(await handle.complete('kept'), true);
@@ -109,12 +113,15 @@ test('concurrent reservations on the same target admit exactly one owner', async
   assert.equal(locks.holderOf(LOCK), next);
 });
 
-test('markUnknown keeps the reservation and the project lock, and nothing else in this process can release them', async () => {
+test('markUnknown keeps the reservation and the project lock, and nothing else in this process can release them', async t => {
+  const f = await recoveryFixture(t);
+  const KEY = f.root;
+  const LOCK = canonicalProjectRoot(KEY);
   const locks = new ProjectMutationLocks();
   const { reservation, calls, logs } = panel(locks);
   const other = panel(locks);
   const handle = reservation.reserve('react', KEY);
-  handle.beginMutation();
+  await handle.beginMutation(f.target);
   assert.equal(handle.markUnknown('the task result was lost'), true);
   assert.equal(handle.settled, true);
   assert.equal(handle.state, 'unknown');
@@ -139,7 +146,7 @@ test('a coordinator whose change has an unknown outcome stays locked through web
   const locks = new ProjectMutationLocks();
   const fixture = makeCoordinator(project, { mutationLocks: locks, mutationRoot: () => project.root });
   const handle = fixture.coordinator.reserve('react');
-  assert.equal(handle.beginMutation(), true);
+  assert.equal(await handle.beginMutation({ workspaceRoot: project.root, root: project.root, identity: (await fixture.read()).mutationTarget.identity, allowlistedPaths: [project.manifestPath, project.lockfilePath], operation: 'removal', hostKind: 'vscode' }), true);
   handle.markUnknown('the task result was lost');
   await fixture.coordinator.handleWebviewReady();
   fixture.coordinator.disposeWhenIdle();
@@ -279,25 +286,19 @@ test('an upgrade stopped before writing answers with a terminal message', async 
   assert.equal(fixture.coordinator.isBusy(), false);
 });
 
-test('a Smart Cleanup restore stopped before writing answers with a terminal message', async (t) => {
+test('opening a durable Smart Cleanup restore point never restores or releases it', async t => {
   const project = await makeProject(t);
   const fixture = makeCoordinator(project);
   const analysisId = await review(fixture);
   await fixture.coordinator.handleConfirmRemove({ analysisId });
-  const kept = fixture.messages.findLast((message) => message.status === 'remove-result').result;
-  assert.equal(kept.restoreAvailable, true);
-  await reloadDuringConfirm(fixture, () => fixture.coordinator.handleRestoreSmartCleanup({ analysisId: kept.analysisId }));
-  assert.deepEqual(fixture.messages.at(-1), {
-    status: 'remove-error',
-    package: 'react',
-    error: { code: 'CHANGE_STOPPED', message: 'This change stopped before any files were changed. Review it again to continue.' },
-  });
-  assert.equal(await readFile(project.lockfilePath, 'utf8'), lockfile(false), 'nothing was restored');
-  assert.deepEqual(fixture.commands, ['install'], 'no reinstall ran');
-  assert.equal(fixture.coordinator.isBusy(), false);
+  await fixture.coordinator.handleRestoreSmartCleanup({ analysisId });
+  assert.equal(fixture.messages.at(-1).status, 'recovery');
+  assert.equal(await readFile(project.lockfilePath, 'utf8'), lockfile(false));
+  assert.deepEqual(fixture.commands, ['install']);
+  assert.equal(fixture.coordinator.isBusy(), true);
 });
 
-test('reviews, a removal, a restore, cancellation and expiry each release the project lock they took', async (t) => {
+test('reviews release their locks and durable cleanup keeps its lock until recovery dismissal', async (t) => {
   const project = await makeProject(t);
   const locks = new ProjectMutationLocks();
   const released = [];
@@ -331,17 +332,18 @@ test('reviews, a removal, a restore, cancellation and expiry each release the pr
   assert.notEqual(analysisId, expiredId);
   free();
 
-  // The removal runs inside its own reservation and releases at the end.
   await fixture.coordinator.handleConfirmRemove({ analysisId });
-  assert.equal(fixture.messages.findLast((message) => message.status === 'remove-result').result.outcome, 'verified');
+  assert.equal(fixture.messages.findLast(message => message.status === 'remove-result').result.outcome, 'verified');
+  assert.equal(fixture.coordinator.isBusy(), true);
+  assert.equal(locks.holderOf(key).state, 'retained');
+  await fixture.coordinator.recovery.inspect();
+  const view = fixture.messages.at(-1).recovery;
+  await fixture.coordinator.recovery.start(true, view.claim);
+  await fixture.coordinator.recovery.apply(choices(fixture.messages.at(-1).recovery));
+  await fixture.coordinator.recovery.dismiss(true, false);
   free();
+  assert.ok(released.length >= 4);
 
-  // Restoring the kept cleanup takes and releases the lock again.
-  const kept = fixture.messages.findLast((message) => message.status === 'remove-result').result;
-  await fixture.coordinator.handleRestoreSmartCleanup({ analysisId: kept.analysisId });
-  assert.equal(fixture.messages.findLast((message) => message.status === 'remove-result').result.outcome, 'rolled-back');
-  free();
-  assert.ok(released.length >= 5, 'each release resumed background work');
 });
 
 /** A coordinator holding the shared project lock, whose controller lookup can be made to reject. */

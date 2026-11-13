@@ -795,8 +795,7 @@ function RestoreNote({
   return (
     <>
       <p>
-        The cleanup changes were kept. Restore dependency files puts package.json and the lockfile back as they were
-        before the cleanup and reinstalls dependencies. It is refused if either file changed after the cleanup.
+        The cleanup changes were kept. Open recovery to review the saved dependency files and choose Restore backup or Keep current for each file.
       </p>
       {onRestoreFiles === undefined ? null : (
         <button
@@ -806,7 +805,7 @@ function RestoreNote({
           aria-busy={restoring ? 'true' : undefined}
           onClick={() => onRestoreFiles(restore.analysisId)}
         >
-          {restoring ? 'Restoring dependency files…' : 'Restore dependency files'}
+          {restoring ? 'Restoring dependency files…' : 'Review recovery files'}
         </button>
       )}
     </>

@@ -576,9 +576,10 @@ test('install steps may only write through the transaction to a file it staged',
       },
     },
   });
-  assert.equal(result.install.status, 'failed');
+  assert.equal(result.install.status, 'unknown');
+  assert.equal(result.rollback.status, 'not-needed');
   assert.equal(files.text(lockfilePath), 'lock-before');
-  assert.equal(files.text(manifestPath), '{"dependencies":{"react":"^18"}}');
+  assert.equal(files.text(manifestPath), '{"dependencies":{"react":"19.0.0"}}');
 });
 
 test('successful install and successful verification keep upgraded files and report verified separately', async () => {

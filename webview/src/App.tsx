@@ -45,6 +45,7 @@ import type {
   DashboardData,
   HostToWebviewMessage,
   RemoveAnalysisPresentation,
+  RecoveryPresentation,
   ScanProgressStage,
   SmartCleanupExecutionCapability,
   UpgradeAnalysisPresentation,
@@ -55,6 +56,7 @@ import { sameUpdateAdvisoryContext } from '../../src/host/updateAdvisoryState.js
 import { UpdateAdvisoryContext } from './components/UpdateVersionWarning.js';
 import type { UpgradeAnalysisSections } from '../../src/host/upgradeAnalysisSections.js';
 import { applyPartialSection, markPhaseLoading, WAITING_UPGRADE_ANALYSIS_SECTIONS } from '../../src/host/upgradeAnalysisSections.js';
+import { RecoveryScreen } from './components/RecoveryScreen.js';
 import { DashboardToolbar } from './components/DashboardToolbar.js';
 import { DependencyEmptyState } from './components/DependencyEmptyState.js';
 import { DependencyLoadingState } from './components/DependencyLoadingState.js';
@@ -148,6 +150,9 @@ interface UpgradeErrorState {
 
 export function App(): ReactElement {
   const [message, setMessage] = useState<HostToWebviewMessage | undefined>(undefined);
+  const [recovery, setRecovery] = useState<RecoveryPresentation | null>(null);
+  const [recoveryEntries, setRecoveryEntries] = useState<Array<{ id: string; label: string }>>([]);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   // Per-analysis choices among host-suggested verification scripts. Keyed by
   // host-issued analysis id, so a new review always starts unchecked.
   const [verificationOptIns, setVerificationOptIns] = useState<ReadonlyMap<string, VerificationOptInSelection>>(
@@ -178,7 +183,8 @@ export function App(): ReactElement {
   const initialRenderStartedAt = useRef<number | null>(null);
   const initialRenderMeasured = useRef(false);
   const [trackSnapshotRender] = useState(() => createSnapshotRenderTracker(
-    document.body.dataset['renderAcknowledgements'] === 'true',
+    // Recovery discovery waits for this paint acknowledgment in every host.
+    true,
     (message) => vscode.postMessage(message)
   ));
   // The anchor package for the upgrade flow this webview most recently
@@ -386,8 +392,6 @@ export function App(): ReactElement {
   const smartCleanupRequestIdRef = useRef(0);
   const activeSmartCleanupRequestIdRef = useRef<string | null>(null);
   const smartCleanupExecutionRef = useRef<SmartCleanupExecutionSnapshot | null>(null);
-  /** analysisId of a Smart Cleanup restore that is waiting for its host result. */
-  const smartCleanupRestoreRef = useRef<string | null>(null);
   const smartCleanupReviewCacheRef = useRef<SmartCleanupReviewCacheIdentity | null>(null);
   const smartCleanupDrilldownRef = useRef<{
     projectKey: string;
@@ -458,6 +462,13 @@ export function App(): ReactElement {
         return;
       }
       const incoming = event.data;
+      if (incoming.status === 'recovery-entries') { setRecoveryEntries(incoming.entries); return; }
+      if (incoming.status === 'recovery') {
+        setRecovery(incoming.recovery);
+        if (incoming.recovery.state === 'none') setRecoveryOpen(false);
+        else setRecoveryOpen(true);
+        return;
+      }
 
       // Not a dashboard snapshot: the table and any running change stay as they are.
       if (incoming.status === 'runtime-error') {
@@ -635,12 +646,6 @@ export function App(): ReactElement {
         return;
       }
 
-      if (incoming.status === 'remove-error' && smartCleanupRestoreRef.current !== null) {
-        smartCleanupRestoreRef.current = null;
-        dispatchSmartCleanup({ type: 'restore-refused', message: incoming.error.message });
-        return;
-      }
-
       if (incoming.status === 'remove-progress') {
         setManageRemoval(manageRemovalAfterProgress(manageRemovalRef.current, incoming.analysisId, incoming.phase));
         return;
@@ -746,14 +751,6 @@ export function App(): ReactElement {
               : { ...smartSnapshot, analysisId: incoming.analysis.analysisId };
             setRemoveBusy(false);
           }
-        }
-        return;
-      }
-
-      if (incoming.status === 'remove-result' && smartCleanupRestoreRef.current !== null) {
-        if (incoming.result.analysisId === smartCleanupRestoreRef.current && incoming.result.outcome === 'rolled-back') {
-          smartCleanupRestoreRef.current = null;
-          dispatchSmartCleanup({ type: 'restore-finished' });
         }
         return;
       }
@@ -2324,9 +2321,6 @@ export function App(): ReactElement {
   }, [removeAnalysis, optInFor]);
 
   const restoreSmartCleanup = useCallback((analysisId: string) => {
-    if (smartCleanupRestoreRef.current !== null) return;
-    smartCleanupRestoreRef.current = analysisId;
-    dispatchSmartCleanup({ type: 'restore-started', analysisId });
     vscode.postMessage({ type: 'restore-smart-cleanup', analysisId });
   }, []);
 
@@ -2379,6 +2373,10 @@ export function App(): ReactElement {
     remediationBusy ||
     cleanupState.phase === 'analyzing';
 
+  if (recoveryOpen && recovery !== null && recovery.state !== 'none') {
+    return <RecoveryScreen recovery={recovery} send={message => vscode.postMessage(message)} close={() => setRecoveryOpen(false)} />;
+  }
+
   return (
     <UpdateAdvisoryContext.Provider value={data?.availability.advisories === 'off' ? [] : data?.updateAdvisories ?? []}>
     <VerificationOptInContext.Provider value={verificationOptInStore}>
@@ -2399,6 +2397,16 @@ export function App(): ReactElement {
         {data !== undefined ? <DependencySearch value={search} onChange={handleSearchChange} /> : null}
       </header>
 
+      {recoveryEntries.map(entry => (
+        <StatusBanner key={entry.id} tone="warning" action={{ label: 'Start recovery', onClick: () => { setRecovery(null); setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery', id: entry.id }); } }}>
+          Saved recovery files: {entry.label}
+        </StatusBanner>
+      ))}
+      {recovery !== null && recovery.state !== 'none' && (recoveryEntries.length === 0 || recovery.state === 'discovery-error') ? (
+        <StatusBanner tone={recovery.state === 'discovery-error' ? 'error' : 'warning'} action={{ label: recovery.state === 'discovery-error' ? 'Retry discovery' : 'Start recovery', onClick: () => { if (recovery.state !== 'discovery-error') setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
+          {recovery.message}
+        </StatusBanner>
+      ) : null}
       {loading ? (
         <DependencyLoadingState
           stage={scanProgress?.stage}

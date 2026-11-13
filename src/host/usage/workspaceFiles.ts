@@ -11,7 +11,7 @@
 
 import * as path from 'node:path';
 
-import { DEFAULT_EXCLUDED_DIRS } from '../../core/workspace/scan.js';
+import { DEFAULT_EXCLUDED_DIRS, isExcluded } from '../../core/workspace/scan.js';
 import { CONFIG_FILE_GLOBS } from '../../core/usage/configHeuristics.js';
 import { STYLE_DEPENDENCY_DIRECTIVE } from '../../core/usage/sourceCoverage.js';
 import { planWorkspaceAnalysisFiles } from '../../core/usage/workspaceAnalysisPlan.js';
@@ -106,13 +106,13 @@ export function planWorkspaceFiles(
   const configPaths: string[] = [];
   for (const absolutePath of sourceFiles) {
     const filePath = relativeToFolder(folder, absolutePath);
-    if (filePath === null) continue;
+    if (filePath === null || isExcluded(filePath)) continue;
     absolutePathByPath.set(filePath, absolutePath);
     sourcePaths.push(filePath);
   }
   for (const absolutePath of configFiles) {
     const filePath = relativeToFolder(folder, absolutePath);
-    if (filePath === null) continue;
+    if (filePath === null || isExcluded(filePath)) continue;
     absolutePathByPath.set(filePath, absolutePath);
     configPaths.push(filePath);
   }

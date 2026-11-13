@@ -98,6 +98,7 @@ export function startSidecar(options: SidecarOptions): JsonRpcConnection {
   });
 
   connection.onClose(() => {
+    platform?.dispose();
     channel?.dispose();
     channel = undefined;
   });
