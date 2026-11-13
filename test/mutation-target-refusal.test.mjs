@@ -1,3 +1,4 @@
+import { FetchError } from '../out/core/registry/http.js';
 /**
  * Every dependency change reads the resolved mutation target. A refusal
  * blocks every entry point before anything is reserved, run or written,
@@ -406,7 +407,7 @@ test("a transitive fix's reinstall after rollback resolves the target again firs
       },
     },
     sink: { postMessage: () => {} },
-    httpClient: { post: async () => { throw new Error('offline'); }, get: async () => { throw new Error('offline'); } },
+    httpClient: { post: async () => { throw new FetchError('NETWORK', 'offline'); }, get: async () => { throw new FetchError('NETWORK', 'offline'); } },
     etagStore: { get: () => undefined, set: () => {} },
     ensureController: async () => ({ root, upgradeSource: snapshot }),
     getSelectedProject: () => ({ id: 'project', dir: '', folder: { id: 'f', name: 'fixture', path: root } }),

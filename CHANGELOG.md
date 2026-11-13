@@ -25,7 +25,8 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - Changing package.json or the lockfile while a scan is running no longer lets the dashboard reuse the older results as if they were current.
 - In a workspace where the lockfile sits above the opened folder, changes are now turned off with the reason shown, instead of rewriting a file Packageawy could not restore.
 - Vulnerability checks for update versions keep working after an internal error, instead of stopping until the dashboard is refreshed.
-- An internal error in Packageawy no longer fails silently. The dashboard stays open and shows one message with a Show Log button. Upgrades, removals and fixes are paused until you close and reopen the Packageawy panel (Restart in JetBrains IDEs), and a change that was already running is allowed to finish. Refresh and reviews keep working.
+- Internal errors now appear in the dashboard with a Show Log button. An error during a dependency change keeps its recovery files and blocks further changes until recovery. Unrelated background errors let the change finish and pause new changes until you reopen the panel. Refresh and reviews keep working.
+- An unhandled internal error in the JetBrains engine now blocks dependency changes until the engine restarts, including after closing and reopening the panel. Read-only scans can continue.
 - Opening a file, a link or Settings from Packageawy now says so when the editor could not open it, and the Packageawy log records the failure.
 - An install or check that finishes immediately no longer leaves the project waiting and locked in VS Code.
 - A confirmed upgrade, removal or Smart Cleanup restore that stops before changing any files, because the Packageawy view reloaded, now says so instead of waiting with no answer.

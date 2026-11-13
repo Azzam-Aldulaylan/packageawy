@@ -30,13 +30,14 @@ const connection = startSidecar({
   log: (message) => console.error(`[packageawy] ${message}`),
 });
 
-// A rejection nothing handled pauses changes instead of ending the process,
-// so a change that is still installing can finish. See unhandledRejection.ts.
-process.on('unhandledRejection', createUnhandledRejectionHandler({
-  log: (line) => console.error(`[packageawy] ${line}`),
-  reportToPanel: (reason) => DashboardPanel.reportRuntimeFailure('unhandled-rejection', reason),
-  notify: (message) => connection.sendNotification(Methods.showMessage, { severity: 'error', message }),
-}));
+// Both last resort handlers settle prepared writers before notifying the client.
+for (const [event, context] of [['unhandledRejection', 'unhandled-rejection'], ['uncaughtException', 'uncaught-exception']] as const) {
+  process.on(event, createUnhandledRejectionHandler({
+    log: (line) => console.error(`[packageawy] ${line}`),
+    reportToPanel: (reason) => DashboardPanel.reportRuntimeFailure(context, reason),
+    notify: (message) => connection.sendNotification(Methods.showMessage, { severity: 'error', message }),
+  }, context));
+}
 
 // The client owns this process. When it closes stdin, the session is over.
 connection.onClose(() => {

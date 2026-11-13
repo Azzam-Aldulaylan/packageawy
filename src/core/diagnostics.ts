@@ -220,6 +220,7 @@ export type RuntimeFailureContext =
   | 'webview-message'
   | 'refresh-after-message'
   | 'unhandled-rejection'
+  | 'uncaught-exception'
   | 'background-refresh'
   | 'usage-refresh'
   | 'advisory-setting-refresh'
@@ -243,7 +244,7 @@ export type RuntimeFailureContext =
   | 'rpc-request';
 
 const RUNTIME_FAILURE_CONTEXTS: ReadonlySet<string> = new Set<RuntimeFailureContext>([
-  'webview-message', 'refresh-after-message', 'unhandled-rejection', 'background-refresh', 'usage-refresh',
+  'webview-message', 'refresh-after-message', 'unhandled-rejection', 'uncaught-exception', 'background-refresh', 'usage-refresh',
   'advisory-setting-refresh', 'update-advisories', 'file-reload', 'git-watcher', 'freshness-check',
   'reservation-release', 'restore-point-check', 'deferred-changes', 'branch-reconcile', 'open-manifest',
   'refresh-command', 'webview-delivery', 'notification', 'open-file', 'open-link', 'open-settings', 'sidebar',

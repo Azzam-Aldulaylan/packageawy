@@ -1,6 +1,7 @@
 export const RECOVERY_MESSAGES = {
   discoveryFailed: 'Could not check for saved recovery files. Retry discovery or use Refresh. If this continues, check folder access and open the Packageawy log.',
   restart: 'Cannot restart while a dependency change is running or its outcome is unknown.',
+  restartRequired: 'Dependency changes are blocked after an internal error. Restart the Packageawy engine to try again. The Packageawy log has the details.',
   stillRunning: 'Still running. The package manager is still working. Packageawy will not roll back or start another change on this project until it finishes.',
   running: 'A dependency change is running.',
   blocked: 'An earlier change may still be running. Dependency changes are blocked.',
