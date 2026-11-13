@@ -43,9 +43,7 @@ export function buildRemoveAnalysisPresentation(
     files: {
       manifestPath: options.manifestPath,
       lockfilePath: options.lockfilePath,
-      // Same guarantee as an upgrade transaction: runUpgradeTransaction
-      // always attempts a compare-and-swap restore of exactly these two
-      // allowlisted files on failure.
+      // Removal uses the same journal backup and guarded restore as upgrades.
       rollbackAvailable: true,
     },
   };

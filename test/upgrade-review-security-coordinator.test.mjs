@@ -7,6 +7,7 @@ import { isHostToWebviewMessage } from '../out/host/webviewProtocol.js';
 
 // Keep the real coordinator, compatibility planner and isolated resolver. Replace
 // only toolchain discovery and the process runner, so the tests never run npm.
+const npmResolverUrl = pathToFileURL(`${process.cwd()}/out/host/npmResolver.js`).href;
 const verifierUrl = pathToFileURL(`${process.cwd()}/out/host/resolverVerifier.js`).href;
 const bundle = await build({ entryPoints: ['src/host/upgradeAssistantCoordinator.ts'], bundle: true,
   write: false, format: 'esm', platform: 'node',
@@ -15,7 +16,8 @@ const bundle = await build({ entryPoints: ['src/host/upgradeAssistantCoordinator
     plugin.onResolve({ filter: /^\.\/npmResolver\.js$/ }, () => ({ path: 'toolchain', namespace: 'test' }));
     plugin.onResolve({ filter: /^\.\/resolverVerifier\.js$/ }, () => ({ path: 'verifier', namespace: 'test' }));
     plugin.onLoad({ filter: /.*/, namespace: 'test' }, args => ({ loader: 'js', contents: args.path === 'toolchain'
-      ? `export const probeLoginShellPath = () => null;
+      ? `export { rethrowUnexpectedResolverError, resolverPathExists } from '${npmResolverUrl}';
+        export const probeLoginShellPath = () => null;
         export const createNodeNpmResolverDeps = () => ({});
         export const candidateNodePaths = () => [];
         export const realListDir = () => [];

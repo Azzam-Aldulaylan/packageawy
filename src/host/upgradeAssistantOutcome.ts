@@ -1,5 +1,6 @@
 import type { UpgradeTransactionResult } from './upgradeTransaction.js';
 import type { ProtocolError, UpgradeResultPresentation } from './webviewProtocol.js';
+import { manualReinstallNote } from './manualReinstallCopy.js';
 
 /** The sole application-state gate: task success alone never authorizes "applied". */
 export function classifyUpgradeApplication(
@@ -55,9 +56,8 @@ export function describeUpgradeTransactionOutcome(
       error: {
         code: 'ROLLBACK_CONFLICT',
         message:
-          'Rollback was incomplete because dependency files changed concurrently. Newer edits were preserved. ' +
-          'Some transaction-owned files may already have been restored. node_modules was not restored. ' +
-          `Review package.json and the active lockfile before running ${packageManager} install.`,
+          'Rollback is incomplete because Packageawy saw dependency files change. Saved and displaced files are kept. ' +
+          `Check ${transaction.rollback.files.filter(file => file.status !== 'restored').map(file => file.path.split(/[\\/]/).at(-1)).join(', ') || 'the dependency files'}. ${manualReinstallNote(packageManager)}`,
       },
     };
   }
@@ -67,9 +67,8 @@ export function describeUpgradeTransactionOutcome(
       error: {
         code: 'ROLLBACK_FAILED',
         message:
-          'Rollback failed for one or more dependency files. Some transaction-owned files may already have been restored. ' +
-          'node_modules was not restored. ' +
-          `Review package.json and the active lockfile before running ${packageManager} install.`,
+          'Rollback is incomplete. Saved and displaced files are kept. ' +
+          `Check ${transaction.rollback.files.filter(file => file.status !== 'restored').map(file => file.path.split(/[\\/]/).at(-1)).join(', ') || 'the dependency files'}. ${manualReinstallNote(packageManager)}`,
       },
     };
   }
@@ -99,7 +98,7 @@ export function describeUpgradeTransactionOutcome(
     };
   }
   if (transaction.completion === 'kept' && transaction.reason === 'verified') {
-    return { kind: 'verified', message: `Upgrade applied to ${packageName}; verification passed.` };
+    return { kind: 'verified', message: `Upgrade applied to ${packageName}. Verification passed.` };
   }
   if (transaction.completion === 'kept') {
     return {
@@ -114,8 +113,7 @@ export function describeUpgradeTransactionOutcome(
     return {
       kind: 'rolled-back',
       message:
-        `Dependency files for ${packageName} were restored to their pre-upgrade state. ` +
-        `node_modules was not restored. Run ${packageManager} install to reconcile installed packages with the restored lockfile.`,
+        `Dependency files for ${packageName} were restored to their pre-upgrade state.`,
     };
   }
 
@@ -123,7 +121,8 @@ export function describeUpgradeTransactionOutcome(
     kind: 'error',
     error: {
       code: 'UPGRADE_TRANSACTION_FAILED',
-      message: 'The upgrade transaction did not reach a verified or fully restored state. Review package.json and the lockfile.',
+      message: 'The upgrade transaction did not reach a verified or fully restored state. Review package.json and the lockfile.' +
+        (transaction.completion === 'incomplete' ? ` ${manualReinstallNote(packageManager)}` : ''),
     },
   };
 }
@@ -147,9 +146,8 @@ export function describeRemoveTransactionOutcome(
       error: {
         code: 'ROLLBACK_CONFLICT',
         message:
-          'Rollback was incomplete because dependency files changed concurrently. Newer edits were preserved. ' +
-          'Some transaction-owned files may already have been restored. node_modules was not restored. ' +
-          `Review package.json and the active lockfile before running ${packageManager} install.`,
+          'Rollback is incomplete because Packageawy saw dependency files change. Saved and displaced files are kept. ' +
+          `Check ${transaction.rollback.files.filter(file => file.status !== 'restored').map(file => file.path.split(/[\\/]/).at(-1)).join(', ') || 'the dependency files'}. ${manualReinstallNote(packageManager)}`,
       },
     };
   }
@@ -159,9 +157,8 @@ export function describeRemoveTransactionOutcome(
       error: {
         code: 'ROLLBACK_FAILED',
         message:
-          'Rollback failed for one or more dependency files. Some transaction-owned files may already have been restored. ' +
-          'node_modules was not restored. ' +
-          `Review package.json and the active lockfile before running ${packageManager} install.`,
+          'Rollback is incomplete. Saved and displaced files are kept. ' +
+          `Check ${transaction.rollback.files.filter(file => file.status !== 'restored').map(file => file.path.split(/[\\/]/).at(-1)).join(', ') || 'the dependency files'}. ${manualReinstallNote(packageManager)}`,
       },
     };
   }
@@ -185,7 +182,7 @@ export function describeRemoveTransactionOutcome(
   }
 
   if (transaction.completion === 'kept' && transaction.reason === 'verified') {
-    return { kind: 'verified', message: `${applied}; verification passed.` };
+    return { kind: 'verified', message: `${applied}. Verification passed.` };
   }
   if (transaction.completion === 'kept') {
     return {
@@ -197,8 +194,7 @@ export function describeRemoveTransactionOutcome(
     return {
       kind: 'rolled-back',
       message:
-        `Dependency files for ${removed} were restored to their pre-removal state. ` +
-        `node_modules was not restored. Run ${packageManager} install to reconcile installed packages with the restored lockfile.`,
+        `Dependency files for ${removed} were restored to their pre-removal state.`,
     };
   }
 
@@ -206,7 +202,8 @@ export function describeRemoveTransactionOutcome(
     kind: 'error',
     error: {
       code: 'REMOVE_TRANSACTION_FAILED',
-      message: 'The removal transaction did not reach a verified or fully restored state. Review package.json and the lockfile.',
+      message: 'The removal transaction did not reach a verified or fully restored state. Review package.json and the lockfile.' +
+        (transaction.completion === 'incomplete' ? ` ${manualReinstallNote(packageManager)}` : ''),
     },
   };
 }

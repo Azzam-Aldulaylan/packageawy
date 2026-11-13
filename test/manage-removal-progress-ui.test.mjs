@@ -10,6 +10,9 @@ import { pathToFileURL } from 'node:url';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+import { rollbackFixture } from './helpers/optional-reinstall.mjs';
+import { manualReinstallNote } from '../out/host/manualReinstallCopy.js';
+
 const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: {
@@ -112,7 +115,7 @@ test('a rolled back removal reports the restore and does not claim an install', 
   assert.match(html, /Install Did not finish/);
   assert.match(html, /Dependency files Restored/);
   assert.match(html, /Rollback Restore point applied/);
-  assert.match(html, /node_modules were not restored/);
+  assert.match(html, /host message/);
   assertPlainCopy(raw);
   const afterVerification = text(renderToStaticMarkup(createElement(RemovalResultPanel, {
     row,
@@ -302,4 +305,19 @@ test('Manage focuses the new view and handles Escape on the document', () => {
   assert.match(manageSource, /ownerDocument\.addEventListener\('keydown', onKeyDown\)/);
   assert.match(manageSource, /!isTopmostTrap\(node\)/);
   assert.doesNotMatch(manageSource, /node\.addEventListener\('keydown'/);
+});
+
+for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`upgrade result panel follows actual optional reinstall ${reinstall}`, async t => {
+  const f = await rollbackFixture(t, 'upgrade');
+  f.state.reinstallChoice = reinstall === 'skipped' ? 'Skip' : 'Reinstall';
+  f.state.reinstallExitCode = reinstall === 'failed' ? 1 : 0;
+  await f.confirm();
+  const hostResult = f.messages.findLast(message => message.status === 'upgrade-result')?.result;
+  assert.equal(hostResult?.application, 'rolled-back', JSON.stringify(f.messages));
+  const raw = renderManage({ activeTab: 'upgrade', upgradeResult: hostResult });
+  const html = text(raw);
+  const note = reinstall === 'succeeded' ? 'Dependencies were reinstalled using the restored lockfile.' : manualReinstallNote('npm');
+  assert.ok(html.includes(note), html);
+  if (reinstall === 'succeeded') assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules were not restored/);
+  assertPlainCopy(raw);
 });

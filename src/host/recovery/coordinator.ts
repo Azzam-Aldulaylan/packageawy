@@ -1,3 +1,4 @@
+import { RestoreFileError } from '../upgradeTransaction.js';
 import path from 'node:path';
 import { hash } from './model.js';
 import { RecoveryLock } from '../recoveryLock.js';
@@ -5,8 +6,9 @@ import type { HostPlatform } from '../platform/hostPlatform.js';
 import type { OwnerHandle } from '../operationReservation.js';
 import type { ProjectMutationLocks } from '../projectMutationLock.js';
 import { lockKey } from '../pathIdentity.js';
-import type { HostToWebviewMessage, RecoveryChoice, RecoveryPresentation } from '../webviewProtocol.js';
-import { RECOVERY_MESSAGES, RecoveryError, type RecoveryTarget } from './model.js';
+import type { DependencyTaskState, HostToWebviewMessage, RecoveryChoice, RecoveryPresentation } from '../webviewProtocol.js';
+import { RECOVERY_MESSAGES, RecoveryError, RecoveryOutcomeUnknownError, type RecoveryTarget } from './model.js';
+import type { RecoveryJournal } from './journal.js';
 import type { RecoverySession } from './session.js';
 
 export class RecoveryCoordinator {
@@ -24,8 +26,15 @@ export class RecoveryCoordinator {
     target(): Promise<RecoveryTarget | undefined>;
     post(message: HostToWebviewMessage): void;
     removed(): Promise<void>;
+    restored?(journal: RecoveryJournal): Promise<'skipped' | 'succeeded' | 'failed' | 'unknown'>;
   }) {}
 
+  reportTaskState(state: DependencyTaskState): void {
+    if (this.lock !== undefined && this.session !== undefined) {
+      this.options.locks.reportTaskState(lockKey(this.session.inspection.storage.target.root, true), this.lock.handle, state);
+    }
+    this.options.post({ status: 'dependency-task', state });
+  }
   async inspect(id?: string): Promise<void> {
     await this.enqueue(async () => {
       // Loading filesystem recovery code waits with discovery until after startup.
@@ -46,9 +55,9 @@ export class RecoveryCoordinator {
       if (this.selected === undefined) this.selected = this.targets.keys().next().value;
       if (previous !== this.selected) { this.session = undefined; this.lock = undefined; }
       await this.execute(async (target) => {
-        const holder = this.options.locks.holderOf(lockKey(target.root)) as OwnerHandle | RecoveryLock | undefined;
-        if (holder?.state === 'mutating') {
-          this.options.post({ status: 'dependency-task', state: this.options.locks.taskState(lockKey(target.root)) });
+        const holder = this.options.locks.holderOf(lockKey(target.root, true)) as OwnerHandle | RecoveryLock | undefined;
+        if (holder?.state === 'mutating' || this.options.locks.taskState(lockKey(target.root, true)) !== 'idle') {
+          this.options.post({ status: 'dependency-task', state: this.options.locks.taskState(lockKey(target.root, true)) });
           this.post({ state: 'running', message: RECOVERY_MESSAGES.running, files: [], claim: null, canDismiss: false, canApply: false });
           return;
         }
@@ -71,8 +80,8 @@ export class RecoveryCoordinator {
   }
   async start(stopped: boolean, claim: string | null): Promise<void> {
     await this.perform(async (target) => {
-      const holder = this.options.locks.holderOf(lockKey(target.root)) as OwnerHandle | RecoveryLock | undefined;
-      if (holder?.state === 'mutating') throw new RecoveryError(RECOVERY_MESSAGES.running);
+      const holder = this.options.locks.holderOf(lockKey(target.root, true)) as OwnerHandle | RecoveryLock | undefined;
+      if (holder?.state === 'mutating' || this.options.locks.taskState(lockKey(target.root, true)) !== 'idle') throw new RecoveryError(RECOVERY_MESSAGES.running);
       if (holder?.state === 'reserved') await holder.releaseReadOnly();
       const { RecoverySession } = await import('./session.js');
       if (this.options.locks.admissionClosed) throw new RecoveryError(
@@ -89,8 +98,8 @@ export class RecoveryCoordinator {
         this.lock = { handle: lock, token };
       }
       if (holder === undefined || holder.state === 'released') {
-        const fence = new RecoveryLock(this.options.locks, lockKey(target.root), token);
-        if (this.options.locks.tryAcquire(target.root, fence) === null) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+        const fence = new RecoveryLock(this.options.locks, lockKey(target.root, true), token);
+        if (this.options.locks.tryAcquire(target.root, fence, true) === null) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
         this.lock = { handle: fence, token };
       }
       this.session = session;
@@ -100,8 +109,20 @@ export class RecoveryCoordinator {
   async apply(choices: readonly RecoveryChoice[]): Promise<void> {
     await this.perform(async () => {
       if (this.session === undefined) throw new RecoveryError(RECOVERY_MESSAGES.stop);
-      await this.session.apply(choices);
-      this.post(await this.session.presentation());
+      const session = this.session;
+      await session.apply(choices);
+      const journal = session.inspection.journal;
+      if (journal?.data.outcome === 'completed' && choices.some(choice => choice.action === 'restore')) {
+        try {
+          const result = await this.options.restored?.(journal);
+          if (result === 'unknown') throw new RecoveryOutcomeUnknownError(RECOVERY_MESSAGES.blocked);
+          await journal.record('recovery-completion', 'finished');
+        } catch (cause) {
+          this.session = undefined;
+          await session.invalidate(cause);
+        }
+      }
+      this.post(await session.presentation());
     });
   }
   async dismiss(stopped: boolean, discardIncomplete: boolean): Promise<void> {
@@ -142,18 +163,29 @@ export class RecoveryCoordinator {
   private async target(): Promise<RecoveryTarget | undefined> {
     return (this.selected === undefined ? undefined : this.targets.get(this.selected)) ?? this.options.target();
   }
+  private async invalidateActive(cause: unknown): Promise<void> {
+    const session = this.session;
+    if (session === undefined) return;
+    this.session = undefined;
+    try { await session.invalidate(cause); }
+    catch (error) { if (!(error instanceof RecoveryOutcomeUnknownError)) throw error; }
+  }
   private async execute(run: (target: RecoveryTarget) => Promise<void>): Promise<void> {
     try {
       const target = await this.target();
       if (target !== undefined) await run(target);
     } catch (error) {
+      if (!(error instanceof RecoveryError) && !(error instanceof RestoreFileError) && this.session !== undefined) {
+        await this.invalidateActive(error);
+      }
+      if (error instanceof RecoveryOutcomeUnknownError) this.session = undefined;
       const { inspectRecovery } = await import('./inspection.js');
       const message = error instanceof Error ? error.message : String(error);
       this.options.platform.showWarningMessage(message);
-      const target = await this.target().catch(() => undefined);
+      const target = await this.target().catch(async (cause: unknown) => { await this.invalidateActive(cause); return undefined; });
       if (target !== undefined) {
-        const latest = await inspectRecovery(target).catch(() => undefined);
-        this.post(latest?.view.state === 'incomplete' ? latest.view : { ...(latest?.view ?? { state: 'invalid', files: [], claim: null, canDismiss: false, canApply: false }), message });
+        const latest = await inspectRecovery(target).catch(async (cause: unknown) => { await this.invalidateActive(cause); return undefined; });
+        this.post(latest?.view.state === 'incomplete' ? { ...latest.view, message: message.includes('Dependency file changed:') ? message : latest.view.message } : { ...(latest?.view ?? { state: 'invalid', files: [], claim: null, canDismiss: false, canApply: false }), message });
       }
     }
   }

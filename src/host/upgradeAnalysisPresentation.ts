@@ -82,10 +82,8 @@ export function buildUpgradeAnalysisFiles(manifestPath: string, lockfilePath: st
   return {
     manifestPath,
     lockfilePath,
-    // The transaction system (upgradeTransaction.ts) always attempts a
-    // compare-and-swap restore of exactly these two allowlisted files on
-    // failure: there is no execution path that reaches this presentation
-    // without that guarantee applying.
+    // These allowlisted files are backed up before mutation so the shared
+    // journal can check for conflicts and preserve displaced bytes on restore.
     rollbackAvailable: true,
   };
 }

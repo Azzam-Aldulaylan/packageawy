@@ -93,9 +93,9 @@ class Handle implements OwnerHandle {
       this.refusal = this.owner.locks.restartRequired ? RECOVERY_MESSAGES.restartRequired : RECOVERY_MESSAGES.restart;
       return false;
     }
-    const key = lockKey(target.root);
+    const key = lockKey(target.root, true);
     if (this.lockKey === undefined) {
-      const acquired = this.owner.locks.tryAcquire(target.root, this);
+      const acquired = this.owner.locks.tryAcquire(target.root, this, true);
       if (acquired === null) { this.refusal = RECOVERY_MESSAGES.blocked; return false; }
       this.lockKey = acquired;
     }
@@ -117,7 +117,9 @@ class Handle implements OwnerHandle {
       return true;
     } catch (error) {
       this.refusal = error instanceof RecoveryError ? error.message : RECOVERY_MESSAGES.blocked;
-      if (!this.settled) this.state = 'reserved';
+      if (!(error instanceof RecoveryError)) {
+        await this.fail('The recovery preparation could not be established.');
+      } else if (!this.settled) this.state = 'reserved';
       return false;
     }
   }
@@ -203,14 +205,14 @@ export class OperationReservation {
    * Takes the panel slot and, when the project has a resolved target, the
    * process-wide lock under that target's key. Both or neither.
    */
-  reserve(label: string, targetKey: string | undefined): OwnerHandle | ReservationRefusal {
+  reserve(label: string, targetKey: string | undefined, strict = false): OwnerHandle | ReservationRefusal {
     if (this.options.locks.admissionClosed) return { ok: false, reason: 'project-locked' };
     if (this.current !== undefined) return { ok: false, reason: 'held' };
     const handle = new Handle(this, label, (owned, state) => this.end(owned, state), (line) => this.log(line));
     if (targetKey !== undefined) {
       // The registry canonicalizes what it is given. The handle keeps the key
       // the registry actually stored, so its release always finds the entry.
-      const stored = this.options.locks.tryAcquire(targetKey, handle);
+      const stored = this.options.locks.tryAcquire(targetKey, handle, strict);
       if (stored === null) return { ok: false, reason: 'project-locked' };
       handle.lockKey = stored;
     }

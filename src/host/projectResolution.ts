@@ -1,3 +1,4 @@
+import { isExpectedFsError, isFsError } from './expectedFsError.js';
 /**
  * Finds the project(s) the dashboard can render, using the platform's
  * workspace search rather than a recursive filesystem walk.
@@ -98,10 +99,11 @@ export interface DiscoveredProject extends DiscoveredProjectCandidate {
 const EXCLUDE_GLOB = `**/{${DEFAULT_EXCLUDED_DIRS.join(',')}}/**`;
 const LOCKFILE_GLOB = `**/{${PACKAGE_LOCK},${SHRINKWRAP},${PNPM_LOCK},${YARN_LOCK},${BUN_LOCK},${BUN_LOCKB}}`;
 
-async function readIfExists(absolutePath: string): Promise<string | undefined> {
+async function readIfExists(absolutePath: string, strict = false): Promise<string | undefined> {
   try {
     return await readFile(absolutePath, 'utf8');
-  } catch {
+  } catch (cause) {
+    if (!(strict ? isExpectedFsError(cause, 'read') : isFsError(cause))) throw cause;
     return undefined;
   }
 }
@@ -157,7 +159,8 @@ async function findLockfile(
 async function resolveRegistryConfiguration(
   platform: HostPlatform,
   projectRoot: string,
-  lockfileRoot: string
+  lockfileRoot: string,
+  strict = false
 ): Promise<{
   registry: ResolvedRegistry;
   peerPolicy: PeerResolutionPolicy;
@@ -169,15 +172,15 @@ async function resolveRegistryConfiguration(
   const allowProjectNpmrc = configured && platform.isWorkspaceTrusted();
 
   const projectNpmrc = allowProjectNpmrc
-    ? await readIfExists(path.join(projectRoot, '.npmrc'))
+    ? await readIfExists(path.join(projectRoot, '.npmrc'), strict)
     : undefined;
   // A workspace member inherits the workspace root's .npmrc (the lockfile
   // root), and its own .npmrc overrides it.
   const workspaceRootNpmrc =
     allowProjectNpmrc && path.resolve(lockfileRoot) !== path.resolve(projectRoot)
-      ? await readIfExists(path.join(lockfileRoot, '.npmrc'))
+      ? await readIfExists(path.join(lockfileRoot, '.npmrc'), strict)
       : undefined;
-  const userNpmrc = await readIfExists(path.join(homedir(), '.npmrc'));
+  const userNpmrc = await readIfExists(path.join(homedir(), '.npmrc'), strict);
 
   const resolveOptions = {
     allowProjectNpmrc,
@@ -238,7 +241,8 @@ export async function loadProject(
   candidate: DiscoveredProject,
   performance: PerformanceRecorder = NOOP_PERFORMANCE_RECORDER,
   /** Test seam. Production reads the real environment, home directory and Node installations. */
-  environment?: MutationTargetEnvironment
+  environment?: MutationTargetEnvironment,
+  strict = false
 ): Promise<ResolvedProject> {
   const base = candidate.folder.path;
   const root = candidate.dir === '' ? base : path.join(base, candidate.dir);
@@ -267,6 +271,7 @@ export async function loadProject(
     projectDir: root,
     folderPath: base,
     packageManager,
+    throwOnUnexpectedError: strict,
     ...(environment === undefined ? {} : { environment }),
   });
   endTargetResolution({ resolved: mutationTarget.ok });
@@ -291,7 +296,7 @@ export async function loadProject(
   const importerRelative = path.relative(lockfileRoot, root).split(path.sep).join('/');
   const importerId = importerRelative === '' ? '.' : importerRelative;
 
-  const configuration = await resolveRegistryConfiguration(platform, root, lockfileRoot);
+  const configuration = await resolveRegistryConfiguration(platform, root, lockfileRoot, strict);
   return {
     root,
     manifestText,

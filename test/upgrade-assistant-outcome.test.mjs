@@ -29,7 +29,7 @@ function result(overrides = {}) {
 test('verified and unverified kept upgrades remain clearly distinct', () => {
   assert.deepEqual(describeUpgradeTransactionOutcome('react', 'npm', result()), {
     kind: 'verified',
-    message: 'Upgrade applied to react; verification passed.',
+    message: 'Upgrade applied to react. Verification passed.',
   });
   assert.deepEqual(
     describeUpgradeTransactionOutcome(
@@ -87,7 +87,7 @@ test('kept changes after failed verification distinguish applied state from veri
   });
 });
 
-test('successful rollback says only dependency files were restored and gives the package-manager reconcile command', () => {
+test('successful rollback describes the restored dependency files', () => {
   const presentation = describeUpgradeTransactionOutcome(
     'react',
     'pnpm',
@@ -104,12 +104,11 @@ test('successful rollback says only dependency files were restored and gives the
   assert.equal(presentation.kind, 'rolled-back');
   assert.equal(
     presentation.message,
-    'Dependency files for react were restored to their pre-upgrade state. ' +
-      'node_modules was not restored. Run pnpm install to reconcile installed packages with the restored lockfile.'
+    'Dependency files for react were restored to their pre-upgrade state.'
   );
 });
 
-test('rollback conflict preserves concurrent edits and does not expose per-file paths', () => {
+test('rollback conflict names the file without exposing its absolute path', () => {
   const presentation = describeUpgradeTransactionOutcome(
     'react',
     'npm',
@@ -127,9 +126,9 @@ test('rollback conflict preserves concurrent edits and does not expose per-file 
 
   assert.equal(presentation.kind, 'error');
   assert.equal(presentation.error.code, 'ROLLBACK_CONFLICT');
-  assert.match(presentation.error.message, /Newer edits were preserved/);
-  assert.match(presentation.error.message, /node_modules was not restored/);
-  assert.match(presentation.error.message, /npm install/);
+  assert.match(presentation.error.message, /Packageawy saw dependency files change/);
+  assert.match(presentation.error.message, /Saved and displaced files are kept/);
+  assert.match(presentation.error.message, /package.json/);
   assert.doesNotMatch(presentation.error.message, /sensitive|raw adapter detail/);
 });
 
@@ -151,9 +150,9 @@ test('rollback I/O failure has a distinct code and warns that restoration may be
 
   assert.equal(presentation.kind, 'error');
   assert.equal(presentation.error.code, 'ROLLBACK_FAILED');
-  assert.match(presentation.error.message, /Some transaction-owned files may already have been restored/);
-  assert.match(presentation.error.message, /node_modules was not restored/);
-  assert.match(presentation.error.message, /pnpm install/);
+  assert.match(presentation.error.message, /Rollback is incomplete/);
+  assert.match(presentation.error.message, /Saved and displaced files are kept/);
+  assert.match(presentation.error.message, /package.json/);
   assert.doesNotMatch(presentation.error.message, /permission denied/);
 });
 
@@ -222,11 +221,11 @@ test('manifest stage write failures are distinct and do not claim an install ran
 test('describeRemoveTransactionOutcome names a single package directly and a batch by count', () => {
   assert.deepEqual(describeRemoveTransactionOutcome(['left-pad'], 'npm', result()), {
     kind: 'verified',
-    message: 'Removed left-pad; verification passed.',
+    message: 'Removed left-pad. Verification passed.',
   });
   assert.deepEqual(describeRemoveTransactionOutcome(['left-pad', 'is-odd', 'is-number'], 'npm', result()), {
     kind: 'verified',
-    message: 'Removed 3 dependencies; verification passed.',
+    message: 'Removed 3 dependencies. Verification passed.',
   });
 });
 
@@ -246,8 +245,7 @@ test('describeRemoveTransactionOutcome mirrors the upgrade outcome\'s rollback/e
   assert.equal(rolledBack.kind, 'rolled-back');
   assert.equal(
     rolledBack.message,
-    'Dependency files for left-pad were restored to their pre-removal state. ' +
-      'node_modules was not restored. Run pnpm install to reconcile installed packages with the restored lockfile.'
+    'Dependency files for left-pad were restored to their pre-removal state.'
   );
 
   const conflict = describeRemoveTransactionOutcome(

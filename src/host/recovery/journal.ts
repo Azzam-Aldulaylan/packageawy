@@ -1,8 +1,9 @@
+import { isExpectedFsError } from '../expectedFsError.js';
 import path from 'node:path';
 import { constants } from 'node:fs';
 import { createNodeUpgradeTransactionFileAdapter, fileStatesEqual } from '../nodeUpgradeTransactionFiles.js';
 import { canonicalPath, isMissingPathError, relatePaths } from '../pathIdentity.js';
-import type { FileState, UpgradeTransactionFileAdapter } from '../upgradeTransaction.js';
+import { RestoreFileError, type FileState, type UpgradeTransactionFileAdapter } from '../upgradeTransaction.js';
 import { Storage, type StorageHooks } from './storage.js';
 import {
   expectation, hash, isClaim, isOwner, matches, newId, RECOVERY_MESSAGES, RecoveryError,
@@ -124,7 +125,11 @@ export class RecoveryJournal {
       const source = await this.storage.safeAbsolute(candidate);
       const destination = await this.storage.at(`displaced/${id}.bin`);
       this.assertWritable();
-      await this.storage.fs.rename(source, destination);
+      try { await this.storage.fs.rename(source, destination); }
+      catch (cause) {
+        if (!isExpectedFsError(cause, 'restoreRename')) throw cause;
+        throw new RestoreFileError(cause);
+      }
       // A directory sync preserves the name, but only syncing the moved inode
       // makes the user's bytes durable before we publish success or replace it.
       await this.syncDisplaced(file, candidate);
@@ -148,7 +153,11 @@ export class RecoveryJournal {
       const source = await this.storage.at(temporary);
       const destination = await this.storage.safeAbsolute(candidate);
       this.assertWritable();
-      await this.storage.fs.rename(source, destination);
+      try { await this.storage.fs.rename(source, destination); }
+      catch (cause) {
+        if (!isExpectedFsError(cause, 'restoreRename')) throw cause;
+        throw new RestoreFileError(cause);
+      }
       await this.storage.syncDirectory(path.dirname(candidate));
     }
     await this.storage.boundary('replacement:installed');
@@ -195,7 +204,7 @@ export async function prepareJournal(target: RecoveryTarget, hooks: StorageHooks
   const folder = await storage.safeAbsolute(storage.folder);
   storage.assertWritable();
   try { await storage.fs.mkdir(folder); }
-  catch (error) { if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST') throw new RecoveryError(RECOVERY_MESSAGES.blocked); throw error; }
+  catch (error) { if (isExpectedFsError(error, 'exclusiveCreate')) throw new RecoveryError(RECOVERY_MESSAGES.blocked); throw error; }
   await storage.boundary('folder:created');
   await storage.syncDirectory(target.root);
   const owner: Owner = { version: 1, transactionId: newId(), ownerToken: newId(), hostKind: target.hostKind, createdAt: new Date().toISOString(), targetIdentity: target.identity };

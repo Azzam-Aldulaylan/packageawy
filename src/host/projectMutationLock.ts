@@ -6,8 +6,8 @@ import { lockKey } from './pathIdentity.js';
  * finds the same lock. Case is always folded, which can only make two
  * windows wait on each other.
  */
-export function canonicalProjectRoot(root: string): string {
-  return lockKey(root);
+export function canonicalProjectRoot(root: string, strict = false): string {
+  return lockKey(root, strict);
 }
 
 /**
@@ -96,9 +96,9 @@ export class ProjectMutationLocks {
   private readonly releaseListeners = new Set<(key: string, owner: object) => void>();
 
   /** The canonical key on success, or null while a different owner holds this root. */
-  tryAcquire(root: string, owner: object): string | null {
+  tryAcquire(root: string, owner: object, strict = false): string | null {
     if (this.admissionClosed) return null;
-    const key = canonicalProjectRoot(root);
+    const key = canonicalProjectRoot(root, strict);
     const holder = this.holders.get(key);
     if (holder !== undefined && holder !== owner) return null;
     this.holders.set(key, owner);

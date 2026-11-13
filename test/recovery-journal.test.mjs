@@ -24,9 +24,9 @@ test('prepared contains byte-exact backups, modes, absent files, and no project 
   await assert.rejects(f.prepare(), { message: RECOVERY_MESSAGES.blocked });
 });
 
-for (const errorCode of ['EPERM', 'ENOTSUP', 'ENOSYS', 'EIO']) test(`hard-link ${errorCode} refuses without fallback`, async t => {
+for (const errorCode of ['EPERM', 'ENOTSUP', 'ENOSYS', 'EBUSY', 'EIO']) test(`hard-link ${errorCode} refuses without fallback`, async t => {
   const f = await recoveryFixture(t);
-  await assert.rejects(f.prepare({ fs: { ...fs, link: async () => { throw failure(errorCode); } } }), { message: RECOVERY_MESSAGES.unsupported });
+  await assert.rejects(f.prepare({ fs: { ...fs, link: async () => { throw failure(errorCode); } } }), { message: errorCode === 'EIO' ? 'EIO' : RECOVERY_MESSAGES.unsupported });
   assert.equal(await f.read('package-lock.json'), 'original lockfile');
   assert.equal((await f.inspect()).view.state, 'uninitialized');
 });
@@ -89,9 +89,9 @@ for (const syncError of [null, 'EPERM', 'EIO']) test(`Windows skips directory sy
   const session = await f.open(hooks);
   const review = await session.presentation();
   if (syncError) {
-    await assert.rejects(session.apply(choices(review, 'restore', true)), { code: syncError });
+    await assert.rejects(session.apply(choices(review, 'restore', true)), error => error.code === 'OUTCOME_UNKNOWN' && error.cause?.code === syncError);
     await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
-    assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
+    assert.equal((await f.inspect()).journal.data.outcome, 'unknown');
   } else {
     await session.apply(choices(review, 'restore', true));
     assert.equal(await f.read('package-lock.json'), 'original lockfile');
@@ -212,7 +212,7 @@ test('all choices precheck before any write and each file rechecks immediately b
   const session = await f.open();
   const view = await session.presentation();
   await fs.writeFile(f.lockfile, 'external edit');
-  await assert.rejects(session.apply(choices(view, 'restore', true)), { message: RECOVERY_MESSAGES.incomplete });
+  await assert.rejects(session.apply(choices(view, 'restore', true)), /Recovery is incomplete.*package-lock.json/);
   assert.equal(await f.read('package.json'), 'changed manifest', 'a later conflict prevents the first replacement');
   assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
 });
@@ -262,7 +262,7 @@ test('displaced bytes sync before displacement completion and replacement', asyn
   assert.equal((await f.inspect()).view.message, RECOVERY_MESSAGES.completed);
 });
 
-test('displaced sync failure preserves bytes and stops restoration as incomplete', async t => {
+test('displaced sync failure preserves bytes and fences restoration as unknown', async t => {
   const f = await recoveryFixture(t);
   await f.prepare();
   await fs.writeFile(f.lockfile, 'external edit');
@@ -277,7 +277,7 @@ test('displaced sync failure preserves bytes and stops restoration as incomplete
       return typeof value === 'function' ? value.bind(target) : value;
     } });
   } } });
-  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { code: 'EIO' });
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), error => error.code === 'OUTCOME_UNKNOWN' && error.cause?.code === 'EIO');
   assert.equal(closed, true);
   await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
   const inspected = await f.inspect();
@@ -286,11 +286,11 @@ test('displaced sync failure preserves bytes and stops restoration as incomplete
   assert.equal(file.displacedIds.length, 1);
   assert.equal(await fs.readFile(path.join(f.folder, 'displaced', `${file.displacedIds[0]}.bin`), 'utf8'), 'external edit');
   assert.equal((await inspected.journal.backupState(file.backup)).contents.toString(), 'original lockfile');
-  assert.equal(inspected.journal.data.outcome, 'recovery-incomplete');
-  assert.equal(inspected.view.message, RECOVERY_MESSAGES.incomplete);
+  assert.equal(inspected.journal.data.outcome, 'unknown');
+  assert.equal(inspected.view.message, RECOVERY_MESSAGES.blocked);
 });
 
-for (const retry of ['same claim', 'fresh claim']) test(`retry syncs the recorded displacement before replacement: ${retry}`, async t => {
+test('unknown sync failures require fresh claims and sync the recorded displacement before replacement', async t => {
   const f = await recoveryFixture(t);
   await f.prepare();
   await fs.writeFile(f.lockfile, 'external edit');
@@ -313,14 +313,19 @@ for (const retry of ['same claim', 'fresh claim']) test(`retry syncs the recorde
     },
   } };
   let session = await f.open(hooks);
-  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { code: 'EIO' });
-  if (retry === 'fresh claim') session = await f.open(hooks);
-  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { code: 'EIO' });
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), error => error.code === 'OUTCOME_UNKNOWN' && error.cause?.code === 'EIO');
+  assert.equal((await session.presentation()).canApply, false);
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { code: 'OUTCOME_UNKNOWN' });
+  assert.equal(attempts, 1, 'the failed claim cannot retry the sync');
+  session = await f.open(hooks);
+  assert.equal((await session.presentation()).canApply, true);
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), error => error.code === 'OUTCOME_UNKNOWN' && error.cause?.code === 'EIO');
   assert.equal(attempts, 2);
   assert.equal(installed, 0);
-  assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
+  assert.equal((await f.inspect()).journal.data.outcome, 'unknown');
   await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
   fail = false;
+  session = await f.open(hooks);
   await session.apply(choices(await session.presentation(), 'restore', true));
   assert.equal(attempts, 3);
   assert.equal(installed, 1);
@@ -340,7 +345,7 @@ for (const damage of ['changed', 'missing', 'symlink']) test(`retry refuses a ${
   else { await fs.unlink(displaced); if (damage === 'symlink') await fs.symlink(f.manifest, displaced); }
   await assert.rejects(session.apply(restore));
   await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
-  assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
+  assert.equal((await f.inspect()).journal.data.outcome, 'unknown');
 });
 
 test('repeated displacement always records a new id and keeps every earlier inode', async t => {
@@ -393,7 +398,7 @@ for (const errorCode of ['EPERM', 'ENOTSUP']) test(`claim hard-link ${errorCode}
 test('an uncertain claim publication keeps its complete claim and refuses restoration', async t => {
   const f = await recoveryFixture(t);
   await f.prepare();
-  await assert.rejects(f.open({ fs: { ...fs, link: async (from, to) => { await fs.link(from, to); throw failure('EIO'); } } }), { message: RECOVERY_MESSAGES.unsupported });
+  await assert.rejects(f.open({ fs: { ...fs, link: async (from, to) => { await fs.link(from, to); throw failure('EIO'); } } }), { code: 'EIO' });
   assert.equal(typeof JSON.parse(await fs.readFile(path.join(f.folder, 'claim.json'), 'utf8')).token, 'string');
   assert.equal(await f.read('package-lock.json'), 'original lockfile');
 });
@@ -544,7 +549,7 @@ test('an edit after the all-file precheck is caught immediately before the later
   const session = await f.open({ boundary: async name => {
     if (name === 'replacement:installed' && !edited) { edited = true; await fs.writeFile(f.lockfile, 'edit after precheck'); }
   } });
-  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { message: RECOVERY_MESSAGES.incomplete });
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), /Recovery is incomplete.*package-lock.json/);
   assert.equal(await f.read('package-lock.json'), 'edit after precheck');
   const inspected = await f.inspect();
   assert.equal(inspected.journal.data.outcome, 'recovery-incomplete');
@@ -589,7 +594,7 @@ test('an unexpected displacement destination is never overwritten', async t => {
     const moving = data.files.find(file => file.progress === 'displace');
     if (moving) { savedPath = path.join(f.folder, 'displaced', `${moving.move.id}.bin`); await fs.writeFile(savedPath, 'earlier saved file'); }
   } });
-  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { message: RECOVERY_MESSAGES.incomplete });
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), error => error.code === 'OUTCOME_UNKNOWN' && error.cause?.message === RECOVERY_MESSAGES.incomplete);
   assert.equal(await fs.readFile(savedPath, 'utf8'), 'earlier saved file');
   assert.equal(await f.read('package-lock.json'), 'installed');
 });
@@ -606,7 +611,7 @@ test('a directory sync failure after displacement leaves the inode saved and nev
       return handle;
     },
   } });
-  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { code: 'EIO' });
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), error => error.code === 'OUTCOME_UNKNOWN' && error.cause?.code === 'EIO');
   await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
   const inspected = await f.inspect();
   assert.equal(inspected.view.files[1].progress, 'moved but not restored');
@@ -633,11 +638,14 @@ test('a failed recovery publication requires a fresh confirmed claim before retr
   assert.equal(await f.read('package-lock.json'), 'original lockfile');
 });
 
-test('a metadata tail finishes only its remaining deletes without publishing new metadata', async t => {
+for (const fault of ['Error', 'EIO', 'TypeError']) test(`a metadata tail after ${fault} finishes only its remaining deletes without publishing new metadata`, async t => {
   const f = await recoveryFixture(t); await f.prepare();
-  const first = await f.open({ boundary: async name => { if (name === 'removal:7') throw new Error('interrupted after deleting journal'); } });
+  const first = await f.open({ boundary: async name => { if (name === 'removal:7') throw fault === 'TypeError' ? new TypeError('interrupted after deleting journal') : Object.assign(new Error('interrupted after deleting journal'), fault === 'EIO' ? { code: 'EIO' } : {}); } });
   await first.apply(choices(await first.presentation()));
-  await assert.rejects(first.dismiss(true, false), /interrupted after deleting journal/);
+  await assert.rejects(first.dismiss(true, false), error => error.code === 'OUTCOME_UNKNOWN' && /interrupted after deleting journal/.test(error.cause?.message));
+  assert.throws(() => first.inspection.journal.assertWritable());
+  assert.equal(first.inspection.journal.data.outcome, 'unknown');
+  await assert.rejects(first.dismiss(true, true), error => error.code === 'OUTCOME_UNKNOWN');
   assert.deepEqual(await fs.readdir(f.folder), ['owner.json']);
   const resumed = await f.open({ fs: { ...fs, open: async (name, ...args) => {
     assert.notEqual(args[0], 'wx', 'a metadata tail cannot recreate its deleted journal');

@@ -44,6 +44,8 @@ export function makeCoordinator(project, hooks = {}) {
   const messages = [];
   const commands = [];
   const logs = [];
+  const prompts = [];
+  const requests = [];
   const state = { paused: false, holdRead: undefined, holdInstall: undefined };
   const read = async () => {
     if (state.holdRead !== undefined) await state.holdRead();
@@ -65,17 +67,21 @@ export function makeCoordinator(project, hooks = {}) {
     isWorkspaceTrusted: () => true,
     async updateWorkspaceSetting() {},
     showWarningMessage() {},
+    async showModalWarning(message, detail, actions) { prompts.push({ message, detail, actions }); return state.reinstallChoice; },
     showInformationMessage() {},
     showErrorMessage() {},
     log: (line) => logs.push(line),
     async runProcess(request) {
+      requests.push(request);
       const command = request.args.find((arg) => arg === 'install' || arg === 'ci');
       commands.push(command);
       if (command === 'install') {
         if (state.holdInstall !== undefined) await state.holdInstall();
         await writeFile(project.lockfilePath, lockfile(false));
       }
-      return { onDidExit: (listener) => { setImmediate(() => listener(0)); return { dispose() {} }; } };
+      if (command === 'ci' && state.holdReinstall !== undefined) await state.holdReinstall();
+      const exit = command === 'ci' ? (state.reinstallUnknown ? undefined : state.reinstallExitCode ?? 0) : state.installExitCode ?? 0;
+      return { onDidExit: (listener) => { setImmediate(() => listener(exit)); return { dispose() {} }; } };
     },
   };
   const coordinator = new UpgradeAssistantCoordinator({
@@ -104,7 +110,7 @@ export function makeCoordinator(project, hooks = {}) {
     changesPaused: () => state.paused,
     ...hooks,
   });
-  return { coordinator, messages, commands, logs, state, read };
+  return { coordinator, messages, commands, logs, state, read, prompts, requests };
 }
 
 export async function review(fixture) {

@@ -6,7 +6,7 @@ export const RECOVERY_MESSAGES = {
   running: 'A dependency change is running.',
   blocked: 'An earlier change may still be running. Dependency changes are blocked.',
   invalid: 'Recovery information is incomplete. Nothing was restored.',
-  open: 'Recovery is open. Review each file.',
+  open: 'Recovery is open. Review each file. Packageawy restores your dependency files and stops if it sees they changed.',
   incomplete: 'Recovery is incomplete. Saved and displaced files are kept.',
   completed: 'Recovery completed. Review the result before removing saved files.',
   unsupported: "This folder's file system does not support Packageawy's recovery safeguards, so changes are unavailable.",
@@ -15,6 +15,6 @@ export const RECOVERY_MESSAGES = {
   unrecognized: 'Recovery contains unrecognized files. Check the folder by hand. Nothing was removed.',
   unsafe: 'A recovery path failed validation. It was not read, written or restored.',
   stop: 'Confirm that installs, verification commands, other Packageawy windows and other recovery sessions have stopped.',
-  warning: 'Check the task terminals in every editor and stop any install or verification command. Close other Packageawy windows and recovery sessions for this project. If something is still running, a restore can race it. Confirmation assumes no earlier recovery session is paused mid-step. Ownership checks narrow the window but are not atomic with a file change. Preservation and conflict detection are best effort; a multi-file restore is not atomic.',
+  warning: 'Check the task terminals in every editor and stop any install or verification command. Close other Packageawy windows and recovery sessions for this project. If something is still running, a restore can race it. Confirmation assumes no earlier recovery session is paused mid-step. Ownership checks narrow the window but are not atomic with a file change. Packageawy restores your dependency files and stops if it sees they changed. Saved and displaced files stay until you remove them.',
 } as const;
 

@@ -455,6 +455,8 @@ export interface UpgradeResultPresentation {
   refreshId: string;
   install: 'succeeded' | 'failed';
   application: 'applied' | 'unconfirmed' | 'rolled-back';
+  /** Reinstall guidance for a completed rollback, supplied by the host. */
+  rollbackMessage?: string;
   verification: 'passed' | 'not-configured' | 'failed' | 'not-run';
   changes: UpgradeResultChange[];
   refreshingDerivedData: boolean;
@@ -2318,7 +2320,7 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'upgrade-result') {
     const result = value['result'];
-    if (!isRecord(result) || !hasOnlyKeys(result, ['package', 'refreshId', 'install', 'application', 'verification', 'changes', 'refreshingDerivedData'])) {
+    if (!isRecord(result) || !hasOnlyKeys(result, ['package', 'refreshId', 'install', 'application', 'rollbackMessage', 'verification', 'changes', 'refreshingDerivedData'])) {
       return false;
     }
     const changes = result['changes'];
@@ -2341,6 +2343,7 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
         (change['declaredRange'] === null || typeof change['declaredRange'] === 'string') &&
         (change['classification'] === null || change['classification'] === 'prod' || change['classification'] === 'dev' || change['classification'] === 'optional')
       ) &&
+      (result['rollbackMessage'] === undefined || (result['application'] === 'rolled-back' && isNonEmptyString(result['rollbackMessage']))) &&
       typeof result['refreshingDerivedData'] === 'boolean'
     );
   }

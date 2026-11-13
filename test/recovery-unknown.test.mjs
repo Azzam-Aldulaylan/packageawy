@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { manualReinstallNote } from '../out/host/manualReinstallCopy.js';
 import assert from 'node:assert/strict';
 import { writeFile, readFile } from 'node:fs/promises';
 import { UpgradeExecutionSession } from '../out/host/upgradeRunner.js';
@@ -242,6 +243,6 @@ test('partial recovery preserves its incomplete message and reports the filesyst
   assert.equal(await f.read('package.json'), '{"dependencies":{"a":"1.0.0"}}');
   assert.equal(await f.read('package-lock.json'), 'changed lockfile');
   assert.equal(messages.at(-1).recovery.state, 'incomplete');
-  assert.equal(messages.at(-1).recovery.message, 'Recovery is incomplete. Saved and displaced files are kept.');
+  assert.equal(messages.at(-1).recovery.message, `Recovery is incomplete. Saved and displaced files are kept. ${manualReinstallNote('npm')}`);
   assert.deepEqual(warnings, ['lockfile sharing violation']);
 });

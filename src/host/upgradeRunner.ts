@@ -91,6 +91,8 @@ export interface UpgradeLockfileReconciliationParams {
   workspaceMember?: boolean;
   /** Task title shown to the user. Defaults to the transitive-fix title. */
   taskTitle?: string;
+  /** Recovery cannot treat an unexpected resolver exception as a known task refusal. */
+  throwOnUnexpectedError?: boolean;
 }
 
 export type PreparedLockfileReconciliation =
@@ -205,7 +207,7 @@ export class UpgradeExecutionSession {
     // the identical, single-read value, so a Volta pin (which depends on the
     // working directory) resolves the same way during this validation as it
     // will during the actual visible task.
-    const invocation = this.resolveInvocation(params.cwd, params.packageManager);
+    const invocation = this.resolveInvocation(params.cwd, params.packageManager, true);
     if (invocation === null) {
       this.platform.showErrorMessage(
         params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${params.packageManager} installation.`
@@ -264,7 +266,7 @@ export class UpgradeExecutionSession {
     }
 
     const { cwd, packageManager, ignoreScripts } = params;
-    const resolved = this.resolveInvocationFor(cwd, packageManager, params.workspaceMember === true);
+    const resolved = this.resolveInvocationFor(cwd, packageManager, params.workspaceMember === true, true);
     if (!resolved.ok) return resolved;
     const invocation = resolved.invocation;
 
@@ -325,7 +327,7 @@ export class UpgradeExecutionSession {
     }
 
     const { cwd, packageManager, ignoreScripts, taskTitle } = params;
-    const resolved = this.resolveInvocationFor(cwd, packageManager, params.workspaceMember === true);
+    const resolved = this.resolveInvocationFor(cwd, packageManager, params.workspaceMember === true, true);
     if (!resolved.ok) return resolved;
     const invocation = resolved.invocation;
 
@@ -366,7 +368,7 @@ export class UpgradeExecutionSession {
     if (!this.platform.isWorkspaceTrusted()) {
       return { status: 'failed', checks: [], message: 'Verification is disabled in untrusted workspaces.' };
     }
-    const invocation = this.resolveInvocation(params.cwd, params.packageManager);
+    const invocation = this.resolveInvocation(params.cwd, params.packageManager, true);
     if (invocation === null) {
       return { status: 'failed', checks: [], message: params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${params.packageManager} installation could not be located.` };
     }
@@ -394,14 +396,14 @@ export class UpgradeExecutionSession {
     return { status: 'passed', checks };
   }
 
-  private resolveInvocation(cwd: string, packageManager: 'npm' | 'pnpm'): PackageManagerInvocation | null {
+  private resolveInvocation(cwd: string, packageManager: 'npm' | 'pnpm', strict = false): PackageManagerInvocation | null {
     if (this.invocationResolver !== undefined) return this.invocationResolver(cwd, packageManager);
-    const npm = resolveNpmInvocation(createNodeNpmResolverDeps(cwd));
+    const npm = resolveNpmInvocation(createNodeNpmResolverDeps(cwd, strict));
     if (packageManager === 'npm') {
       if (!npm.ok) return null;
       return { executable: npm.invocation.node, prefixArgs: [npm.invocation.npmCliJs], version: npm.invocation.version };
     }
-    return resolveInstalledPnpmInvocation(npm.ok ? npm.invocation : null, cwd);
+    return resolveInstalledPnpmInvocation(npm.ok ? npm.invocation : null, cwd, strict);
   }
 
   /**
@@ -411,9 +413,10 @@ export class UpgradeExecutionSession {
   private resolveInvocationFor(
     cwd: string,
     packageManager: 'npm' | 'pnpm',
-    workspaceMember: boolean
+    workspaceMember: boolean,
+    strict = false
   ): { ok: true; invocation: PackageManagerInvocation } | { ok: false; code: string; message: string } {
-    const invocation = this.resolveInvocation(cwd, packageManager);
+    const invocation = this.resolveInvocation(cwd, packageManager, strict);
     if (invocation === null) {
       this.platform.showErrorMessage(
         packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`

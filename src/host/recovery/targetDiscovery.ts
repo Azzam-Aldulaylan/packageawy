@@ -1,3 +1,4 @@
+import { isExpectedFsError } from '../expectedFsError.js';
 import path from 'node:path';
 import { lstat, opendir } from 'node:fs/promises';
 import { DEFAULT_EXCLUDED_DIRS } from '../../core/workspace/scan.js';
@@ -5,7 +6,7 @@ import type { HostPlatform, WorkspaceFolder } from '../platform/hostPlatform.js'
 import { resolveMutationTarget } from '../mutationTarget.js';
 import { canonicalPath, isMissingPathError, relatePaths } from '../pathIdentity.js';
 import { isOwner, RECOVERY_FOLDER, type RecoveryTarget } from './model.js';
-import { Storage, code } from './storage.js';
+import { Storage } from './storage.js';
 
 /** A journal is discoverable even when an interrupted restore moved package.json aside. */
 export async function targetFromRecoveryFolder(folder: WorkspaceFolder, root: string, platform: HostPlatform): Promise<RecoveryTarget | undefined> {
@@ -24,7 +25,7 @@ export async function targetFromRecoveryFolder(folder: WorkspaceFolder, root: st
   let recordedLockfile: string | undefined;
   if (isOwner(owner)) {
     let identity: unknown;
-    try { identity = JSON.parse(owner.targetIdentity); } catch { return undefined; }
+    try { identity = JSON.parse(owner.targetIdentity); } catch (cause) { if (!(cause instanceof SyntaxError)) throw cause; return undefined; }
     if (!Array.isArray(identity) || identity.length !== 5 || identity[0] !== 'target' ||
         (identity[1] !== 'npm' && identity[1] !== 'pnpm') || typeof identity[4] !== 'string') return undefined;
     packageManager = identity[1]; importer = identity[4];
@@ -45,7 +46,7 @@ export async function targetFromRecoveryFolder(folder: WorkspaceFolder, root: st
     await storage.safeAbsolute(recordedLockfile);
     return { ...provisional, identity: isOwner(owner) ? owner.targetIdentity : '', allowlistedPaths: [path.join(projectDir, 'package.json'), recordedLockfile] };
   }
-  const resolution = await resolveMutationTarget({ projectDir, folderPath: folder.path, packageManager });
+  const resolution = await resolveMutationTarget({ projectDir, folderPath: folder.path, packageManager, throwOnUnexpectedError: true });
   if (!resolution.ok || await canonicalPath(resolution.target.root) !== await canonicalPath(root)) return undefined;
   return { ...provisional, identity: resolution.identity, allowlistedPaths: [path.join(projectDir, 'package.json'), resolution.target.lockfilePath] };
 }
@@ -70,7 +71,7 @@ export async function findRecoveryTargets(platform: HostPlatform): Promise<Recov
       let directory;
       try { directory = await opendir(current.root); }
       catch (error) {
-        if (isMissingPathError(error) || code(error) === 'EACCES' || code(error) === 'EPERM') continue;
+        if (isExpectedFsError(error, 'scanDirectory')) continue;
         throw error;
       }
       for await (const entry of directory) {

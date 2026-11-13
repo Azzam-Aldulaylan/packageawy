@@ -1,0 +1,1262 @@
+[
+  {
+    "id": "upgradeAssistantCoordinator.ts#1",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 741,
+    "func": "constructor",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior settlement. Deferred refresh cannot authorize mutation or release ownership.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "frozenReconciliation.ts#1",
+    "file": "src/host/frozenReconciliation.ts",
+    "line": 66,
+    "func": "offerFrozenReconciliation",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "mutationTarget.ts#1",
+    "file": "src/host/mutationTarget.ts",
+    "line": 96,
+    "func": "nodePrefixes",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "mutationTarget.ts#2",
+    "file": "src/host/mutationTarget.ts",
+    "line": 132,
+    "func": "readText",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: missingPath",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "mutationTarget.ts#3",
+    "file": "src/host/mutationTarget.ts",
+    "line": 142,
+    "func": "exists",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: missingPath",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "mutationTarget.ts#4",
+    "file": "src/host/mutationTarget.ts",
+    "line": 179,
+    "func": "npmMembership",
+    "mode": "propagate",
+    "allowed": "SyntaxError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "mutationTarget.ts#5",
+    "file": "src/host/mutationTarget.ts",
+    "line": 219,
+    "func": "pnpmMembership",
+    "mode": "propagate",
+    "allowed": "YAMLException",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "mutationTarget.ts#6",
+    "file": "src/host/mutationTarget.ts",
+    "line": 244,
+    "func": "resolveMutationTarget",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: none",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "mutationTarget.ts#7",
+    "file": "src/host/mutationTarget.ts",
+    "line": 290,
+    "func": "resolveOrRefuse",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: none",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "nodeUpgradeTransactionFiles.ts#1",
+    "file": "src/host/nodeUpgradeTransactionFiles.ts",
+    "line": 113,
+    "func": "assertSafeCanonicalPath",
+    "mode": "propagate",
+    "allowed": "missingFile",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "nodeUpgradeTransactionFiles.ts#2",
+    "file": "src/host/nodeUpgradeTransactionFiles.ts",
+    "line": 119,
+    "func": "assertSafeCanonicalPath",
+    "mode": "propagate",
+    "allowed": "canonicalize",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "nodeUpgradeTransactionFiles.ts#3",
+    "file": "src/host/nodeUpgradeTransactionFiles.ts",
+    "line": 136,
+    "func": "assertSafeCanonicalPath",
+    "mode": "propagate",
+    "allowed": "canonicalize",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "nodeUpgradeTransactionFiles.ts#4",
+    "file": "src/host/nodeUpgradeTransactionFiles.ts",
+    "line": 163,
+    "func": "resolveAllowed",
+    "mode": "propagate",
+    "allowed": "canonicalize",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "nodeUpgradeTransactionFiles.ts#5",
+    "file": "src/host/nodeUpgradeTransactionFiles.ts",
+    "line": 194,
+    "func": "readWithMode",
+    "mode": "propagate",
+    "allowed": "missingFile",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "nodeUpgradeTransactionFiles.ts#6",
+    "file": "src/host/nodeUpgradeTransactionFiles.ts",
+    "line": 224,
+    "func": "compareAndSwap",
+    "mode": "propagate",
+    "allowed": "missingFile",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "nodeUpgradeTransactionFiles.ts#7",
+    "file": "src/host/nodeUpgradeTransactionFiles.ts",
+    "line": 271,
+    "func": "compareAndSwap",
+    "mode": "propagate",
+    "allowed": "exclusiveCreate",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "nodeUpgradeTransactionFiles.ts#8",
+    "file": "src/host/nodeUpgradeTransactionFiles.ts",
+    "line": 290,
+    "func": "compareAndSwap",
+    "mode": "propagate",
+    "allowed": "cleanup",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "npmResolver.ts#1",
+    "file": "src/host/npmResolver.ts",
+    "line": 372,
+    "func": "resolverPathExists",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "npmResolver.ts#2",
+    "file": "src/host/npmResolver.ts",
+    "line": 379,
+    "func": "realIsExecutable",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "npmResolver.ts#3",
+    "file": "src/host/npmResolver.ts",
+    "line": 388,
+    "func": "realListDir",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "npmResolver.ts#4",
+    "file": "src/host/npmResolver.ts",
+    "line": 410,
+    "func": "runFixedProbe",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "operationReservation.ts#1",
+    "file": "src/host/operationReservation.ts",
+    "line": 113,
+    "func": "beginMutation",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "operationReservation.ts#2",
+    "file": "src/host/operationReservation.ts",
+    "line": 118,
+    "func": "beginMutation",
+    "mode": "propagate",
+    "allowed": "RecoveryError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "operationReservation.ts#3",
+    "file": "src/host/operationReservation.ts",
+    "line": 155,
+    "func": "complete",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "operationReservation.ts#4",
+    "file": "src/host/operationReservation.ts",
+    "line": 169,
+    "func": "fail",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "operationReservation.ts#5",
+    "file": "src/host/operationReservation.ts",
+    "line": 252,
+    "func": "notifyUnknown",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "operationReservation.ts#6",
+    "file": "src/host/operationReservation.ts",
+    "line": 263,
+    "func": "end",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "operationReservation.ts#7",
+    "file": "src/host/operationReservation.ts",
+    "line": 268,
+    "func": "end",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "operationReservation.ts#8",
+    "file": "src/host/operationReservation.ts",
+    "line": 278,
+    "func": "log",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "pathIdentity.ts#1",
+    "file": "src/host/pathIdentity.ts",
+    "line": 55,
+    "func": "canonicalPath",
+    "mode": "propagate",
+    "allowed": "missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Propagates to caller mode"
+  },
+  {
+    "id": "pathIdentity.ts#2",
+    "file": "src/host/pathIdentity.ts",
+    "line": 73,
+    "func": "canonicalPathSync",
+    "mode": "propagate",
+    "allowed": "missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Propagates to caller mode"
+  },
+  {
+    "id": "pathIdentity.ts#3",
+    "file": "src/host/pathIdentity.ts",
+    "line": 88,
+    "func": "lockKey",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: canonicalize",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pathIdentity.ts#4",
+    "file": "src/host/pathIdentity.ts",
+    "line": 140,
+    "func": "authorizedRelation",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: canonicalize",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pnpmLockfileSettings.ts#1",
+    "file": "src/host/pnpmLockfileSettings.ts",
+    "line": 126,
+    "func": "readSource",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: missingPath",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pnpmLockfileSettings.ts#2",
+    "file": "src/host/pnpmLockfileSettings.ts",
+    "line": 265,
+    "func": "checkYamlFile",
+    "mode": "propagate",
+    "allowed": "YAMLException",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "pnpmLockfileSettings.ts#3",
+    "file": "src/host/pnpmLockfileSettings.ts",
+    "line": 361,
+    "func": "rootManifestConfigDependencies",
+    "mode": "propagate",
+    "allowed": "SyntaxError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "pnpmResolver.ts#1",
+    "file": "src/host/pnpmResolver.ts",
+    "line": 82,
+    "func": "resolvePnpmInvocation",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pnpmResolver.ts#2",
+    "file": "src/host/pnpmResolver.ts",
+    "line": 122,
+    "func": "resolvePnpmInvocation",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pnpmResolver.ts#3",
+    "file": "src/host/pnpmResolver.ts",
+    "line": 164,
+    "func": "resolveInstalledPnpmInvocation",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe or SyntaxError",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pnpmResolver.ts#4",
+    "file": "src/host/pnpmResolver.ts",
+    "line": 189,
+    "func": "probe",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "projectMutationLock.ts#1",
+    "file": "src/host/projectMutationLock.ts",
+    "line": 86,
+    "func": "reportTaskState",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "projectMutationLock.ts#2",
+    "file": "src/host/projectMutationLock.ts",
+    "line": 116,
+    "func": "release",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "projectResolution.ts#1",
+    "file": "src/host/projectResolution.ts",
+    "line": 105,
+    "func": "readIfExists",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: read",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#2",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 756,
+    "func": "reportDependencyTask",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#3",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 916,
+    "func": "reserveMutation",
+    "mode": "refuse",
+    "allowed": "none",
+    "decision": "Before an owner is acquired, report the original preflight error and refuse confirmation. No mutation or recovery journal has started.",
+    "fsMode": "Strict confirmed admission before ownership"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#4",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 940,
+    "func": "restoreGuard",
+    "mode": "propagate",
+    "allowed": "read",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#5",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 956,
+    "func": "logChangeFailure",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#8",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 997,
+    "func": "reconcileRollback",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#21",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 3080,
+    "func": "executeStoredRemediation",
+    "mode": "propagate",
+    "allowed": "FetchError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#22",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 3243,
+    "func": "executeStoredRemediation",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#23",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 3355,
+    "func": "executeStoredAnalysis",
+    "mode": "propagate",
+    "allowed": "read",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#24",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 3624,
+    "func": "executeStoredAnalysis",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#25",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 3880,
+    "func": "executeStoredRemoval",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#26",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 4068,
+    "func": "executeStoredRemoval",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeRunner.ts#1",
+    "file": "src/host/upgradeRunner.ts",
+    "line": 483,
+    "func": "executeTask",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeRunner.ts#2",
+    "file": "src/host/upgradeRunner.ts",
+    "line": 524,
+    "func": "executeTask",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#1",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 329,
+    "func": "takeSnapshot",
+    "mode": "propagate",
+    "allowed": "read (without journal only)",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#2",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 407,
+    "func": "stageManifest",
+    "mode": "propagate",
+    "allowed": "restoreRename (without journal only)",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#3",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 497,
+    "func": "stageExactFile",
+    "mode": "propagate",
+    "allowed": "restoreRename (without journal only)",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#4",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 526,
+    "func": "captureExpectedStates",
+    "mode": "propagate",
+    "allowed": "read (without journal only)",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#5",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 562,
+    "func": "rollback",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#6",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 585,
+    "func": "rollback",
+    "mode": "propagate",
+    "allowed": "RestoreFileError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#7",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 613,
+    "func": "executeInstall",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#8",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 621,
+    "func": "executeVerification",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#9",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 669,
+    "func": "decideAfterFailure",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeTransaction.ts#10",
+    "file": "src/host/upgradeTransaction.ts",
+    "line": 958,
+    "func": "runUpgradeTransaction",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "verificationPolicy.ts#1",
+    "file": "src/host/verificationPolicy.ts",
+    "line": 14,
+    "func": "manifestScripts",
+    "mode": "propagate",
+    "allowed": "SyntaxError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/coordinator.ts#1",
+    "file": "src/host/recovery/coordinator.ts",
+    "line": 120,
+    "func": "apply",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/coordinator.ts#2",
+    "file": "src/host/recovery/coordinator.ts",
+    "line": 160,
+    "func": "enqueue",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "recovery/coordinator.ts#3",
+    "file": "src/host/recovery/coordinator.ts",
+    "line": 171,
+    "func": "invalidateActive",
+    "mode": "propagate",
+    "allowed": "RecoveryOutcomeUnknownError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/coordinator.ts#4",
+    "file": "src/host/recovery/coordinator.ts",
+    "line": 177,
+    "func": "execute",
+    "mode": "propagate",
+    "allowed": "RecoveryError or RestoreFileError",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/coordinator.ts#5",
+    "file": "src/host/recovery/coordinator.ts",
+    "line": 185,
+    "func": "execute",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/coordinator.ts#6",
+    "file": "src/host/recovery/coordinator.ts",
+    "line": 187,
+    "func": "execute",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/inspection.ts#1",
+    "file": "src/host/recovery/inspection.ts",
+    "line": 29,
+    "func": "inspectRecovery",
+    "mode": "propagate",
+    "allowed": "missingFile",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/inspection.ts#2",
+    "file": "src/host/recovery/inspection.ts",
+    "line": 36,
+    "func": "inspectRecovery",
+    "mode": "propagate",
+    "allowed": "missingFile",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/inspection.ts#3",
+    "file": "src/host/recovery/inspection.ts",
+    "line": 43,
+    "func": "inspectRecovery",
+    "mode": "propagate",
+    "allowed": "RecoveryError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/inspection.ts#4",
+    "file": "src/host/recovery/inspection.ts",
+    "line": 99,
+    "func": "inspectRecovery",
+    "mode": "propagate",
+    "allowed": "RecoveryError, UpgradeTransactionPathError or missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/journal.ts#1",
+    "file": "src/host/recovery/journal.ts",
+    "line": 49,
+    "func": "record",
+    "mode": "propagate",
+    "allowed": "RecoveryError(unsafe), recovery-completion only",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/journal.ts#2",
+    "file": "src/host/recovery/journal.ts",
+    "line": 129,
+    "func": "replace",
+    "mode": "propagate",
+    "allowed": "restoreRename",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/journal.ts#3",
+    "file": "src/host/recovery/journal.ts",
+    "line": 157,
+    "func": "replace",
+    "mode": "propagate",
+    "allowed": "restoreRename",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/journal.ts#4",
+    "file": "src/host/recovery/journal.ts",
+    "line": 207,
+    "func": "prepareJournal",
+    "mode": "propagate",
+    "allowed": "exclusiveCreate",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/journal.ts#5",
+    "file": "src/host/recovery/journal.ts",
+    "line": 241,
+    "func": "folderExists",
+    "mode": "propagate",
+    "allowed": "missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/removal.ts#1",
+    "file": "src/host/recovery/removal.ts",
+    "line": 43,
+    "func": "removeSavedFiles",
+    "mode": "propagate",
+    "allowed": "SyntaxError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/session.ts#1",
+    "file": "src/host/recovery/session.ts",
+    "line": 40,
+    "func": "open",
+    "mode": "propagate",
+    "allowed": "exclusiveCreate",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/session.ts#2",
+    "file": "src/host/recovery/session.ts",
+    "line": 105,
+    "func": "invalidate",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence. No mutation outcome is inferred.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "recovery/session.ts#3",
+    "file": "src/host/recovery/session.ts",
+    "line": 115,
+    "func": "apply",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/session.ts#4",
+    "file": "src/host/recovery/session.ts",
+    "line": 136,
+    "func": "apply",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/session.ts#5",
+    "file": "src/host/recovery/session.ts",
+    "line": 152,
+    "func": "apply",
+    "mode": "propagate",
+    "allowed": "RestoreConflictError or RestoreFileError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/session.ts#6",
+    "file": "src/host/recovery/session.ts",
+    "line": 157,
+    "func": "apply",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/session.ts#7",
+    "file": "src/host/recovery/session.ts",
+    "line": 170,
+    "func": "dismiss",
+    "mode": "propagate",
+    "allowed": "RecoveryError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/session.ts#8",
+    "file": "src/host/recovery/session.ts",
+    "line": 175,
+    "func": "dismiss",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#1",
+    "file": "src/host/recovery/storage.ts",
+    "line": 40,
+    "func": "initialize",
+    "mode": "propagate",
+    "allowed": "missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#2",
+    "file": "src/host/recovery/storage.ts",
+    "line": 57,
+    "func": "exists",
+    "mode": "propagate",
+    "allowed": "missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#3",
+    "file": "src/host/recovery/storage.ts",
+    "line": 68,
+    "func": "json",
+    "mode": "propagate",
+    "allowed": "missingPath or SyntaxError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#4",
+    "file": "src/host/recovery/storage.ts",
+    "line": 84,
+    "func": "unlink",
+    "mode": "propagate",
+    "allowed": "missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#5",
+    "file": "src/host/recovery/storage.ts",
+    "line": 92,
+    "func": "rmdir",
+    "mode": "propagate",
+    "allowed": "missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#6",
+    "file": "src/host/recovery/storage.ts",
+    "line": 115,
+    "func": "publish",
+    "mode": "propagate",
+    "allowed": "StorageFenceError is rethrown, other errors fence and rethrow",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#7",
+    "file": "src/host/recovery/storage.ts",
+    "line": 142,
+    "func": "publishPrepared",
+    "mode": "propagate",
+    "allowed": "exclusiveLink",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#8",
+    "file": "src/host/recovery/storage.ts",
+    "line": 147,
+    "func": "publishPrepared",
+    "mode": "propagate",
+    "allowed": "missingFile",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/storage.ts#9",
+    "file": "src/host/recovery/storage.ts",
+    "line": 153,
+    "func": "publishPrepared",
+    "mode": "propagate",
+    "allowed": "SyntaxError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/targetDiscovery.ts#1",
+    "file": "src/host/recovery/targetDiscovery.ts",
+    "line": 16,
+    "func": "targetFromRecoveryFolder",
+    "mode": "propagate",
+    "allowed": "missingPath",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/targetDiscovery.ts#2",
+    "file": "src/host/recovery/targetDiscovery.ts",
+    "line": 28,
+    "func": "targetFromRecoveryFolder",
+    "mode": "propagate",
+    "allowed": "SyntaxError",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "recovery/targetDiscovery.ts#3",
+    "file": "src/host/recovery/targetDiscovery.ts",
+    "line": 73,
+    "func": "findRecoveryTargets",
+    "mode": "propagate",
+    "allowed": "scanDirectory",
+    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "platform/vscode/vsCodePlatform.ts#1",
+    "file": "src/host/platform/vscode/vsCodePlatform.ts",
+    "line": 82,
+    "func": "started",
+    "mode": "preserve",
+    "allowed": "none",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "platform/vscode/vsCodePlatform.ts#3",
+    "file": "src/host/platform/vscode/vsCodePlatform.ts",
+    "line": 360,
+    "func": "runProcess",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only listed errors are ordinary. All other failures propagate or settle unknown and fence.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "platform/rpc/rpcPlatform.ts#5",
+    "file": "src/host/platform/rpc/rpcPlatform.ts",
+    "line": 371,
+    "func": "runProcess",
+    "mode": "propagate",
+    "allowed": "none",
+    "decision": "Only listed errors are ordinary. All other failures propagate or settle unknown and fence.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "packageManagerProcessRunner.ts#1",
+    "file": "src/host/packageManagerProcessRunner.ts",
+    "line": 56,
+    "func": "run",
+    "mode": "propagate",
+    "allowed": "processGone or terminateGroup",
+    "decision": "Only listed errors are ordinary. All other failures propagate or settle unknown and fence.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "projectCompatibility/projectEvidenceParsing.ts#1",
+    "file": "src/host/projectCompatibility/projectEvidenceParsing.ts",
+    "line": 38,
+    "func": "parseProjectManifestCompatibilityEvidence",
+    "mode": "propagate",
+    "allowed": "SyntaxError",
+    "decision": "Only listed errors are ordinary. All other failures propagate or settle unknown and fence.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "dashboardPanel.ts#1",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 533,
+    "func": "handle",
+    "allowed": "none",
+    "mode": "propagate",
+    "decision": "Propagate or explicitly settle unknown, retain ownership and fence.",
+    "fsMode": "Production dispatch settlement"
+  },
+  {
+    "id": "dashboardPanel.ts#2",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 541,
+    "func": "handle",
+    "allowed": "none",
+    "mode": "preserve",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "dashboardPanel.ts#3",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 554,
+    "func": "reportRuntimeFailure",
+    "allowed": "none",
+    "mode": "preserve",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "dashboardPanel.ts#4",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 561,
+    "func": "reportRuntimeFailure",
+    "allowed": "none",
+    "mode": "preserve",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "dashboardPanel.ts#5",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 564,
+    "func": "reportRuntimeFailure",
+    "allowed": "none",
+    "mode": "preserve",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "dashboardPanel.ts#6",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 596,
+    "func": "settleFailedRequest",
+    "allowed": "none",
+    "mode": "preserve",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "dashboardPanel.ts#7",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 599,
+    "func": "settleFailedRequest",
+    "allowed": "none",
+    "mode": "preserve",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "dashboardPanel.ts#10",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 646,
+    "func": "postRuntimeError",
+    "allowed": "none",
+    "mode": "preserve",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "dashboardPanel.ts#11",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 649,
+    "func": "postRuntimeError",
+    "allowed": "none",
+    "mode": "preserve",
+    "decision": "Preserve prior unknown settlement and fence.",
+    "fsMode": "Preserve prior outcome"
+  },
+  {
+    "id": "dashboardPanel.ts#12",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 737,
+    "func": "inspectRecoveryInBackground",
+    "allowed": "none",
+    "mode": "propagate",
+    "decision": "Propagate or explicitly settle unknown, retain ownership and fence.",
+    "fsMode": "Production dispatch settlement"
+  },
+  {
+    "id": "dashboardPanel.ts#15",
+    "file": "src/host/dashboardPanel.ts",
+    "line": 1283,
+    "func": "reloadAndScan",
+    "allowed": "Default: any errno. Strict: read or SyntaxError",
+    "mode": "propagate",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "dashboardController.ts#1",
+    "file": "src/host/dashboardController.ts",
+    "line": 292,
+    "func": "parseDeclaredDependencies",
+    "allowed": "SyntaxError",
+    "mode": "propagate",
+    "decision": "Only listed errors are ordinary. All other failures propagate or settle unknown and fence.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "dashboardController.ts#2",
+    "file": "src/host/dashboardController.ts",
+    "line": 1127,
+    "func": "run",
+    "allowed": "Default: any errno. Strict: FetchError, SyntaxError, YAMLException, UnsupportedLockfileError, UnsupportedPnpmLockfileError, cancellation or read",
+    "mode": "propagate",
+    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "npmAuditRunner.ts#1",
+    "file": "src/host/npmAuditRunner.ts",
+    "line": 66,
+    "func": "isUsableAuditOutput",
+    "allowed": "AuditUnavailableError",
+    "mode": "propagate",
+    "decision": "Only listed errors are ordinary. All other failures propagate or settle unknown and fence.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "npmAuditRunner.ts#2",
+    "file": "src/host/npmAuditRunner.ts",
+    "line": 87,
+    "func": "run",
+    "allowed": "none",
+    "mode": "propagate",
+    "decision": "Only listed errors are ordinary. All other failures propagate or settle unknown and fence.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "npmAuditRunner.ts#3",
+    "file": "src/host/npmAuditRunner.ts",
+    "line": 106,
+    "func": "runnerFor",
+    "allowed": "AbortError or TimeoutError from shared scan, unless own signal aborted",
+    "mode": "propagate",
+    "decision": "Only listed errors are ordinary. All other failures propagate or settle unknown and fence.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#6",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 962,
+    "func": "refreshAfterCompletion",
+    "mode": "presentation",
+    "allowed": "post-completion refresh errors",
+    "decision": "Keep the observed transaction result and invalidate the dashboard snapshot. Journal, ownership and unfinished writer failures remain outside this catch.",
+    "fsMode": "Strict evidence read, presentation-only failure"
+  },
+  {
+    "id": "upgradeAssistantCoordinator.ts#7",
+    "file": "src/host/upgradeAssistantCoordinator.ts",
+    "line": 965,
+    "func": "refreshAfterCompletion",
+    "mode": "presentation-diagnostic",
+    "allowed": "post-completion refresh errors",
+    "decision": "Failure while reporting invalidated presentation must not change the known transaction result.",
+    "fsMode": "Strict evidence read, presentation-only failure"
+  }
+]

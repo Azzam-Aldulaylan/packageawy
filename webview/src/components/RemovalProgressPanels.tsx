@@ -140,7 +140,7 @@ export function RemovalResultPanel({
         </dl>
         {kept ? null : (
           <p className="analysis-card__hint">
-            Installed packages in node_modules were not restored. Run your package manager's install to match the restored lockfile.
+            {result.message}
           </p>
         )}
         {kept && result.verification !== 'passed' ? (

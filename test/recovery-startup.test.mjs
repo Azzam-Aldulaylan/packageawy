@@ -37,6 +37,31 @@ test('startup leaves recovery I/O unloaded and discovers an orphan after the fir
   assert.equal(s.posted.find(m => m.status === 'recovery').recovery.files.find(f => f.path === 'package.json').current, 'absent');
 });
 
+test('cached npm dashboard reopen leaves restore and frozen reinstall work deferred', async t => {
+  const first = await panel(t, { saved: {} });
+  first.gate.resolve(); await first.finished(); await first.ready(); first.close();
+  const s = await panel(t, { workspace: first.root, saved: {} });
+  let restores = 0, offers = 0, tasks = 0;
+  t.mock.method(require('../out/host/restorePrecheck.js'), 'precheckRestore', async () => { restores++; return []; });
+  const recovery = s.current.upgradeCoordinator.recovery;
+  const restored = recovery.options.restored;
+  recovery.options.restored = async (...args) => { offers++; return restored(...args); };
+  s.platform.runProcess = async () => { tasks++; throw new Error('unexpected install on reopen'); };
+  s.gate.resolve(); await s.finished();
+  const started = performance.now();
+  await s.ready();
+  t.diagnostic(`cached npm ready in ${(performance.now() - started).toFixed(1)} ms with fixture adapters`);
+  assert.equal(s.snapshots()[0].status, 'ready');
+  assert.equal(s.current.recoveryInspectionScheduled, false);
+  assert.equal(require.cache[require.resolve('../out/host/frozenReconciliation.js')], undefined);
+  await s.current.handle({ type: 'rendered', generatedAt: s.snapshots()[0].data.generatedAt });
+  await until(() => !s.current.recoveryInspectionScheduled);
+  assert.equal(restores, 0);
+  assert.equal(offers, 0);
+  assert.equal(tasks, 0);
+  assert.equal(require.cache[require.resolve('../out/host/frozenReconciliation.js')], undefined);
+});
+
 test('an empty project list still discovers an orphan without a table acknowledgment', async t => {
   const s = await panel(t, { projects: [], target: null });
   await orphanJournal(s);

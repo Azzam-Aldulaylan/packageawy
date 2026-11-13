@@ -63,7 +63,8 @@ export function isUsableAuditOutput(stdout: string): boolean {
   try {
     parseNpmAuditOutput(stdout);
     return true;
-  } catch {
+  } catch (cause) {
+    if (!(cause instanceof AuditUnavailableError)) throw cause;
     return false;
   }
 }

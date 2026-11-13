@@ -1,3 +1,7 @@
+import { isExpectedFsError, isFsError } from './expectedFsError.js';
+import { UnsupportedLockfileError } from '../core/lockfile/parse.js';
+import { UnsupportedPnpmLockfileError } from '../core/lockfile/pnpm.js';
+import { YAMLException } from 'js-yaml';
 /**
  * Drives the pipeline for one open panel.
  *
@@ -74,6 +78,8 @@ export type BackgroundRefreshOutcome =
   | { status: 'superseded' };
 
 export interface DashboardControllerOptions {
+  /** Panel reload generation: a newer disk read supersedes scans before they publish or persist. */
+  scanGeneration?: () => number;
   /** Absolute path to the directory holding package.json. */
   root: string;
   manifestText: string;
@@ -285,7 +291,8 @@ export class DashboardController {
   private static parseDeclaredDependencies(manifestText: string): DeclaredDependency[] {
     try {
       return parseManifest(manifestText).dependencies;
-    } catch {
+    } catch (cause) {
+      if (!(cause instanceof SyntaxError)) throw cause;
       return [];
     }
   }
@@ -774,11 +781,12 @@ export class DashboardController {
    * ready/eligible while a time-only revalidation runs. Incomplete core data
    * remains structurally gated until a complete run succeeds.
    */
-  async handleReady(sink: MessageSink): Promise<void> {
-    await this.presentReady(sink);
+  async handleReady(sink: MessageSink): Promise<BackgroundRefreshOutcome | undefined> {
+    return this.presentReady(sink);
   }
 
   private async presentReady(sink: MessageSink, startup?: StartupTask): Promise<BackgroundRefreshOutcome | undefined> {
+    if (this.disposed) return { status: 'cancelled' };
     const cachePerformance = createPerformanceSession('Packageawy cache', this.performanceEnabled());
     if (this.lastResult === undefined) {
       this.hydrateFromPersistedCache(cachePerformance);
@@ -858,12 +866,13 @@ export class DashboardController {
    * left as-is until `run()` either replaces it with the new result or
    * decides (via its aborted/failure checks) not to.
    */
-  async handleRefresh(sink: MessageSink): Promise<BackgroundRefreshOutcome> {
+  async handleRefresh(sink: MessageSink, strict = false): Promise<BackgroundRefreshOutcome> {
+    if (this.disposed) return { status: 'cancelled' };
     this.lastResult = undefined;
     this.lastResultSourceFingerprint = undefined;
     this.lastGeneratedAt = undefined;
     sink.postMessage({ status: 'loading' });
-    return this.run(sink);
+    return this.run(sink, 'structural', strict);
   }
 
   /**
@@ -879,9 +888,10 @@ export class DashboardController {
    */
   async refreshInBackground(
     sink: MessageSink,
-    reason: BackgroundRefreshReason = 'structural'
+    reason: BackgroundRefreshReason = 'structural',
+    strict = false
   ): Promise<BackgroundRefreshOutcome> {
-    return this.run(sink, reason);
+    return this.run(sink, reason, strict);
   }
 
   /**
@@ -951,8 +961,11 @@ export class DashboardController {
 
   private async run(
     sink: MessageSink,
-    reason: BackgroundRefreshReason = 'structural'
+    reason: BackgroundRefreshReason = 'structural',
+    strict = false
   ): Promise<BackgroundRefreshOutcome> {
+    if (this.disposed) return { status: 'cancelled' };
+    const scanGeneration = this.options.scanGeneration?.();
     this.scanId += 1;
     this.updateContext = undefined;
     this.updateAdvisories.clear(true);
@@ -1002,6 +1015,10 @@ export class DashboardController {
     this.inFlight?.abort();
     const controller = new AbortController();
     this.inFlight = controller;
+    const superseded = (): boolean => controller.signal.aborted || this.disposed ||
+      scanGeneration !== this.options.scanGeneration?.();
+    const destination = sink;
+    sink = { postMessage: message => { if (!superseded()) destination.postMessage(message); } };
 
     // Announce that a revalidation is now actively running: a no-op if
     // there's nothing to carry (a cold start already posted its own
@@ -1054,7 +1071,7 @@ export class DashboardController {
       // was already past the last boundary when the abort fired still resolves
       // normally. Superseded or disposed, its result, and any cache write,
       // is not wanted either way.
-      if (controller.signal.aborted) {
+      if (superseded()) {
         return { status: this.disposed ? 'cancelled' : 'superseded' };
       }
       // A watcher/project mutation that lands during an age-only refresh
@@ -1118,7 +1135,10 @@ export class DashboardController {
       this.enrichOfferedVersions(sink);
       return { status: 'succeeded' };
     } catch (cause) {
-      if (controller.signal.aborted) {
+      if (!(cause instanceof FetchError) && !(cause instanceof SyntaxError) && !(cause instanceof YAMLException) &&
+          !(cause instanceof UnsupportedLockfileError) && !(cause instanceof UnsupportedPnpmLockfileError) &&
+          !isCancellation(cause) && !(strict ? isExpectedFsError(cause, 'read') : isFsError(cause))) throw cause;
+      if (superseded()) {
         return { status: this.disposed ? 'cancelled' : 'superseded' };
       }
       if (isCancellation(cause)) return { status: 'cancelled' };

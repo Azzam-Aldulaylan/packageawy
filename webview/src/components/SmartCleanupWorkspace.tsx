@@ -682,7 +682,7 @@ function ConfirmationView({
         <p>
           {checkedPreflight?.files.rollbackAvailable === false
             ? 'No automatic restore point is available. Review source control before continuing.'
-            : 'Dependency removals run inside one restore boundary. If cleanup fails, restoration of the project manifest and active lockfile is attempted automatically.'}
+            : 'If cleanup fails, Packageawy restores your dependency files and stops if it sees they changed.'}
         </p>
       </div>
     </div>
@@ -871,7 +871,7 @@ function ResultView({
       <IconHistory />
       {restore !== null ? <RestoreNote restore={restore} onRestoreFiles={onRestoreFiles} /> : <p>
         {result.rollback === 'restored'
-          ? "The saved package.json and active lockfile were restored. node_modules and script side effects were not restored. Run your package manager's install command before trying another cleanup."
+          ? "The saved package.json and active lockfile were restored. Script side effects were not restored."
           : result.rollback === 'incomplete'
             ? 'Automatic restoration could not be fully verified. Review package.json and the active lockfile before continuing.'
             : 'The cleanup changes were kept. Use source control if you need to reverse them later.'}

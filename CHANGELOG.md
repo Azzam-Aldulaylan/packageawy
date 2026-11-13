@@ -6,11 +6,13 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Added
 
+- After a successful dependency file restore with a lockfile, Packageawy offers to reinstall node_modules with npm ci or pnpm install --frozen-lockfile. Reinstall results are reported separately from the file restore.
 - A long dependency change now shows Still running, explaining why Packageawy waits for the package manager before allowing another change or a rollback.
 - If VS Code or a JetBrains IDE closes during a dependency change, Packageawy now keeps a recovery record in the project and offers to restore each file the next time you open it.
 
 ### Changed
 
+- Rollback restores your dependency files and stops if it sees they changed. It checks all files before starting and keeps saved and displaced files until you remove them.
 - Likely-unused results and Smart Cleanup now read the script blocks of Vue, Svelte and Astro files, and .mts and .cts files, so packages used only there are no longer suggested for removal.
 - When a project has files Packageawy does not read yet, such as .mdx, removals are not recommended automatically and the screen says why.
 - Cleanup checks now recognize more framework and tool config files, and package names in package.json tool settings.
@@ -70,7 +72,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 - The `packageawy.security.publicAdvisoryCheck` setting turns the vulnerability checks, identifier lookups and npm audit on or off for each project. When it is off, the Vulnerabilities column reads Off. JetBrains IDEs have the same option under the project's Security settings.
 - When no verification scripts are set, reviews for upgrades, removals, and transitive fixes list the project's `typecheck`, `build`, `test`, and `lint` scripts as checkboxes. Checked scripts run after that change, with the same Rollback choice if one fails. Scripts that watch files or start a server are not listed.
 - "Remember for this project" saves the checked scripts as the project's verification scripts. In JetBrains IDEs they appear under Settings, Tools, Packageawy, Project.
-- After a kept Smart Cleanup, **Restore dependency files** puts `package.json` and the lockfile back as they were before the cleanup.
+- After a kept Smart Cleanup, **Restore dependency files** opens recovery to review the saved `package.json` and lockfile.
 - Yarn and Bun projects open with their dependencies shown and a note that changes are available for npm and pnpm projects.
 - Registries that ask for sign-in get one note per registry, and their packages read **Sign-in needed**. Upgrades for every other package stay available.
 - The VSIX and the JetBrains plugin include `ThirdPartyNotices.txt` with the licenses of bundled packages.
@@ -175,7 +177,7 @@ First public pre-release.
 
 - Runs only in trusted workspaces.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
-- Re-reads the project right before every change and refuses to roll back over edits made in the meantime.
+- Re-reads the project right before every change and stops rollback if it sees dependency files changed.
 
 [0.9.7]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.7
 [0.9.6]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.6

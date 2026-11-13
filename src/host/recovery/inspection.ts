@@ -1,11 +1,13 @@
-import { createNodeUpgradeTransactionFileAdapter } from '../nodeUpgradeTransactionFiles.js';
+import { isExpectedFsError } from '../expectedFsError.js';
+import { createNodeUpgradeTransactionFileAdapter, UpgradeTransactionPathError } from '../nodeUpgradeTransactionFiles.js';
+import { manualReinstallNote, recoveryPackageManager } from '../manualReinstallCopy.js';
 import type { RecoveryPresentation } from '../webviewProtocol.js';
 import {
   isBackup, isClaim, isJournal, isOwner, hash, matches, RECOVERY_MESSAGES, RecoveryError,
   type Journal, type Owner, type RecoveryTarget,
 } from './model.js';
 import { RecoveryJournal, folderExists } from './journal.js';
-import { Storage, code, type StorageHooks } from './storage.js';
+import { Storage, type StorageHooks } from './storage.js';
 import { uninitializedEntries, validateRemovalInventory } from './removal.js';
 
 function preview(bytes: Uint8Array): string {
@@ -24,7 +26,7 @@ export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHook
   const result: Inspection = { storage, view };
   // With no journal, avoid component checks and adapter setup entirely.
   try { await storage.fs.lstat(storage.folder); }
-  catch (error) { if (code(error) === 'ENOENT') return result; throw error; }
+  catch (error) { if (isExpectedFsError(error, 'missingFile')) return result; throw error; }
   await storage.initialize();
   if (!await folderExists(storage)) return result;
   view.state = 'blocked'; view.message = RECOVERY_MESSAGES.blocked;
@@ -32,13 +34,13 @@ export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHook
   const owner = await storage.json('owner.json');
   const raw = await storage.json('journal.json');
   const claim = await storage.read('claim.json').catch((error: unknown) => {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return undefined;
+    if (isExpectedFsError(error, 'missingFile')) return undefined;
     throw error;
   });
   view.claim = claim === undefined ? null : hash(claim);
   if (!isOwner(owner)) {
     try { await uninitializedEntries(storage); view.state = 'uninitialized'; }
-    catch { view.state = 'invalid'; view.message = RECOVERY_MESSAGES.invalid; }
+    catch (cause) { if (!(cause instanceof RecoveryError)) throw cause; view.state = 'invalid'; view.message = RECOVERY_MESSAGES.invalid; }
     return result;
   }
   if (owner.targetIdentity !== target.identity) throw new RecoveryError(RECOVERY_MESSAGES.unsafe);
@@ -94,7 +96,8 @@ export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHook
       view.files.push({ id: file.backup.id, path: file.backup.path, existed: file.backup.existed,
         backup: file.backup.sha256 ?? 'absent', current: current.exists ? hash(current.contents) : 'absent',
         backupPreview: backup?.exists ? preview(backup.contents) : '', currentPreview: current.exists ? preview(current.contents) : '', progress });
-    } catch {
+    } catch (cause) {
+      if (!(cause instanceof RecoveryError) && !(cause instanceof UpgradeTransactionPathError) && !isExpectedFsError(cause, 'missingPath')) throw cause;
       view.state = 'invalid'; view.message = RECOVERY_MESSAGES.unsafe;
     }
   }
@@ -102,6 +105,9 @@ export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHook
   if (data.outcome === 'removing') { view.state = 'removing'; view.message = RECOVERY_MESSAGES.completed; view.canDismiss = false; }
   else if (data.outcome === 'recovery-incomplete' || data.outcome === 'rollback-incomplete') { view.state = 'incomplete'; view.message = RECOVERY_MESSAGES.incomplete; view.canDismiss = false; }
   else if (data.outcome === 'completed' || data.outcome === 'rolled-back') { view.state = 'completed'; view.message = RECOVERY_MESSAGES.completed; view.canDismiss = false; }
+  }
+  if (data.outcome === 'recovery-incomplete' || data.outcome === 'rollback-incomplete') {
+    view.message += ` ${manualReinstallNote(recoveryPackageManager(target.allowlistedPaths))}`;
   }
   if (isClaim(await storage.json('claim.json')) && view.state === 'blocked') view.message = RECOVERY_MESSAGES.blocked;
   return result;

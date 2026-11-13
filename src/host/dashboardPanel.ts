@@ -1,3 +1,4 @@
+import { isExpectedFsError, isFsError } from './expectedFsError.js';
 /**
  * The dashboard session behind the webview: lifecycle, the message boundary,
  * and watcher/reload wiring.
@@ -295,7 +296,7 @@ export class DashboardPanel {
       sink: this.sink,
       httpClient: this.httpClient,
       etagStore: this.etagStore,
-      ensureController: () => this.ensureController(),
+      ensureController: (strict) => this.ensureController(strict),
       getSelectedProject: () => this.selectedProject,
       mutationRoot: () => {
         const controller = this.controller;
@@ -307,8 +308,12 @@ export class DashboardPanel {
       },
       getSmartCleanupDeprecationEvidence: () => this.smartCleanupMetadataCoordinator.currentDeprecationEvidence(),
       isDisposed: () => this.disposed,
-      reloadFinalState: async () => {
-        await this.reloadAndScan(undefined, { forceUsageRecheck: true });
+      reloadFinalState: () => this.reloadAndScan(undefined, { forceUsageRecheck: true, strict: true }),
+      invalidateSnapshot: () => {
+        this.clearCurrentProject();
+        this.sink.postMessage({ status: 'fatal-error', error: {
+          code: 'ProjectRefreshError', message: 'Could not reload project data. Try again.',
+        } });
       },
       reloadSmartCleanupFinalState: () => this.reloadAndCaptureFinalState(),
       readAndApplyMutationLocalState: () => this.readAndApplyMutationLocalState(),
@@ -793,10 +798,19 @@ export class DashboardPanel {
       this.pending = undefined;
     }
     this.deliveryReady = true;
+    await this.presentDashboard();
+  }
+
+  private async presentDashboard(forceUsageRecheck = false): Promise<void> {
+    const cold = this.controller === undefined;
     const controller = await this.ensureController();
     if (controller === undefined) return;
-    await controller.handleReady(this.sink);
-    this.requestAutomaticUsageRefresh();
+    const outcome = await controller.handleReady(this.sink);
+    if (cold && outcome?.status === 'failed' && this.controller === controller) {
+      this.clearCurrentProject();
+      return;
+    }
+    this.requestAutomaticUsageRefresh({ force: forceUsageRecheck });
   }
 
   private async handleOtherMessage(message: Exclude<WebviewToHostMessage, { type: 'ready' }>): Promise<void> {
@@ -1030,10 +1044,7 @@ export class DashboardPanel {
       // UsageAnalysisCoordinator.requestBackgroundUsageRefresh's doc for
       // why forcing is safe here.
       if (this.selectedProject === undefined) {
-        const controller = await this.ensureController();
-        if (controller === undefined) return;
-        await controller.handleReady(this.sink);
-        this.requestAutomaticUsageRefresh({ force: true });
+        await this.presentDashboard(true);
         return;
       }
       await this.reloadAndScan(this.selectedProject, { forceUsageRecheck: true });
@@ -1232,9 +1243,9 @@ export class DashboardPanel {
    */
   private async reloadAndScan(
     candidate: DiscoveredProject | undefined = this.selectedProject,
-    options: { forceUsageRecheck?: boolean; clearOnLoadFailure?: boolean } = {}
-  ): Promise<BackgroundRefreshOutcome | undefined> {
-    if (candidate === undefined) return undefined; // nothing selected yet. Only reachable before init ever completes
+    options: { forceUsageRecheck?: boolean; clearOnLoadFailure?: boolean; strict?: boolean } = {}
+  ): Promise<BackgroundRefreshOutcome> {
+    if (candidate === undefined) return { status: 'superseded' }; // nothing selected yet
 
     const previousProjectId = this.selectedProject?.id;
     const sameProjectReload = isSameProjectReload(previousProjectId, candidate.id);
@@ -1278,20 +1289,23 @@ export class DashboardPanel {
 
     let project: ResolvedProject;
     try {
-      project = await this.loadProjectMeasured(candidate, 'Packageawy project reload');
+      project = await this.loadProjectMeasured(candidate, 'Packageawy project reload', options.strict);
     } catch (cause) {
-      if (this.disposed || generation !== this.reloadGeneration) return;
+      if (!(cause instanceof SyntaxError) && !(options.strict ? isExpectedFsError(cause, 'read') : isFsError(cause))) throw cause;
+      if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
+      const error = toProtocolError(cause);
       if (options.clearOnLoadFailure === true) {
         this.clearCurrentProjectForBranch(
           'The selected package.json disappeared while this branch was loading. Select a project and try again.',
           'ProjectChangedDuringBranchLoadError'
         );
-        return;
+        return { status: 'failed', error };
       }
-      this.sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
-      return;
+      this.sink.postMessage({ status: 'fatal-error', error });
+      if (this.controller?.lastResultEvidence() === null) this.clearCurrentProject();
+      return { status: 'failed', error };
     }
-    if (this.disposed || generation !== this.reloadGeneration) return;
+    if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
     this.selectedProject = candidate;
 
     const projectInfo = toProjectInfo(candidate);
@@ -1329,8 +1343,8 @@ export class DashboardPanel {
     // clear the old project's rows so they are never presented under the new
     // project identity.
     const scanOutcome = sameProjectReload
-      ? await controller.refreshInBackground(this.sink)
-      : await controller.handleRefresh(this.sink);
+      ? await controller.refreshInBackground(this.sink, 'structural', options.strict)
+      : await controller.handleRefresh(this.sink, options.strict);
 
     // The network scan can take long enough for an
     // entirely separate, newer reloadAndScan call (a faster project switch,
@@ -1341,7 +1355,7 @@ export class DashboardPanel {
     // duplicate that newer flush or, worse, act on pending state that
     // belongs to whatever project is now actually selected, not the one this
     // call was for. Bail without flushing anything.
-    if (this.disposed || generation !== this.reloadGeneration) return undefined;
+    if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
 
     // Queued, not awaited: dependency data is already published to the
     // webview above, so usage/cleanup analysis must never block on it: it
@@ -1368,7 +1382,7 @@ export class DashboardPanel {
    * rows. Ordinary upgrade/removal callers use the normal reload path.
    */
   private async reloadAndCaptureFinalState(): Promise<SmartCleanupFinalRefreshEvidence | undefined> {
-    const outcome = await this.reloadAndScan(undefined, { forceUsageRecheck: true });
+    const outcome = await this.reloadAndScan(undefined, { forceUsageRecheck: true, strict: true });
     if (outcome?.status !== 'succeeded') return undefined;
     const controller = this.controller;
     const candidate = this.selectedProject;
@@ -1376,7 +1390,7 @@ export class DashboardPanel {
     if (controller === undefined || candidate === undefined || evidence === null || this.disposed) return undefined;
 
     const generationAtReadStart = this.smartCleanupSourceGeneration;
-    const confirmed = await this.loadProjectMeasured(candidate, 'Smart Cleanup final evidence reread');
+    const confirmed = await this.loadProjectMeasured(candidate, 'Smart Cleanup final evidence reread', true);
     const generationAfterRead = this.smartCleanupSourceGeneration;
     if (this.disposed || candidate !== this.selectedProject || controller !== this.controller) return undefined;
 
@@ -1421,7 +1435,7 @@ export class DashboardPanel {
     // read remain queued and are drained after the mutation lock is released.
     this.fileChangeCoordinator.discardPending();
     const generationAtReadStart = controller.beginRevalidation();
-    const project = await this.loadProjectMeasured(candidate, 'Packageawy post-upgrade local refresh');
+    const project = await this.loadProjectMeasured(candidate, 'Packageawy post-upgrade local refresh', true);
     if (
       this.disposed ||
       generation !== this.reloadGeneration ||
@@ -1606,25 +1620,32 @@ export class DashboardPanel {
    * panel still opens and shows a retryable state: clicking Retry re-sends
    * `ready`, which runs this whole selection flow again from scratch.
    */
-  private async ensureController(): Promise<DashboardController | undefined> {
+  private async ensureController(strict = false): Promise<DashboardController | undefined> {
     if (this.controller === undefined && this.startup !== undefined) await this.startup.preparation;
     if (this.disposed) return undefined;
     if (this.controller !== undefined) return this.controller;
-    this.pending ??= this.createController();
-    const controller = await this.pending;
+    if (this.pending === undefined) {
+      if (this.shownDashboardStatus !== undefined) this.sink.postMessage({ status: 'loading' });
+      this.pending = this.createController(strict);
+    }
+    const pending = this.pending;
+    const controller = await pending;
+    if (this.pending !== pending || this.disposed) return undefined;
     if (controller === undefined) this.pending = undefined;
     return controller;
   }
 
-  private async createController(): Promise<DashboardController | undefined> {
+  private async createController(strict = false): Promise<DashboardController | undefined> {
     const performance = createPerformanceSession('Packageawy project load', this.performanceEnabled());
+    const generation = this.reloadGeneration;
+    const isCurrent = (): boolean => !this.disposed && generation === this.reloadGeneration;
     try {
-      const candidate = await this.selectInitialProject(performance);
-      if (this.disposed || candidate === undefined) return undefined; // already posted (or torn down)
+      const candidate = await this.selectInitialProject(performance, isCurrent);
+      if (!isCurrent() || candidate === undefined) return undefined;
 
+      const project = await loadProject(this.platform, candidate, performance, undefined, strict);
+      if (!isCurrent()) return undefined;
       this.selectedProject = candidate;
-      const project = await loadProject(this.platform, candidate, performance);
-      if (this.disposed) return undefined;
 
       this.setupFileWatchers(candidate, path.join(project.root, 'package.json'));
       this.selectedLockfilePath = project.lockfilePath;
@@ -1636,7 +1657,7 @@ export class DashboardPanel {
       );
       return this.controller;
     } catch (cause) {
-      if (this.disposed) return undefined;
+      if (!isCurrent()) return undefined;
       this.sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
       return undefined;
     } finally {
@@ -1651,9 +1672,9 @@ export class DashboardPanel {
    * candidates, distinguished only by the message, since there is no
    * "currently selected project" yet to fall back to on a first-ever open.
    */
-  private async selectInitialProject(performance: PerformanceRecorder): Promise<DiscoveredProject | undefined> {
+  private async selectInitialProject(performance: PerformanceRecorder, isCurrent: () => boolean): Promise<DiscoveredProject | undefined> {
     const candidates = await discoverProjects(this.platform, performance);
-    if (this.disposed) return undefined;
+    if (!isCurrent()) return undefined;
     this.candidateCount = candidates.length;
 
     const requested = this.requestedManifestPath;
@@ -1674,7 +1695,7 @@ export class DashboardPanel {
     if (candidates.length === 1) return candidates[0];
 
     const picked = await pickProject(this.platform, candidates);
-    if (this.disposed) return undefined;
+    if (!isCurrent()) return undefined;
     if (picked === undefined) {
       this.sink.postMessage({
         status: 'fatal-error',
@@ -1716,6 +1737,7 @@ export class DashboardPanel {
       ttlMinutesProvider: this.ttlMinutesProvider,
       performanceEnabled: this.performanceEnabled,
       progressEnabled: true,
+      scanGeneration: () => this.reloadGeneration,
       publicAdvisoryCheckEnabled: this.publicAdvisoryCheckEnabled,
       log: (line) => this.platform.log?.(line),
     });
@@ -1727,10 +1749,10 @@ export class DashboardPanel {
   private readonly performanceEnabled = (): boolean =>
     this.platform.getSetting<boolean>('debug.performance', false);
 
-  private async loadProjectMeasured(candidate: DiscoveredProject, operation: string): Promise<ResolvedProject> {
+  private async loadProjectMeasured(candidate: DiscoveredProject, operation: string, strict = false): Promise<ResolvedProject> {
     const performance = createPerformanceSession(operation, this.performanceEnabled());
     try {
-      return await loadProject(this.platform, candidate, performance);
+      return await loadProject(this.platform, candidate, performance, undefined, strict);
     } finally {
       performance.finish();
     }
@@ -1747,7 +1769,11 @@ export class DashboardPanel {
   };
 
   private onBackgroundTick(): void {
-    if (this.disposed || this.backgroundStopped || this.controller === undefined || this.upgradeCoordinator.isBusy()) return;
+    if (this.disposed || this.backgroundStopped || !this.webviewReady || this.upgradeCoordinator.isBusy()) return;
+    if (this.controller === undefined) {
+      fireAndForget(this.presentDashboard(), this.onBackgroundError('background-refresh', false));
+      return;
+    }
     if (!this.controller.needsBackgroundRefresh()) return;
     const controller = this.controller;
     // A failed timed refresh keeps the last table. It is logged, and the next tick tries again.
@@ -1819,16 +1845,33 @@ export class DashboardPanel {
     this.branchChangeCoordinator.notify();
   }
 
-  private clearCurrentProjectForBranch(message: string, code: string): void {
+  /** Supersede all work and return to the ordinary full discovery/load path. */
+  private clearCurrentProject(): void {
     this.reloadGeneration += 1;
+    this.startupGeneration += 1;
+    this.startup = undefined;
+    this.branchProjectPickerCancellation?.cancel();
+    this.usageCoordinator.invalidateProjectSource(this.selectedProject?.id);
+    this.automaticUsagePending = false;
+    this.automaticUsageForce = false;
     this.fileChangeCoordinator.discardPending();
     this.controller?.dispose();
+    this.controller?.invalidateCache();
     this.controller = undefined;
     this.pending = undefined;
     this.selectedProject = undefined;
     this.selectedPackageManager = null;
     this.selectedLockfilePath = null;
+    this.candidateCount = 0;
     this.disposeWatchers();
+    this.gitWatcherSetupGeneration += 1;
+    this.gitHeadWatcher?.dispose();
+    this.gitHeadWatcher = undefined;
+    this.gitWatchedProjectPath = undefined;
+  }
+
+  private clearCurrentProjectForBranch(message: string, code: string): void {
+    this.clearCurrentProject();
     this.sink.postMessage({ status: 'fatal-error', error: { code, message } });
   }
 

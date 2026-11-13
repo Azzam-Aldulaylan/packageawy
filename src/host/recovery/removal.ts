@@ -40,7 +40,7 @@ export async function removeSavedFiles(storage: Storage, identity: Owner, data: 
   let claimDeleted = false;
   const claimBytes = await storage.exists('claim.json') ? await storage.read('claim.json') : undefined;
   let initialClaim: unknown;
-  try { initialClaim = claimBytes === undefined ? undefined : JSON.parse(claimBytes.toString('utf8')); } catch { initialClaim = undefined; }
+  try { initialClaim = claimBytes === undefined ? undefined : JSON.parse(claimBytes.toString('utf8')); } catch (cause) { if (!(cause instanceof SyntaxError)) throw cause; initialClaim = undefined; }
   if (claimToken !== null && (!isClaim(initialClaim) || initialClaim.token !== claimToken)) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
   if (claimToken === null && data?.outcome !== 'removing' && claimBytes !== undefined) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
   const check = async (): Promise<void> => {

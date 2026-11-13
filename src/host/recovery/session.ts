@@ -1,13 +1,21 @@
+import { isExpectedFsError } from '../expectedFsError.js';
+import { RestoreFileError } from '../upgradeTransaction.js';
+import { precheckRestore } from '../restorePrecheck.js';
+import { manualReinstallNote, recoveryPackageManager } from '../manualReinstallCopy.js';
 import type { RecoveryChoice, RecoveryPresentation } from '../webviewProtocol.js';
 import {
-  hash, isClaim, isOwner, newId, RECOVERY_MESSAGES, RecoveryError, type Claim, type RecoveryTarget,
+  hash, isClaim, isOwner, newId, RECOVERY_MESSAGES, RecoveryError, RecoveryOutcomeUnknownError, type Claim, type RecoveryTarget,
 } from './model.js';
 import { inspectRecovery, type Inspection } from './inspection.js';
-import { code, type StorageHooks } from './storage.js';
+import { type StorageHooks } from './storage.js';
 import { removeSavedFiles, removeUninitialized, validateRemovalInventory } from './removal.js';
+
+/** Only an observed mismatch is a known conflict during restore. */
+class RestoreConflictError extends RecoveryError {}
 
 /** A screen close never settles this session or resumes its saved choices. */
 export class RecoverySession {
+  private outcomeUnknown = false;
   private constructor(readonly inspection: Inspection, readonly token: string | null) {}
 
   static async open(target: RecoveryTarget, stopped: boolean, confirmedClaim: string | null, hooks: StorageHooks = {}): Promise<RecoverySession> {
@@ -29,7 +37,7 @@ export class RecoverySession {
     };
     if (confirmedClaim !== null) {
       try { await storage.mkdir('takeover'); }
-      catch (error) { if (code(error) === 'EEXIST') throw new RecoveryError(RECOVERY_MESSAGES.takingOver); throw error; }
+      catch (error) { if (isExpectedFsError(error, 'exclusiveCreate')) throw new RecoveryError(RECOVERY_MESSAGES.takingOver); throw error; }
       await storage.boundary('takeover:created');
       await checkOwner();
       const previousBytes = await storage.read('claim.json');
@@ -72,7 +80,7 @@ export class RecoverySession {
 
   async presentation(): Promise<RecoveryPresentation> {
     const latest = await inspectRecovery(this.inspection.storage.target, this.inspection.storage.hooks);
-    if (this.inspection.storage.publicationFailed) return latest.view;
+    if (this.inspection.storage.publicationFailed || this.outcomeUnknown) return latest.view;
     if (this.token === null && ['uninitialized', 'removing'].includes(latest.view.state)) {
       latest.view.state = 'open'; latest.view.canDismiss = true;
     } else if (this.token !== null && latest.view.claim === this.inspection.view.claim) {
@@ -87,10 +95,24 @@ export class RecoverySession {
     return latest.view;
   }
 
+  /** A stale session must stay fenced even when publishing unknown fails. */
+  async invalidate(cause: unknown): Promise<never> {
+    this.outcomeUnknown = true;
+    const journal = this.inspection.journal;
+    journal?.fence();
+    if (journal !== undefined) journal.data.outcome = 'unknown';
+    try { await journal?.unknown('The recovery result could not be established.'); }
+    catch { /* The last durable intent and claim remain retained. */ }
+    throw new RecoveryOutcomeUnknownError(RECOVERY_MESSAGES.blocked, { cause });
+  }
+
   async apply(choices: readonly RecoveryChoice[]): Promise<void> {
     const { journal, storage } = this.inspection;
     if (journal === undefined || this.token === null) throw new RecoveryError(RECOVERY_MESSAGES.invalid);
-    await journal.assertOwner();
+    const manualNote = manualReinstallNote(recoveryPackageManager(storage.target.allowlistedPaths));
+    const uncertain = (cause: unknown): Promise<never> => this.invalidate(cause);
+    try { await journal.assertOwner(); }
+    catch (cause) { return uncertain(cause); }
     const selected = choices.map((choice) => {
       const file = journal.data.files.find((entry) => entry.backup.id === choice.id);
       const shown = this.inspection.view.files.find((entry) => entry.id === choice.id);
@@ -98,40 +120,58 @@ export class RecoverySession {
       return { choice, file };
     });
     if (new Set(choices.map((choice) => choice.id)).size !== this.inspection.view.files.length || choices.length !== this.inspection.view.files.length) throw new RecoveryError(RECOVERY_MESSAGES.invalid);
-    const check = async (entry: typeof selected[number]): Promise<void> => {
+    const check = async (entry: typeof selected[number]): Promise<boolean> => {
       await journal.assertOwner();
       const current = await journal.files.read(await journal.filePath(entry.file.backup));
-      if ((current.exists ? hash(current.contents) : 'absent') !== entry.choice.current) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
+      const unchanged = (current.exists ? hash(current.contents) : 'absent') === entry.choice.current;
       await journal.backupState(entry.file.backup);
+      return unchanged;
     };
+    let issues;
     try {
-      for (const entry of selected) await check(entry);
+      issues = await precheckRestore(selected.map(entry => ({
+        path: entry.file.backup.path,
+        check: () => check(entry),
+      })));
+    } catch (cause) { return uncertain(cause); }
+    try {
+      if (issues.length > 0) throw new RestoreConflictError(`${RECOVERY_MESSAGES.incomplete} ${issues.map(issue => issue.message).join(' ')} ${manualNote}`);
       for (const entry of selected) {
-        await check(entry);
+        if (!await check(entry)) throw new RestoreConflictError(`${RECOVERY_MESSAGES.incomplete} Dependency file changed: ${entry.file.backup.path}. ${manualNote}`);
         if (entry.choice.action === 'keep') { entry.file.progress = 'keep'; await journal.save(); }
         else {
           const candidate = await journal.filePath(entry.file.backup);
           const current = await journal.files.read(candidate);
-          if (await journal.replace(entry.file, current, await journal.backupState(entry.file.backup)) !== 'restored') throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
+          if ((current.exists ? hash(current.contents) : 'absent') !== entry.choice.current ||
+              await journal.replace(entry.file, current, await journal.backupState(entry.file.backup)) !== 'restored') throw new RestoreConflictError(`${RECOVERY_MESSAGES.incomplete} Dependency file changed: ${entry.file.backup.path}. ${manualNote}`);
         }
       }
       journal.data.outcome = selected.length === journal.data.files.length ? 'completed' : 'recovery-incomplete';
       await journal.record('recovery-completion', 'finished');
+      await storage.boundary('recovery:completed');
     } catch (error) {
-      journal.data.outcome = 'recovery-incomplete';
-      await journal.save();
+      if (!(error instanceof RestoreConflictError) && !(error instanceof RestoreFileError)) return uncertain(error);
+      try {
+        journal.data.outcome = 'recovery-incomplete';
+        await journal.save();
+      } catch (cause) { return uncertain(cause); }
       throw error;
     }
-    await storage.boundary('recovery:completed');
   }
 
   async dismiss(stopped: boolean, discardIncomplete: boolean): Promise<void> {
+    if (this.outcomeUnknown || this.inspection.storage.publicationFailed) throw new RecoveryOutcomeUnknownError(RECOVERY_MESSAGES.blocked);
     if (!stopped) throw new RecoveryError(RECOVERY_MESSAGES.stop);
     const { storage, owner, journal, view } = this.inspection;
     if (view.state === 'uninitialized') { await removeUninitialized(storage, stopped); return; }
     if (owner === undefined) throw new RecoveryError(RECOVERY_MESSAGES.invalid);
     if (view.state !== 'removing' && journal?.data.outcome !== 'completed' && journal?.data.outcome !== 'rolled-back' && !discardIncomplete) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
-    await validateRemovalInventory(storage, journal?.data);
-    await removeSavedFiles(storage, owner, journal?.data, this.token);
+    try { await validateRemovalInventory(storage, journal?.data); }
+    catch (cause) {
+      if (cause instanceof RecoveryError) throw cause;
+      return this.invalidate(cause);
+    }
+    try { await removeSavedFiles(storage, owner, journal?.data, this.token); }
+    catch (cause) { return this.invalidate(cause); }
   }
 }

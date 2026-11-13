@@ -1,3 +1,4 @@
+import { isExpectedFsError, isFsError } from './expectedFsError.js';
 /**
  * npm invocation resolution for GUI-launched VS Code. See the spec's "npm
  * Binary Resolution" section. A GUI-launched process on macOS does not
@@ -90,7 +91,7 @@
  * suite actually runs on.
  */
 
-import { accessSync, constants as fsConstants, existsSync, readdirSync } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync, readdirSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import * as posixPath from 'node:path/posix';
@@ -351,19 +352,41 @@ export function resolveNpmInvocation(deps: NpmResolverDeps): NpmResolutionResult
   return { ok: false };
 }
 
-export function realIsExecutable(path: string): boolean {
+/** Missing or unusable installations are ordinary probe failures. I/O and internal failures are not. */
+export function rethrowUnexpectedResolverError(cause: unknown, strict = false): void {
+  if (!strict && isFsError(cause)) return;
+  const error = cause as NodeJS.ErrnoException & { status?: unknown };
+  if (isExpectedFsError(cause, 'probe')) return;
+  if (cause instanceof Error && !(cause instanceof TypeError)) {
+    // execFileSync reports an observed nonzero exit as this Node error shape.
+    if (Object.getPrototypeOf(cause) === Error.prototype && error.code === undefined &&
+        typeof error.status === 'number' && Number.isInteger(error.status) && error.status > 0 &&
+        'pid' in error && typeof error.pid === 'number' && 'stdout' in error && 'stderr' in error) return;
+  }
+  throw cause;
+}
+
+export function resolverPathExists(candidate: string, strict = false): boolean {
+  if (!strict) return existsSync(candidate);
+  try { statSync(candidate); return true; }
+  catch (cause) { rethrowUnexpectedResolverError(cause, strict); return false; }
+}
+
+export function realIsExecutable(path: string, strict = false): boolean {
   try {
     accessSync(path, fsConstants.X_OK);
     return true;
-  } catch {
+  } catch (cause) {
+    rethrowUnexpectedResolverError(cause, strict);
     return false;
   }
 }
 
-export function realListDir(dirPath: string): string[] {
+export function realListDir(dirPath: string, strict = false): string[] {
   try {
     return readdirSync(dirPath);
-  } catch {
+  } catch (cause) {
+    rethrowUnexpectedResolverError(cause, strict);
     return [];
   }
 }
@@ -371,7 +394,8 @@ export function realListDir(dirPath: string): string[] {
 function runFixedProbe(
   executable: string,
   args: readonly string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv }
+  options: { cwd: string; env?: NodeJS.ProcessEnv },
+  strict = false
 ): string | undefined {
   try {
     const output = execFileSync(executable, [...args], {
@@ -383,41 +407,42 @@ function runFixedProbe(
     });
     const trimmed = output.trim();
     return trimmed.length > 0 ? trimmed : undefined;
-  } catch {
+  } catch (cause) {
+    rethrowUnexpectedResolverError(cause, strict);
     return undefined;
   }
 }
 
-function realResolveRealNodePath(node: string, cwd: string): string | undefined {
-  return runFixedProbe(node, REAL_NODE_PATH_PROBE_ARGS, { cwd });
+function realResolveRealNodePath(node: string, cwd: string, strict: boolean): string | undefined {
+  return runFixedProbe(node, REAL_NODE_PATH_PROBE_ARGS, { cwd }, strict);
 }
 
 /** POSIX only. See the file header for why this needs PATH prepended, and why Windows never calls this at all. */
-function realResolveGlobalNpmRoot(node: string, platform: NodeJS.Platform, cwd: string): string | undefined {
+function realResolveGlobalNpmRoot(node: string, platform: NodeJS.Platform, cwd: string, strict: boolean): string | undefined {
   const p = pathModuleFor(platform);
   const nodeDir = p.dirname(node);
   const npmBin = p.join(nodeDir, 'npm'); // the co-located wrapper script, never npm.cmd, this path only runs on POSIX
-  if (!existsSync(npmBin)) return undefined;
+  if (!resolverPathExists(npmBin, strict)) return undefined;
   const env = { ...process.env, PATH: prependDirToPath(nodeDir, platform, process.env['PATH']) };
-  return runFixedProbe(npmBin, NPM_ROOT_PROBE_ARGS, { cwd, env });
+  return runFixedProbe(npmBin, NPM_ROOT_PROBE_ARGS, { cwd, env }, strict);
 }
 
-function realProbeVersion(node: string, npmCliJs: string, cwd: string): string | undefined {
-  return runFixedProbe(node, [npmCliJs, NPM_VERSION_PROBE_ARG], { cwd })?.slice(0, 100);
+function realProbeVersion(node: string, npmCliJs: string, cwd: string, strict: boolean): string | undefined {
+  return runFixedProbe(node, [npmCliJs, NPM_VERSION_PROBE_ARG], { cwd }, strict)?.slice(0, 100);
 }
 
-function realProbeLoginShellNode(cwd: string): string | undefined {
-  return probeLoginShell(cwd, LOGIN_SHELL_PROBE_ARGS);
+function realProbeLoginShellNode(cwd: string, strict: boolean): string | undefined {
+  return probeLoginShell(cwd, LOGIN_SHELL_PROBE_ARGS, strict);
 }
 
 /** Reuse the login-shell environment probe for package managers installed outside Node. */
-export function probeLoginShellPath(cwd: string): string | undefined {
-  return probeLoginShell(cwd, ['-lic', 'printf "%s\\n" "$PATH"']);
+export function probeLoginShellPath(cwd: string, strict = false): string | undefined {
+  return probeLoginShell(cwd, ['-lic', 'printf "%s\\n" "$PATH"'], strict);
 }
 
-function probeLoginShell(cwd: string, args: readonly string[]): string | undefined {
+function probeLoginShell(cwd: string, args: readonly string[], strict: boolean): string | undefined {
   const shell = process.env['SHELL'] ?? '/bin/zsh';
-  const output = runFixedProbe(shell, args, { cwd });
+  const output = runFixedProbe(shell, args, { cwd }, strict);
   return output?.split('\n').pop()?.trim() || undefined;
 }
 
@@ -426,7 +451,7 @@ function probeLoginShell(cwd: string, args: readonly string[]): string | undefin
  * "PROJECT-AWARE" note. Called from UpgradeExecutionSession.run with the
  * same `params.cwd` the eventual task's ProcessExecution uses.
  */
-export function createNodeNpmResolverDeps(cwd: string): NpmResolverDeps {
+export function createNodeNpmResolverDeps(cwd: string, strict = false): NpmResolverDeps {
   const platform = process.platform;
   return {
     platform,
@@ -434,12 +459,12 @@ export function createNodeNpmResolverDeps(cwd: string): NpmResolverDeps {
     homeDir: homedir(),
     fnmDirEnv: process.env['FNM_DIR'],
     cwd,
-    exists: existsSync,
-    isExecutable: realIsExecutable,
-    listDir: realListDir,
-    resolveRealNodePath: (node) => realResolveRealNodePath(node, cwd),
-    resolveGlobalNpmRoot: (node) => realResolveGlobalNpmRoot(node, platform, cwd),
-    probeVersion: (node, npmCliJs) => realProbeVersion(node, npmCliJs, cwd),
-    probeLoginShellNode: () => realProbeLoginShellNode(cwd),
+    exists: candidate => resolverPathExists(candidate, strict),
+    isExecutable: candidate => realIsExecutable(candidate, strict),
+    listDir: candidate => realListDir(candidate, strict),
+    resolveRealNodePath: (node) => realResolveRealNodePath(node, cwd, strict),
+    resolveGlobalNpmRoot: (node) => realResolveGlobalNpmRoot(node, platform, cwd, strict),
+    probeVersion: (node, npmCliJs) => realProbeVersion(node, npmCliJs, cwd, strict),
+    probeLoginShellNode: () => realProbeLoginShellNode(cwd, strict),
   };
 }
