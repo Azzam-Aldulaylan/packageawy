@@ -221,6 +221,35 @@ test('the sidecar dashboard shows the selected npm workspace member installed ve
   );
   assert.equal(posted.params.message.data.project.manifestPath, 'packages/app/package.json');
   assert.deepEqual(posted.params.message.data.rows.map(({ name, current }) => [name, current]), [['foo', '2.0.0']]);
+  // Opened at the workspace root, the member's root lockfile is inside the folder.
+  assert.equal(posted.params.message.data.readOnlyReason, undefined);
+});
+
+test('the sidecar resolves the same mutation target as VS Code, with the client folder as the boundary', async (t) => {
+  const home = await mkdtemp(path.join(tmpdir(), 'packageawy-sidecar-boundary-'));
+  await writeFile(path.join(home, '.npmrc'), `registry=${OFFLINE_REGISTRY}\n`);
+  const memberFolder = path.join(repositoryRoot, 'test', 'fixtures', 'npm-member-versions', 'packages', 'app');
+  const client = startClient(home);
+  const exited = new Promise((resolve) => client.child.once('exit', resolve));
+  t.after(async () => {
+    client.close();
+    if (client.child.exitCode === null) client.child.kill();
+    await exited;
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+  await client.request('initialize', {
+    workspaceFolders: [{ id: pathToFileURL(memberFolder).href, name: 'app', path: memberFolder }],
+    isWorkspaceTrusted: true, settings: {}, workspaceState: {}, globalState: {},
+  });
+  client.notify('webview/didReceiveMessage', { message: { type: 'ready' } });
+  const posted = await client.waitFor(
+    (n) => n.method === 'webview/postMessage' && DATA_STATUSES.has(n.params.message.status),
+    30_000
+  );
+  assert.equal(
+    posted.params.message.data.readOnlyReason,
+    'Dependency changes would write outside this opened folder. Open the workspace root to enable changes.'
+  );
 });
 
 test('likely-unused findings come back after a package.json change event', async (t) => {

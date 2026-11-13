@@ -45,7 +45,9 @@ import type { PackageManagerKind, PackageRow, ResolvedRegistry } from '../core/t
 import { validateBulkRemoveRequest, validateBulkUpgradeRequest, validateUpgradeRequest } from '../core/upgrade/validate.js';
 import type { BuildInfo } from './dashboardData.js';
 import { toHostToWebviewMessage } from './dashboardData.js';
-import { otherPackageManagerMessage } from './packageManagerSupport.js';
+import { readOnlyReasonFor } from './packageManagerSupport.js';
+import { targetFingerprintField } from './mutationTarget.js';
+import type { MutationTargetResolution } from './mutationTarget.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
 import { diagnosticLine, runtimeFailureLine } from '../core/diagnostics.js';
 import { fireAndForget } from '../core/fireAndForget.js';
@@ -83,6 +85,8 @@ export interface DashboardControllerOptions {
   lockfileName?: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
   /** Yarn, Bun, or an unrecognized package manager owns this project: every dependency change is refused. */
   otherPackageManager?: OtherPackageManager | null;
+  /** Where a dependency change writes, or why changes are refused. Null or absent refuses every change. */
+  mutationTarget?: MutationTargetResolution | null;
   /** Already resolved by the caller via resolveRegistry. */
   registry: string;
   /** Full registry routing, including scoped overrides, for on-demand package metadata. */
@@ -181,6 +185,7 @@ export type ProjectSnapshot = Pick<
   | 'importerId'
   | 'lockfileName'
   | 'otherPackageManager'
+  | 'mutationTarget'
   | 'registry'
   | 'resolvedRegistry'
   | 'peerPolicy'
@@ -294,8 +299,7 @@ export class DashboardController {
 
   /** Why dependency changes are off for this project, or undefined when npm or pnpm owns it. */
   private readOnlyReason(): string | undefined {
-    const kind = this.options.otherPackageManager ?? null;
-    return kind === null ? undefined : otherPackageManagerMessage(kind);
+    return readOnlyReasonFor(this.options);
   }
 
   /** Host-only source state used to build preflight and transaction inputs. */
@@ -310,6 +314,7 @@ export class DashboardController {
     importerId: string;
     lockfileName: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
     otherPackageManager: OtherPackageManager | null;
+    mutationTarget: MutationTargetResolution | null;
   } {
     return {
       manifestText: this.options.manifestText,
@@ -330,6 +335,7 @@ export class DashboardController {
       importerId: this.options.importerId ?? '.',
       lockfileName: this.options.lockfileName ?? null,
       otherPackageManager: this.options.otherPackageManager ?? null,
+      mutationTarget: this.options.mutationTarget ?? null,
     };
   }
 
@@ -619,9 +625,13 @@ export class DashboardController {
 
   /**
    * Lockfile evidence from project resolution, never from npm's output. A
-   * caller that gives no lockfileName falls back to whether lockfile text was read.
+   * resolved mutation target answers from whether the lockfile it names
+   * exists. Otherwise a caller that gives no lockfileName falls back to
+   * whether lockfile text was read.
    */
   private lockfileMissing(): boolean {
+    const target = this.options.mutationTarget;
+    if (target?.ok === true) return !target.target.lockfileExists;
     const name = this.options.lockfileName;
     return name === null || (name === undefined && this.options.lockfileText === null);
   }
@@ -641,6 +651,7 @@ export class DashboardController {
       packageManager: this.options.packageManager ?? 'npm',
       importerId: this.options.importerId ?? '.',
       lockfilePath: this.options.lockfilePath,
+      ...targetFingerprintField(this.options.mutationTarget),
     });
   }
 

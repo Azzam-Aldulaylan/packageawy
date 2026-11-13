@@ -13,6 +13,7 @@ import { test } from 'node:test';
 
 const { UpgradeAssistantCoordinator } = await import('../out/host/upgradeAssistantCoordinator.js');
 const { isHostToWebviewMessage } = await import('../out/host/webviewProtocol.js');
+import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 const MANIFEST = `${JSON.stringify({ name: 'fixture', dependencies: { 'left-pad': '^1.3.0', react: '^18.0.0' } }, null, 2)}\n`;
 
@@ -57,6 +58,7 @@ function makeCoordinator(project, hooks = {}) {
       resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
       packageManager: 'npm',
       importerId: '.',
+      mutationTarget: resolvedTarget(project.root),
     };
   };
   const platform = {

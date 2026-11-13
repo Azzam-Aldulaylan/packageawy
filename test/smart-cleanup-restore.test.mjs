@@ -10,6 +10,7 @@ const { UpgradeAssistantCoordinator } = await import('../out/host/upgradeAssista
 const { createNodeUpgradeTransactionFileAdapter } = await import('../out/host/nodeUpgradeTransactionFiles.js');
 const restorePoint = await import('../out/host/smartCleanupRestorePoint.js');
 const { isHostToWebviewMessage, isWebviewToHostMessage } = await import('../out/host/webviewProtocol.js');
+import { refusedTarget, resolvedTarget } from './helpers/mutation-target.mjs';
 
 const MANIFEST = `${JSON.stringify({ name: 'fixture', dependencies: { 'left-pad': '^1.3.0', react: '^18.0.0' } }, null, 2)}\n`;
 
@@ -42,6 +43,7 @@ function makeCoordinator(project) {
   const commands = [];
   const information = [];
   const warnings = [];
+  let target;
   const read = async () => {
     const manifestText = await readFile(project.manifestPath, 'utf8');
     const lockfileText = await readFile(project.lockfilePath, 'utf8');
@@ -55,6 +57,7 @@ function makeCoordinator(project) {
       resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
       packageManager: 'npm',
       importerId: '.',
+      mutationTarget: target ?? resolvedTarget(project.root),
     };
   };
   const platform = {
@@ -100,7 +103,7 @@ function makeCoordinator(project) {
     smartCleanupRemovalEvidence: () => ({ isCurrent: () => true }),
     loadProject: read,
   });
-  return { coordinator, messages, commands, information, warnings };
+  return { coordinator, messages, commands, information, warnings, setTarget: (next) => { target = next; } };
 }
 
 async function runCleanup(fixture) {
@@ -145,6 +148,27 @@ test('a successful Smart Cleanup keeps its restore point and restore puts both f
   // Single use: a second request is refused without touching files.
   await fixture.coordinator.handleRestoreSmartCleanup({ analysisId: result.analysisId });
   assert.equal(fixture.messages.at(-1).error.code, 'RESTORE_UNAVAILABLE');
+});
+
+test('restore resolves the mutation target again and refuses without touching files', async (t) => {
+  for (const [label, next, code] of [
+    ['a refusal', refusedTarget('PNPMFILE', 'This project uses a pnpmfile, which can change where pnpm writes the lockfile. Changes are unavailable.'), 'CHANGES_UNAVAILABLE'],
+    ['a moved target', (root) => resolvedTarget(root, { targetRoot: path.dirname(root), importerId: path.basename(root) }), 'RESTORE_UNAVAILABLE'],
+  ]) {
+    const project = await makeProject(t);
+    const fixture = makeCoordinator(project);
+    const result = await runCleanup(fixture);
+    fixture.setTarget(typeof next === 'function' ? next(project.root) : next);
+    await fixture.coordinator.handleRestoreSmartCleanup({ analysisId: result.analysisId });
+    const refused = fixture.messages.at(-1);
+    assert.equal(refused.status, 'remove-error', label);
+    assert.equal(refused.error.code, code, label);
+    if (code === 'CHANGES_UNAVAILABLE') assert.equal(refused.error.message, next.refusal.reason);
+    assert.equal(await readFile(project.lockfilePath, 'utf8'), lockfile(false), `${label}: nothing was restored`);
+    assert.doesNotMatch(await readFile(project.manifestPath, 'utf8'), /react/);
+    assert.equal(fixture.commands.filter((entry) => entry.command === 'ci').length, 0, `${label}: nothing was reinstalled`);
+    assert.equal(fixture.coordinator.isBusy(), false);
+  }
 });
 
 test('restore is refused when the manifest changed after the cleanup', async (t) => {

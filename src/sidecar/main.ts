@@ -7,12 +7,21 @@ import { DashboardPanel } from '../host/dashboardPanel.js';
 import { Methods } from '../host/platform/rpc/protocol.js';
 import { startSidecar } from './server.js';
 import { createUnhandledRejectionHandler } from './unhandledRejection.js';
+import { unsupportedNodeMessage } from './nodeVersion.js';
 
 // stdout carries the protocol only, so console output must not reach it.
 const toStderr = (...args: unknown[]): void => console.error(...args);
 console.log = toStderr;
 console.info = toStderr;
 console.debug = toStderr;
+
+const unsupported = unsupportedNodeMessage(process.versions.node);
+if (unsupported !== null) {
+  // Before anything runs that the old runtime may not support. The client
+  // sees the process end and the message on stderr.
+  console.error(`[packageawy] ${unsupported}`);
+  process.exit(1);
+}
 
 const connection = startSidecar({
   input: process.stdin,

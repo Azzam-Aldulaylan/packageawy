@@ -44,6 +44,8 @@ import {
 } from '../core/workspace/scan.js';
 import type { OtherPackageManager } from '../core/manifest/parse.js';
 import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
+import { resolveMutationTarget } from './mutationTarget.js';
+import type { MutationTargetEnvironment, MutationTargetResolution } from './mutationTarget.js';
 
 export class NoProjectFoundError extends Error {
   constructor(message: string) {
@@ -77,6 +79,11 @@ export interface ResolvedProject {
   importerId: string;
   /** Set when the project is managed by Yarn, Bun, or an unrecognized package manager: shown read-only. */
   otherPackageManager?: OtherPackageManager | null;
+  /**
+   * The directory and exact lockfile a dependency change writes, or why
+   * changes are refused. Every mutation path reads this, never `lockfilePath`.
+   */
+  mutationTarget: MutationTargetResolution;
 }
 
 /**
@@ -229,7 +236,9 @@ export async function discoverProjects(
 export async function loadProject(
   platform: HostPlatform,
   candidate: DiscoveredProject,
-  performance: PerformanceRecorder = NOOP_PERFORMANCE_RECORDER
+  performance: PerformanceRecorder = NOOP_PERFORMANCE_RECORDER,
+  /** Test seam. Production reads the real environment, home directory and Node installations. */
+  environment?: MutationTargetEnvironment
 ): Promise<ResolvedProject> {
   const base = candidate.folder.path;
   const root = candidate.dir === '' ? base : path.join(base, candidate.dir);
@@ -250,13 +259,35 @@ export async function loadProject(
   );
   const otherPackageManager = manifest.otherPackageManager ?? otherLockfileManager;
   endLockfileDiscovery({ found: lockfile !== null });
-  const lockfilePath = lockfile === null ? null : path.join(base, lockfile.dir, lockfile.name);
+  const packageManager =
+    (lockfile === null ? null : packageManagerForLockfile(lockfile.name)) ?? preferredPackageManager;
+
+  const endTargetResolution = performance.start('mutation target resolution');
+  const mutationTarget = await resolveMutationTarget({
+    projectDir: root,
+    folderPath: base,
+    packageManager,
+    ...(environment === undefined ? {} : { environment }),
+  });
+  endTargetResolution({ resolved: mutationTarget.ok });
+
+  // A resolved target names the lockfile the package manager will write, so
+  // the dashboard reads that one too. A refused project keeps the lockfile
+  // found inside the opened folder, which is enough for viewing.
+  let lockfilePath = lockfile === null ? null : path.join(base, lockfile.dir, lockfile.name);
+  let lockfileName = lockfile === null
+    ? null
+    : (lockfile.name as 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml');
+  let lockfileRoot = lockfile === null ? root : path.join(base, lockfile.dir);
+  if (mutationTarget.ok) {
+    const { target } = mutationTarget;
+    lockfilePath = target.lockfileExists ? target.lockfilePath : null;
+    lockfileName = target.lockfileExists ? target.lockfileName : null;
+    lockfileRoot = target.root;
+  }
   const endLockfileRead = performance.start('lockfile read');
   const lockfileText = lockfilePath === null ? null : ((await readIfExists(lockfilePath)) ?? null);
   endLockfileRead({ bytes: lockfileText === null ? 0 : Buffer.byteLength(lockfileText) });
-  const packageManager =
-    (lockfile === null ? null : packageManagerForLockfile(lockfile.name)) ?? preferredPackageManager;
-  const lockfileRoot = lockfile === null ? root : path.join(base, lockfile.dir);
   const importerRelative = path.relative(lockfileRoot, root).split(path.sep).join('/');
   const importerId = importerRelative === '' ? '.' : importerRelative;
 
@@ -270,12 +301,10 @@ export async function loadProject(
     resolvedRegistry: configuration.registry,
     peerPolicy: configuration.peerPolicy,
     packageManager,
-    lockfileName:
-      lockfile === null
-        ? null
-        : (lockfile.name as 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml'),
+    lockfileName,
     lockfileRoot,
     importerId,
     otherPackageManager,
+    mutationTarget,
   };
 }

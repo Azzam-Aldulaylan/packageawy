@@ -40,6 +40,7 @@ import { buildDependencyGraph } from '../../core/lockfile/build.js';
 import { parseManifest } from '../../core/manifest/parse.js';
 import type { Manifest } from '../../core/manifest/parse.js';
 import { computeSourceFingerprint } from '../../core/cache/sourceFingerprint.js';
+import { targetFingerprintField } from '../mutationTarget.js';
 import type { ProjectSourceFingerprint } from '../../core/cache/sourceFingerprint.js';
 import { buildUnusedFinding } from '../../core/usage/unused.js';
 import type { DependencyReference, DependencyUsageResult } from '../../core/usage/types.js';
@@ -338,6 +339,7 @@ export class UsageAnalysisCoordinator {
       packageManager: source.packageManager,
       importerId: source.importerId,
       lockfilePath: source.lockfilePath,
+      ...targetFingerprintField(source.mutationTarget),
     });
   }
 

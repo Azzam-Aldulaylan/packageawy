@@ -16,6 +16,7 @@
 import type { DashboardController, MessageSink } from './dashboardController.js';
 import type { ResolvedRegistry } from '../core/types.js';
 import type { SelectedProjectInfo } from './webviewProtocol.js';
+import type { MutationTargetResolution } from './mutationTarget.js';
 
 export interface ReloadedProject {
   root: string;
@@ -29,6 +30,8 @@ export interface ReloadedProject {
   importerId?: string;
   lockfileName?: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
   otherPackageManager?: 'yarn' | 'bun' | 'unknown' | null;
+  /** Re-resolved with every reload, so a topology or settings change reaches eligibility and the banner. */
+  mutationTarget?: MutationTargetResolution;
 }
 
 export interface ReloadSource<TCandidate> {
@@ -107,6 +110,7 @@ export async function reloadControllerFromDisk<TCandidate>(
       importerId: project.importerId ?? '.',
       lockfileName: project.lockfileName ?? null,
       otherPackageManager: project.otherPackageManager ?? null,
+      mutationTarget: project.mutationTarget ?? null,
       projectInfo,
       canChangeProject: params.canChangeProject,
       cacheKey,

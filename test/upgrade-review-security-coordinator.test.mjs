@@ -17,12 +17,15 @@ const bundle = await build({ entryPoints: ['src/host/upgradeAssistantCoordinator
     plugin.onLoad({ filter: /.*/, namespace: 'test' }, args => ({ loader: 'js', contents: args.path === 'toolchain'
       ? `export const probeLoginShellPath = () => null;
         export const createNodeNpmResolverDeps = () => ({});
+        export const candidateNodePaths = () => [];
+        export const realListDir = () => [];
         export const resolveNpmInvocation = () => ({ ok: true, invocation: { node: '/fake/node', npmCliJs: '/fake/npm', version: '10.0.0' } });`
       : `export { IsolatedResolverVerifier } from '${verifierUrl}';
         export class NodeResolverProcessRunner { run(...args) { return globalThis.__reviewSecurityRunner.run(...args); } }` }));
     plugin.onResolve({ filter: /^file:/ }, args => ({ path: args.path, external: true }));
   } }] });
 const { UpgradeAssistantCoordinator } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false, cancelAt, disableAtAdvisory = false, toggleAfterSecurity, toggleAtFinalRead = false, toggleDuringRecheck = false, toggleDuringSmartPlan = false, confirm = false } = {}) {
   const messages = [];
@@ -45,7 +48,7 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
   const source = { root: '/fixture', manifestText: JSON.stringify({ dependencies }), lockfileText: JSON.stringify({ lockfileVersion: 3, packages }),
     lockfilePath: '/fixture/package-lock.json', lockfileRoot: '/fixture', lockfileName: 'package-lock.json', importerId: '.',
     registry: 'https://registry.npmjs.org/', resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} },
-    peerPolicy: { strictPeerDeps: true, legacyPeerDeps: false }, packageManager: 'npm' };
+    peerPolicy: { strictPeerDeps: true, legacyPeerDeps: false }, packageManager: 'npm', mutationTarget: resolvedTarget('/fixture') };
   const changes = [{ packageName: 'app', currentVersion: '1.0.0', target: bulk ? '3.0.0' : '2.0.0', classification: 'prod' },
     ...(bulk ? [{ packageName: 'peer', currentVersion: '1.0.0', target: '2.0.0', classification: 'prod' }] : [])];
   globalThis.__reviewSecurityRunner = { async run(_, args, cwd, signal) {

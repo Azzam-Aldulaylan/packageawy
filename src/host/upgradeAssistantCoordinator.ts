@@ -141,7 +141,9 @@ import { applyVerificationOptIn } from './verificationOptIn.js';
 import type { VerificationOptInRequest } from './verificationOptIn.js';
 import type { VerificationScript } from './verificationPolicy.js';
 import { smartCleanupProjectCapability } from './smartCleanupProjectCapability.js';
-import { dependencyChangeRefusal } from './packageManagerSupport.js';
+import { dependencyChangeRefusal, requireMutationTarget } from './packageManagerSupport.js';
+import { mutationTargetIdentity, resolveMutationTarget, targetFingerprintField } from './mutationTarget.js';
+import type { MutationTargetResolution } from './mutationTarget.js';
 import { canonicalProjectRoot, projectMutationLocks, type ProjectMutationLocks } from './projectMutationLock.js';
 import { buildSmartCleanupCompletionReport } from './smartCleanupCompletionReport.js';
 import type {
@@ -275,9 +277,9 @@ export interface UpgradeAssistantCoordinatorOptions {
   reportBackgroundFailure?(context: RuntimeFailureContext, error: unknown, fence: boolean): void;
   performanceEnabled?(): boolean;
   /**
-   * The directory whose dependency files a change here would write: the
-   * lockfile root when one is known. Falls back to the selected project's
-   * directory. Keys the extension-wide one-change-per-project lock.
+   * The resolved mutation target's root, which keys the extension-wide
+   * one-change-per-project lock. Undefined when no target is resolved, and
+   * then no change can start.
    */
   mutationRoot?(): string | undefined;
   /** Test seam. Production shares one process-wide lock registry. */
@@ -304,6 +306,9 @@ export interface UpgradeAssistantCoordinatorOptions {
 }
 
 const MAX_REMEDIATION_PRESENTED_ADVISORIES = 400;
+
+const RESTORE_TARGET_MOVED_MESSAGE =
+  'The dependency files changed location or settings during this change, so Packageawy left them as they are instead of restoring them.';
 
 /** Production default for `UpgradeAssistantCoordinatorOptions.withCompatibilityProgress`: the exact `withProgress`/`AbortController` wiring `handleAnalyzeUpgradeRequests`'s compatibility preflight used inline before this seam existed. */
 async function defaultWithCompatibilityProgress<T>(
@@ -413,8 +418,22 @@ function projectCompatibilityFingerprint(project: ResolvedProject, evidenceFinge
   ].join(':');
 }
 
+/**
+ * A different identity means the directory or lockfile a change would write
+ * moved (or a refusal appeared or cleared), which invalidates a review like
+ * any other source change.
+ */
+function sameMutationTarget(
+  left: { mutationTarget?: MutationTargetResolution | null },
+  right: { mutationTarget?: MutationTargetResolution | null }
+): boolean {
+  const leftIdentity = mutationTargetIdentity(left.mutationTarget);
+  return leftIdentity !== undefined && leftIdentity === mutationTargetIdentity(right.mutationTarget);
+}
+
 function resolvedProjectSourceMatches(left: ResolvedProject, right: ResolvedProject): boolean {
   return left.root === right.root &&
+    sameMutationTarget(left, right) &&
     left.manifestText === right.manifestText &&
     left.lockfileText === right.lockfileText &&
     left.lockfilePath === right.lockfilePath &&
@@ -530,6 +549,9 @@ interface StoredSmartCleanupRestore {
   projectId: string;
   projectRoot: string;
   packageManager: 'npm' | 'pnpm';
+  /** The mutation target the cleanup wrote. Restore re-resolves and refuses when it moved. */
+  targetIdentity: string;
+  workspaceMember: boolean;
   ignoreScripts: boolean;
   packages: string[];
   reservationKey: string;
@@ -743,10 +765,9 @@ export class UpgradeAssistantCoordinator {
   }
 
   private currentMutationRootKey(): string | undefined {
-    const selected = this.options.getSelectedProject();
-    const folderPath = selected?.folder?.path;
-    const root = this.options.mutationRoot?.() ??
-      (selected === undefined || typeof folderPath !== 'string' ? undefined : path.join(folderPath, selected.dir ?? ''));
+    // Always the resolved target's root. A project without one cannot start
+    // a change, so it holds no lock.
+    const root = this.options.mutationRoot?.();
     if (root === undefined) return undefined;
     if (this.canonicalRootCache?.root !== root) {
       this.canonicalRootCache = { root, key: canonicalProjectRoot(root) };
@@ -917,6 +938,23 @@ export class UpgradeAssistantCoordinator {
         this.options.sink.postMessage({ status: 'remove-error', package: stored.reservationKey, error: refusal });
         return;
       }
+      // Resolve the target again before restoring: the files captured must
+      // still be the ones the package manager would write.
+      const selected = this.options.getSelectedProject();
+      const current = selected === undefined ? undefined : await this.projectLoader(selected);
+      const currentTarget = requireMutationTarget(current);
+      if (!currentTarget.ok) {
+        this.options.sink.postMessage({ status: 'remove-error', package: stored.reservationKey, error: currentTarget.error });
+        return;
+      }
+      if (current?.mutationTarget.identity !== stored.targetIdentity) {
+        this.options.sink.postMessage({
+          status: 'remove-error',
+          package: stored.reservationKey,
+          error: { code: 'RESTORE_UNAVAILABLE', message: SMART_CLEANUP_RESTORE_MESSAGES.unavailable },
+        });
+        return;
+      }
       if (this.changesPaused()) {
         this.options.sink.postMessage({
           status: 'remove-error',
@@ -948,6 +986,7 @@ export class UpgradeAssistantCoordinator {
         cwd: stored.projectRoot,
         ignoreScripts: stored.ignoreScripts,
         packageManager: stored.packageManager,
+        workspaceMember: stored.workspaceMember,
         taskTitle: SMART_CLEANUP_RESTORE_TASK_TITLE,
       });
       const reinstalled = prepared.ok ? await prepared.execute() : prepared;
@@ -985,6 +1024,29 @@ export class UpgradeAssistantCoordinator {
     } finally {
       await this.releaseReservation(stored.reservationKey);
     }
+  }
+
+  /**
+   * For a transaction's `beforeRestore`, and before a reinstall that
+   * follows a restore: resolves the mutation target again and refuses when
+   * it is no longer the one the change captured. If the project cannot be
+   * reloaded (an install can leave package.json unreadable), the target is
+   * resolved from the filesystem alone so a restore is not blocked for that.
+   */
+  private restoreGuard(
+    selected: DiscoveredProject,
+    packageManager: 'npm' | 'pnpm',
+    identity: string
+  ): () => Promise<string | null> {
+    return async () => {
+      const reloaded = await this.projectLoader(selected).catch(() => undefined);
+      const resolution = reloaded?.mutationTarget ?? await resolveMutationTarget({
+        projectDir: selected.dir === '' ? selected.folder.path : path.join(selected.folder.path, selected.dir),
+        folderPath: selected.folder.path,
+        packageManager,
+      });
+      return resolution.identity === identity ? null : RESTORE_TARGET_MOVED_MESSAGE;
+    };
   }
 
   /**
@@ -1358,11 +1420,12 @@ export class UpgradeAssistantCoordinator {
 
     const controller = await this.options.ensureController();
     if (controller === undefined) return;
-    const refusal = dependencyChangeRefusal(controller.upgradeSource);
-    if (refusal !== null) {
-      this.options.sink.postMessage({ status: 'upgrade-error', package: messages[0]?.package ?? 'unknown', error: refusal });
+    const required = requireMutationTarget(controller.upgradeSource);
+    if (!required.ok) {
+      this.options.sink.postMessage({ status: 'upgrade-error', package: messages[0]?.package ?? 'unknown', error: required.error });
       return;
     }
+    const mutationTarget = required.target;
 
     let publishedTargetsByPackage: ReadonlyMap<string, ReadonlySet<string>> = new Map();
     let batch = controller.validateBulkUpgradeRequest(messages);
@@ -1447,7 +1510,8 @@ export class UpgradeAssistantCoordinator {
         preflightProject.lockfilePath !== source.lockfilePath ||
         preflightProject.registry !== source.registry ||
         preflightProject.packageManager !== source.packageManager ||
-        preflightProject.importerId !== source.importerId
+        preflightProject.importerId !== source.importerId ||
+        !sameMutationTarget(preflightProject, source)
       ) {
         this.options.sink.postMessage({
           status: 'upgrade-error',
@@ -1464,9 +1528,7 @@ export class UpgradeAssistantCoordinator {
       const suggestedScriptNames = verificationSuggestionsFor(source.manifestText, verificationScripts);
 
       const manifestPath = path.join(controller.root, 'package.json');
-      const expectedLockfilePath =
-        source.lockfilePath ??
-        path.join(controller.root, source.packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json');
+      const expectedLockfilePath = mutationTarget.lockfilePath;
 
       const overviewChanges = buildUpgradeAnalysisChanges({
         packageName: eligibility.packageName,
@@ -2158,12 +2220,13 @@ export class UpgradeAssistantCoordinator {
       if (this.pendingRemovalAnalysis === pending) this.pendingRemovalAnalysis = undefined;
       return;
     }
-    const refusal = dependencyChangeRefusal(controller.upgradeSource);
-    if (refusal !== null) {
-      this.options.sink.postMessage({ status: 'remove-error', package: requestedPackage, error: refusal });
+    const required = requireMutationTarget(controller.upgradeSource);
+    if (!required.ok) {
+      this.options.sink.postMessage({ status: 'remove-error', package: requestedPackage, error: required.error });
       if (this.pendingRemovalAnalysis === pending) this.pendingRemovalAnalysis = undefined;
       return;
     }
+    const mutationTarget = required.target;
 
     if (smartCleanup !== undefined) {
       const capability = smartCleanupProjectCapability(controller.upgradeSource);
@@ -2242,7 +2305,8 @@ export class UpgradeAssistantCoordinator {
         preflightProject.lockfilePath !== source.lockfilePath ||
         preflightProject.registry !== source.registry ||
         preflightProject.packageManager !== source.packageManager ||
-        preflightProject.importerId !== source.importerId
+        preflightProject.importerId !== source.importerId ||
+        !sameMutationTarget(preflightProject, source)
       ) {
         this.options.sink.postMessage({
           status: 'remove-error',
@@ -2289,9 +2353,7 @@ export class UpgradeAssistantCoordinator {
         stillRequiredBy: stillRequiredBy(graph, manifest.dependencies, item.packageName, removingNames, whyInstalledIndex),
       }));
       const manifestPath = path.join(controller.root, 'package.json');
-      const expectedLockfilePath =
-        source.lockfilePath ??
-        path.join(controller.root, source.packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json');
+      const expectedLockfilePath = mutationTarget.lockfilePath;
 
       const ignoreScripts = this.options.platform.getSetting<boolean>('upgrade.ignoreScripts', true);
       const configuredVerification = this.options.platform.getSetting<unknown[]>('upgrade.verificationScripts', []);
@@ -2315,6 +2377,7 @@ export class UpgradeAssistantCoordinator {
               lockfilePath: preflightProject.lockfilePath,
               packageManager: preflightProject.packageManager,
               importerId: preflightProject.importerId,
+              ...targetFingerprintField(preflightProject.mutationTarget),
             }),
             ...(deprecationEvidence === undefined
               ? {}
@@ -2680,6 +2743,7 @@ export class UpgradeAssistantCoordinator {
       preflightProject.registry !== source.registry ||
       preflightProject.packageManager !== source.packageManager ||
       preflightProject.importerId !== source.importerId ||
+      !sameMutationTarget(preflightProject, source) ||
       JSON.stringify(preflightProject.peerPolicy) !== JSON.stringify(source.peerPolicy) ||
       JSON.stringify(preflightProject.resolvedRegistry) !== JSON.stringify(source.resolvedRegistry)
     ) {
@@ -2837,10 +2901,17 @@ export class UpgradeAssistantCoordinator {
         throw Object.assign(new Error('No project is selected.'), { name: 'NO_PROJECT' });
       }
       const disk = await this.projectLoader(selected);
+      // Resolved again right before writing: a refusal that appeared since
+      // the review is reported as itself, not as a stale review.
+      const diskTarget = requireMutationTarget(disk);
+      if (!diskTarget.ok) {
+        this.options.sink.postMessage({ status: 'remediation-error', package: stored.packageName, error: diskTarget.error });
+        return;
+      }
       if (
         stored.stale ||
         !resolvedProjectSourceMatches(disk, stored.snapshot) ||
-        disk.lockfilePath === null ||
+        !diskTarget.target.lockfileExists ||
         disk.lockfileText === null
       ) {
         stored.stale = true;
@@ -2893,7 +2964,7 @@ export class UpgradeAssistantCoordinator {
       }
 
       const manifestPath = path.join(disk.root, 'package.json');
-      const lockfilePath = disk.lockfilePath;
+      const lockfilePath = diskTarget.target.lockfilePath;
       const files = await createNodeUpgradeTransactionFileAdapter({
         workspaceRoot: selected.folder.path,
         allowlistedPaths: [manifestPath, lockfilePath],
@@ -2949,9 +3020,11 @@ export class UpgradeAssistantCoordinator {
       });
 
       let securityVerificationFailed = false;
+      const beforeRestore = this.restoreGuard(selected, disk.packageManager, disk.mutationTarget.identity);
       const transaction = await runUpgradeTransaction({
         allowlistedPaths: [manifestPath, lockfilePath],
         files,
+        beforeRestore,
         fileStages: [{
           path: lockfilePath,
           expectedContents: Buffer.from(disk.lockfileText, 'utf8'),
@@ -2987,6 +3060,7 @@ export class UpgradeAssistantCoordinator {
                 applied.lockfileText === null ||
                 applied.lockfileText !== stored.proposedLockfileText ||
                 applied.lockfilePath !== stored.snapshot.lockfilePath ||
+                !sameMutationTarget(applied, stored.snapshot) ||
                 applied.packageManager !== stored.snapshot.packageManager ||
                 applied.importerId !== stored.snapshot.importerId
               ) {
@@ -3140,11 +3214,16 @@ export class UpgradeAssistantCoordinator {
           analysisId: stored.id,
           phase: 'rolling-back',
         });
-        const restore = this.session.prepareLockfileReconciliation({
-          cwd: disk.root,
-          ignoreScripts: stored.ignoreScripts,
-          packageManager: disk.packageManager,
-        });
+        // The reinstall writes the lockfile again, so the target is resolved
+        // once more first, as for the restore just before it.
+        const targetMoved = await beforeRestore();
+        const restore = targetMoved !== null
+          ? { ok: false as const }
+          : this.session.prepareLockfileReconciliation({
+              cwd: disk.root,
+              ignoreScripts: stored.ignoreScripts,
+              packageManager: disk.packageManager,
+            });
         if (!restore.ok) {
           rollbackReconciliationFailed = true;
         } else {
@@ -3335,6 +3414,13 @@ export class UpgradeAssistantCoordinator {
       // and repeat the host-owned eligibility check immediately before the
       // snapshot. The stored analysis is never execution authority.
       const disk = await this.projectLoader(selected);
+      // The target is resolved again right before writing. A refusal that
+      // appeared since the review is reported as itself.
+      const diskTarget = requireMutationTarget(disk);
+      if (!diskTarget.ok) {
+        this.options.sink.postMessage({ status: 'upgrade-error', package: stored.eligibility.packageName, error: diskTarget.error });
+        return;
+      }
       const sourceStillMatches = disk.root === controller.root && resolvedProjectSourceMatches(disk, stored.snapshot);
       const rechecked = controller.validateBulkUpgradeRequest(
         stored.requests,
@@ -3374,9 +3460,7 @@ export class UpgradeAssistantCoordinator {
 
       const source = controller.upgradeSource;
       const manifestPath = path.join(controller.root, 'package.json');
-      const expectedLockfilePath =
-        source.lockfilePath ??
-        path.join(controller.root, source.packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json');
+      const expectedLockfilePath = diskTarget.target.lockfilePath;
       const allowlistedPaths = [manifestPath, expectedLockfilePath];
       // Every upgrade writes package.json itself and then reconciles with a
       // bare install. `npm install pkg@x` / `pnpm add pkg@x` would apply the
@@ -3404,6 +3488,7 @@ export class UpgradeAssistantCoordinator {
         importerId: source.importerId,
         ignoreScripts: stored.ignoreScripts,
         packageManager: source.packageManager,
+        workspaceMember: diskTarget.target.workspaceMember,
         taskTitle,
         taskScope: stored.eligibility.packageName,
       });
@@ -3414,6 +3499,7 @@ export class UpgradeAssistantCoordinator {
             importerId: source.importerId,
             ignoreScripts: true,
             packageManager: source.packageManager,
+            workspaceMember: diskTarget.target.workspaceMember,
             lockfileOnly: true,
             taskTitle: `${taskTitle} (keep version ranges)`,
             taskScope: stored.eligibility.packageName,
@@ -3459,6 +3545,7 @@ export class UpgradeAssistantCoordinator {
       const transaction = await runUpgradeTransaction({
         allowlistedPaths,
         files,
+        beforeRestore: this.restoreGuard(selected, source.packageManager, disk.mutationTarget.identity),
         manifestStage: {
           path: manifestPath,
           expectedContents: Buffer.from(disk.manifestText, 'utf8'),
@@ -3659,8 +3746,16 @@ export class UpgradeAssistantCoordinator {
       if (selected === undefined) return;
 
       const disk = await this.projectLoader(selected);
+      // The target is resolved again right before writing. A refusal that
+      // appeared since the review is reported as itself.
+      const diskTarget = requireMutationTarget(disk);
+      if (!diskTarget.ok) {
+        this.options.sink.postMessage({ status: 'remove-error', package: stored.reservationKey, error: diskTarget.error });
+        return;
+      }
       const sourceStillMatches =
         disk.root === controller.root &&
+        sameMutationTarget(disk, stored.snapshot) &&
         disk.manifestText === stored.snapshot.manifestText &&
         disk.lockfileText === stored.snapshot.lockfileText &&
         disk.lockfilePath === stored.snapshot.lockfilePath &&
@@ -3714,9 +3809,7 @@ export class UpgradeAssistantCoordinator {
 
       const source = controller.upgradeSource;
       const manifestPath = path.join(controller.root, 'package.json');
-      const expectedLockfilePath =
-        source.lockfilePath ??
-        path.join(controller.root, source.packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json');
+      const expectedLockfilePath = diskTarget.target.lockfilePath;
       const allowlistedPaths = [manifestPath, expectedLockfilePath];
 
       const stagedManifest = stored.eligibilities.length === 0
@@ -3735,6 +3828,7 @@ export class UpgradeAssistantCoordinator {
         importerId: source.importerId,
         ignoreScripts: stored.ignoreScripts,
         packageManager: source.packageManager,
+        workspaceMember: diskTarget.target.workspaceMember,
       });
       if (!prepared.ok) {
         this.options.sink.postMessage({
@@ -3779,6 +3873,7 @@ export class UpgradeAssistantCoordinator {
       const transaction = await runUpgradeTransaction({
         allowlistedPaths,
         files,
+        beforeRestore: this.restoreGuard(selected, source.packageManager, disk.mutationTarget.identity),
         ...(stored.eligibilities.length === 0
           ? {}
           : {
@@ -3979,6 +4074,8 @@ export class UpgradeAssistantCoordinator {
           projectId: selected.id,
           projectRoot: controller.root,
           packageManager: source.packageManager,
+          targetIdentity: disk.mutationTarget.identity,
+          workspaceMember: diskTarget.target.workspaceMember,
           ignoreScripts: stored.ignoreScripts,
           packages: removedPackages,
           reservationKey: stored.reservationKey,

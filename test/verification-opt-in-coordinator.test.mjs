@@ -2,6 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 const SCRIPTS = { build: 'tsc', test: 'echo "Error: no test specified" && exit 1', lint: 'eslint .', dev: 'vite' };
 
@@ -19,6 +20,7 @@ function makeCoordinator(UpgradeAssistantCoordinator, { setting = [], trusted = 
     resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
     packageManager: 'npm',
     importerId: '.',
+    mutationTarget: resolvedTarget('/nonexistent-packageawy-fixture'),
   };
   const messages = [];
   const updates = [];

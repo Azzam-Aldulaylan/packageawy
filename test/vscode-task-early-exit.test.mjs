@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
+import { resolvedTarget } from './helpers/mutation-target.mjs';
+
 /** The fake for the current test. The vscode module below delegates to it. */
 let current;
 
@@ -414,6 +416,7 @@ test('an install that exits before VS Code says it started still settles the cha
     resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
     packageManager: 'npm',
     importerId: '.',
+    mutationTarget: resolvedTarget(root),
   });
   const messages = [];
   const coordinator = new UpgradeAssistantCoordinator({

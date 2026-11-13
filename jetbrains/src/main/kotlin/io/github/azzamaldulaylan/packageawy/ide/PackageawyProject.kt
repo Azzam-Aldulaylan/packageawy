@@ -34,6 +34,7 @@ import io.github.azzamaldulaylan.packageawy.settings.SettingsListener
 import io.github.azzamaldulaylan.packageawy.settings.SettingsState
 import io.github.azzamaldulaylan.packageawy.sidecar.Initialize
 import io.github.azzamaldulaylan.packageawy.sidecar.NodeLocator
+import io.github.azzamaldulaylan.packageawy.sidecar.NodeVersion
 import io.github.azzamaldulaylan.packageawy.sidecar.SidecarProcess
 import io.github.azzamaldulaylan.packageawy.sidecar.WorkspaceFolder
 import io.github.azzamaldulaylan.packageawy.webview.IdeTheme
@@ -159,6 +160,7 @@ class PackageawyProject(private val project: Project) : Disposable {
         val script = bundledSidecar() ?: throw IllegalStateException("The bundled Packageawy engine is missing.")
         val node = NodeLocator.find(project)
             ?: throw IllegalStateException("Node.js was not found. Configure a Node.js interpreter or add node to PATH.")
+        NodeVersion.probe(node)?.let { version -> NodeVersion.unsupportedMessage(version)?.let { throw IllegalStateException(it) } }
         val sidecar = SidecarProcess.start(node, script.toFile(), EnvironmentUtil.getEnvironmentMap(), LOG::warn) {
             LOG.info("sidecar: $it")
         }

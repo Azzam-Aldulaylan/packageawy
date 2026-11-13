@@ -2,7 +2,7 @@
  * Builds ThirdPartyNotices.txt from the packages esbuild actually bundled.
  *
  * The extension, sidecar and webview bundles carry copies of runtime
- * dependencies (semver, js-yaml, react, react-dom and what they pull in), and
+ * dependencies (semver, js-yaml, ini, react, react-dom and what they pull in), and
  * their licenses ask for the notice to travel with every copy. Reading the
  * esbuild metafile keeps the list exact: a package appears only when some of
  * its code made it into an output file.

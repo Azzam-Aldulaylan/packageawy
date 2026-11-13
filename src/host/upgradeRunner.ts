@@ -17,6 +17,8 @@
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 
+import semver from 'semver';
+
 import type { DependencyClassification } from '../core/upgrade/plan.js';
 import {
   buildCoordinatedInstallArgs,
@@ -63,6 +65,8 @@ export interface UpgradeManifestReconciliationParams {
   packageManager: 'npm' | 'pnpm';
   /** Reconcile only the lockfile. See buildManifestReconciliationArgs. */
   lockfileOnly?: boolean;
+  /** The project is a workspace member whose lockfile is at the workspace root. */
+  workspaceMember?: boolean;
   /** Task title and scope shown to the user. Default to the cleanup wording. */
   taskTitle?: string;
   taskScope?: string;
@@ -82,6 +86,8 @@ export interface UpgradeLockfileReconciliationParams {
   cwd: string;
   ignoreScripts: boolean;
   packageManager: 'npm' | 'pnpm';
+  /** The project is a workspace member whose lockfile is at the workspace root. */
+  workspaceMember?: boolean;
   /** Task title shown to the user. Defaults to the transitive-fix title. */
   taskTitle?: string;
 }
@@ -97,6 +103,24 @@ export interface UpgradeVerificationParams {
   scripts: readonly VerificationScript[];
   /** Observed only between scripts. An in-flight task is always allowed to reach a stable boundary. */
   signal?: AbortSignal;
+}
+
+/**
+ * The first npm that finds the workspace root when run from a member's own
+ * folder: npm 8.5.0 shipped @npmcli/config 3.0.0 with that lookup
+ * (https://docs.npmjs.com/cli/v8/using-npm/changelog/#v850-2022-02-10).
+ * An older npm treats the member as its own project and writes a lockfile
+ * beside its package.json, not the one the transaction captured.
+ */
+export const NPM_WORKSPACE_MEMBER_MIN_VERSION = '8.5.0';
+export const NPM_TOO_OLD_FOR_MEMBER_CODE = 'NPM_TOO_OLD_FOR_WORKSPACE';
+export const NPM_TOO_OLD_FOR_MEMBER_MESSAGE =
+  'This npm version does not find the workspace root from a package folder, so it would write a different lockfile. Update npm to enable changes.';
+
+/** Whether this npm writes the workspace root's lockfile from a member folder. An unreadable version is treated as too old. */
+export function npmFindsWorkspaceRoot(version: string | undefined): boolean {
+  const parsed = version === undefined ? null : semver.coerce(version);
+  return parsed !== null && semver.gte(parsed, NPM_WORKSPACE_MEMBER_MIN_VERSION);
 }
 
 const DISPOSED_OUTCOME: UpgradeRunOutcome = {
@@ -116,7 +140,11 @@ export class UpgradeExecutionSession {
   private readonly listeners = new Set<Disposable>();
   private readonly pendingRuns = new PendingUpgradeRuns();
 
-  constructor(private readonly platform: HostPlatform) {}
+  constructor(
+    private readonly platform: HostPlatform,
+    /** Test seam. Production resolves the real npm or pnpm for `cwd`. */
+    private readonly invocationResolver?: (cwd: string, packageManager: 'npm' | 'pnpm') => PackageManagerInvocation | null
+  ) {}
 
   /**
    * Reserves the panel's single upgrade slot for `packageName` for the whole
@@ -224,17 +252,9 @@ export class UpgradeExecutionSession {
     }
 
     const { cwd, packageManager, ignoreScripts } = params;
-    const invocation = this.resolveInvocation(cwd, packageManager);
-    if (invocation === null) {
-      this.platform.showErrorMessage(
-        packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`
-      );
-      return {
-        ok: false,
-        code: 'PACKAGE_MANAGER_NOT_FOUND',
-        message: packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${packageManager} installation could not be located.`,
-      };
-    }
+    const resolved = this.resolveInvocationFor(cwd, packageManager, params.workspaceMember === true);
+    if (!resolved.ok) return resolved;
+    const invocation = resolved.invocation;
 
     const reconcileArgs = buildManifestReconciliationArgs(packageManager, {
       ignoreScripts,
@@ -293,17 +313,9 @@ export class UpgradeExecutionSession {
     }
 
     const { cwd, packageManager, ignoreScripts, taskTitle } = params;
-    const invocation = this.resolveInvocation(cwd, packageManager);
-    if (invocation === null) {
-      this.platform.showErrorMessage(
-        packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`
-      );
-      return {
-        ok: false,
-        code: 'PACKAGE_MANAGER_NOT_FOUND',
-        message: packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${packageManager} installation could not be located.`,
-      };
-    }
+    const resolved = this.resolveInvocationFor(cwd, packageManager, params.workspaceMember === true);
+    if (!resolved.ok) return resolved;
+    const invocation = resolved.invocation;
 
     const args = buildLockfileReconciliationArgs(packageManager, { ignoreScripts });
     let executed = false;
@@ -370,12 +382,39 @@ export class UpgradeExecutionSession {
   }
 
   private resolveInvocation(cwd: string, packageManager: 'npm' | 'pnpm'): PackageManagerInvocation | null {
+    if (this.invocationResolver !== undefined) return this.invocationResolver(cwd, packageManager);
     const npm = resolveNpmInvocation(createNodeNpmResolverDeps(cwd));
     if (packageManager === 'npm') {
       if (!npm.ok) return null;
-      return { executable: npm.invocation.node, prefixArgs: [npm.invocation.npmCliJs] };
+      return { executable: npm.invocation.node, prefixArgs: [npm.invocation.npmCliJs], version: npm.invocation.version };
     }
     return resolveInstalledPnpmInvocation(npm.ok ? npm.invocation : null, cwd);
+  }
+
+  /**
+   * The invocation a reconciliation will run, or the refusal to report.
+   * Checked before anything is staged, so a refusal writes nothing.
+   */
+  private resolveInvocationFor(
+    cwd: string,
+    packageManager: 'npm' | 'pnpm',
+    workspaceMember: boolean
+  ): { ok: true; invocation: PackageManagerInvocation } | { ok: false; code: string; message: string } {
+    const invocation = this.resolveInvocation(cwd, packageManager);
+    if (invocation === null) {
+      this.platform.showErrorMessage(
+        packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`
+      );
+      return {
+        ok: false,
+        code: 'PACKAGE_MANAGER_NOT_FOUND',
+        message: packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${packageManager} installation could not be located.`,
+      };
+    }
+    if (packageManager === 'npm' && workspaceMember && !npmFindsWorkspaceRoot(invocation.version)) {
+      return { ok: false, code: NPM_TOO_OLD_FOR_MEMBER_CODE, message: NPM_TOO_OLD_FOR_MEMBER_MESSAGE };
+    }
+    return { ok: true, invocation };
   }
 
   private async executeTask(

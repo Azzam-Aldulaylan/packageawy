@@ -20,6 +20,7 @@ import { attentionCardValue, summaryMetrics, vulnerabilitiesCardValue } from '..
 import { UpgradeAssistantCoordinator } from '../out/host/upgradeAssistantCoordinator.js';
 import { isWebviewToHostMessage } from '../out/host/webviewProtocol.js';
 import { RpcPlatform } from '../out/host/platform/rpc/rpcPlatform.js';
+import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 const REGISTRY = 'https://registry.npmjs.org';
 const BULK = 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk';
@@ -306,7 +307,7 @@ function remediationCoordinator(enabled, duringLoad = () => {}) {
     etagStore: new MemoryEtagStore(),
     ensureController: async () => ({
       root: ROOT,
-      upgradeSource: { manifestText: MANIFEST, lockfileText: LOCKFILE, lockfilePath: null, packageManager: 'npm', importerId: '.', lockfileName: 'package-lock.json', otherPackageManager: null },
+      upgradeSource: { manifestText: MANIFEST, lockfileText: LOCKFILE, lockfilePath: null, packageManager: 'npm', importerId: '.', lockfileName: 'package-lock.json', otherPackageManager: null, mutationTarget: resolvedTarget(ROOT) },
       lastResultRows: () => [TRANSITIVE_ROW],
     }),
     getSelectedProject: () => ({ id: 'project', dir: '', manifestPath: 'package.json', folder: { id: 'folder', name: 'app', path: ROOT } }),
