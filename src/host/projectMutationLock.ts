@@ -42,6 +42,13 @@ export class ProjectMutationLocks {
     }
   }
 
+  /** Transfer is synchronous, so admission never opens between owners. */
+  transfer(key: string, previous: object, next: object): boolean {
+    if (this.holders.get(key) !== previous) return false;
+    this.holders.set(key, next);
+    return true;
+  }
+
   holderOf(key: string): object | undefined {
     return this.holders.get(key);
   }

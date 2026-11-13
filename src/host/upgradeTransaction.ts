@@ -44,7 +44,8 @@ export type InstallExecutionResult =
       message: string;
       exitCode?: number | null;
     }
-  | { status: 'cancelled'; message: string; exitCode?: number | null };
+  | { status: 'cancelled'; message: string; exitCode?: number | null }
+  | { status: 'unknown'; message: string };
 
 /**
  * Writes an install step makes to a host-staged file go through this, so the
@@ -73,6 +74,7 @@ export interface VerificationCheckResult {
 }
 
 export type VerificationExecutionResult =
+  | { status: 'unknown'; checks: readonly VerificationCheckResult[]; message: string }
   | { status: 'passed'; checks: readonly VerificationCheckResult[] }
   | { status: 'failed'; checks: readonly VerificationCheckResult[]; message?: string }
   | { status: 'cancelled'; checks: readonly VerificationCheckResult[]; message?: string };
@@ -142,7 +144,7 @@ export type InstallResult =
 export type VerificationResult =
   | {
       status: 'not-run';
-      reason: 'not-configured' | 'manifest-stage-failed' | 'file-stage-failed' | 'install-failed' | 'cancelled';
+      reason: 'not-configured' | 'manifest-stage-failed' | 'file-stage-failed' | 'install-failed' | 'cancelled' | 'unknown';
     }
   | VerificationExecutionResult;
 
@@ -159,9 +161,10 @@ export type RollbackResult =
       files: readonly RollbackFileResult[];
     };
 
-export type TransactionCompletion = 'kept' | 'rolled-back' | 'not-started' | 'incomplete';
+export type TransactionCompletion = 'kept' | 'rolled-back' | 'not-started' | 'incomplete' | 'unknown';
 
 export type TransactionReason =
+  | 'unknown'
   | 'verified'
   | 'verification-not-configured'
   | 'verification-failed'
@@ -199,6 +202,7 @@ export interface UpgradeTransactionOptions {
   /** Canonical, host-resolved files this transaction is allowed to restore. */
   allowlistedPaths: readonly string[];
   files: UpgradeTransactionFileAdapter;
+  journal?: { record(step: string, phase: 'intent' | 'finished'): Promise<void> };
   /**
    * Exact host-generated package.json bytes to stage before reconciliation.
    * The path must be an existing member of `allowlistedPaths`. The state
@@ -524,8 +528,10 @@ function withOwnedStates(
 async function rollback(
   entries: readonly ExpectedEntry[],
   files: UpgradeTransactionFileAdapter,
-  beforeRestore?: () => Promise<string | null>
+  beforeRestore?: () => Promise<string | null>,
+  journal?: UpgradeTransactionOptions['journal']
 ): Promise<RollbackResult> {
+  await journal?.record('rollback', 'intent');
   const results: RollbackFileResult[] = [];
   if (beforeRestore !== undefined && entries.length > 0) {
     let refusal: string | null;
@@ -565,6 +571,7 @@ async function rollback(
     }
   }
 
+  await journal?.record('rollback', 'finished');
   if (results.some((result) => result.status === 'failed')) {
     return { status: 'failed', files: results };
   }
@@ -585,7 +592,7 @@ async function executeInstall(
   try {
     return await executor.execute(context);
   } catch (cause) {
-    return { status: 'failed', code: 'INSTALL_EXECUTOR_ERROR', message: errorMessage(cause) };
+    return { status: 'unknown', message: errorMessage(cause) };
   }
 }
 
@@ -594,7 +601,7 @@ async function executeVerification(verifier: UpgradeVerifier): Promise<Verificat
     return await verifier.verify();
   } catch (cause) {
     return {
-      status: 'failed',
+      status: 'unknown',
       checks: [],
       message: `Verification could not run: ${errorMessage(cause)}`,
     };
@@ -646,7 +653,7 @@ async function decideAfterFailure(
 }
 
 /** Run one complete upgrade transaction without throwing operational failures. */
-export async function runUpgradeTransaction(
+async function executeTransaction(
   options: UpgradeTransactionOptions
 ): Promise<UpgradeTransactionResult> {
   const paths = stableAllowlist(options.allowlistedPaths);
@@ -725,7 +732,7 @@ export async function runUpgradeTransaction(
       const rolledBack =
         expectedAfterStage.length === 0
           ? { status: 'not-needed' as const }
-          : await rollback(expectedAfterStage, options.files, options.beforeRestore);
+          : await rollback(expectedAfterStage, options.files, options.beforeRestore, options.journal);
       return {
         completion:
           rolledBack.status === 'not-needed'
@@ -765,7 +772,7 @@ export async function runUpgradeTransaction(
         retentionDecision: 'not-needed',
       };
     }
-    const rolledBack = await rollback(expectedAfterStage, options.files, options.beforeRestore);
+    const rolledBack = await rollback(expectedAfterStage, options.files, options.beforeRestore, options.journal);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -781,6 +788,7 @@ export async function runUpgradeTransaction(
 
   // Once install starts it is always awaited. Cancellation is observed only
   // after it reaches this stable boundary, then handled by rollback.
+  await options.journal?.record('install', 'intent');
   const install = await executeInstall(options.install, {
     compareAndSwap: async (path, expectedState, replacement) => {
       if (!owned.has(path)) {
@@ -791,10 +799,15 @@ export async function runUpgradeTransaction(
       return result;
     },
   });
+  if (install.status === 'unknown') return {
+    completion: 'unknown', reason: 'unknown', snapshot: snapshotResult, manifestStage, fileStages, install,
+    verification: { status: 'not-run', reason: 'unknown' }, rollback: { status: 'not-needed' }, retentionDecision: 'not-needed',
+  };
+  await options.journal?.record('install', 'finished');
   const expected = withOwnedStates(await captureExpectedStates(snapshot.entries, options.files), owned);
 
   if (install.status !== 'succeeded') {
-    const rolledBack = await rollback(expected, options.files, options.beforeRestore);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: install.status === 'cancelled' || cancelled(options.signal) ? 'cancelled' : 'install-failed',
@@ -812,7 +825,7 @@ export async function runUpgradeTransaction(
   }
 
   if (cancelled(options.signal)) {
-    const rolledBack = await rollback(expected, options.files, options.beforeRestore);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -843,10 +856,16 @@ export async function runUpgradeTransaction(
 
   // Verification also reaches a stable boundary before cancellation can
   // initiate rollback, so rollback cannot race an in-flight verification.
+  await options.journal?.record('verification', 'intent');
   const verification = await executeVerification(options.verifier);
+  if (verification.status === 'unknown') return {
+    completion: 'unknown', reason: 'unknown', snapshot: snapshotResult, manifestStage, fileStages, install,
+    verification, rollback: { status: 'not-needed' }, retentionDecision: 'not-needed',
+  };
+  await options.journal?.record('verification', 'finished');
 
   if (cancelled(options.signal) || verification.status === 'cancelled') {
-    const rolledBack = await rollback(expected, options.files, options.beforeRestore);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -875,11 +894,13 @@ export async function runUpgradeTransaction(
     };
   }
 
+  await options.journal?.record('decision', 'intent');
   const retention = await decideAfterFailure(
     options.verificationFailureDecider,
     verification,
     options.signal
   );
+  await options.journal?.record('decision', 'finished');
   if (retention.decision === 'keep' && !cancelled(options.signal)) {
     return {
       completion: 'kept',
@@ -895,7 +916,7 @@ export async function runUpgradeTransaction(
     };
   }
 
-  const rolledBack = await rollback(expected, options.files, options.beforeRestore);
+  const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
   return {
     completion: completionAfterRollback(rolledBack),
     reason: cancelled(options.signal) ? 'cancelled' : 'verification-failed',
@@ -907,4 +928,16 @@ export async function runUpgradeTransaction(
     rollback: rolledBack,
     retentionDecision: retention.status,
   };
+}
+
+export async function runUpgradeTransaction(options: UpgradeTransactionOptions): Promise<UpgradeTransactionResult> {
+  let dispatched = false;
+  try {
+    return await executeTransaction({ ...options, install: { execute: (context) => { dispatched = true; return options.install.execute(context); } } });
+  } catch (error) {
+    if (!dispatched) throw error;
+    return { completion: 'unknown', reason: 'unknown', snapshot: { status: 'not-run' }, manifestStage: { status: 'not-run' },
+      install: { status: 'unknown', message: errorMessage(error) }, verification: { status: 'not-run', reason: 'unknown' },
+      rollback: { status: 'not-needed' }, retentionDecision: 'not-needed' };
+  }
 }

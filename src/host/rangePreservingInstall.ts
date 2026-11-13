@@ -9,7 +9,7 @@
 
 import type { InstallExecutionResult, UpgradeInstallExecutor } from './upgradeTransaction.js';
 
-export type ReconcileOutcome = { ok: true } | { ok: false; code: string; message: string };
+export type ReconcileOutcome = { ok: true } | { ok: false; status?: 'unknown'; code: string; message: string };
 
 export interface RangePreservingInstallOptions {
   manifestPath: string;
@@ -23,7 +23,7 @@ export interface RangePreservingInstallOptions {
 }
 
 function failed(outcome: Extract<ReconcileOutcome, { ok: false }>): InstallExecutionResult {
-  return { status: 'failed', code: outcome.code, message: outcome.message };
+  return outcome.status === 'unknown' ? { status: 'unknown', message: outcome.message } : { status: 'failed', code: outcome.code, message: outcome.message };
 }
 
 export function createRangePreservingInstall(options: RangePreservingInstallOptions): UpgradeInstallExecutor {

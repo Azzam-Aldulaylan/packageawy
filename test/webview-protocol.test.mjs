@@ -2174,3 +2174,44 @@ test('usage coverage reasons accept only an optional array of strings', () => {
     assert.equal(isHostToWebviewMessage({ ...message, analysis: { ...message.analysis, result: { ...message.analysis.result, coverageReasons } } }), false);
   }
 });
+
+test('recovery messages carry choices and confirmation, never filesystem authority', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const digest = 'a'.repeat(64);
+  const choice = { id, current: digest, action: 'keep', approveDeletion: false };
+  const view = { state: 'blocked', message: 'An earlier change may still be running. Dependency changes are blocked.', claim: null, canDismiss: false, canApply: false,
+    files: [{ id, path: 'package.json', existed: true, backup: digest, current: digest, backupPreview: '{}', currentPreview: '{}', progress: 'pending' }] };
+  assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: view }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'inspect-recovery' }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'start-recovery', stopped: true, claim: digest }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'dismiss-recovery', stopped: true, discardIncomplete: true }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'apply-recovery', choices: [choice] }), true);
+  for (const message of [
+    { type: 'start-recovery', stopped: false, claim: null },
+    { type: 'start-recovery', stopped: true },
+    { type: 'start-recovery', stopped: true, claim: '../claim' },
+    { type: 'dismiss-recovery', stopped: false, discardIncomplete: true },
+    { type: 'dismiss-recovery', stopped: true, discardIncomplete: 'yes' },
+    { type: 'apply-recovery', choices: [{ ...choice, path: '/etc/passwd' }] },
+    { type: 'apply-recovery', choices: [{ ...choice, id: '../manifest' }] },
+    { type: 'apply-recovery', choices: [{ ...choice, action: 'delete' }] },
+    { type: 'apply-recovery', choices: [{ ...choice, current: 'unknown' }] },
+    { type: 'apply-recovery', choices: [{ ...choice, approveDeletion: 'true' }] },
+    { type: 'inspect-recovery', root: '/tmp' },
+  ]) assert.equal(isWebviewToHostMessage(message), false, JSON.stringify(message));
+  for (const changed of [{ state: 'surprise' }, { claim: 'token' }, { canDismiss: 'yes' }, { canApply: 'yes' }, { files: [{ id: '../id' }] }]) {
+    assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: { ...view, ...changed } }), false);
+  }
+});
+
+
+test('recovery entries and selection use validated opaque IDs', () => {
+  const id = 'a'.repeat(64);
+  assert.equal(isHostToWebviewMessage({ status: 'recovery-entries', entries: [{ id, label: 'nested/project' }] }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'inspect-recovery', id }), true);
+  for (const bad of ['../outside', '', 42]) {
+    assert.equal(isWebviewToHostMessage({ type: 'inspect-recovery', id: bad }), false);
+    assert.equal(isHostToWebviewMessage({ status: 'recovery-entries', entries: [{ id: bad, label: 'project' }] }), false);
+  }
+  assert.equal(isHostToWebviewMessage({ status: 'recovery-entries', entries: [{ id, label: 'project', root: '/tmp' }] }), false);
+});

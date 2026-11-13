@@ -682,7 +682,24 @@ export type ScanProgressStage =
   | 'npm-audit'
   | 'rows';
 
+export interface RecoveryPresentation {
+  state: 'none' | 'running' | 'blocked' | 'uninitialized' | 'invalid' | 'takeover' | 'open' | 'incomplete' | 'completed' | 'removing';
+  message: string;
+  claim: string | null;
+  canDismiss: boolean;
+  canApply: boolean;
+  files: Array<{ id: string; path: string; existed: boolean; backup: string; current: string; backupPreview: string; currentPreview: string; progress: string }>;
+}
+export interface RecoveryChoice {
+  id: string;
+  current: string;
+  action: 'keep' | 'restore';
+  approveDeletion: boolean;
+}
+
 export type HostToWebviewMessage =
+  | { status: 'recovery-entries'; entries: Array<{ id: string; label: string }> }
+  | { status: 'recovery'; recovery: RecoveryPresentation }
   | { status: 'update-advisories'; context: UpdateAdvisoryContext; results: UpdateAdvisoryResult[] }
   | { status: 'loading' }
   | { status: 'scan-progress'; stage: ScanProgressStage; completed?: number; total?: number }
@@ -852,6 +869,10 @@ export type HostToWebviewMessage =
  * upgradeAssistantCoordinator.ts's handleConfirmUpgrade/handleUseSmartPlan.
  */
 export type WebviewToHostMessage =
+  | { type: 'inspect-recovery'; id?: string }
+  | { type: 'start-recovery'; stopped: true; claim: string | null }
+  | { type: 'apply-recovery'; choices: RecoveryChoice[] }
+  | { type: 'dismiss-recovery'; stopped: true; discardIncomplete: boolean }
   | { type: 'ready' }
   | { type: 'rendered'; generatedAt: string }
   | { type: 'refresh' }
@@ -1074,6 +1095,13 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (!isRecord(value)) return false;
 
   const type = value['type'];
+  if (type === 'inspect-recovery') return hasOnlyKeys(value, ['type', 'id']) && (value['id'] === undefined || isRecoveryHash(value['id']));
+  if (type === 'start-recovery') return hasOnlyKeys(value, ['type', 'stopped', 'claim']) && value['stopped'] === true &&
+    (value['claim'] === null || isRecoveryHash(value['claim']));
+  if (type === 'dismiss-recovery') return hasOnlyKeys(value, ['type', 'stopped', 'discardIncomplete']) && value['stopped'] === true && typeof value['discardIncomplete'] === 'boolean';
+  if (type === 'apply-recovery') return hasOnlyKeys(value, ['type', 'choices']) && Array.isArray(value['choices']) && value['choices'].length <= 1000 && value['choices'].every((choice: unknown) =>
+    isRecord(choice) && hasOnlyKeys(choice, ['id', 'current', 'action', 'approveDeletion']) && isRecoveryId(choice['id']) &&
+    (choice['current'] === 'absent' || isRecoveryHash(choice['current'])) && (choice['action'] === 'keep' || choice['action'] === 'restore') && typeof choice['approveDeletion'] === 'boolean');
   if (type === 'rendered') {
     return hasOnlyKeys(value, ['type', 'generatedAt']) && isNonEmptyString(value['generatedAt']);
   }
@@ -2230,6 +2258,10 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   const status = value['status'];
   if (typeof status !== 'string') return false;
 
+  if (status === 'recovery-entries') return hasOnlyKeys(value, ['status', 'entries']) &&
+    Array.isArray(value['entries']) && value['entries'].length <= 1000 && value['entries'].every((entry: unknown) =>
+      isRecord(entry) && hasOnlyKeys(entry, ['id', 'label']) && isRecoveryHash(entry['id']) && typeof entry['label'] === 'string');
+  if (status === 'recovery') return hasOnlyKeys(value, ['status', 'recovery']) && isRecoveryPresentation(value['recovery']);
   if (status === 'update-advisories') {
     return hasOnlyKeys(value, ['status', 'context', 'results']) &&
       isUpdateAdvisoryContext(value['context']) && isUpdateAdvisoryResults(value['results']);
@@ -2597,4 +2629,20 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
     return hasOnlyKeys(value, ['status', 'data']) && isDashboardData(value['data']);
   }
   return false;
+}
+
+function isRecoveryHash(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+function isRecoveryId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+}
+function isRecoveryPresentation(value: unknown): value is RecoveryPresentation {
+  return isRecord(value) && hasOnlyKeys(value, ['state', 'message', 'claim', 'canDismiss', 'canApply', 'files']) &&
+    ['none', 'running', 'blocked', 'uninitialized', 'invalid', 'takeover', 'open', 'incomplete', 'completed', 'removing'].includes(value['state'] as string) &&
+    typeof value['message'] === 'string' && (value['claim'] === null || isRecoveryHash(value['claim'])) && typeof value['canDismiss'] === 'boolean' && typeof value['canApply'] === 'boolean' &&
+    Array.isArray(value['files']) && value['files'].length <= 1000 && value['files'].every((file: unknown) =>
+      isRecord(file) && hasOnlyKeys(file, ['id', 'path', 'existed', 'backup', 'current', 'backupPreview', 'currentPreview', 'progress']) && isRecoveryId(file['id']) &&
+      isNonEmptyString(file['path']) && typeof file['existed'] === 'boolean' && (file['backup'] === 'absent' || isRecoveryHash(file['backup'])) &&
+      (file['current'] === 'absent' || isRecoveryHash(file['current'])) && typeof file['backupPreview'] === 'string' && file['backupPreview'].length <= 5000 && typeof file['currentPreview'] === 'string' && file['currentPreview'].length <= 5000 && typeof file['progress'] === 'string');
 }

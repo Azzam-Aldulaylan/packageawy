@@ -42,7 +42,7 @@ test('a failure that lands while a confirmation is in preflight stops it before 
   assert.equal(fixture.coordinator.isBusy(), false);
 });
 
-test('a change already running finishes and releases normally after a failure elsewhere', async (t) => {
+test('a running cleanup finishes and retains its recovery files after a failure elsewhere', async (t) => {
   const project = await makeProject(t);
   const releases = [];
   const fixture = makeCoordinator(project, { onMutationLockReleased: () => releases.push('released') });
@@ -58,11 +58,11 @@ test('a change already running finishes and releases normally after a failure el
   const result = fixture.messages.findLast((message) => message.status === 'remove-result');
   assert.ok(result, `the removal finished: ${JSON.stringify(fixture.messages.at(-1))}`);
   assert.equal(result.result.outcome, 'verified');
-  assert.equal(fixture.coordinator.isBusy(), false, 'the lock was released');
-  assert.ok(releases.length > 0, 'the normal post-release callback ran');
+  assert.equal(fixture.coordinator.isBusy(), true, 'the durable cleanup restore point keeps the lock');
+  assert.equal(fixture.coordinator.reservation.held.state, 'retained');
 });
 
-test('a kept Smart Cleanup restore is refused after the failure without touching files', async (t) => {
+test('recovery can be inspected after a failure without touching files', async (t) => {
   const project = await makeProject(t);
   const fixture = makeCoordinator(project);
   const analysisId = await review(fixture);
@@ -71,7 +71,7 @@ test('a kept Smart Cleanup restore is refused after the failure without touching
   assert.equal(result.restoreAvailable, true);
   fixture.state.paused = true;
   await fixture.coordinator.handleRestoreSmartCleanup({ analysisId: result.analysisId });
-  assert.equal(fixture.messages.at(-1).error.code, 'CHANGES_PAUSED');
+  assert.equal(fixture.messages.at(-1).status, 'recovery');
   assert.equal(await readFile(project.lockfilePath, 'utf8'), lockfile(false), 'nothing was restored');
   assert.deepEqual(fixture.commands, ['install'], 'no reinstall ran');
 });

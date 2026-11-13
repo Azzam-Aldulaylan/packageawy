@@ -1,5 +1,6 @@
 /** HostPlatform on the VS Code extension API. */
 
+import { isRecoveryPath } from '../../../core/workspace/scan.js';
 import { readFileSync } from 'node:fs';
 import { readFileChunks } from '../fileChunks.js';
 
@@ -60,7 +61,7 @@ class TaskRun {
   private exit: { exitCode: number | undefined } | undefined;
   private disposed = false;
   private readonly listeners = new Set<(exitCode: number | undefined) => void>();
-  private readonly replays = new Set<ReturnType<typeof setTimeout>>();
+  private readonly replays = new Map<ReturnType<typeof setTimeout>, (exitCode: number | undefined) => void>();
 
   constructor() {
     // onDidEndTaskProcess fires for every task in the workspace, so events are matched by execution.
@@ -82,7 +83,10 @@ class TaskRun {
   }
 
   onDidExit(listener: (exitCode: number | undefined) => void): Disposable {
-    if (this.disposed) return { dispose: () => undefined };
+    if (this.disposed) {
+      const replay = setTimeout(() => listener(undefined), 0);
+      return { dispose: () => clearTimeout(replay) };
+    }
     const exit = this.exit;
     if (exit !== undefined) {
       // Never synchronously: callers assign the returned disposable after subscribing.
@@ -90,7 +94,7 @@ class TaskRun {
         this.replays.delete(handle);
         if (!this.disposed) listener(exit.exitCode);
       }, 0);
-      this.replays.add(handle);
+      this.replays.set(handle, (exitCode) => listener(exitCode));
       return {
         dispose: () => {
           clearTimeout(handle);
@@ -111,31 +115,39 @@ class TaskRun {
     this.early.clear();
   }
 
-  /** Platform teardown: no callback runs after this, including replays already scheduled. */
+  /** Teardown settles undelivered results as unknown, including queued replays. */
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
     this.stopObserving();
-    this.listeners.clear();
-    for (const handle of this.replays) clearTimeout(handle);
+    for (const [handle, listener] of this.replays) {
+      clearTimeout(handle);
+      this.listeners.add(listener);
+    }
     this.replays.clear();
+    this.deliver(undefined);
   }
 
   private finish(exitCode: number | undefined): void {
-    if (this.exit !== undefined) return;
+    if (this.exit !== undefined || this.disposed) return;
     this.exit = { exitCode };
     this.stopObserving();
-    const listeners = [...this.listeners];
-    this.listeners.clear();
-    // A subscriber may dispose the platform, and then the rest must not run.
-    for (const listener of listeners) {
-      if (this.disposed) return;
-      listener(exitCode);
+    this.deliver(exitCode);
+  }
+
+  private deliver(exitCode: number | undefined): void {
+    // Remove each observer only as it is delivered. Reentrant disposal can
+    // then settle every remaining observer as unknown exactly once.
+    for (const listener of this.listeners) {
+      this.listeners.delete(listener);
+      listener(this.disposed ? undefined : exitCode);
     }
   }
 }
 
 export class VsCodePlatform implements HostPlatform {
   readFileChunks = readFileChunks;
+  readonly hostKind = 'vscode';
   /** Created on first use so a session with no failures adds no output channel. */
   private logChannel: vscode.LogOutputChannel | undefined;
   /** Every task run until the platform is disposed, so teardown can stop late callbacks. */
@@ -235,7 +247,7 @@ export class VsCodePlatform implements HostPlatform {
 
   watchFiles(baseDir: string, glob: string, listener: (filePath: string) => void): Disposable {
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(baseDir), glob));
-    const onEvent = (uri: vscode.Uri): void => listener(uri.fsPath);
+    const onEvent = (uri: vscode.Uri): void => { if (!isRecoveryPath(uri.fsPath)) listener(uri.fsPath); };
     watcher.onDidChange(onEvent);
     watcher.onDidCreate(onEvent);
     watcher.onDidDelete(onEvent);

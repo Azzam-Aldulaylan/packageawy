@@ -4,6 +4,10 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- If VS Code or a JetBrains IDE closes during a dependency change, Packageawy now keeps a recovery record in the project and offers to restore each file the next time you open it.
+
 ### Changed
 
 - Likely-unused results and Smart Cleanup now read the script blocks of Vue, Svelte and Astro files, and .mts and .cts files, so packages used only there are no longer suggested for removal.

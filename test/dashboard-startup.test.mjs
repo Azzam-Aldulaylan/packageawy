@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { DashboardController } from '../out/host/dashboardController.js';
@@ -462,7 +463,7 @@ test('closing during a mutation and reopening preserves the shared lock and read
   const owner = s.current.upgradeCoordinator;
   const handle = owner.reserve('clean-pkg');
   assert.equal(handle.ok, true);
-  assert.equal(handle.beginMutation(), true);
+  assert.equal(await handle.beginMutation({ workspaceRoot: s.root, root: join(s.root, 'a'), identity: 'startup-test', allowlistedPaths: [join(s.root, 'a', 'package.json')], operation: 'upgrade', hostKind: 'vscode' }), true);
   await s.ready();
   assert.equal(owner.isMutationBusy(), true, 'webview reload never releases an ongoing install');
   s.close();

@@ -136,6 +136,7 @@ export interface FilePosition {
 }
 
 export interface HostPlatform {
+  readonly hostKind?: 'vscode' | 'jetbrains';
   /**
    * Writes one troubleshooting line to the host's log (the Packageawy output
    * channel in VS Code, the IDE log in JetBrains). Lines must come from

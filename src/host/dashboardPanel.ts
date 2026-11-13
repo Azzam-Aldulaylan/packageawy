@@ -272,6 +272,7 @@ export class DashboardPanel {
     this.etagStore = new PersistentEtagStore(platform.cacheStore ?? platform.globalState);
     this.projectCacheStore = new PersistentProjectCacheStore(platform.workspaceState);
     this.upgradeCoordinator = new UpgradeAssistantCoordinator({
+      recoverySource: () => this.controller?.upgradeSource,
       platform,
       sink: this.sink,
       httpClient: this.httpClient,
@@ -671,6 +672,7 @@ export class DashboardPanel {
           this.automaticUsageReleased = true;
           if (this.automaticUsagePending) this.requestAutomaticUsageRefresh();
         }
+        await this.upgradeCoordinator.recovery.inspect();
         // A reloaded webview starts without the banner. Put it back.
         if (this.runtimeFailed) this.postRuntimeError();
       }
@@ -714,6 +716,10 @@ export class DashboardPanel {
   }
 
   private async handleOtherMessage(message: Exclude<WebviewToHostMessage, { type: 'ready' }>): Promise<void> {
+    if (message.type === 'inspect-recovery') { await this.upgradeCoordinator.recovery.inspect(message.id); return; }
+    if (message.type === 'start-recovery') { await this.upgradeCoordinator.recovery.start(message.stopped, message.claim); return; }
+    if (message.type === 'apply-recovery') { await this.upgradeCoordinator.recovery.apply(message.choices); return; }
+    if (message.type === 'dismiss-recovery') { await this.upgradeCoordinator.recovery.dismiss(message.stopped, message.discardIncomplete); return; }
     if (message.type === 'load-upgrade-targets') {
       await this.upgradeCoordinator.handleLoadUpgradeTargets(message);
       return;
@@ -854,7 +860,6 @@ export class DashboardPanel {
         });
         return;
       }
-      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.usageCoordinator.handleAnalyzeCleanup();
       return;
     }
@@ -867,7 +872,6 @@ export class DashboardPanel {
         });
         return;
       }
-      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.smartCleanupMetadataCoordinator.analyze(message.requestId);
       return;
     }
@@ -910,7 +914,6 @@ export class DashboardPanel {
       // a scan (and a controller replacement) against a package.json/
       // lockfile an upgrade task is still writing to.
       if (this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
-      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.changeProject();
       return;
     }
@@ -1078,7 +1081,6 @@ export class DashboardPanel {
     this.candidateCount = candidates.length;
     if (target.id === this.selectedProject?.id) return;
     if (this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
-    this.upgradeCoordinator.discardSmartCleanupRestorePoint();
     await this.reloadAndScan(target);
   }
 

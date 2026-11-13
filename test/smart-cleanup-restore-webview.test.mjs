@@ -84,9 +84,9 @@ test('without a host restore point the results keep the source control guidance'
 test('a kept restore point shows the action and explains what it does', () => {
   const state = smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' });
   const html = render(state);
-  assert.match(html, /<button type="button" class="button button--secondary">Restore dependency files<\/button>/);
-  assert.match(html, /puts package\.json and the lockfile back as they were\s+before the cleanup and reinstalls dependencies/);
-  assert.match(html, /It is refused if either file changed after the cleanup\./);
+  assert.match(html, /<button type="button" class="button button--secondary">Review recovery files<\/button>/);
+  assert.match(html, /Open recovery to review the saved dependency files and choose Restore backup or Keep current for each file/);
+  assert.doesNotMatch(html, /reinstalls dependencies/);
   assert.doesNotMatch(html, /Use source control/);
 });
 
@@ -120,7 +120,7 @@ test('after a restore the results describe the restored dependencies, not the re
 
 test('the restore note sits above the change list so the action is visible without scrolling', () => {
   const html = render(smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' }));
-  assert.ok(html.indexOf('Restore dependency files') < html.indexOf('What changed'));
+  assert.ok(html.indexOf('Review recovery files') < html.indexOf('What changed'));
 });
 
 test('a cleanup with no build or test scripts is not reported as verified', () => {
@@ -153,9 +153,9 @@ test('a new cleanup result clears an old restore point', () => {
   assert.equal(smartCleanupReducer(available, { type: 'execution-complete', result }).restore, null);
 });
 
-test('the app sends only the host analysis id and routes the restore outcome to the results', () => {
+test('the app opens recovery with a host analysis id and never starts the former automatic restore', () => {
   assert.match(app, /incoming\.result\.restoreAvailable === true && kept/);
   assert.match(app, /vscode\.postMessage\(\{ type: 'restore-smart-cleanup', analysisId \}\)/);
-  assert.match(app, /dispatchSmartCleanup\(\{ type: 'restore-refused', message: incoming\.error\.message \}\)/);
-  assert.match(app, /dispatchSmartCleanup\(\{ type: 'restore-finished' \}\)/);
+  assert.doesNotMatch(app, /dispatchSmartCleanup\(\{ type: 'restore-started'/);
+  assert.match(app, /incoming.status === 'recovery'/);
 });

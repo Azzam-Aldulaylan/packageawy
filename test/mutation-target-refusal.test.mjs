@@ -363,8 +363,9 @@ test('an automatic rollback resolves the target again and leaves files alone whe
   const analysisId = await reviewRemoval(fixture);
   await fixture.coordinator.handleConfirmRemove({ analysisId });
 
-  assert.equal(fixture.messages.at(-1).status, 'remove-error');
-  assert.equal(fixture.messages.at(-1).error.code, 'ROLLBACK_FAILED');
+  assert.equal(fixture.messages.findLast(message => message.status === 'remove-error').status, 'remove-error');
+  assert.equal(fixture.messages.findLast(message => message.status === 'remove-error').error.code, 'ROLLBACK_FAILED');
+  assert.equal(fixture.messages.at(-1).recovery.state, 'incomplete');
   assert.equal(await readFile(memberLockfile, 'utf8'), 'written by the failed install', 'nothing was restored');
   assert.doesNotMatch(await readFile(path.join(root, 'packages/app/package.json'), 'utf8'), /react/);
 });
