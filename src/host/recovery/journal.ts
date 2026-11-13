@@ -68,7 +68,10 @@ export class RecoveryJournal {
   private async syncDisplaced(file: JournalFile, candidate: string): Promise<void> {
     const move = file.move;
     if (move === undefined) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
-    const displaced = await this.storage.fs.open(await this.storage.at(`displaced/${move.id}.bin`), constants.O_RDONLY | constants.O_NOFOLLOW);
+    // Windows requires a writable handle for fsync (r+). Keep POSIX read-only
+    // handles so preserving an inode does not require write permission there.
+    const access = (this.storage.hooks.platform ?? process.platform) === 'win32' ? constants.O_RDWR : constants.O_RDONLY;
+    const displaced = await this.storage.fs.open(await this.storage.at(`displaced/${move.id}.bin`), access | constants.O_NOFOLLOW);
     try {
       if (!(await displaced.stat()).isFile()) throw new RecoveryError(RECOVERY_MESSAGES.unsafe);
       if (!matches(move.before, { exists: true, contents: await displaced.readFile() })) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);

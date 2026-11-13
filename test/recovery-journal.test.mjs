@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
+import { constants } from 'node:fs';
 import path from 'node:path';
 import { recoveryFixture, choices } from './helpers/recovery.mjs';
 import { RECOVERY_MESSAGES } from '../out/host/recovery/model.js';
@@ -11,9 +12,12 @@ const failure = code => Object.assign(new Error(code), { code });
 test('prepared contains byte-exact backups, modes, absent files, and no project changes', async t => {
   const f = await recoveryFixture(t, { absent: true });
   await fs.chmod(f.manifest, 0o640);
+  // Windows chmod only controls writability, not POSIX group/other bits.
+  const mode = (await fs.stat(f.manifest)).mode & 0o777;
+  if (process.platform !== 'win32') assert.equal(mode, 0o640);
   const journal = await f.prepare();
   assert.equal(journal.data.step, 'prepared');
-  assert.equal(journal.data.files[0].backup.mode, 0o640);
+  assert.equal(journal.data.files[0].backup.mode, mode);
   assert.equal((await journal.backupState(journal.data.files[0].backup)).contents.toString(), await f.read('package.json'));
   assert.equal(journal.data.files[1].backup.existed, false);
   assert.equal(await fs.readFile(path.join(f.folder, '.gitignore'), 'utf8'), '*');
@@ -49,12 +53,53 @@ for (const [method, errorCode] of [['writeFile', 'ENOSPC'], ['sync', 'EIO'], ['s
   await assert.rejects(f.prepare(), { message: RECOVERY_MESSAGES.blocked });
 });
 
-test('Windows directory sync is unsupported, while file sync is still required', async t => {
+for (const syncError of [null, 'EPERM', 'EIO']) test(`Windows skips directory sync and requires writable file sync: ${syncError ?? 'success'}`, async t => {
   const f = await recoveryFixture(t);
-  const calls = [];
-  await f.prepare({ platform: 'win32', fs: { ...fs, open: async (...args) => { calls.push(args[1]); return fs.open(...args); } } });
-  assert.ok(calls.includes('wx'));
-  assert.ok(!calls.includes('r'), 'directory opens are skipped on Windows');
+  let fileSyncs = 0;
+  let displacedSyncs = 0;
+  let reads = 0;
+  const hooks = { platform: 'win32', fs: { ...fs, open: async (name, flags, ...args) => {
+    // Model both Windows limitations on every host, including this Mac.
+    if ((await fs.stat(name).catch(() => undefined))?.isDirectory()) throw failure('EISDIR');
+    const handle = await fs.open(name, flags, ...args);
+    const displaced = path.dirname(name) === path.join(f.folder, 'displaced') && name.endsWith('.bin');
+    const readOnly = typeof flags === 'number' ? (flags & (constants.O_WRONLY | constants.O_RDWR)) === 0 : flags === 'r';
+    if (displaced) {
+      assert.equal(flags & (constants.O_WRONLY | constants.O_RDWR), constants.O_RDWR, 'fsync uses r+ without truncation');
+      assert.equal(flags & (constants.O_CREAT | constants.O_TRUNC | constants.O_APPEND), 0);
+      assert.equal(flags & constants.O_NOFOLLOW, constants.O_NOFOLLOW ?? 0);
+    } else if (typeof flags === 'number') {
+      assert.equal(readOnly, true, 'ordinary reads do not request write access');
+      reads++;
+    }
+    return new Proxy(handle, { get(target, property) {
+      if (property === 'sync') return async () => {
+        if (readOnly) throw failure('EPERM');
+        if (displaced) { displacedSyncs++; if (syncError) throw failure(syncError); }
+        await handle.sync();
+        fileSyncs++;
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } } };
+  await f.prepare(hooks);
+  assert.ok(fileSyncs > 0, 'published files must still be synced');
+  await fs.writeFile(f.lockfile, 'external edit');
+  const session = await f.open(hooks);
+  const review = await session.presentation();
+  if (syncError) {
+    await assert.rejects(session.apply(choices(review, 'restore', true)), { code: syncError });
+    await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
+    assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
+  } else {
+    await session.apply(choices(review, 'restore', true));
+    assert.equal(await f.read('package-lock.json'), 'original lockfile');
+  }
+  assert.equal(displacedSyncs, 1);
+  assert.ok(reads > 0);
+  const file = (await f.inspect()).journal.data.files[1];
+  assert.equal(await fs.readFile(path.join(f.folder, 'displaced', `${file.move.id}.bin`), 'utf8'), 'external edit');
 });
 
 test('a sharing violation keeps old journal bytes and never unlinks first', async t => {
@@ -378,6 +423,7 @@ test('all publications write, sync and close before either exclusive linking or 
 });
 
 test('directory fsync I/O errors refuse bootstrap and keep the exclusive folder', async t => {
+  if (process.platform === 'win32') return t.skip('Node does not support directory fsync on Windows');
   const f = await recoveryFixture(t);
   await assert.rejects(f.prepare({ fs: { ...fs, open: async (name, ...args) => {
     const handle = await fs.open(name, ...args);
@@ -502,7 +548,8 @@ test('an unexpected displacement destination is never overwritten', async t => {
   assert.equal(await f.read('package-lock.json'), 'installed');
 });
 
-test('a sync failure after displacement leaves the inode saved and never installs its replacement', async t => {
+test('a directory sync failure after displacement leaves the inode saved and never installs its replacement', async t => {
+  if (process.platform === 'win32') return t.skip('this injects a directory fsync error; Node does not support directory fsync on Windows');
   const f = await recoveryFixture(t); await f.prepare(); await fs.writeFile(f.lockfile, 'installed');
   let moved = false;
   const session = await f.open({ fs: { ...fs,

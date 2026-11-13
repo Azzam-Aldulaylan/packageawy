@@ -71,6 +71,8 @@ export class Storage {
     catch (error) { if (!isMissingPathError(error)) throw error; }
   }
   async syncDirectory(candidate = this.folder): Promise<void> {
+    // Node cannot fsync directories on Windows (EPERM/EISDIR). POSIX errors
+    // still propagate because directory durability is required there.
     if ((this.hooks.platform ?? process.platform) === 'win32') return;
     const same = await canonicalPath(candidate) === this.canonicalRoot;
     if (same && (await this.fs.lstat(candidate)).isSymbolicLink()) throw new RecoveryError(RECOVERY_MESSAGES.unsafe);
