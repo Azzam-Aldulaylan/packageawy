@@ -347,16 +347,21 @@ test('a config location with ${...} is refused even when it looks absolute', asy
 test('only exactly ~/ is expanded, the way npm and pnpm resolve it', async (t) => {
   const base = await environment(t);
   // ~//abs resolves to /abs, as path.resolve(home, '/abs') does, so its lockfile setting is found there.
-  const outside = path.join(base.host, 'outside.npmrc');
-  await writeFile(outside, 'lockfile-dir=../x\n');
-  // An empty file where path.join(home, rest) would point, so reading the wrong one is allowed.
-  await files(base.homeDir, { [path.join(base.host, 'outside.npmrc').slice(1)]: '' });
-  assertRefused(
-    await resolveWith(t, { ...base, env: { npm_config_userconfig: `~/${outside}` } }),
-    'LOCKFILE_UNDETERMINED',
-    /Setting found: lockfile-dir in .*outside\.npmrc/
-  );
-  for (const value of ['~', '~other/.npmrc', '~\\.npmrc']) {
+  // POSIX only: a Windows absolute path starts with a drive letter, so "~/C:\\..." is not this case.
+  if (process.platform !== 'win32') {
+    const outside = path.join(base.host, 'outside.npmrc');
+    await writeFile(outside, 'lockfile-dir=../x\n');
+    // An empty file where path.join(home, rest) would point, so reading the wrong one is allowed.
+    await files(base.homeDir, { [path.join(base.host, 'outside.npmrc').slice(1)]: '' });
+    assertRefused(
+      await resolveWith(t, { ...base, env: { npm_config_userconfig: `~/${outside}` } }),
+      'LOCKFILE_UNDETERMINED',
+      /Setting found: lockfile-dir in .*outside\.npmrc/
+    );
+  }
+  // "~\\" is expanded on Windows, so it is only refused elsewhere.
+  const refused = process.platform === 'win32' ? ['~', '~other/.npmrc'] : ['~', '~other/.npmrc', '~\\.npmrc'];
+  for (const value of refused) {
     assertRefused(
       await resolveWith(t, { ...base, env: { npm_config_userconfig: value } }),
       'LOCKFILE_UNDETERMINED',
