@@ -103,6 +103,17 @@ for (const fault of ['EIO', 'TypeError']) {
 
   test(`strict target environment discovery propagates ${fault}`, t => {
     const error = failure(fault);
+    let hits = 0;
+    // Every host canonicalizes candidates. Only POSIX enumerates nvm/fnm directories.
+    patch(t, syncFs.realpathSync, 'native', () => () => { hits++; throw error; });
+    assert.throws(() => defaultMutationTargetEnvironment(true), cause => cause === error);
+    assert.equal(hits, 1);
+  });
+
+  test(`strict POSIX target environment directory discovery propagates ${fault}`, {
+    skip: process.platform === 'win32' && 'Windows candidates do not enumerate POSIX version managers',
+  }, t => {
+    const error = failure(fault);
     patch(t, syncFs, 'readdirSync', () => () => { throw error; });
     assert.throws(() => defaultMutationTargetEnvironment(true), cause => cause === error);
   });

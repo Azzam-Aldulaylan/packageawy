@@ -35,11 +35,11 @@ for (const code of codes) {
       const error = failure(code);
       let hits = 0;
       if (source === 'optional npmrc') patch(t, io, 'readFile', original => async (file, ...args) => {
-        if (String(file).endsWith('/.npmrc')) { hits++; throw error; }
+        if (path.basename(String(file)) === '.npmrc') { hits++; throw error; }
         return original(file, ...args);
       });
       if (source === 'mutation target') patch(t, io, 'lstat', original => async (file, ...args) => {
-        if (String(file).endsWith('/npm-shrinkwrap.json')) { hits++; throw error; }
+        if (path.basename(String(file)) === 'npm-shrinkwrap.json') { hits++; throw error; }
         return original(file, ...args);
       });
       if (source === 'npm discovery') {
@@ -254,7 +254,10 @@ for (const code of codes) {
     if (source === 'lock key') patch(t, fs.realpathSync, 'native', () => () => { hits++; throw error; });
     else {
       f.coordinator.session.invocationResolver = undefined;
-      patch(t, fs, 'readdirSync', () => () => { hits++; throw error; });
+      // Keep the POSIX directory fault and reach Windows through its candidate stat.
+      for (const method of ['readdirSync', 'statSync']) {
+        patch(t, fs, method, () => () => { hits++; throw error; });
+      }
     }
     await f.confirm();
     assert.ok(hits > 0);

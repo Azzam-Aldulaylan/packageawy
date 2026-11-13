@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { makeCoordinator, makeProject, review, lockfile } from './removal-project.mjs';
 
-export async function rollbackFixture(t, operation) {
+export async function rollbackFixture(t, operation, hooks = {}) {
   const project = await makeProject(t);
-  const f = makeCoordinator(project, { mutationRoot: () => project.root });
+  const f = makeCoordinator(project, { mutationRoot: () => project.root, ...hooks });
   f.coordinator.session.invocationResolver = () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' });
   f.state.installExitCode = 1;
   f.state.reinstallChoice = 'Reinstall';

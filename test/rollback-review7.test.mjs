@@ -8,6 +8,7 @@ import { rollbackFixture } from './helpers/optional-reinstall.mjs';
 import { resolvedTarget } from './helpers/mutation-target.mjs';
 import { withoutFsync } from './helpers/without-fsync.mjs';
 import { panel } from './helpers/dashboard-startup.mjs';
+import { ProjectMutationLocks } from '../out/host/projectMutationLock.js';
 
 withoutFsync();
 const codes = ['EINVAL', 'UNKNOWN', 'EBUSY', 'ENAMETOOLONG', 'EMFILE', 'ENETUNREACH'];
@@ -36,14 +37,16 @@ for (const packageManager of ['npm', 'pnpm']) {
       return handle;
     };
     const error = Object.assign(new Error(`discovery ${code}`), { code });
-    const method = packageManager === 'npm' ? 'readdirSync' : 'readFileSync';
-    const original = fs[method];
-    fs[method] = (file, ...args) => {
-      if (hits === 0 && (packageManager === 'npm' || file === f.project.manifestPath)) { hits++; throw error; }
-      return original(file, ...args);
-    };
-    syncBuiltinESMExports();
-    t.after(() => { fs[method] = original; syncBuiltinESMExports(); });
+    // Keep the POSIX directory fault and reach Windows through its candidate stat.
+    for (const method of packageManager === 'npm' ? ['readdirSync', 'statSync'] : ['readFileSync']) {
+      const original = fs[method];
+      fs[method] = (file, ...args) => {
+        if (hits === 0 && (packageManager === 'npm' || file === f.project.manifestPath)) { hits++; throw error; }
+        return original(file, ...args);
+      };
+      syncBuiltinESMExports();
+      t.after(() => { fs[method] = original; syncBuiltinESMExports(); });
+    }
 
     await f.confirm();
 
@@ -63,7 +66,8 @@ for (const packageManager of ['npm', 'pnpm']) {
 for (const operation of ['removal', 'cleanup', 'upgrade', 'transitive']) {
   for (const probe of ['root key', 'registry key']) {
     for (const code of codes) test(`confirmed ${operation} refuses ${probe} ${code} even after caching the review key`, async t => {
-      const f = await rollbackFixture(t, operation);
+      // restartState describes the whole registry, including retained owners from earlier tests.
+      const f = await rollbackFixture(t, operation, { mutationLocks: new ProjectMutationLocks() });
       f.coordinator.currentMutationRootKey();
       const before = await Promise.all([f.project.manifestPath, f.project.lockfilePath].map(file => io.readFile(file, 'utf8')));
       const error = Object.assign(new Error(`confirmation ${probe} ${code}`), { code });
@@ -122,11 +126,12 @@ for (const strict of [false, true]) {
     const s = await panel(t, { early: false });
     // A confirmation arrives after webview delivery is open, even if its controller needs recreating.
     s.current.deliveryReady = true;
+    const root = await io.realpath(s.root);
     const error = Object.assign(new Error(`controller discovery ${code}`), { code });
     const original = io.lstat;
     let hits = 0;
     io.lstat = async (file, ...args) => {
-      if (hits === 0 && String(file).endsWith('/a/npm-shrinkwrap.json')) { hits++; throw error; }
+      if (hits === 0 && file === path.join(root, 'a', 'npm-shrinkwrap.json')) { hits++; throw error; }
       return original(file, ...args);
     };
     syncBuiltinESMExports();

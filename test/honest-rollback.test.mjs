@@ -8,6 +8,13 @@ import { runUpgradeTransaction } from '../out/host/upgradeTransaction.js';
 import { recoveryFixture, choices } from './helpers/recovery.mjs';
 import { makeCoordinator, makeProject, review } from './helpers/removal-project.mjs';
 
+async function fileIdentity(file) {
+  // Node exposes the Windows file ID as ino. BigInt avoids rounding 64-bit IDs.
+  const { dev, ino } = await fs.stat(file, { bigint: true });
+  assert.ok(ino > 0n, 'the filesystem must provide a real file identity');
+  return { dev, ino };
+}
+
 for (const operation of ['upgrade', 'removal']) {
   test(`${operation} rollback pre-check names a late conflict before touching any file`, async t => {
     const f = await recoveryFixture(t, { operation });
@@ -28,30 +35,38 @@ for (const operation of ['upgrade', 'removal']) {
     assert.deepEqual(await fs.readdir(path.join(f.folder, 'displaced')), []);
   });
 
-  test(`${operation} rollback preserves actual displaced inodes and retains an incomplete second swap`, async t => {
-    const f = await recoveryFixture(t, { operation });
-    const journal = await f.prepare({ fs: { ...fs, async rename(source, dest) {
-      if (source === f.lockfile && dest.includes('/displaced/')) throw Object.assign(new Error('sharing violation'), { code: 'EPERM' });
-      return fs.rename(source, dest);
-    } } });
-    let inode;
-    const result = await runUpgradeTransaction({ allowlistedPaths: f.target.allowlistedPaths, files: journal.adapter(), journal,
-      install: { async execute() {
-        await fs.writeFile(f.manifest, 'installed manifest'); await fs.writeFile(f.lockfile, 'installed lock');
-        inode = (await fs.stat(f.manifest)).ino;
-        return { status: 'failed', code: 'FAILED', message: 'failed' };
-      } },
+  for (const platform of [process.platform, ...(process.platform === 'win32' ? [] : ['win32'])]) {
+    test(`${operation} rollback preserves actual displaced file identity and retains an incomplete second swap (${platform})`, async t => {
+      const f = await recoveryFixture(t, { operation });
+      let hits = 0;
+      const journal = await f.prepare({ platform, fs: { ...fs, async rename(source, dest) {
+        if (source === f.lockfile && path.dirname(dest) === path.join(f.folder, 'displaced')) {
+          hits++;
+          throw Object.assign(new Error('sharing violation'), { code: 'EPERM' });
+        }
+        return fs.rename(source, dest);
+      } } });
+      let identity;
+      const result = await runUpgradeTransaction({ allowlistedPaths: f.target.allowlistedPaths, files: journal.adapter(), journal,
+        install: { async execute() {
+          await fs.writeFile(f.manifest, 'installed manifest'); await fs.writeFile(f.lockfile, 'installed lock');
+          identity = await fileIdentity(f.manifest);
+          return { status: 'failed', code: 'FAILED', message: 'failed' };
+        } },
+      });
+      assert.equal(hits, 1, 'the second displacement rename must reach the injected fault');
+      assert.equal(result.completion, 'incomplete');
+      assert.equal(result.rollback.status, 'failed');
+      assert.match(result.rollback.files.at(-1).message, /sharing violation/);
+      assert.equal(await journal.finish('incomplete'), false);
+      assert.equal((await f.inspect()).journal.data.outcome, 'rollback-incomplete');
+      const displaced = path.join(f.folder, 'displaced', `${journal.data.files[0].displacedIds[0]}.bin`);
+      assert.deepEqual(await fileIdentity(displaced), identity);
+      assert.notDeepEqual(await fileIdentity(f.manifest), identity, 'replacement must be a different file');
+      assert.equal(await fs.readFile(displaced, 'utf8'), 'installed manifest');
+      assert.equal(await f.read('package-lock.json'), 'installed lock', 'failed rename must prevent replacement without a copy fallback');
     });
-    assert.equal(result.completion, 'incomplete');
-    assert.equal(result.rollback.status, 'failed');
-    assert.match(result.rollback.files.at(-1).message, /sharing violation/);
-    assert.equal(await journal.finish('incomplete'), false);
-    assert.equal((await f.inspect()).journal.data.outcome, 'rollback-incomplete');
-    const displaced = path.join(f.folder, 'displaced', `${journal.data.files[0].displacedIds[0]}.bin`);
-    assert.equal((await fs.stat(displaced)).ino, inode);
-    assert.equal(await fs.readFile(displaced, 'utf8'), 'installed manifest');
-    assert.equal(await f.read('package-lock.json'), 'installed lock', 'failed rename must prevent replacement without a copy fallback');
-  });
+  }
 }
 
 for (const operation of ['upgrade', 'cleanup']) {
@@ -67,22 +82,32 @@ for (const operation of ['upgrade', 'cleanup']) {
     assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
   });
 
-  test(`${operation === 'cleanup' ? 'Smart Cleanup' : 'recovery'} restore uses rename displacement and keeps it after a later rename fails`, async t => {
-    const f = await recoveryFixture(t, { operation });
-    await f.prepare();
-    await fs.writeFile(f.manifest, 'current manifest'); await fs.writeFile(f.lockfile, 'current lock');
-    const inode = (await fs.stat(f.manifest)).ino;
-    const session = await f.open({ fs: { ...fs, async rename(source, dest) {
-      if (source === f.lockfile && dest.includes('/displaced/')) throw Object.assign(new Error('rename refused'), { code: 'EPERM' });
-      return fs.rename(source, dest);
-    } } });
-    const view = await session.presentation();
-    await assert.rejects(session.apply(choices(view, 'restore')), /rename refused/);
-    const file = session.inspection.journal.data.files[0];
-    assert.equal((await fs.stat(path.join(f.folder, 'displaced', `${file.displacedIds[0]}.bin`))).ino, inode);
-    assert.equal(await f.read('package-lock.json'), 'current lock');
-    assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
-  });
+  for (const platform of [process.platform, ...(process.platform === 'win32' ? [] : ['win32'])]) {
+    test(`${operation === 'cleanup' ? 'Smart Cleanup' : 'recovery'} restore uses rename displacement and keeps it after a later rename fails (${platform})`, async t => {
+      const f = await recoveryFixture(t, { operation });
+      await f.prepare();
+      await fs.writeFile(f.manifest, 'current manifest'); await fs.writeFile(f.lockfile, 'current lock');
+      const identity = await fileIdentity(f.manifest);
+      let hits = 0;
+      const session = await f.open({ platform, fs: { ...fs, async rename(source, dest) {
+        if (source === f.lockfile && path.dirname(dest) === path.join(f.folder, 'displaced')) {
+          hits++;
+          throw Object.assign(new Error('rename refused'), { code: 'EPERM' });
+        }
+        return fs.rename(source, dest);
+      } } });
+      const view = await session.presentation();
+      await assert.rejects(session.apply(choices(view, 'restore')), /rename refused/);
+      assert.equal(hits, 1, 'the second displacement rename must reach the injected fault');
+      const file = session.inspection.journal.data.files[0];
+      const displaced = path.join(f.folder, 'displaced', `${file.displacedIds[0]}.bin`);
+      assert.deepEqual(await fileIdentity(displaced), identity);
+      assert.equal(await fs.readFile(displaced, 'utf8'), 'current manifest');
+      assert.notDeepEqual(await fileIdentity(f.manifest), identity, 'replacement must be a different file');
+      assert.equal(await f.read('package-lock.json'), 'current lock');
+      assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
+    });
+  }
 }
 
 test('Smart Cleanup recovery offers frozen reinstall only after a successful restore and uses the held owner', async t => {
