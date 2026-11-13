@@ -15,6 +15,7 @@ import type { DashboardPanelIntegrationTestSnapshot } from './host/dashboardPane
 import { OPEN_MANIFEST_UNAVAILABLE_MESSAGE } from './host/openManifestTarget.js';
 import { openManifestInDashboard, showDashboard } from './host/platform/vscode/dashboardWebview.js';
 import { registerSidebar } from './host/platform/vscode/sidebar.js';
+import type { ProcessRequest, RunningProcess } from './host/platform/hostPlatform.js';
 import { VsCodePlatform } from './host/platform/vscode/vsCodePlatform.js';
 
 export interface PackageawyIntegrationTestApi {
@@ -22,6 +23,8 @@ export interface PackageawyIntegrationTestApi {
     snapshot(): DashboardPanelIntegrationTestSnapshot;
     dispatch(message: unknown): Promise<void>;
   };
+  /** Runs a task through the real VS Code adapter, to check how its exit is reported. */
+  runProcessForTest(request: ProcessRequest): Promise<RunningProcess>;
 }
 
 export function activate(context: vscode.ExtensionContext): void | PackageawyIntegrationTestApi {
@@ -89,6 +92,7 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
         snapshot: () => DashboardPanel.integrationTestSnapshot(),
         dispatch: (message) => DashboardPanel.dispatchIntegrationTestMessage(message),
       },
+      runProcessForTest: (request) => platform.runProcess(request),
     };
   }
 }
