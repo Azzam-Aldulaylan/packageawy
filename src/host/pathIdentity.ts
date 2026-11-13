@@ -101,10 +101,20 @@ export function lockKey(candidate: string): string {
  * is not part of the directory tree, so it is compared without case.
  */
 function segmentsOf(target: string, pathModule: path.PlatformPath): string[] {
+  // Decided by the separator, not by object identity: `import * as path`
+  // compiles to a copy of the module, which is never `path.win32` itself.
+  const windows = pathModule.sep === '\\';
   const normalized = pathModule.normalize(target);
-  const parts = normalized.split(pathModule === path.win32 ? /[\\/]+/ : /\/+/).filter((part) => part !== '');
-  if (pathModule === path.win32 && parts[0] !== undefined && /^[a-z]:$/i.test(parts[0])) parts[0] = parts[0].toUpperCase();
+  const parts = normalized.split(windows ? /[\\/]+/ : /\/+/).filter((part) => part !== '');
+  if (windows && parts[0] !== undefined && /^[a-z]:$/i.test(parts[0])) parts[0] = parts[0].toUpperCase();
   return parts;
+}
+
+/** The filesystem root of an absolute path and the segments below it. */
+export function rootAndSegments(target: string, pathModule: path.PlatformPath = path): { root: string; segments: string[] } {
+  const normalized = pathModule.normalize(target);
+  const root = pathModule.parse(normalized).root;
+  return { root, segments: segmentsOf(normalized, pathModule).slice(segmentsOf(root, pathModule).length) };
 }
 
 /**

@@ -209,6 +209,26 @@ export function pnpmConfigDirs(environment: PnpmSettingsEnvironment): string[] {
   return dirs;
 }
 
+/**
+ * Where npm keeps its global config: `<prefix>/etc/npmrc`, with the prefix
+ * defaulting to the Node installation (dirname(dirname(node)) on POSIX,
+ * dirname(node) on Windows) in @npmcli/config's loadGlobalPrefix, and
+ * globalconfig defined as resolve(prefix, 'etc/npmrc') in loadDefaults
+ * (https://github.com/npm/cli/blob/latest/workspaces/config/lib/index.js).
+ * On Windows the npm that the Node installer ships also has a built-in
+ * `npmrc` beside it (read by loadBuiltinConfig) that sets the prefix to
+ * %APPDATA%\npm, as npm's folders documentation says for Windows
+ * (https://docs.npmjs.com/cli/v10/configuring-npm/folders#prefix-configuration),
+ * and that is what `npm run` exports. Both are read as sources and
+ * accepted as unmoved defaults.
+ */
+function npmGlobalPrefixes(environment: PnpmSettingsEnvironment): string[] {
+  const prefixes = [...environment.nodePrefixes];
+  const appData = environment.env['APPDATA'];
+  if (environment.platform === 'win32' && appData !== undefined && appData !== '') prefixes.push(path.join(appData, 'npm'));
+  return prefixes;
+}
+
 async function samePath(left: string, right: string): Promise<boolean> {
   try {
     return (await authorizedRelation(left, right)) === 'same';
@@ -233,8 +253,8 @@ async function namesInspectedDefault(
   const defaults = name === 'userconfig'
     ? [path.join(environment.homeDir, '.npmrc')]
     : name === 'globalconfig'
-      ? environment.nodePrefixes.map((prefix) => path.join(prefix, 'etc', 'npmrc'))
-      : name === 'prefix' ? [...environment.nodePrefixes] : [];
+      ? npmGlobalPrefixes(environment).map((prefix) => path.join(prefix, 'etc', 'npmrc'))
+      : name === 'prefix' ? npmGlobalPrefixes(environment) : [];
   for (const candidate of defaults) {
     if (await samePath(value, candidate)) return true;
   }
@@ -308,7 +328,7 @@ export async function findPnpmLockfileOverride(input: PnpmSettingsInput): Promis
     [path.join(projectDir, '.npmrc'), 'the project .npmrc'],
     [path.join(workspaceRoot, '.npmrc'), 'the workspace .npmrc'],
     [path.join(environment.homeDir, '.npmrc'), 'your user .npmrc'],
-    ...environment.nodePrefixes.map((prefix): [string, string] => [path.join(prefix, 'etc', 'npmrc'), 'the global npmrc']),
+    ...npmGlobalPrefixes(environment).map((prefix): [string, string] => [path.join(prefix, 'etc', 'npmrc'), 'the global npmrc']),
   ];
   for (const configDir of pnpmConfigDirs(environment)) npmrcSources.push([path.join(configDir, 'rc'), "pnpm's global rc"]);
   const seen = new Set<string>();

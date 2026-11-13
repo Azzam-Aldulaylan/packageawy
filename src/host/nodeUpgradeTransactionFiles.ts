@@ -31,7 +31,7 @@ import {
 } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import { canonicalPath, nativeRealpath, relatePaths, segmentsBelow } from './pathIdentity.js';
+import { canonicalPath, nativeRealpath, relatePaths, rootAndSegments } from './pathIdentity.js';
 import type {
   CompareAndSwapResult,
   FileState,
@@ -95,59 +95,55 @@ const NODE_CHECKS: TransactionPathChecks = {
 };
 
 /**
- * A path is accepted only when it is spelled under the opened folder
- * exactly, and every part below the folder is spelled exactly as on disk
- * (the native realpath through it equals the folder's realpath plus the same
- * parts). Each part below the folder is lstat-ed on the way, so a symbolic
- * link is refused.
+ * A path is accepted whatever valid spelling it uses (a Windows short name
+ * such as RUNNER~1, another drive-letter case, a link above the folder),
+ * as long as no part of it below the opened folder is a symbolic link and
+ * its native realpath is inside the folder's.
  *
- * This is the stricter of the two ways to keep a differently spelled prefix
- * (C:\WORKSPACE for C:\workspace) from skipping the link check: it refuses
- * every other spelling instead of trying to walk it. Walking every component
- * from the filesystem root instead would also refuse links above the opened
- * folder, which are allowed (/tmp on macOS, a home directory alias). The
- * resolver already produces paths in this spelling, so nothing legitimate
- * is lost.
+ * The link check walks every part of the path as written, from the
+ * filesystem root, so a differently spelled prefix (C:\WORKSPACE for
+ * C:\workspace) cannot skip it. Whether a part is below the folder is
+ * decided by the realpath of its parent, not by how it is spelled. Links
+ * above the folder are allowed (/tmp on macOS, a home directory alias), so
+ * only a link whose parent resolves to the folder or below it is refused.
  */
 async function assertSafeCanonicalPath(
   checks: TransactionPathChecks,
-  lexicalRoot: string,
   canonicalRoot: string,
   candidate: string
 ): Promise<void> {
-  const base = relatePaths(lexicalRoot, candidate, checks.path) === 'inside'
-    ? lexicalRoot
-    : relatePaths(canonicalRoot, candidate, checks.path) === 'inside' ? canonicalRoot : undefined;
-  if (base === undefined) {
-    throw new UpgradeTransactionPathError(
-      'PATH_OUTSIDE_WORKSPACE',
-      `Upgrade transaction path is outside the workspace: ${candidate}`
-    );
-  }
-  const below = segmentsBelow(base, candidate, checks.path);
-  let current = base;
-  for (const segment of below) {
-    current = checks.path.join(current, segment);
+  const { root, segments } = rootAndSegments(candidate, checks.path);
+  let parent = root;
+  for (const segment of segments) {
+    const current = checks.path.join(parent, segment);
+    let isLink: boolean;
     try {
-      if ((await checks.lstat(current)).isSymbolicLink()) {
+      isLink = (await checks.lstat(current)).isSymbolicLink();
+    } catch (cause) {
+      // Nothing below a missing part exists, so nothing below it is a link.
+      if (isMissing(cause)) break;
+      throw cause;
+    }
+    if (isLink) {
+      const parentCanonical = await canonicalPath(parent, checks).catch(() => undefined);
+      const relation = parentCanonical === undefined ? undefined : relatePaths(canonicalRoot, parentCanonical, checks.path);
+      if (relation === undefined || relation === 'same' || relation === 'inside') {
         throw new UpgradeTransactionPathError(
           'SYMLINK_NOT_ALLOWED',
           `Upgrade transaction path uses a symbolic link: ${current}`
         );
       }
-    } catch (cause) {
-      if (isMissing(cause)) break;
-      throw cause;
     }
+    parent = current;
   }
 
   // The same comparison the mutation target resolver used to accept this
   // path: native realpath, then exact segments.
   const canonical = await canonicalPath(candidate, checks).catch(() => undefined);
-  if (canonical === undefined || relatePaths(checks.path.join(canonicalRoot, ...below), canonical, checks.path) !== 'same') {
+  if (canonical === undefined || relatePaths(canonicalRoot, canonical, checks.path) !== 'inside') {
     throw new UpgradeTransactionPathError(
       'PATH_OUTSIDE_WORKSPACE',
-      `Upgrade transaction path is not spelled as it is on disk inside the workspace: ${candidate}`
+      `Upgrade transaction path is outside the workspace: ${candidate}`
     );
   }
 }
@@ -155,7 +151,6 @@ async function assertSafeCanonicalPath(
 class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter {
   constructor(
     private readonly checks: TransactionPathChecks,
-    private readonly lexicalRoot: string,
     private readonly canonicalRoot: string,
     /** Canonical path to the allowlisted spelling that gets read and written. */
     private readonly allowed: ReadonlyMap<string, string>
@@ -176,7 +171,7 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
         `Path is not owned by this upgrade transaction: ${candidate}`
       );
     }
-    await assertSafeCanonicalPath(this.checks, this.lexicalRoot, this.canonicalRoot, resolved);
+    await assertSafeCanonicalPath(this.checks, this.canonicalRoot, resolved);
     return resolved;
   }
 
@@ -314,7 +309,7 @@ export async function createNodeUpgradeTransactionFileAdapter(
       );
     }
     const resolved = checks.path.resolve(raw);
-    await assertSafeCanonicalPath(checks, root, canonicalRoot, resolved);
+    await assertSafeCanonicalPath(checks, canonicalRoot, resolved);
     allowed.set(await canonicalPath(resolved, checks), resolved);
   }
 
@@ -325,7 +320,7 @@ export async function createNodeUpgradeTransactionFileAdapter(
     );
   }
 
-  return new NodeUpgradeTransactionFileAdapter(checks, root, canonicalRoot, allowed);
+  return new NodeUpgradeTransactionFileAdapter(checks, canonicalRoot, allowed);
 }
 
 /** Exposed for adapters/tests that need exact FileState comparison semantics. */

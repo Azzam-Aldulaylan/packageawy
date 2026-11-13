@@ -271,3 +271,24 @@ test('a backslash separates path settings only on Windows', async (t) => {
     assert.equal(result.ok, allowed, `${setting} on ${platform}`);
   }
 });
+
+test("on Windows, npm's default prefix under %APPDATA% counts as unmoved and its npmrc is read", async (t) => {
+  const base = await environment(t);
+  const appData = path.join(base.host, 'AppData', 'Roaming');
+  const npmPrefix = path.join(appData, 'npm');
+  const cases = [
+    ['win32', { APPDATA: appData, npm_config_globalconfig: path.join(npmPrefix, 'etc', 'npmrc') }, true],
+    ['win32', { APPDATA: appData, npm_config_prefix: npmPrefix }, true],
+    ['win32', { APPDATA: appData, npm_config_globalconfig: path.join(appData, 'elsewhere', 'npmrc') }, false],
+    ['linux', { APPDATA: appData, npm_config_globalconfig: path.join(npmPrefix, 'etc', 'npmrc') }, false],
+  ];
+  for (const [platform, env, allowed] of cases) {
+    const root = await pnpmWorkspace(t);
+    const result = await resolve(t, { folder: root, project: path.join(root, 'packages/app'), packageManager: 'pnpm', env: { ...base, platform, env } });
+    assert.equal(result.ok, allowed, `${platform} ${JSON.stringify(env)}`);
+  }
+  await files(npmPrefix, { 'etc/npmrc': 'lockfile-dir=../x\n' });
+  const root = await pnpmWorkspace(t);
+  const result = await resolve(t, { folder: root, project: path.join(root, 'packages/app'), packageManager: 'pnpm', env: { ...base, platform: 'win32', env: { APPDATA: appData } } });
+  assertRefused(result, 'LOCKFILE_UNDETERMINED', /Setting found: lockfile-dir in the global npmrc\./);
+});

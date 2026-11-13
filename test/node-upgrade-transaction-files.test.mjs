@@ -229,7 +229,7 @@ test('FileState equality is exact for bytes and distinguishes missing from empty
   assert.equal(fileStatesEqual(missing, { exists: true, contents: new Uint8Array() }), false);
 });
 
-test('only the on-disk spelling is allowlisted, and requests are matched through the realpath', async (t) => {
+test('any valid spelling of an allowlisted file is the same file, matched through the realpath', async (t) => {
   const root = await workspaceFixture(t);
   await mkdir(path.join(root, 'Member'));
   const manifest = path.join(root, 'Member', 'package.json');
@@ -240,67 +240,83 @@ test('only the on-disk spelling is allowlisted, and requests are matched through
     return;
   }
   const adapter = await createNodeUpgradeTransactionFileAdapter({ workspaceRoot: root, allowlistedPaths: [manifest] });
-  // A request in another spelling resolves to the allowlisted file, which is what gets read.
   assert.deepEqual(Buffer.from((await adapter.read(variant)).contents).toString(), 'before');
   await assert.rejects(adapter.read(path.join(root, 'Member', 'other.json')), { code: 'PATH_NOT_ALLOWLISTED' });
-  // An allowlist entry or a folder spelled differently from the disk is refused.
-  await assert.rejects(
-    createNodeUpgradeTransactionFileAdapter({ workspaceRoot: root, allowlistedPaths: [variant] }),
-    { code: 'PATH_OUTSIDE_WORKSPACE' }
-  );
+  const fromVariant = await createNodeUpgradeTransactionFileAdapter({ workspaceRoot: root, allowlistedPaths: [variant] });
+  assert.equal((await fromVariant.read(manifest)).exists, true);
 });
 
-test('a differently spelled prefix cannot skip the symbolic link check (Windows rules)', async () => {
-  const win = path.win32;
+/**
+ * A fake Windows volume that ignores case, with a short name for the user
+ * folder (RUNNER~1 for runneradmin, as os.tmpdir() returns on CI) and
+ * `linked`, a link inside the workspace to `real`.
+ */
+function windowsVolume() {
+  // A copy of the module, like `import * as path` gives: never path.win32 itself.
+  const win = { ...path.win32 };
   const missing = (target) => Object.assign(new Error(`ENOENT ${target}`), { code: 'ENOENT' });
-  // One directory C:\workspace on a volume that ignores case, with `linked` a link to `real` inside it.
-  const entries = new Map([
-    ['c:\\', { link: false }],
-    ['c:\\workspace', { link: false }],
-    ['c:\\workspace\\real', { link: false }],
-    ['c:\\workspace\\real\\package-lock.json', { link: false }],
-    ['c:\\workspace\\linked', { link: true }],
-  ]);
-  const realpaths = new Map([
+  const long = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp';
+  const short = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp';
+  const real = new Map([
     ['c:\\', 'C:\\'],
-    ['c:\\workspace', 'C:\\workspace'],
-    ['c:\\workspace\\real', 'C:\\workspace\\real'],
-    ['c:\\workspace\\real\\package-lock.json', 'C:\\workspace\\real\\package-lock.json'],
-    ['c:\\workspace\\linked', 'C:\\workspace\\real'],
+    ['c:\\users', 'C:\\Users'],
+    ['c:\\users\\runneradmin', 'C:\\Users\\runneradmin'],
+    ['c:\\users\\runner~1', 'C:\\Users\\runneradmin'],
   ]);
+  for (const [from, to] of [[long, long], [short, long]]) {
+    for (const tail of ['', '\\AppData', '\\AppData\\Local', '\\AppData\\Local\\Temp']) {
+      const prefix = from.slice(0, from.indexOf('\\AppData'));
+      real.set((prefix + tail).toLowerCase(), to.slice(0, to.indexOf('\\AppData')) + tail);
+    }
+  }
+  for (const [name, target] of [['workspace', 'workspace'], ['workspace\\real', 'workspace\\real'], ['workspace\\real\\package-lock.json', 'workspace\\real\\package-lock.json'], ['workspace\\linked', 'workspace\\real']]) {
+    real.set(`${long}\\${name}`.toLowerCase(), `${long}\\${target}`);
+    real.set(`${short}\\${name}`.toLowerCase(), `${long}\\${target}`);
+  }
+  const links = new Set([`${long}\\workspace\\linked`.toLowerCase(), `${short}\\workspace\\linked`.toLowerCase()]);
   const key = (target) => win.normalize(target).toLowerCase();
   const checks = {
     path: win,
     lstat: async (target) => {
-      const entry = entries.get(key(target));
-      if (entry === undefined) throw missing(target);
-      return { isSymbolicLink: () => entry.link };
+      if (!real.has(key(target))) throw missing(target);
+      return { isSymbolicLink: () => links.has(key(target)) };
     },
     realpath: async (target) => {
-      const tail = [];
-      let current = key(target);
-      // Resolve the deepest known prefix, then append the rest, like the real call.
-      while (!realpaths.has(current)) {
-        if (win.dirname(current) === current) throw missing(target);
-        tail.unshift(win.basename(current));
-        current = win.dirname(current);
-      }
-      if (tail.length > 0 && !entries.has(key(win.join(current, ...tail)))) throw missing(target);
-      return win.join(realpaths.get(current), ...tail);
+      const resolved = real.get(key(target));
+      if (resolved === undefined) throw missing(target);
+      return resolved;
     },
   };
-  const options = (allowlisted) => ({ workspaceRoot: 'C:\\workspace', allowlistedPaths: [allowlisted] });
-  // The review's repro: a case-variant prefix with a link below it.
+  return { checks, long, short };
+}
+
+test('a short-name or differently cased spelling is accepted, and its links are still found (Windows rules)', async () => {
+  const { checks, long, short } = windowsVolume();
+  const accepted = [
+    [`${long}\\workspace`, `${long}\\workspace\\real\\package-lock.json`],
+    // os.tmpdir() returned a short name for the folder, the allowlist uses either spelling.
+    [`${short}\\workspace`, `${short}\\workspace\\real\\package-lock.json`],
+    [`${short}\\workspace`, `${long}\\workspace\\real\\package-lock.json`],
+    [`${long}\\workspace`, `${short}\\WORKSPACE\\Real\\package-lock.json`],
+    [`${long}\\workspace`, `c:${long.slice(2)}\\workspace\\real\\new-lock.json`],
+  ];
+  for (const [workspaceRoot, allowlisted] of accepted) {
+    await createNodeUpgradeTransactionFileAdapter({ workspaceRoot, allowlistedPaths: [allowlisted] }, checks);
+  }
+  for (const [workspaceRoot, allowlisted] of [
+    [`${long}\\workspace`, `${long}\\workspace\\linked\\package-lock.json`],
+    // The review's repro: a differently spelled prefix does not skip the link.
+    [`${long}\\workspace`, `${long}\\WORKSPACE\\linked\\package-lock.json`],
+    [`${long}\\workspace`, `${short}\\workspace\\linked\\package-lock.json`],
+  ]) {
+    await assert.rejects(
+      createNodeUpgradeTransactionFileAdapter({ workspaceRoot, allowlistedPaths: [allowlisted] }, checks),
+      { code: 'SYMLINK_NOT_ALLOWED' },
+      allowlisted
+    );
+  }
   await assert.rejects(
-    createNodeUpgradeTransactionFileAdapter(options('C:\\WORKSPACE\\linked\\package-lock.json'), checks),
-    (error) => error instanceof UpgradeTransactionPathError
+    createNodeUpgradeTransactionFileAdapter({ workspaceRoot: `${long}\\workspace`, allowlistedPaths: [`${long}\\other\\package.json`] }, checks),
+    { code: 'PATH_OUTSIDE_WORKSPACE' }
   );
-  // The link spelled normally is a link.
-  await assert.rejects(
-    createNodeUpgradeTransactionFileAdapter(options('C:\\workspace\\linked\\package-lock.json'), checks),
-    { code: 'SYMLINK_NOT_ALLOWED' }
-  );
-  // A canonical path still passes, and so does a lockfile that does not exist yet.
-  await createNodeUpgradeTransactionFileAdapter(options('C:\\workspace\\real\\package-lock.json'), checks);
-  await createNodeUpgradeTransactionFileAdapter(options('C:\\workspace\\real\\new-lock.json'), checks);
 });
