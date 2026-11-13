@@ -1,3 +1,4 @@
+import { isExpectedFsError } from './expectedFsError.js';
 /** Shared bounded output and cancellation lifecycle for isolated package-manager analysis. */
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -53,7 +54,10 @@ export class NodePackageManagerProcessRunner {
         if (!windows && child.pid !== undefined) {
           try { process.kill(-child.pid, killSignal); }
           catch (cause) {
-            if ((cause as NodeJS.ErrnoException).code !== 'ESRCH') child.kill(killSignal);
+            if (!isExpectedFsError(cause, 'processGone')) {
+              if (!isExpectedFsError(cause, 'terminateGroup')) throw cause;
+              child.kill(killSignal);
+            }
           }
         } else if (windows && child.pid !== undefined) {
           if (treeKiller !== undefined) return;

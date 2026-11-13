@@ -88,7 +88,7 @@ test('an internal throw before preparation reports a normal failure and releases
   await assert.rejects(readFile(`${project.root}/.packageawy-recovery/journal.json`), { code: 'ENOENT' });
 });
 
-for (const phase of ['preparing', 'install', 'verification', 'final-reread']) test(`Smart Cleanup internal ${phase} failure settles the real owner as unknown`, async t => {
+for (const phase of ['preparing', 'install', 'verification']) test(`Smart Cleanup internal ${phase} failure settles the real owner as unknown`, async t => {
   const project = await makeProject(t);
   let fixture;
   fixture = makeCoordinator(project, {
@@ -96,7 +96,6 @@ for (const phase of ['preparing', 'install', 'verification', 'final-reread']) te
     sink: { postMessage(message) {
       fixture.messages.push(message);
     } },
-    ...(phase === 'final-reread' ? { reloadSmartCleanupFinalState: async () => { throw new TypeError('final state bug'); } } : {}),
   });
   const id = await review(fixture);
   fixture.coordinator.session.invocationResolver = invocation;
@@ -123,7 +122,7 @@ for (const phase of ['preparing', 'install', 'verification', 'final-reread']) te
   await assertUnknown(fixture, project);
 });
 
-test('generic removal internal failure retains its journal as unknown', async t => {
+test('generic removal final refresh failure preserves the known removal', async t => {
   const project = await makeProject(t);
   const fixture = makeCoordinator(project, { mutationRoot: () => project.root,
     reloadFinalState: async () => { throw new TypeError('reload bug'); } });
@@ -131,7 +130,9 @@ test('generic removal internal failure retains its journal as unknown', async t 
   await fixture.coordinator.handleAnalyzeBulkRemove({ changes: [{ package: 'react' }] });
   const id = fixture.messages.findLast(message => message.status === 'remove-analysis').analysis.analysisId;
   await fixture.coordinator.handleConfirmRemove({ analysisId: id });
-  await assertUnknown(fixture, project);
+  assert.equal(fixture.coordinator.reservation.held, undefined);
+  assert.equal(fixture.messages.findLast(message => message.status === 'remove-result').result.outcome, 'verified');
+  assert.equal(fixture.messages.some(message => message.error?.code === 'OUTCOME_UNKNOWN'), false);
 });
 
 async function upgrade(fixture) {
@@ -147,14 +148,16 @@ async function upgrade(fixture) {
   fixture.coordinator.session.invocationResolver = invocation;
 }
 
-test('upgrade internal final-state failure settles as unknown rather than kept', async t => {
+test('upgrade final-state presentation failure preserves its known install', async t => {
   const project = await makeProject(t);
   const fixture = makeCoordinator(project, { mutationRoot: () => project.root });
   await upgrade(fixture);
   let loads = 0;
   fixture.coordinator.projectLoader = async () => { if (++loads > 1) throw new TypeError('read bug'); return fixture.read(); };
   await fixture.coordinator.handleConfirmUpgrade({ analysisId: 'upgrade' });
-  await assertUnknown(fixture, project, 'upgrade-error');
+  assert.equal(fixture.coordinator.reservation.held, undefined);
+  assert.equal(fixture.messages.findLast(message => message.status === 'upgrade-result').result.install, 'succeeded');
+  assert.equal(fixture.messages.some(message => message.error?.code === 'OUTCOME_UNKNOWN'), false);
 });
 
 // Fatal handlers permanently close admission, so each scenario needs its own process.
@@ -210,6 +213,7 @@ for (const phase of ['preparing', 'apply', 'security-verification', 'reconciliat
   }
   let reconciliations = 0;
   if (phase === 'reconciliation') {
+    fixture.state.reinstallChoice = 'Reinstall';
     fixture.coordinator.options.platform.getSetting = (key, fallback) => key === 'security.publicAdvisoryCheck' ? false : fallback;
     fixture.coordinator.session.prepareLockfileReconciliation = () => ({ ok: true, execute: async () => {
       if (++reconciliations > 1) throw new TypeError('restored tree reconciliation bug');

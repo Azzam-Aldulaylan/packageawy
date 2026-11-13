@@ -11,7 +11,8 @@ function manifestScripts(manifestText: string): Record<string, unknown> | undefi
   let parsed: unknown;
   try {
     parsed = JSON.parse(manifestText);
-  } catch {
+  } catch (cause) {
+    if (!(cause instanceof SyntaxError)) throw cause;
     return undefined;
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;

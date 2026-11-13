@@ -1,3 +1,4 @@
+import { isExpectedFsError } from './expectedFsError.js';
 /**
  * Real Node filesystem adapter for upgrade transactions.
  *
@@ -7,16 +8,11 @@
  * never accepts a path merely because it happens to be under the workspace;
  * it must exactly match an entry supplied to the factory.
  *
- * Node does not expose a general filesystem compare-and-swap primitive for an
- * existing pathname. We therefore use the strongest practical construction:
- * read/compare, prepare exact replacement bytes in the same directory,
- * read/compare again immediately before an atomic rename. The transaction
- * relies on that compare-and-swap contract for host-generated manifest staging
- * as well as rollback. Restoring a file
- * that is expected to be absent uses `link`, which is atomically no-clobber;
- * deleting a transaction-created file similarly performs a second comparison
- * immediately before unlink. Callers must still serialize dashboard-owned
- * operations around a transaction.
+ * Node does not expose a conditional filesystem rename for an existing
+ * pathname. Staging compares bytes before preparing and installing a
+ * replacement. Rollback uses the recovery journal to retain the displaced
+ * inode and checks again before each move. These checks detect observed
+ * conflicts, but cannot exclude a writer racing the final rename.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -73,12 +69,7 @@ function cloneState(state: FileState): FileState {
 }
 
 function isMissing(cause: unknown): boolean {
-  return (
-    typeof cause === 'object' &&
-    cause !== null &&
-    'code' in cause &&
-    (cause as { code?: unknown }).code === 'ENOENT'
-  );
+  return isExpectedFsError(cause, 'missingFile');
 }
 
 /** The filesystem calls the path checks make. Node's, or Windows rules and fakes in a test. */
@@ -125,7 +116,10 @@ export async function assertSafeCanonicalPath(
       throw cause;
     }
     if (isLink) {
-      const parentCanonical = await canonicalPath(parent, checks).catch(() => undefined);
+      const parentCanonical = await canonicalPath(parent, checks).catch((cause: unknown) => {
+        if (!isExpectedFsError(cause, 'canonicalize')) throw cause;
+        return undefined;
+      });
       const relation = parentCanonical === undefined ? undefined : relatePaths(canonicalRoot, parentCanonical, checks.path);
       if (relation === undefined || relation === 'same' || relation === 'inside') {
         throw new UpgradeTransactionPathError(
@@ -139,7 +133,10 @@ export async function assertSafeCanonicalPath(
 
   // The same comparison the mutation target resolver used to accept this
   // path: native realpath, then exact segments.
-  const canonical = await canonicalPath(candidate, checks).catch(() => undefined);
+  const canonical = await canonicalPath(candidate, checks).catch((cause: unknown) => {
+        if (!isExpectedFsError(cause, 'canonicalize')) throw cause;
+        return undefined;
+      });
   if (canonical === undefined || relatePaths(canonicalRoot, canonical, checks.path) !== 'inside') {
     throw new UpgradeTransactionPathError(
       'PATH_OUTSIDE_WORKSPACE',
@@ -163,7 +160,10 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
    * is refused.
    */
   private async resolveAllowed(candidate: string): Promise<string> {
-    const canonical = await canonicalPath(path.resolve(candidate), this.checks).catch(() => undefined);
+    const canonical = await canonicalPath(path.resolve(candidate), this.checks).catch((cause: unknown) => {
+        if (!isExpectedFsError(cause, 'canonicalize')) throw cause;
+        return undefined;
+      });
     const resolved = canonical === undefined ? undefined : this.allowed.get(canonical);
     if (resolved === undefined) {
       throw new UpgradeTransactionPathError(
@@ -269,11 +269,7 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
           beforeMutation?.();
           await link(temporary, resolved);
         } catch (cause) {
-          const code =
-            typeof cause === 'object' && cause !== null && 'code' in cause
-              ? (cause as { code?: unknown }).code
-              : undefined;
-          if (code === 'EEXIST') return 'conflict';
+          if (isExpectedFsError(cause, 'exclusiveCreate')) return 'conflict';
           throw cause;
         }
         return 'restored';
@@ -286,12 +282,15 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
       temporaryCreated = false;
       return 'restored';
     } finally {
-      await temporaryHandle?.close().catch(() => {});
+      await temporaryHandle?.close();
       if (temporaryCreated) {
         try {
           beforeMutation?.();
           await rm(temporary, { force: true });
-        } catch { /* A fenced flow also retains its temporary file. */ }
+        } catch (cause) {
+          // A fence refusal retains the temporary file. Other failures propagate.
+          if (!isExpectedFsError(cause, 'cleanup')) throw cause;
+        }
       }
     }
   }

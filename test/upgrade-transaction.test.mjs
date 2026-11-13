@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { runUpgradeTransaction } from '../out/host/upgradeTransaction.js';
+import { RestoreFileError, runUpgradeTransaction } from '../out/host/upgradeTransaction.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -395,7 +395,7 @@ test('a concurrent manifest edit between snapshot and stage is preserved without
 
 test('a thrown manifest stage write is structured and never starts install or rollback', async () => {
   const files = new MemoryFiles({ [manifestPath]: present('before') });
-  files.casFailures.set(manifestPath, new Error('write denied'));
+  files.casFailures.set(manifestPath, Object.assign(new Error('write denied'), { code: 'EACCES' }));
   let installCalls = 0;
 
   const result = await runUpgradeTransaction({
@@ -553,7 +553,7 @@ test('a staged manifest rewritten by anyone but the transaction is kept as a rol
   assert.equal(result.completion, 'incomplete');
   assert.equal(result.rollback.files.find((file) => file.path === manifestPath).status, 'conflict');
   assert.equal(files.text(manifestPath), foreign);
-  assert.equal(files.text(lockfilePath), 'lock-before');
+  assert.equal(files.text(lockfilePath), 'partial lock', 'the conflicting manifest stops all swaps');
 });
 
 test('install steps may only write through the transaction to a file it staged', async () => {
@@ -734,7 +734,7 @@ test('rollback failures are structured per file and leave completion incomplete'
     [manifestPath]: present('manifest-before'),
     [lockfilePath]: present('lock-before'),
   });
-  files.casFailures.set(lockfilePath, new Error('permission denied'));
+  files.casFailures.set(lockfilePath, new RestoreFileError(new Error('permission denied')));
 
   const result = await runUpgradeTransaction({
     allowlistedPaths: [manifestPath, lockfilePath],
@@ -785,16 +785,15 @@ test('compare-and-swap rollback preserves a concurrent edit made after install',
     result.rollback.files.map(({ path, status }) => ({ path, status })),
     [
       { path: manifestPath, status: 'conflict' },
-      { path: lockfilePath, status: 'restored' },
     ]
   );
   assert.equal(files.text(manifestPath), 'developer concurrent edit');
-  assert.equal(files.text(lockfilePath), 'lock-before');
+  assert.equal(files.text(lockfilePath), 'lock-installed');
 });
 
 test('snapshot failure stops before execution and reports the exact failing allowlisted path', async () => {
   const files = new MemoryFiles({ [manifestPath]: present('before') });
-  files.readFailures.set(lockfilePath, new Error('read denied'));
+  files.readFailures.set(lockfilePath, Object.assign(new Error('read denied'), { code: 'EACCES' }));
   let executed = false;
 
   const result = await runUpgradeTransaction({
@@ -932,4 +931,21 @@ test('cancellation during verification waits for verification before rollback', 
   assert.equal(result.reason, 'cancelled');
   assert.equal(result.verification.status, 'passed');
   assert.equal(files.text(manifestPath), 'before');
+});
+
+for (const fault of ['EIO', 'TypeError']) test(`rollback post-precheck ${fault} is unknown even without a journal adapter`, async () => {
+  const files = new MemoryFiles({ [manifestPath]: present('manifest-before'), [lockfilePath]: present('lock-before') });
+  files.casFailures.set(lockfilePath, fault === 'TypeError' ? new TypeError('restore bug') : Object.assign(new Error('restore EIO'), { code: 'EIO' }));
+  const result = await runUpgradeTransaction({
+    allowlistedPaths: [manifestPath, lockfilePath], files,
+    install: successfulInstall(() => {
+      files.set(manifestPath, present('manifest-after'));
+      files.set(lockfilePath, present('lock-after'));
+    }),
+    verifier: failedVerification(),
+  });
+  assert.equal(result.completion, 'unknown');
+  assert.equal(result.rollback.status, 'not-needed');
+  assert.equal(files.text(manifestPath), 'manifest-before');
+  assert.equal(files.text(lockfilePath), 'lock-after');
 });

@@ -1,3 +1,4 @@
+import { isFsError } from './expectedFsError.js';
 /**
  * pnpm settings that move, split or replace the lockfile pnpm writes, read
  * from every source this host can read without running pnpm.
@@ -17,10 +18,10 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { parse as parseIni } from 'ini';
-import { load as loadYaml } from 'js-yaml';
+import { load as loadYaml, YAMLException } from 'js-yaml';
 
 import { isRecord } from '../core/validation.js';
-import { authorizedRelation, isMissingPathError } from './pathIdentity.js';
+import { authorizedRelation, canonicalPath, isMissingPathError, relatePaths } from './pathIdentity.js';
 
 export const LOCKFILE_UNDETERMINED_REASON =
   'Packageawy cannot safely determine which lockfile your package manager will write. Changes are unavailable.';
@@ -119,10 +120,11 @@ function settingRefusal(
 
 type SourceText = { status: 'absent' } | { status: 'read'; text: string } | { status: 'unreadable' };
 
-async function readSource(filePath: string): Promise<SourceText> {
+async function readSource(filePath: string, strict = false): Promise<SourceText> {
   try {
     return { status: 'read', text: await readFile(filePath, 'utf8') };
   } catch (cause) {
+    if (!(strict ? isMissingPathError(cause) : isFsError(cause))) throw cause;
     return isMissingPathError(cause) ? { status: 'absent' } : { status: 'unreadable' };
   }
 }
@@ -137,9 +139,10 @@ async function checkNpmrc(
   filePath: string,
   label: string,
   environment: PnpmSettingsEnvironment,
-  redirected = false
+  redirected = false,
+  strict = false
 ): Promise<PnpmSettingsRefusal | null> {
-  const source = await readSource(filePath);
+  const source = await readSource(filePath, strict);
   if (source.status === 'absent') return null;
   if (source.status === 'unreadable') return undetermined(`Could not read ${label}.`);
   const redirects: Array<{ name: string; value: string | undefined }> = [];
@@ -153,7 +156,7 @@ async function checkNpmrc(
     if (refusal !== null) return refusal;
   }
   for (const redirect of redirects) {
-    const refusal = await followRedirect(redirect.name, redirect.value, label, environment, redirected);
+    const refusal = await followRedirect(redirect.name, redirect.value, label, environment, redirected, strict);
     if (refusal !== null) return refusal;
   }
   return null;
@@ -184,7 +187,8 @@ async function followRedirect(
   value: string | undefined,
   source: string,
   environment: PnpmSettingsEnvironment,
-  alreadyRedirected: boolean
+  alreadyRedirected: boolean,
+  strict = false
 ): Promise<PnpmSettingsRefusal | null> {
   // npm and pnpm expand `${...}` in these values, to something unknown here.
   const expanded = value === undefined || value.includes('${') ? undefined : expandHome(value.trim(), environment);
@@ -196,10 +200,13 @@ async function followRedirect(
   // exports userconfig as ~/.npmrc) moves nothing, so it is not a redirect,
   // even inside a file that was itself reached by one.
   for (const defaultSource of defaultNpmrcPaths(environment)) {
-    if ((await authorizedRelation(defaultSource, target)) === 'same') return null;
+    const relation = strict
+      ? relatePaths(await canonicalPath(defaultSource), await canonicalPath(target))
+      : await authorizedRelation(defaultSource, target);
+    if (relation === 'same') return null;
   }
   if (alreadyRedirected) return undetermined(`Config location set twice: ${name} in ${source}.`);
-  return checkNpmrc(target, `${target} (named by ${name} in ${source})`, environment, true);
+  return checkNpmrc(target, `${target} (named by ${name} in ${source})`, environment, true, strict);
 }
 
 function collectEntries(document: Record<string, unknown>, into: Array<{ key: string; value: string | undefined }>): void {
@@ -248,14 +255,15 @@ export function checkYamlSettings(
   return null;
 }
 
-async function checkYamlFile(filePath: string, label: string, platform: NodeJS.Platform): Promise<PnpmSettingsRefusal | null> {
-  const source = await readSource(filePath);
+async function checkYamlFile(filePath: string, label: string, platform: NodeJS.Platform, strict = false): Promise<PnpmSettingsRefusal | null> {
+  const source = await readSource(filePath, strict);
   if (source.status === 'absent') return null;
   if (source.status === 'unreadable') return undetermined(`Could not read ${label}.`);
   let document: unknown;
   try {
     document = loadYaml(source.text);
-  } catch {
+  } catch (cause) {
+    if (!(cause instanceof YAMLException)) throw cause;
     return undetermined(`Could not read ${label}.`);
   }
   if (document === null || document === undefined) return null;
@@ -308,7 +316,7 @@ function npmGlobalPrefixes(environment: PnpmSettingsEnvironment): string[] {
   return prefixes;
 }
 
-async function checkEnvironment(environment: PnpmSettingsEnvironment): Promise<PnpmSettingsRefusal | null> {
+async function checkEnvironment(environment: PnpmSettingsEnvironment, strict = false): Promise<PnpmSettingsRefusal | null> {
   for (const [rawName, value] of Object.entries(environment.env)) {
     const lower = rawName.toLowerCase();
     const prefix = lower.startsWith('npm_config_') ? 'npm_config_' : lower.startsWith('pnpm_config_') ? 'pnpm_config_' : null;
@@ -316,7 +324,7 @@ async function checkEnvironment(environment: PnpmSettingsEnvironment): Promise<P
     const name = normalizeSettingName(lower.slice(prefix.length));
     const label = `the environment (${rawName})`;
     const refusal = CONFIG_LOCATION_SETTINGS.has(name)
-      ? await followRedirect(name, value, label, environment, false)
+      ? await followRedirect(name, value, label, environment, false, strict)
       : settingRefusal(name, value, label, environment.platform);
     if (refusal !== null) return refusal;
   }
@@ -329,19 +337,20 @@ export interface PnpmSettingsInput {
   /** The parsed pnpm-workspace.yaml that owns the project, or null when there is none. */
   workspaceManifest: Record<string, unknown> | null;
   environment: PnpmSettingsEnvironment;
+  throwOnUnexpectedError?: boolean;
 }
 
-async function hasPnpmfile(dir: string): Promise<boolean | 'unreadable'> {
+async function hasPnpmfile(dir: string, strict: boolean): Promise<boolean | 'unreadable'> {
   for (const name of ['.pnpmfile.cjs', '.pnpmfile.mjs']) {
-    const source = await readSource(path.join(dir, name));
+    const source = await readSource(path.join(dir, name), strict);
     if (source.status === 'read') return true;
     if (source.status === 'unreadable') return 'unreadable';
   }
   return false;
 }
 
-async function rootManifestConfigDependencies(root: string): Promise<boolean | 'unreadable'> {
-  const source = await readSource(path.join(root, 'package.json'));
+async function rootManifestConfigDependencies(root: string, strict: boolean): Promise<boolean | 'unreadable'> {
+  const source = await readSource(path.join(root, 'package.json'), strict);
   if (source.status === 'absent') return false;
   if (source.status === 'unreadable') return 'unreadable';
   try {
@@ -349,7 +358,8 @@ async function rootManifestConfigDependencies(root: string): Promise<boolean | '
     if (!isRecord(manifest)) return false;
     const pnpm = manifest['pnpm'];
     return manifest['configDependencies'] !== undefined || (isRecord(pnpm) && pnpm['configDependencies'] !== undefined);
-  } catch {
+  } catch (cause) {
+    if (!(cause instanceof SyntaxError)) throw cause;
     return 'unreadable';
   }
 }
@@ -357,20 +367,21 @@ async function rootManifestConfigDependencies(root: string): Promise<boolean | '
 /** The first reason pnpm might write somewhere other than `<workspaceRoot>/pnpm-lock.yaml`, or null. */
 export async function findPnpmLockfileOverride(input: PnpmSettingsInput): Promise<PnpmSettingsRefusal | null> {
   const { projectDir, workspaceRoot, workspaceManifest, environment } = input;
+  const strict = input.throwOnUnexpectedError === true;
   if (workspaceManifest !== null) {
     const fromWorkspace = checkYamlSettings(workspaceManifest, 'pnpm-workspace.yaml', environment.platform);
     if (fromWorkspace !== null) return fromWorkspace;
   }
   for (const dir of new Set([workspaceRoot, projectDir])) {
-    const pnpmfile = await hasPnpmfile(dir);
+    const pnpmfile = await hasPnpmfile(dir, strict);
     if (pnpmfile === 'unreadable') return undetermined('Could not read the project pnpmfile.');
     if (pnpmfile) return { code: 'PNPMFILE', reason: PNPMFILE_REASON };
   }
-  const configDependencies = await rootManifestConfigDependencies(workspaceRoot);
+  const configDependencies = await rootManifestConfigDependencies(workspaceRoot, strict);
   if (configDependencies === 'unreadable') return undetermined('Could not read the workspace package.json.');
   if (configDependencies) return { code: 'PNPM_CONFIG_DEPENDENCIES', reason: PNPM_CONFIG_DEPENDENCIES_REASON };
 
-  const fromEnvironment = await checkEnvironment(environment);
+  const fromEnvironment = await checkEnvironment(environment, strict);
   if (fromEnvironment !== null) return fromEnvironment;
 
   const npmrcSources: Array<[string, string]> = [
@@ -383,11 +394,11 @@ export async function findPnpmLockfileOverride(input: PnpmSettingsInput): Promis
   for (const [filePath, label] of npmrcSources) {
     if (seen.has(filePath)) continue;
     seen.add(filePath);
-    const refusal = await checkNpmrc(filePath, label, environment);
+    const refusal = await checkNpmrc(filePath, label, environment, false, strict);
     if (refusal !== null) return refusal;
   }
   for (const configDir of pnpmConfigDirs(environment)) {
-    const refusal = await checkYamlFile(path.join(configDir, 'config.yaml'), "pnpm's global config.yaml", environment.platform);
+    const refusal = await checkYamlFile(path.join(configDir, 'config.yaml'), "pnpm's global config.yaml", environment.platform, strict);
     if (refusal !== null) return refusal;
   }
   return null;

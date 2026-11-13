@@ -1,3 +1,6 @@
+import { isExpectedFsError } from './expectedFsError.js';
+import { precheckRestore } from './restorePrecheck.js';
+
 /**
  * Transactional orchestration for a dependency upgrade.
  *
@@ -18,12 +21,21 @@ export type FileState =
 
 export type CompareAndSwapResult = 'restored' | 'conflict';
 
+/** Only an ordinary project-file move failure may settle a journal rollback as incomplete. */
+export class RestoreFileError extends Error {
+  readonly code: string | undefined;
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'string' ? cause.code : undefined;
+  }
+}
+
 export interface UpgradeTransactionFileAdapter {
   /** Read exact bytes, or report that the allowlisted file does not exist. */
   read(path: string): Promise<FileState>;
   /**
-   * Atomically, or with the strongest equivalent protection the host can
-   * provide, replace `expected` with `replacement`. The transaction assumes
+   * Compare current bytes with `expected` before installing `replacement`.
+   * The journal retains displaced files during rollback. The transaction assumes
    * `restored` means the replacement is committed before this promise settles.
    * A mismatch must return `conflict` without modifying the file. This is the
    * safety boundary used both for pre-install manifest staging and rollback;
@@ -315,7 +327,7 @@ async function takeSnapshot(
     try {
       entries.push({ path, before: cloneState(await files.read(path)) });
     } catch (cause) {
-      if (uncertainErrors) throw cause;
+      if (uncertainErrors || !isExpectedFsError(cause, 'read')) throw cause;
       return {
         ok: false,
         result: { status: 'failed', path, message: errorMessage(cause) },
@@ -393,7 +405,7 @@ async function stageManifest(
       };
     }
   } catch (cause) {
-    if (uncertainErrors) throw cause;
+    if (uncertainErrors || !isExpectedFsError(cause, 'restoreRename')) throw cause;
     return {
       ok: false,
       result: {
@@ -483,7 +495,7 @@ async function stageExactFile(
       };
     }
   } catch (cause) {
-    if (uncertainErrors) throw cause;
+    if (uncertainErrors || !isExpectedFsError(cause, 'restoreRename')) throw cause;
     return {
       ok: false,
       result: {
@@ -512,7 +524,7 @@ async function captureExpectedStates(
     try {
       expected.push({ snapshot, expected: cloneState(await files.read(snapshot.path)) });
     } catch (cause) {
-      if (uncertainErrors) throw cause;
+      if (uncertainErrors || !isExpectedFsError(cause, 'read')) throw cause;
       expected.push({ snapshot, captureError: errorMessage(cause) });
     }
   }
@@ -548,42 +560,37 @@ async function rollback(
     try {
       refusal = await beforeRestore();
     } catch (cause) {
-      if (journal !== undefined) throw cause;
-      refusal = errorMessage(cause);
+      throw cause;
     }
     if (refusal !== null) {
       return { status: 'failed', files: entries.map((entry) => ({ path: entry.snapshot.path, status: 'failed', message: refusal })) };
     }
   }
 
-  for (const entry of entries) {
-    if ('captureError' in entry) {
-      results.push({
-        path: entry.snapshot.path,
-        status: 'failed',
-        message: `Could not capture post-install state: ${entry.captureError}`,
-      });
-      continue;
-    }
+  const issues = await precheckRestore(entries.map(entry => ({
+    path: entry.snapshot.path,
+    check: async () => {
+      if ('captureError' in entry) throw new Error(entry.captureError);
+      return statesEqual(await files.read(entry.snapshot.path), entry.expected);
+    },
+  })));
+  if (issues.length > 0) return { status: issues.some(issue => issue.status === 'failed') ? 'failed' : 'conflict', files: issues };
 
+  for (const entry of entries) {
+    if ('captureError' in entry) continue;
     try {
-      const result = await files.compareAndSwap(
-        entry.snapshot.path,
-        cloneState(entry.expected),
-        cloneState(entry.snapshot.before)
-      );
+      const result = await files.compareAndSwap(entry.snapshot.path, cloneState(entry.expected), cloneState(entry.snapshot.before));
       results.push({ path: entry.snapshot.path, status: result });
+      if (result !== 'restored') break;
     } catch (cause) {
-      if (journal !== undefined) throw cause;
-      results.push({
-        path: entry.snapshot.path,
-        status: 'failed',
-        message: errorMessage(cause),
-      });
+      if (!(cause instanceof RestoreFileError)) throw cause;
+      results.push({ path: entry.snapshot.path, status: 'failed', message: errorMessage(cause) });
+      break;
     }
   }
 
-  await journal?.record('rollback', 'finished');
+  // A partial restore retains its last expectations for manual recovery.
+  if (results.every(result => result.status === 'restored')) await journal?.record('rollback', 'finished');
   if (results.some((result) => result.status === 'failed')) {
     return { status: 'failed', files: results };
   }
@@ -623,8 +630,7 @@ async function executeVerification(verifier: UpgradeVerifier): Promise<Verificat
 async function decideAfterFailure(
   decider: VerificationFailureDecider | undefined,
   verification: Extract<VerificationResult, { status: 'failed' }>,
-  signal: AbortSignal | undefined,
-  uncertainErrors = false
+  signal: AbortSignal | undefined
 ): Promise<{ decision: VerificationFailureDecision; status: UpgradeTransactionResult['retentionDecision'] }> {
   if (decider === undefined) return { decision: 'rollback', status: 'rollback' };
   if (cancelled(signal)) return { decision: 'rollback', status: 'cancelled' };
@@ -661,8 +667,7 @@ async function decideAfterFailure(
       status: cancelled(signal) ? 'cancelled' : decision,
     };
   } catch (cause) {
-    if (uncertainErrors) throw cause;
-    return { decision: 'rollback', status: 'failed' };
+    throw cause;
   }
 }
 
@@ -914,8 +919,7 @@ async function executeTransaction(
   const retention = await decideAfterFailure(
     options.verificationFailureDecider,
     verification,
-    options.signal,
-    options.journal !== undefined
+    options.signal
   );
   await options.journal?.record('decision', 'finished');
   if (retention.decision === 'keep' && !cancelled(options.signal)) {

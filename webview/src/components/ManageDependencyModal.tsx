@@ -144,7 +144,7 @@ function UpgradeResultPanel({
         <h3 className="analysis-card__title" id="upgrade-result-heading">{title}</h3>
         {result.changes.map((change) => (
           <p key={change.packageName} className="analysis-card__hint">
-            <code>{change.packageName}</code>: <code>{change.previousVersion}</code> <span aria-hidden="true">→</span>{' '}
+            <code>{change.packageName}</code>: <code>{change.previousVersion}</code> <span>to</span>{' '}
             <code>{change.currentVersion ?? 'not resolved'}</code>
           </p>
         ))}
@@ -153,6 +153,9 @@ function UpgradeResultPanel({
           <div className="manage-glance__row"><dt>Applied state</dt><dd>{applicationLabel}</dd></div>
           <div className="manage-glance__row"><dt>Verification</dt><dd>{verificationLabel}</dd></div>
         </dl>
+        {result.application === 'rolled-back' && result.rollbackMessage ? (
+          <p className="analysis-card__hint">{result.rollbackMessage}</p>
+        ) : null}
         {enrichment?.phase === 'refreshing' ? (
           <p className="analysis-card__pending-label">
             <IconRefresh className="banner__icon--spin" aria-hidden="true" /> Refreshing dependency security and update data…

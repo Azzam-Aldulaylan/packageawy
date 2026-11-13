@@ -1,3 +1,4 @@
+import { isExpectedFsError } from '../expectedFsError.js';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
@@ -10,9 +11,6 @@ export interface StorageHooks {
   boundary?(name: string): Promise<void>;
   isInvalidated?(): boolean;
   platform?: NodeJS.Platform;
-}
-export function code(error: unknown): unknown {
-  return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
 }
 
 /** A refused dispatch is certain, unlike an I/O failure after dispatch. */
@@ -144,11 +142,15 @@ export class Storage {
       catch (error) {
         // Even EEXIST can be an uncertain link result. Only a different,
         // complete publication proves an ordinary competing owner won.
-        if (code(error) === 'EEXIST') {
-          const existing = await this.read(relative).catch(() => undefined);
+        if (!isExpectedFsError(error, 'exclusiveLink')) throw error;
+        if (isExpectedFsError(error, 'exclusiveCreate')) {
+          const existing = await this.read(relative).catch((cause: unknown) => {
+            if (!isExpectedFsError(cause, 'missingFile')) throw cause;
+            return undefined;
+          });
           if (existing !== undefined && !existing.equals(Buffer.from(data))) {
             let value: unknown;
-            try { value = JSON.parse(existing.toString('utf8')); } catch { value = undefined; }
+            try { value = JSON.parse(existing.toString('utf8')); } catch (cause) { if (!(cause instanceof SyntaxError)) throw cause; value = undefined; }
             if (relative === 'owner.json' ? isOwner(value) : isClaim(value)) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
           }
         }

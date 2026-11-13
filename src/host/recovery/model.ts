@@ -88,3 +88,7 @@ export function isJournal(value: unknown): value is Journal {
       (file['move'] === undefined || (isRecord(file['move']) && isId(file['move']['id']) && isExpected(file['move']['before']) && file['displacedIds'].includes(file['move']['id']))));
 }
 export class RecoveryError extends Error {}
+
+export class RecoveryOutcomeUnknownError extends RecoveryError {
+  readonly code = 'OUTCOME_UNKNOWN';
+}

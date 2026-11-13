@@ -1,3 +1,4 @@
+import { isFsError } from './expectedFsError.js';
 /**
  * Decides, once, which directory and which lockfile a dependency change
  * writes, and refuses when that cannot be established safely.
@@ -18,12 +19,12 @@ import { lstat, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-import { load as loadYaml } from 'js-yaml';
+import { load as loadYaml, YAMLException } from 'js-yaml';
 
 import { isRecord } from '../core/validation.js';
 import { matchWorkspacePatterns } from '../core/workspace/patterns.js';
 import { PACKAGE_LOCK, PNPM_LOCK, SHRINKWRAP } from '../core/workspace/scan.js';
-import { candidateNodePaths, realListDir } from './npmResolver.js';
+import { candidateNodePaths, realListDir, rethrowUnexpectedResolverError } from './npmResolver.js';
 import { canonicalPath, isMissingPathError, relatePaths, segmentsBelow } from './pathIdentity.js';
 import {
   findPnpmLockfileOverride,
@@ -75,22 +76,25 @@ export interface ResolveMutationTargetInput {
   folderPath: string;
   packageManager: 'npm' | 'pnpm';
   environment?: MutationTargetEnvironment;
+  /** Recovery must fence unexpected resolution failures instead of reporting a safe skip. */
+  throwOnUnexpectedError?: boolean;
 }
 
-function nodePrefixes(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>, homeDir: string): string[] {
+function nodePrefixes(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>, homeDir: string, strict: boolean): string[] {
   const prefixes = new Set<string>();
   const candidates = candidateNodePaths({
     platform,
     pathEnv: env['PATH'],
     homeDir,
     fnmDirEnv: env['FNM_DIR'],
-    listDir: realListDir,
+    listDir: candidate => realListDir(candidate, strict),
   });
   for (const candidate of candidates) {
     try {
       const real = realpathSync.native(candidate);
       prefixes.add(platform === 'win32' ? path.dirname(real) : path.dirname(path.dirname(real)));
-    } catch {
+    } catch (cause) {
+      rethrowUnexpectedResolverError(cause, strict);
       // Not installed there.
     }
   }
@@ -98,10 +102,10 @@ function nodePrefixes(platform: NodeJS.Platform, env: Readonly<Record<string, st
 }
 
 /** The real host: process environment, home directory and every Node installation a task could pick. */
-export function defaultMutationTargetEnvironment(): MutationTargetEnvironment {
+export function defaultMutationTargetEnvironment(strict = false): MutationTargetEnvironment {
   const env = { ...process.env };
   const homeDir = homedir();
-  return { env, homeDir, platform: process.platform, nodePrefixes: nodePrefixes(process.platform, env, homeDir) };
+  return { env, homeDir, platform: process.platform, nodePrefixes: nodePrefixes(process.platform, env, homeDir, strict) };
 }
 
 function refused(code: MutationRefusalCode, reason: string): MutationTargetResolution {
@@ -122,19 +126,21 @@ function unsupportedPattern(pattern: string): MutationTargetResolution {
 
 type ReadResult = { status: 'absent' } | { status: 'read'; text: string } | { status: 'unreadable' };
 
-async function readText(filePath: string): Promise<ReadResult> {
+async function readText(filePath: string, strict = false): Promise<ReadResult> {
   try {
     return { status: 'read', text: await readFile(filePath, 'utf8') };
   } catch (cause) {
+    if (!(strict ? isMissingPathError(cause) : isFsError(cause))) throw cause;
     return isMissingPathError(cause) ? { status: 'absent' } : { status: 'unreadable' };
   }
 }
 
-async function exists(filePath: string): Promise<boolean | 'unreadable'> {
+async function exists(filePath: string, strict = false): Promise<boolean | 'unreadable'> {
   try {
     await lstat(filePath);
     return true;
   } catch (cause) {
+    if (!(strict ? isMissingPathError(cause) : isFsError(cause))) throw cause;
     return isMissingPathError(cause) ? false : 'unreadable';
   }
 }
@@ -162,15 +168,16 @@ type Membership = { root: string; workspaceManifest: Record<string, unknown> | n
  * project, as npm 8.5 and later find it from a member directory. An
  * ancestor that does not include the project never captures it.
  */
-async function npmMembership(project: string): Promise<Membership> {
+async function npmMembership(project: string, strict: boolean): Promise<Membership> {
   for (let dir = path.dirname(project); ; dir = path.dirname(dir)) {
-    const source = await readText(path.join(dir, 'package.json'));
+    const source = await readText(path.join(dir, 'package.json'), strict);
     if (source.status === 'unreadable') return { refusal: undetermined() };
     if (source.status === 'read') {
       let manifest: unknown;
       try {
         manifest = JSON.parse(source.text);
-      } catch {
+      } catch (cause) {
+        if (!(cause instanceof SyntaxError)) throw cause;
         // npm cannot use a broken manifest either, but one that names
         // workspaces might have been meant to own this project.
         if (source.text.includes('"workspaces"')) return { refusal: undetermined() };
@@ -199,17 +206,18 @@ async function npmMembership(project: string): Promise<Membership> {
  * check membership. A file that does not list the project is refused: the
  * lockfile written then depends on the pnpm version.
  */
-async function pnpmMembership(project: string): Promise<Membership> {
+async function pnpmMembership(project: string, strict: boolean): Promise<Membership> {
   for (let dir = project; ; dir = path.dirname(dir)) {
-    const misnamed = await exists(path.join(dir, 'pnpm-workspace.yml'));
+    const misnamed = await exists(path.join(dir, 'pnpm-workspace.yml'), strict);
     if (misnamed !== false) return { refusal: undetermined() };
-    const source = await readText(path.join(dir, 'pnpm-workspace.yaml'));
+    const source = await readText(path.join(dir, 'pnpm-workspace.yaml'), strict);
     if (source.status === 'unreadable') return { refusal: undetermined() };
     if (source.status === 'read') {
       let document: unknown;
       try {
         document = loadYaml(source.text);
-      } catch {
+      } catch (cause) {
+        if (!(cause instanceof YAMLException)) throw cause;
         return { refusal: undetermined() };
       }
       if (document === null || document === undefined) document = {};
@@ -233,7 +241,8 @@ async function pnpmMembership(project: string): Promise<Membership> {
 export async function resolveMutationTarget(input: ResolveMutationTargetInput): Promise<MutationTargetResolution> {
   try {
     return await resolveOrRefuse(input);
-  } catch {
+  } catch (cause) {
+    if (input.throwOnUnexpectedError || !isFsError(cause)) throw cause;
     // A filesystem error part way through means the answer is unknown, and
     // an unknown answer is an expected refusal, not an internal failure.
     return undetermined();
@@ -241,6 +250,7 @@ export async function resolveMutationTarget(input: ResolveMutationTargetInput): 
 }
 
 async function resolveOrRefuse(input: ResolveMutationTargetInput): Promise<MutationTargetResolution> {
+  const strict = input.throwOnUnexpectedError === true;
   const folder = path.resolve(input.folderPath);
   const projectDir = path.resolve(input.projectDir);
   const lexical = path.relative(folder, projectDir);
@@ -258,7 +268,7 @@ async function resolveOrRefuse(input: ResolveMutationTargetInput): Promise<Mutat
   const project = await canonicalPath(projectDir);
   if (relatePaths(canonicalFolder, project) === 'outside') return refused('PATH_ESCAPES', PATH_ESCAPES_REASON);
 
-  const membership = input.packageManager === 'npm' ? await npmMembership(project) : await pnpmMembership(project);
+  const membership = input.packageManager === 'npm' ? await npmMembership(project, strict) : await pnpmMembership(project, strict);
   if ('refusal' in membership) return membership.refusal;
   const root = membership.root;
   if (relatePaths(canonicalFolder, root) === 'outside') return refused('OUTSIDE_FOLDER', OUTSIDE_FOLDER_REASON);
@@ -267,7 +277,7 @@ async function resolveOrRefuse(input: ResolveMutationTargetInput): Promise<Mutat
   if (input.packageManager === 'pnpm') {
     lockfileName = PNPM_LOCK;
   } else {
-    const shrinkwrap = await exists(path.join(root, SHRINKWRAP));
+    const shrinkwrap = await exists(path.join(root, SHRINKWRAP), strict);
     if (shrinkwrap === 'unreadable') return undetermined();
     lockfileName = shrinkwrap ? SHRINKWRAP : PACKAGE_LOCK;
   }
@@ -278,7 +288,10 @@ async function resolveOrRefuse(input: ResolveMutationTargetInput): Promise<Mutat
     if (stat.isSymbolicLink() || !stat.isFile()) return refused('PATH_ESCAPES', PATH_ESCAPES_REASON);
     lockfileExists = true;
   } catch (cause) {
-    if (!isMissingPathError(cause)) return undetermined();
+    if (!isMissingPathError(cause)) {
+      if (input.throwOnUnexpectedError || !isFsError(cause)) throw cause;
+      return undetermined();
+    }
   }
 
   if (input.packageManager === 'pnpm') {
@@ -286,7 +299,8 @@ async function resolveOrRefuse(input: ResolveMutationTargetInput): Promise<Mutat
       projectDir: project,
       workspaceRoot: root,
       workspaceManifest: membership.workspaceManifest,
-      environment: input.environment ?? defaultMutationTargetEnvironment(),
+      environment: input.environment ?? defaultMutationTargetEnvironment(strict),
+      throwOnUnexpectedError: strict,
     });
     if (override !== null) return refused(override.code, override.reason);
   }

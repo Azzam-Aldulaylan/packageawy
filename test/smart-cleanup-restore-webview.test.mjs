@@ -7,8 +7,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { makeCoordinator, makeProject, review } from './helpers/removal-project.mjs';
+import { manualReinstallNote } from '../out/host/manualReinstallCopy.js';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+import { rollbackFixture } from './helpers/optional-reinstall.mjs';
 
 const require = createRequire(import.meta.url);
 const app = await readFile(join(process.cwd(), 'webview/src/App.tsx'), 'utf8');
@@ -16,6 +20,8 @@ const app = await readFile(join(process.cwd(), 'webview/src/App.tsx'), 'utf8');
 const bundle = await build({
   stdin: {
     contents: [
+      'export { TransitiveFixReview } from "./webview/src/components/TransitiveFixReview.tsx";',
+      'export { RemovalResultPanel } from "./webview/src/components/RemovalProgressPanels.tsx";',
       'export { SmartCleanupWorkspace } from "./webview/src/components/SmartCleanupWorkspace.tsx";',
       'export { createSmartCleanupState, smartCleanupReducer, canCloseSmartCleanup } from "./webview/src/smartCleanupState.ts";',
     ].join('\n'),
@@ -37,7 +43,7 @@ const bundle = await build({
     },
   }],
 });
-const { SmartCleanupWorkspace, createSmartCleanupState, smartCleanupReducer, canCloseSmartCleanup } = await import(
+const { TransitiveFixReview, RemovalResultPanel, SmartCleanupWorkspace, createSmartCleanupState, smartCleanupReducer, canCloseSmartCleanup } = await import(
   `data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=smart-cleanup-restore.fixture.js`).toString('base64')}`
 );
 
@@ -158,4 +164,66 @@ test('the app opens recovery with a host analysis id and never starts the former
   assert.match(app, /vscode\.postMessage\(\{ type: 'restore-smart-cleanup', analysisId \}\)/);
   assert.doesNotMatch(app, /dispatchSmartCleanup\(\{ type: 'restore-started'/);
   assert.match(app, /incoming.status === 'recovery'/);
+});
+
+for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`cleanup rollback guidance matches optional reinstall ${reinstall}`, async t => {
+  const project = await makeProject(t);
+  const f = makeCoordinator(project, { mutationRoot: () => project.root });
+  f.state.installExitCode = 1;
+  f.state.reinstallChoice = reinstall === 'skipped' ? 'Skip' : 'Reinstall';
+  f.state.reinstallExitCode = reinstall === 'failed' ? 1 : 0;
+  await f.coordinator.handleConfirmRemove({ analysisId: await review(f) });
+  const hostResult = f.messages.findLast(message => message.status === 'remove-result')?.result;
+  assert.equal(hostResult?.outcome, 'rolled-back', JSON.stringify(f.messages));
+  assert.deepEqual(f.commands, reinstall === 'skipped' ? ['install'] : ['install', 'ci']);
+  const state = smartCleanupReducer(createSmartCleanupState('fixture'), {
+    type: 'execution-cancelled-and-restored',
+    result: { ...result, rollback: 'restored', detail: hostResult.message },
+  });
+  const html = render(state);
+  if (reinstall === 'succeeded') {
+    assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules and script side effects were not restored/);
+    assert.match(html, /Dependencies were reinstalled using the restored lockfile/);
+  } else {
+    assert.ok(html.includes(manualReinstallNote('npm')), html);
+  }
+});
+
+for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`normal removal panel follows actual reinstall ${reinstall}`, async t => {
+  const project = await makeProject(t);
+  const f = makeCoordinator(project, { mutationRoot: () => project.root });
+  f.state.installExitCode = 1;
+  f.state.reinstallChoice = reinstall === 'skipped' ? 'Skip' : 'Reinstall';
+  f.state.reinstallExitCode = reinstall === 'failed' ? 1 : 0;
+  await f.coordinator.handleAnalyzeBulkRemove({ changes: [{ package: 'react' }] });
+  const analysisId = f.messages.findLast(message => message.status === 'remove-analysis').analysis.analysisId;
+  await f.coordinator.handleConfirmRemove({ analysisId });
+  const hostResult = f.messages.findLast(message => message.status === 'remove-result')?.result;
+  assert.equal(hostResult?.outcome, 'rolled-back', JSON.stringify(f.messages));
+  const html = renderToStaticMarkup(createElement(RemovalResultPanel, {
+    row: { name: 'react', current: '18.2.0', range: '^18.0.0' }, result: hostResult,
+  }));
+  assert.ok(html.includes(hostResult.message), html);
+  if (reinstall === 'succeeded') {
+    assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules were not restored/);
+    assert.match(html, /Dependencies were reinstalled using the restored lockfile/);
+  } else assert.ok(html.includes(manualReinstallNote('npm')), html);
+});
+
+for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`transitive result panel follows actual optional reinstall ${reinstall}`, async t => {
+  const f = await rollbackFixture(t, 'transitive');
+  f.state.reinstallChoice = reinstall === 'skipped' ? 'Skip' : 'Reinstall';
+  f.state.reinstallExitCode = reinstall === 'failed' ? 1 : 0;
+  await f.confirm();
+  const hostResult = f.messages.findLast(message => message.status === 'remediation-apply-result')?.result;
+  assert.equal(hostResult?.outcome, 'rolled-back', JSON.stringify(f.messages));
+  const noop = () => {};
+  const html = renderToStaticMarkup(createElement(TransitiveFixReview, {
+    rootPackage: 'react', subject: 'react', dependencyPath: ['react'], disabled: false,
+    state: { phase: 'result', plan: { rootPackage: 'react' }, result: hostResult },
+    onAnalyze: noop, onReview: noop, onApply: noop, onCancel: noop, onRetry: noop, onOpenAdvisory: noop,
+  }));
+  const note = reinstall === 'succeeded' ? 'Dependencies were reinstalled using the restored lockfile.' : manualReinstallNote('npm');
+  assert.ok(html.includes(note), html);
+  if (reinstall === 'succeeded') assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules were not restored/);
 });

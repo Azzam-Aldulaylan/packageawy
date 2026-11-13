@@ -1,3 +1,4 @@
+import { isExpectedFsError, isFsError } from './expectedFsError.js';
 /**
  * One way to decide whether two dependency file paths are the same file or
  * whether one lies inside a folder. The mutation target resolver, the
@@ -21,14 +22,9 @@ import path from 'node:path';
 
 export type PathRelation = 'same' | 'inside' | 'outside' | 'unresolved';
 
-function errorCode(cause: unknown): unknown {
-  return typeof cause === 'object' && cause !== null && 'code' in cause ? (cause as { code?: unknown }).code : undefined;
-}
-
 /** Missing parts of a path are expected here: the lockfile an install will create does not exist yet. */
 export function isMissingPathError(cause: unknown): boolean {
-  const code = errorCode(cause);
-  return code === 'ENOENT' || code === 'ENOTDIR';
+  return isExpectedFsError(cause, 'missingPath');
 }
 
 /** The native realpath and path rules, or Windows semantics and a fake realpath in a test. */
@@ -85,11 +81,12 @@ function canonicalPathSync(candidate: string): string {
 }
 
 /** Key for the one-change-per-project lock: canonical, then always lowercased. */
-export function lockKey(candidate: string): string {
+export function lockKey(candidate: string, strict = false): string {
   let canonical: string;
   try {
     canonical = canonicalPathSync(candidate);
-  } catch {
+  } catch (cause) {
+    if (!(strict ? isExpectedFsError(cause, 'canonicalize') : isFsError(cause))) throw cause;
     canonical = path.resolve(candidate);
   }
   return canonical.toLowerCase();
@@ -136,11 +133,12 @@ export function relatePaths(parent: string, child: string, pathModule: path.Plat
  * Canonicalizes both paths, then relates them exactly. A path that cannot
  * be canonicalized is `unresolved`, and callers refuse the change.
  */
-export async function authorizedRelation(parent: string, child: string, system: PathSystem = HOST): Promise<PathRelation> {
+export async function authorizedRelation(parent: string, child: string, system: PathSystem = HOST, strict = false): Promise<PathRelation> {
   try {
     const [canonicalParent, canonicalChild] = await Promise.all([canonicalPath(parent, system), canonicalPath(child, system)]);
     return relatePaths(canonicalParent, canonicalChild, system.path);
-  } catch {
+  } catch (cause) {
+    if (!(strict ? isExpectedFsError(cause, 'canonicalize') : isFsError(cause))) throw cause;
     return 'unresolved';
   }
 }

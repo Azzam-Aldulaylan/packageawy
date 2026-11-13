@@ -1,3 +1,4 @@
+import { isExpectedFsError } from './expectedFsError.js';
 /**
  * Host-side coordinator for one dependency-upgrade lifecycle.
  *
@@ -90,7 +91,7 @@ import { requiresSecurityAcknowledgement } from './upgradeSecuritySummary.js';
 import { resolveTrustedAttributedAdvisoryUrl } from '../core/advisories/resolve.js';
 import type { AdvisoryLookupRequest } from '../core/advisories/resolve.js';
 import { PUBLIC_ADVISORY_CHECK_SETTING } from './dashboardController.js';
-import type { DashboardController, MessageSink } from './dashboardController.js';
+import type { BackgroundRefreshOutcome, DashboardController, MessageSink } from './dashboardController.js';
 import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.js';
 import { createNodeUpgradeTransactionFileAdapter } from './nodeUpgradeTransactionFiles.js';
 import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
@@ -126,6 +127,7 @@ import {
 import { createRangePreservingInstall } from './rangePreservingInstall.js';
 import { UpgradeExecutionSession } from './upgradeRunner.js';
 import { RECOVERY_MESSAGES } from './recoveryCopy.js';
+import { manualReinstallNote, reinstallResultNote } from './manualReinstallCopy.js';
 import { RecoveryCoordinator } from './recovery/coordinator.js';
 import type { RecoveryTarget } from './recovery/model.js';
 import { OperationReservation, SourceGenerationGuard } from './operationReservation.js';
@@ -230,14 +232,16 @@ export interface UpgradeAssistantCoordinatorOptions {
   sink: MessageSink;
   httpClient: HttpClient;
   etagStore: EtagStore;
-  ensureController(): Promise<DashboardController | undefined>;
+  ensureController(strict?: boolean): Promise<DashboardController | undefined>;
   getSelectedProject(): DiscoveredProject | undefined;
   getSmartCleanupDeprecationEvidence?(): {
     deprecatedPackages: readonly string[];
     installedVersions: Readonly<Record<string, string>>;
   } | undefined;
   isDisposed(): boolean;
-  reloadFinalState(): Promise<void>;
+  reloadFinalState(): Promise<BackgroundRefreshOutcome>;
+  /** A completed writer stays settled even when presentation evidence cannot be refreshed. */
+  invalidateSnapshot?(): void;
   /** Reloads and captures the exact post-transaction evidence used only by Smart Cleanup completion reporting. */
   reloadSmartCleanupFinalState?(): Promise<SmartCleanupFinalRefreshEvidence | undefined>;
   /** Reads and applies post-mutation package.json/lockfile state without waiting for registry/audit enrichment. */
@@ -282,7 +286,7 @@ export interface UpgradeAssistantCoordinatorOptions {
   /** Test seam. Production shares one process-wide lock registry. */
   mutationLocks?: ProjectMutationLocks;
   /** Test seam. Production always uses the host-owned project loader. */
-  loadProject?: (candidate: DiscoveredProject) => Promise<ResolvedProject>;
+  loadProject?: (candidate: DiscoveredProject, strict?: boolean) => Promise<ResolvedProject>;
   /** Test seam. Production always uses the platform's cancellable progress. See defaultWithCompatibilityProgress. */
   withCompatibilityProgress?: <T>(title: string, run: (signal: AbortSignal) => Promise<T>) => Promise<T>;
   /** Test seam. Production always reads the real `packageawy` upgrade configuration (see defaultGetUpgradeConfiguration). */
@@ -654,7 +658,7 @@ export class UpgradeAssistantCoordinator {
   private readonly reservation: OperationReservation;
   /** Advanced synchronously by host watcher/HEAD notifications. */
   private readonly sourceGeneration = new SourceGenerationGuard();
-  private readonly projectLoader: (candidate: DiscoveredProject) => Promise<ResolvedProject>;
+  private readonly projectLoader: (candidate: DiscoveredProject, strict?: boolean) => Promise<ResolvedProject>;
   private readonly withCompatibilityProgress: <T>(title: string, run: (signal: AbortSignal) => Promise<T>) => Promise<T>;
   private readonly getUpgradeConfiguration: () => { ignoreScripts: boolean; verificationScripts: unknown[] };
   private analysis: StoredAnalysis | undefined;
@@ -700,7 +704,13 @@ export class UpgradeAssistantCoordinator {
         if (message.status === 'dependency-task' && message.state !== 'idle') this.observeSharedTask();
         options.sink.postMessage(message);
       },
-      removed: () => options.reloadFinalState(),
+      removed: async () => { await this.refreshAfterCompletion(() => options.reloadFinalState()); },
+      restored: async journal => {
+        const { offerFrozenReconciliation } = await import('./frozenReconciliation.js');
+        this.session.observeTaskState(state => this.recovery.reportTaskState(state));
+        try { return await offerFrozenReconciliation(journal, options.platform, this.session); }
+        finally { this.session.observeTaskState(state => this.reportDependencyTask(state)); }
+      },
     });
     this.reservation = new OperationReservation({
       locks: this.mutationLocks,
@@ -713,7 +723,7 @@ export class UpgradeAssistantCoordinator {
       log: (line) => options.platform.log?.(line),
       onUnknown: (handle) => this.showUnknown(handle),
     });
-    this.projectLoader = options.loadProject ?? ((candidate) => loadProject(options.platform, candidate));
+    this.projectLoader = options.loadProject ?? ((candidate, strict = false) => loadProject(options.platform, candidate, undefined, undefined, strict));
     this.withCompatibilityProgress = options.withCompatibilityProgress ??
       ((title, run) => defaultWithCompatibilityProgress(options.platform, title, run));
     this.getUpgradeConfiguration = options.getUpgradeConfiguration ??
@@ -740,7 +750,7 @@ export class UpgradeAssistantCoordinator {
     // A status update to a closed or broken view must not interrupt its writer.
     try {
       const handle = this.reservation.held;
-      const key = handle?.journal === undefined ? this.currentMutationRootKey() : canonicalProjectRoot(handle.journal.storage.target.root);
+      const key = handle?.journal === undefined ? this.currentMutationRootKey() : canonicalProjectRoot(handle.journal.storage.target.root, true);
       if (handle !== undefined && key !== undefined) this.mutationLocks.reportTaskState(key, handle, state);
       this.options.sink.postMessage({ status: 'dependency-task', state });
     } catch (error) { this.onBackgroundError('webview-message', false)(error); }
@@ -788,17 +798,19 @@ export class UpgradeAssistantCoordinator {
       if (recovered !== undefined) return recovered;
       if (root === selected.folder.path || path.dirname(root) === root) break;
     }
-    const resolution = source?.mutationTarget ?? await resolveMutationTarget({ projectDir, folderPath: selected.folder.path, packageManager: source?.packageManager ?? 'npm' });
+    const resolution = source?.mutationTarget ?? await resolveMutationTarget({ projectDir, folderPath: selected.folder.path, packageManager: source?.packageManager ?? 'npm', throwOnUnexpectedError: true });
     if (!resolution.ok) return undefined;
     return { workspaceRoot: selected.folder.path, root: resolution.target.root, identity: resolution.identity,
       allowlistedPaths: [path.join(projectDir, 'package.json'), resolution.target.lockfilePath], operation: 'upgrade', hostKind: this.options.platform.hostKind ?? 'vscode' };
   }
 
-  private currentMutationRootKey(): string | undefined {
+  private currentMutationRootKey(strict = false): string | undefined {
     // Always the resolved target's root. A project without one cannot start
     // a change, so it holds no lock.
     const root = this.options.mutationRoot?.();
     if (root === undefined) return undefined;
+    // Confirmation must probe again even when a review populated the cache.
+    if (strict) return canonicalProjectRoot(root, true);
     if (this.canonicalRootCache?.root !== root) {
       this.canonicalRootCache = { root, key: canonicalProjectRoot(root) };
     }
@@ -890,13 +902,22 @@ export class UpgradeAssistantCoordinator {
     try { await run(); } finally { done(); }
   }
 
-  private reserve(packageName: string): OwnerHandle | ReservationRefusal {
+  private reserve(packageName: string, strict = false): OwnerHandle | ReservationRefusal {
     // Any new analysis or dependency change supersedes a kept cleanup's restore point.
     // The shared project lock is taken with the reservation, keyed by the
     // resolved target's lock key, and held by the returned handle until that
     // handle ends it, after install, verification, and rollback.
     this.session.observeTaskState(state => this.reportDependencyTask(state));
-    return this.reservation.reserve(packageName, this.currentMutationRootKey());
+    return this.reservation.reserve(packageName, this.currentMutationRootKey(strict), strict);
+  }
+
+  private reserveMutation(packageName: string, status: 'upgrade-error' | 'remove-error' | 'remediation-error'): OwnerHandle | ReservationRefusal | undefined {
+    try { return this.reserve(packageName, true); }
+    catch (cause) {
+      this.logChangeFailure(cause);
+      if (!this.options.isDisposed()) this.options.sink.postMessage({ status, package: packageName, error: toProtocolError(cause) });
+      return undefined;
+    }
   }
 
   async handleRestoreSmartCleanup(_message: { analysisId: string }): Promise<void> {
@@ -916,11 +937,15 @@ export class UpgradeAssistantCoordinator {
     identity: string
   ): () => Promise<string | null> {
     return async () => {
-      const reloaded = await this.projectLoader(selected).catch(() => undefined);
+      const reloaded = await this.projectLoader(selected, true).catch((cause: unknown) => {
+        if (!isExpectedFsError(cause, 'read')) throw cause;
+        return undefined;
+      });
       const resolution = reloaded?.mutationTarget ?? await resolveMutationTarget({
         projectDir: selected.dir === '' ? selected.folder.path : path.join(selected.folder.path, selected.dir),
         folderPath: selected.folder.path,
         packageManager,
+        throwOnUnexpectedError: true,
       });
       return resolution.identity === identity ? null : RESTORE_TARGET_MOVED_MESSAGE;
     };
@@ -929,6 +954,25 @@ export class UpgradeAssistantCoordinator {
   private logChangeFailure(cause: unknown): void {
     try { this.options.platform.log?.(runtimeFailureLine('webview-message', cause)); }
     catch { /* Diagnostics must not interrupt handle settlement. */ }
+  }
+
+  /** Only post-completion presentation work belongs here, never journal or owner settlement. */
+  private async refreshAfterCompletion<T>(refresh: () => Promise<T>): Promise<T | undefined> {
+    try {
+      const result = await refresh();
+      // Disk reloads also return ordinary failures, cancellation and
+      // supersession. Missing final evidence is unsuccessful too.
+      if (result !== undefined &&
+          !(typeof result === 'object' && result !== null && 'status' in result && result.status !== 'succeeded')) {
+        return result;
+      }
+    }
+    catch (cause) {
+      this.logChangeFailure(cause);
+    }
+    try { this.options.invalidateSnapshot?.(); }
+    catch (reportingError) { this.logChangeFailure(reportingError); }
+    return undefined;
   }
 
   /** Settle only the owning change; unrelated refresh failures never call this. */
@@ -946,6 +990,21 @@ export class UpgradeAssistantCoordinator {
     } finally {
       // Recovery delivery is attempted even when the request's view failed.
       await this.recovery.inspect();
+    }
+  }
+
+  /** Reinstall stays inside the owner boundary and settles before any terminal result is posted. */
+  private async reconcileRollback(handle: OwnerHandle, completion: TransactionCompletion): Promise<{ completion: TransactionCompletion; reinstall?: 'skipped' | 'succeeded' | 'failed' }> {
+    if (completion !== 'rolled-back' || handle.journal === undefined || this.options.isDisposed()) return { completion };
+    const { offerFrozenReconciliation } = await import('./frozenReconciliation.js');
+    try {
+      const reconciled = await offerFrozenReconciliation(handle.journal, this.options.platform, this.session);
+      if (reconciled === 'unknown') { await handle.fail('The reinstall result was not observed.'); return { completion: 'unknown' }; }
+      // A known optional task failure does not change the completed file restore.
+      return { completion, reinstall: reconciled };
+    } catch {
+      await handle.fail('The reinstall could not be settled.');
+      return { completion: 'unknown' };
     }
   }
 
@@ -2772,7 +2831,8 @@ export class UpgradeAssistantCoordinator {
       });
       return;
     }
-    const handle = this.reserve(stored.packageName);
+    const handle = this.reserveMutation(stored.packageName, 'remediation-error');
+    if (handle === undefined) return;
     if (!handle.ok) {
       this.options.sink.postMessage({
         status: 'remediation-error',
@@ -2793,7 +2853,7 @@ export class UpgradeAssistantCoordinator {
       if (selected === undefined) {
         throw Object.assign(new Error('No project is selected.'), { name: 'NO_PROJECT' });
       }
-      const disk = await this.projectLoader(selected);
+      const disk = await this.projectLoader(selected, true);
       // Resolved again right before writing: a refusal that appeared since
       // the review is reported as itself, not as a stale review.
       const diskTarget = requireMutationTarget(disk);
@@ -2816,9 +2876,9 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
-      const currentNpm = resolveNpmInvocation(createNodeNpmResolverDeps(disk.root));
+      const currentNpm = resolveNpmInvocation(createNodeNpmResolverDeps(disk.root, true));
       const currentInvocation = disk.packageManager === 'pnpm'
-        ? resolveInstalledPnpmInvocation(currentNpm.ok ? currentNpm.invocation : null, disk.root)
+        ? resolveInstalledPnpmInvocation(currentNpm.ok ? currentNpm.invocation : null, disk.root, true)
         : currentNpm.ok ? { version: currentNpm.invocation.version } : null;
       if (
         currentInvocation === null ||
@@ -2955,7 +3015,7 @@ export class UpgradeAssistantCoordinator {
             });
             const checks: Array<{ id: string; status: 'passed' | 'failed' | 'cancelled'; message?: string }> = [];
             try {
-              const applied = await this.projectLoader(selected);
+              const applied = await this.projectLoader(selected, true);
               if (
                 applied.manifestText !== stored.snapshot.manifestText ||
                 applied.lockfileText === null ||
@@ -3071,7 +3131,7 @@ export class UpgradeAssistantCoordinator {
             if (securityVerificationFailed || this.options.isDisposed()) return 'rollback';
             const choice = await this.options.platform.showModalWarning(
               'The transitive fix installed, but project verification failed.',
-              'Rollback restores package.json and the active lockfile. Keep changes only if you have reviewed the failed checks.',
+              'Packageawy restores your dependency files and stops if it sees they changed. Keep changes only if you have reviewed the failed checks.',
               ['Rollback', 'Keep Changes']
             );
             return choice === 'Keep Changes' ? 'keep' : 'rollback';
@@ -3079,6 +3139,8 @@ export class UpgradeAssistantCoordinator {
         },
         signal: abort.signal,
       });
+      const reconciliation = await this.reconcileRollback(handle, transaction.completion);
+      transaction.completion = reconciliation.completion;
       completion = transaction.completion;
       if (completion === 'unknown') return;
 
@@ -3107,48 +3169,7 @@ export class UpgradeAssistantCoordinator {
         return;
       }
 
-      // Restoring package.json/lockfile bytes is not enough after a package
-      // manager has touched node_modules. Reconcile the installed tree back
-      // to the restored lockfile before claiming rollback completed.
-      let rollbackReconciliationFailed = false;
-      if (
-        transaction.completion === 'rolled-back' &&
-        transaction.rollback.status === 'succeeded' &&
-        transaction.install.status !== 'not-run'
-      ) {
-        this.options.sink.postMessage({
-          status: 'remediation-applying',
-          package: stored.packageName,
-          analysisId: stored.id,
-          phase: 'rolling-back',
-        });
-        // The reinstall writes the lockfile again, so the target is resolved
-        // once more first, as for the restore just before it.
-        const targetMoved = await beforeRestore();
-        const restore = targetMoved !== null
-          ? { ok: false as const }
-          : this.session.prepareLockfileReconciliation({
-              cwd: disk.root,
-              ignoreScripts: stored.ignoreScripts,
-              packageManager: disk.packageManager,
-            });
-        if (!restore.ok) {
-          rollbackReconciliationFailed = true;
-        } else {
-          const restored = await restore.execute();
-          if (!restored.ok && restored.status === 'unknown') { completion = 'unknown'; return; }
-          rollbackReconciliationFailed = !restored.ok;
-        }
-      }
-
-      const rollback: TransitiveRemediationApplyResult['rollback'] =
-        rollbackReconciliationFailed
-          ? 'failed'
-          : transaction.rollback.status === 'not-needed'
-          ? 'not-needed'
-          : transaction.rollback.status === 'succeeded'
-            ? 'succeeded'
-            : transaction.rollback.status;
+      const rollback: TransitiveRemediationApplyResult['rollback'] = transaction.rollback.status;
       const verification: TransitiveRemediationApplyResult['verification'] =
         transaction.verification.status === 'passed'
           ? 'passed'
@@ -3158,9 +3179,7 @@ export class UpgradeAssistantCoordinator {
               ? 'not-configured'
               : 'not-run';
       const outcome: TransitiveRemediationApplyResult['outcome'] =
-        rollbackReconciliationFailed
-          ? 'recovery-required'
-          : transaction.completion === 'rolled-back'
+        transaction.completion === 'rolled-back'
           ? transaction.reason === 'cancelled' ? 'cancelled' : 'rolled-back'
           : transaction.completion === 'incomplete'
             ? 'recovery-required'
@@ -3186,7 +3205,7 @@ export class UpgradeAssistantCoordinator {
                 : outcome === 'cancelled'
                   ? 'The transitive fix was cancelled and any staged dependency-file changes were restored.'
                   : outcome === 'recovery-required'
-                    ? 'The operation could not restore every dependency file automatically. Review the project before continuing.'
+                    ? `Restore is incomplete. Saved and displaced files are kept. Check ${transaction.rollback.status === 'not-needed' ? 'the dependency files' : transaction.rollback.files.filter(file => file.status !== 'restored').map(file => file.path.split(/[\\/]/).at(-1)).join(', ') || 'the dependency files'}. ${manualReinstallNote(disk.packageManager)}`
                     : finalPlan?.automaticApplyAllowed === true && transaction.verification.status === 'failed'
                       ? 'The security outcome was verified, but project verification failed and the changes were kept.'
                       : 'The dependency change finished, but the reviewed security outcome could not be verified.',
@@ -3205,6 +3224,9 @@ export class UpgradeAssistantCoordinator {
           ? []
           : transaction.completion === 'kept' ? resultEvidence.introducedAdvisories : [],
       };
+      if (transaction.completion === 'rolled-back') {
+        result.message += ` ${reinstallResultNote(disk.packageManager, reconciliation.reinstall)}`;
+      }
       this.options.sink.postMessage({
         status: 'remediation-apply-result',
         package: stored.packageName,
@@ -3212,18 +3234,21 @@ export class UpgradeAssistantCoordinator {
         result,
       });
 
-      if (this.options.readAndApplyMutationLocalState !== undefined) {
-        const local = await this.options.readAndApplyMutationLocalState();
-        if (local !== undefined && this.options.refreshMutationEnrichmentInBackground !== undefined) {
-          this.options.refreshMutationEnrichmentInBackground(
-            randomBytes(16).toString('hex'),
-            stored.packageName,
-            local.structurallyCurrent
-          );
+      await this.refreshAfterCompletion(async () => {
+        if (this.options.readAndApplyMutationLocalState !== undefined) {
+          const local = await this.options.readAndApplyMutationLocalState();
+          if (local !== undefined && this.options.refreshMutationEnrichmentInBackground !== undefined) {
+            this.options.refreshMutationEnrichmentInBackground(
+              randomBytes(16).toString('hex'),
+              stored.packageName,
+              local.structurallyCurrent
+            );
+          }
+          return local;
+        } else if (!this.options.isDisposed()) {
+          return this.options.reloadFinalState();
         }
-      } else if (!this.options.isDisposed()) {
-        await this.options.reloadFinalState();
-      }
+      });
     } catch (cause) {
       this.logChangeFailure(cause);
       if (await handle.fail('An internal error interrupted the dependency change.')) return;
@@ -3287,7 +3312,8 @@ export class UpgradeAssistantCoordinator {
       });
       return;
     }
-    const handle = this.reserve(stored.eligibility.packageName);
+    const handle = this.reserveMutation(stored.eligibility.packageName, 'upgrade-error');
+    if (handle === undefined) return;
     if (!handle.ok) {
       this.options.sink.postMessage({
         status: 'upgrade-error',
@@ -3313,7 +3339,7 @@ export class UpgradeAssistantCoordinator {
     let completion: TransactionCompletion = 'not-started';
     try {
       // Inside the try, so a rejected lookup still ends the reservation.
-      const controller = await this.options.ensureController();
+      const controller = await this.options.ensureController(true);
       if (controller === undefined) return;
       const selected = this.options.getSelectedProject();
       if (selected === undefined) return;
@@ -3321,7 +3347,7 @@ export class UpgradeAssistantCoordinator {
       // A modal can remain open while project/config files change. Re-read
       // and repeat the host-owned eligibility check immediately before the
       // snapshot. The stored analysis is never execution authority.
-      const disk = await this.projectLoader(selected);
+      const disk = await this.projectLoader(selected, true);
       // The target is resolved again right before writing. A refusal that
       // appeared since the review is reported as itself.
       const diskTarget = requireMutationTarget(disk);
@@ -3341,7 +3367,10 @@ export class UpgradeAssistantCoordinator {
             dir: selected.dir,
             manifestText: disk.manifestText,
             packageName: stored.eligibility.packageName,
-          }).catch(() => null)
+          }).catch((cause: unknown) => {
+            if (!isExpectedFsError(cause, 'read')) throw cause;
+            return null;
+          })
         : null;
       const projectEvidenceStillMatches = projectCompatibilityEvidenceIsCurrent(
         stored.projectCompatibilityEvidenceFingerprint,
@@ -3491,8 +3520,7 @@ export class UpgradeAssistantCoordinator {
                   if (this.options.isDisposed()) return 'rollback' as const;
                   const choice = await this.options.platform.showModalWarning(
                     'The dependency installed, but post-upgrade verification failed.',
-                    'Rollback restores only package.json and the active lockfile captured by this upgrade transaction; ' +
-                      'it does not restore node_modules or files changed by lifecycle/verification scripts.',
+                    'Packageawy restores your dependency files and stops if it sees they changed. You can then choose a frozen reinstall of node_modules.',
                     ['Rollback', 'Keep Changes']
                   );
                   return choice === 'Keep Changes' ? ('keep' as const) : ('rollback' as const);
@@ -3500,6 +3528,8 @@ export class UpgradeAssistantCoordinator {
               },
             }),
       });
+      const reconciliation = await this.reconcileRollback(handle, transaction.completion);
+      transaction.completion = reconciliation.completion;
       completion = transaction.completion;
       if (completion === 'unknown') return;
 
@@ -3517,9 +3547,9 @@ export class UpgradeAssistantCoordinator {
         })),
       };
       if (this.options.readAndApplyMutationLocalState === undefined) {
-        finalProject = await this.projectLoader(selected);
+        finalProject = await this.refreshAfterCompletion(() => this.projectLoader(selected, true));
       } else {
-        const localRead = await this.options.readAndApplyMutationLocalState();
+        const localRead = await this.refreshAfterCompletion(() => this.options.readAndApplyMutationLocalState!());
         finalProject = localRead?.project;
         structurallyCurrent = localRead?.structurallyCurrent === true;
       }
@@ -3557,22 +3587,25 @@ export class UpgradeAssistantCoordinator {
             verification,
             changes: appliedState.changes,
             refreshingDerivedData: usedTargetedRefresh,
+            ...(application === 'rolled-back' ? { rollbackMessage: reinstallResultNote(source.packageManager, reconciliation.reinstall) } : {}),
           },
         });
       }
 
-      if (usedTargetedRefresh) {
-        this.options.refreshMutationEnrichmentInBackground?.(
-          refreshId,
-          stored.eligibility.packageName,
-          structurallyCurrent
-        );
-      } else if (!this.options.isDisposed()) {
-        // Compatibility fallback for embedders/tests that have not supplied
-        // the targeted-refresh hooks. The result above is still surfaced
-        // before this potentially expensive scan.
-        await this.options.reloadFinalState();
-      }
+      await this.refreshAfterCompletion(async () => {
+        if (usedTargetedRefresh) {
+          this.options.refreshMutationEnrichmentInBackground?.(
+            refreshId,
+            stored.eligibility.packageName,
+            structurallyCurrent
+          );
+          return { status: 'succeeded' as const };
+        } else if (!this.options.isDisposed() && finalProject !== undefined) {
+          // Do not retry a failed evidence read within the same completion.
+          // Compatibility fallback for embedders without targeted-refresh hooks.
+          return this.options.reloadFinalState();
+        }
+      });
       if (this.options.isDisposed()) return;
 
       const presentation = describeUpgradeTransactionOutcome(
@@ -3581,6 +3614,9 @@ export class UpgradeAssistantCoordinator {
         transaction,
         structurallyCurrent && appliedState.confirmed
       );
+      if (presentation.kind === 'rolled-back') {
+        presentation.message += ` ${reinstallResultNote(source.packageManager, reconciliation.reinstall)}`;
+      }
       if (
         presentation.kind === 'verified' ||
         (presentation.kind === 'unverified' && transaction.verification.status === 'not-run')
@@ -3637,7 +3673,8 @@ export class UpgradeAssistantCoordinator {
       if (stored !== undefined && now >= stored.expiresAt) this.removal = undefined;
       return;
     }
-    const handle = this.reserve(stored.reservationKey);
+    const handle = this.reserveMutation(stored.reservationKey, 'remove-error');
+    if (handle === undefined) return;
     if (!handle.ok) {
       this.options.sink.postMessage({
         status: 'remove-error',
@@ -3657,12 +3694,12 @@ export class UpgradeAssistantCoordinator {
     let completion: TransactionCompletion = 'not-started';
     try {
       // Inside the try, so a rejected lookup still ends the reservation.
-      const controller = await this.options.ensureController();
+      const controller = await this.options.ensureController(true);
       if (controller === undefined) return;
       const selected = this.options.getSelectedProject();
       if (selected === undefined) return;
 
-      const disk = await this.projectLoader(selected);
+      const disk = await this.projectLoader(selected, true);
       // The target is resolved again right before writing. A refusal that
       // appeared since the review is reported as itself.
       const diskTarget = requireMutationTarget(disk);
@@ -3882,14 +3919,15 @@ export class UpgradeAssistantCoordinator {
             if (this.options.isDisposed()) return 'rollback' as const;
             const choice = await this.options.platform.showModalWarning(
               'Cleanup was applied, but a configured verification check failed.',
-              'Rollback restores only package.json and the active lockfile captured by this cleanup transaction; ' +
-                'it does not restore node_modules or files changed by lifecycle/verification scripts.',
+              'Packageawy restores your dependency files and stops if it sees they changed. You can then choose a frozen reinstall of node_modules.',
               ['Rollback', 'Keep Changes']
             );
             return choice === 'Keep Changes' ? ('keep' as const) : ('rollback' as const);
           },
         },
       });
+      const reconciliation = await this.reconcileRollback(handle, transaction.completion);
+      transaction.completion = reconciliation.completion;
       completion = transaction.completion;
       if (completion === 'unknown') return;
 
@@ -3900,13 +3938,13 @@ export class UpgradeAssistantCoordinator {
       // Smart Cleanup also performs one bounded final reread so its report is
       // correlated to the exact source that produced the refreshed snapshot.
       const finalEvidence = !this.options.isDisposed() && stored.smartCleanupRequestId !== undefined
-        ? await this.options.reloadSmartCleanupFinalState?.()
+        ? await this.refreshAfterCompletion(async () => this.options.reloadSmartCleanupFinalState?.())
         : undefined;
       if (
         !this.options.isDisposed() &&
         (stored.smartCleanupRequestId === undefined || this.options.reloadSmartCleanupFinalState === undefined)
       ) {
-        await this.options.reloadFinalState();
+        await this.refreshAfterCompletion(() => this.options.reloadFinalState());
       }
       if (this.options.isDisposed()) return;
 
@@ -3915,6 +3953,9 @@ export class UpgradeAssistantCoordinator {
         source.packageManager,
         transaction
       );
+      if (presentation.kind === 'rolled-back') {
+        presentation.message += ` ${reinstallResultNote(source.packageManager, reconciliation.reinstall)}`;
+      }
       const removedPackages = stored.eligibilities.map((item) => item.packageName);
       // With no build or test scripts, only the dependency-file structure
       // check ran. That is not project verification, so it is not reported
@@ -3945,7 +3986,7 @@ export class UpgradeAssistantCoordinator {
                 completedActionIds: [],
                 skippedActionIds: [],
                 failedActionIds: removedPackages.map((packageName) => `remove-direct:${packageName}`),
-                reason: 'Fresh correlated dashboard evidence was unavailable after cleanup.',
+                reason: 'Cleanup evidence is unavailable because the final dashboard refresh could not be confirmed.',
               }
             : (() => {
                 const refreshId = randomBytes(12).toString('hex');
