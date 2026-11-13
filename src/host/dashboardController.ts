@@ -202,6 +202,12 @@ interface StartupTask {
   outcome?: BackgroundRefreshOutcome | undefined;
 }
 
+interface ScanSource {
+  cacheKey: string;
+  sourceFingerprint: ProjectSourceFingerprint;
+  projectFacts: Pick<ScanSnapshot, 'packageManager' | 'lockfileMissing'>;
+}
+
 export class DashboardController {
   private options: DashboardControllerOptions;
   private lastResult: ScanSnapshot | undefined;
@@ -707,13 +713,23 @@ export class DashboardController {
     this.lastGeneratedAt = cached.generatedAt;
   }
 
-  private persistSnapshot(snapshot: ScanSnapshot, generatedAt: string, performance: PerformanceRecorder): void {
+  private persistSnapshot(snapshot: ScanSnapshot, generatedAt: string, source: ScanSource, performance: PerformanceRecorder): void {
+    const currentFacts = this.projectFacts();
+    // Skip changed sources so an older scan cannot replace a valid cache entry
+    // or make its rows authoritative for files it never scanned.
+    if (
+      source.cacheKey !== this.options.cacheKey ||
+      !sourceFingerprintsMatch(source.sourceFingerprint, this.currentSourceFingerprint()) ||
+      source.projectFacts.packageManager !== currentFacts.packageManager ||
+      source.projectFacts.lockfileMissing !== currentFacts.lockfileMissing
+    ) return;
+
     const endWrite = performance.start('cache write');
-    this.options.projectCacheStore.set(this.options.cacheKey, {
+    this.options.projectCacheStore.set(source.cacheKey, {
       ...snapshot,
       generatedAt,
-      lockfilePath: this.options.lockfilePath,
-      sourceFingerprint: this.currentSourceFingerprint(),
+      lockfilePath: source.sourceFingerprint.lockfilePath,
+      sourceFingerprint: source.sourceFingerprint,
     });
     endWrite({ rows: snapshot.rows.length });
   }
@@ -996,7 +1012,11 @@ export class DashboardController {
     // `announceRevalidating`'s doc.
     if (effectiveReason === 'structural') this.announceRevalidating(sink);
 
-    const scanSourceFingerprint = this.currentSourceFingerprint();
+    const scanSource: ScanSource = {
+      cacheKey: this.options.cacheKey,
+      sourceFingerprint: this.currentSourceFingerprint(),
+      projectFacts: this.projectFacts(),
+    };
     const buildOptions: BuildPackageRowsOptions = {
       root: this.options.root,
       manifestText: this.options.manifestText,
@@ -1045,11 +1065,11 @@ export class DashboardController {
       }
 
       const generatedAt = new Date().toISOString();
-      const snapshot = toScanSnapshot({ ...result, ...this.projectFacts() });
+      const snapshot = toScanSnapshot({ ...result, ...scanSource.projectFacts });
       this.lastResult = snapshot;
-      this.lastResultSourceFingerprint = scanSourceFingerprint;
+      this.lastResultSourceFingerprint = scanSource.sourceFingerprint;
       this.lastGeneratedAt = generatedAt;
-      this.persistSnapshot(snapshot, generatedAt, performance);
+      this.persistSnapshot(snapshot, generatedAt, scanSource, performance);
       // Only a scan whose source didn't change out from under it restores
       // Upgrade eligibility: if `beginRevalidation()` was called again
       // (`revalidationGeneration` has moved) since this run started, the

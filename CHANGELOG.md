@@ -11,6 +11,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Fixed
 
+- Changing package.json or the lockfile while a scan is running no longer lets the dashboard reuse the older results as if they were current.
 - In a workspace where the lockfile sits above the opened folder, changes are now turned off with the reason shown, instead of rewriting a file Packageawy could not restore.
 - Vulnerability checks for update versions keep working after an internal error, instead of stopping until the dashboard is refreshed.
 - An internal error in Packageawy no longer fails silently. The dashboard stays open and shows one message with a Show Log button. Upgrades, removals and fixes are paused until you close and reopen the Packageawy panel (Restart in JetBrains IDEs), and a change that was already running is allowed to finish. Refresh and reviews keep working.
