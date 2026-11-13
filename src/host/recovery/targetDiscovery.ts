@@ -9,13 +9,15 @@ import { Storage, code } from './storage.js';
 
 /** A journal is discoverable even when an interrupted restore moved package.json aside. */
 export async function targetFromRecoveryFolder(folder: WorkspaceFolder, root: string, platform: HostPlatform): Promise<RecoveryTarget | undefined> {
+  // Absence needs no canonical walk. Present journals still undergo every
+  // path and ownership check before their metadata can authorize recovery.
+  try { await lstat(path.join(root, RECOVERY_FOLDER)); }
+  catch (error) { if (isMissingPathError(error)) return undefined; throw error; }
   const canonicalFolder = await canonicalPath(folder.path);
   if (relatePaths(canonicalFolder, await canonicalPath(root)) === 'outside') return undefined;
   const provisional: RecoveryTarget = { workspaceRoot: folder.path, root, identity: '', allowlistedPaths: [path.join(root, 'package.json')], operation: 'upgrade', hostKind: platform.hostKind ?? 'vscode' };
   const storage = new Storage(provisional);
   await storage.initialize();
-  try { await lstat(storage.folder); }
-  catch (error) { if (isMissingPathError(error)) return undefined; throw error; }
   const owner = await storage.json('owner.json');
   let packageManager: 'npm' | 'pnpm' = 'npm';
   let importer = '.';

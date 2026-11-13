@@ -5,7 +5,7 @@ import {
   type Journal, type Owner, type RecoveryTarget,
 } from './model.js';
 import { RecoveryJournal, folderExists } from './journal.js';
-import { Storage, type StorageHooks } from './storage.js';
+import { Storage, code, type StorageHooks } from './storage.js';
 import { uninitializedEntries, validateRemovalInventory } from './removal.js';
 
 function preview(bytes: Uint8Array): string {
@@ -20,9 +20,12 @@ export interface Inspection {
 }
 export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHooks = {}): Promise<Inspection> {
   const storage = new Storage(target, hooks);
-  await storage.initialize();
   const view: RecoveryPresentation = { state: 'none', message: '', claim: null, files: [], canDismiss: false, canApply: false };
   const result: Inspection = { storage, view };
+  // With no journal, avoid component checks and adapter setup entirely.
+  try { await storage.fs.lstat(storage.folder); }
+  catch (error) { if (code(error) === 'ENOENT') return result; throw error; }
+  await storage.initialize();
   if (!await folderExists(storage)) return result;
   view.state = 'blocked'; view.message = RECOVERY_MESSAGES.blocked;
   if (await storage.exists('takeover')) { view.state = 'takeover'; view.message = RECOVERY_MESSAGES.interruptedTakeover; return result; }

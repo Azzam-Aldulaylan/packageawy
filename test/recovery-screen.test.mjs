@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { isWebviewToHostMessage } from '../out/host/webviewProtocol.js';
+import { isHostToWebviewMessage, isWebviewToHostMessage } from '../out/host/webviewProtocol.js';
 const require = createRequire(import.meta.url);
 const hooks = { slots: [], cursor: 0, deps: [], effects: [] };
 globalThis.__recoveryHooks = hooks;
@@ -85,4 +85,18 @@ test('reopening only shows progress, closing is separate, and incomplete dismiss
   button(tree, 'Close').props.onClick();
   assert.equal(next.closed(), 1); assert.deepEqual(next.sent, []);
   assert.match(renderToStaticMarkup(tree), /Closing this screen keeps saved files and the lock/);
+});
+
+test('discovery failure offers a read-only retry without stopped confirmation or recovery actions', () => {
+  const f = fixture('discovery-error');
+  f.props.recovery.files = [];
+  f.props.recovery.message = 'Could not check for saved recovery files. Retry discovery or use Refresh.';
+  assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: f.props.recovery }), true);
+  const tree = f.render();
+  assert.match(renderToStaticMarkup(tree), /Retry discovery or use Refresh/);
+  assert.equal(button(tree, 'Start recovery'), undefined);
+  assert.equal(input(tree, 'checkbox').length, 0);
+  button(tree, 'Retry discovery').props.onClick();
+  assert.deepEqual(f.sent, [{ type: 'inspect-recovery' }]);
+  assert.equal(button(f.render(), 'Retry discovery').props.disabled, true);
 });

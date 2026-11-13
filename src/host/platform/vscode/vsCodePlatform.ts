@@ -60,6 +60,8 @@ class TaskRun {
   private readonly early = new Map<vscode.TaskExecution, { exitCode: number | undefined }>();
   private exit: { exitCode: number | undefined } | undefined;
   private disposed = false;
+  private resolveTeardown: () => void = () => undefined;
+  readonly teardown = new Promise<void>((resolve) => { this.resolveTeardown = resolve; });
   private readonly listeners = new Set<(exitCode: number | undefined) => void>();
   private readonly replays = new Map<ReturnType<typeof setTimeout>, (exitCode: number | undefined) => void>();
 
@@ -75,7 +77,11 @@ class TaskRun {
   }
 
   started(execution: vscode.TaskExecution): void {
-    if (this.disposed) return;
+    if (this.disposed) {
+      // A late launch must not keep mutating after observation was lost.
+      try { execution.terminate(); } catch { /* Teardown still settles if the task already ended. */ }
+      return;
+    }
     this.execution = execution;
     const early = this.early.get(execution);
     this.early.clear();
@@ -119,6 +125,7 @@ class TaskRun {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.resolveTeardown();
     this.stopObserving();
     for (const [handle, listener] of this.replays) {
       clearTimeout(handle);
@@ -152,6 +159,7 @@ export class VsCodePlatform implements HostPlatform {
   private logChannel: vscode.LogOutputChannel | undefined;
   /** Every task run until the platform is disposed, so teardown can stop late callbacks. */
   private readonly taskRuns = new Set<TaskRun>();
+  private disposed = false;
   readonly workspaceState: KeyValueStore;
   readonly globalState: KeyValueStore;
   readonly cacheStore: KeyValueStore;
@@ -179,6 +187,7 @@ export class VsCodePlatform implements HostPlatform {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.logChannel?.dispose();
     this.logChannel = undefined;
     for (const run of this.taskRuns) run.dispose();
@@ -323,6 +332,7 @@ export class VsCodePlatform implements HostPlatform {
   }
 
   async runProcess(request: ProcessRequest): Promise<RunningProcess> {
+    if (this.disposed) throw new Error('The platform is disposed.');
     const execution = new vscode.ProcessExecution(request.executable, [...request.args], { cwd: request.cwd });
     const task = new vscode.Task(
       { type: 'packageawy.upgrade', package: request.scope },
@@ -340,14 +350,17 @@ export class VsCodePlatform implements HostPlatform {
     // executeTask resolves, or before the caller subscribes, is still seen.
     const run = new TaskRun();
     this.taskRuns.add(run);
-    let started: vscode.TaskExecution;
     try {
-      started = await vscode.tasks.executeTask(task);
+      // Teardown must release the observer even if executeTask never answers.
+      // Keep the launch handler attached so a late task is fenced and stopped.
+      await Promise.race([
+        Promise.resolve(vscode.tasks.executeTask(task)).then((started) => run.started(started)),
+        run.teardown,
+      ]);
     } catch (error) {
       run.stopObserving();
-      throw error;
+      if (!this.disposed) throw error;
     }
-    run.started(started);
     return { onDidExit: (listener) => run.onDidExit(listener) };
   }
 

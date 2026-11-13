@@ -1,4 +1,5 @@
 export const RECOVERY_MESSAGES = {
+  discoveryFailed: 'Could not check for saved recovery files. Retry discovery or use Refresh. If this continues, check folder access and open the Packageawy log.',
   running: 'A dependency change is running.',
   blocked: 'An earlier change may still be running. Dependency changes are blocked.',
   invalid: 'Recovery information is incomplete. Nothing was restored.',

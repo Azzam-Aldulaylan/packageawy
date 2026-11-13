@@ -67,6 +67,10 @@ import { failedRequestSettlement } from './failedRequestSettlement.js';
 const BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
 /** Coalesces a burst of filesystem events (e.g. an editor's atomic save, which can fire delete+create in quick succession) into a single invalidation + rescan. */
 const FILE_EVENT_DEBOUNCE_MS = 300;
+/** Give the first snapshot time to paint, but do not depend on a responsive webview. */
+const RECOVERY_PAINT_WAIT_MS = 2_000;
+const RECOVERY_INSPECTION_MAX_ATTEMPTS = 3;
+const RECOVERY_INSPECTION_RETRY_MS = 250;
 const MAX_INTEGRATION_TEST_MESSAGES = 160;
 
 type DashboardViewStatus = 'loading' | 'empty' | 'ready' | 'stale' | 'partial-error' | 'fatal-error';
@@ -183,6 +187,12 @@ export class DashboardPanel {
   private webviewReady = false;
   /** Opens after startup preparation so its first live message is the ready-time replay. */
   private deliveryReady = false;
+  private recoverySnapshotDelivered = false;
+  private recoveryInspectionPending = false;
+  private recoveryInspectionScheduled = false;
+  private recoveryInspectionAttempts = 0;
+  private recoveryInspectionImmediate: NodeJS.Immediate | undefined;
+  private recoveryInspectionTimer: NodeJS.Timeout | undefined;
   private readonly speculativeStartup: boolean;
   private startupGeneration = 0;
   private startup: {
@@ -255,8 +265,11 @@ export class DashboardPanel {
     this.sink = {
       postMessage: (message) => {
         if (this.disposed || !this.deliveryReady) return;
+        const cancelsRecoveryPaint = this.recoverySnapshotDelivered &&
+          DASHBOARD_VIEW_STATUSES.has(message.status) && !('data' in message);
         if (DASHBOARD_VIEW_STATUSES.has(message.status)) {
           this.shownDashboardStatus = message.status as DashboardViewStatus;
+          this.recoverySnapshotDelivered = 'data' in message;
         }
         this.recordIntegrationTestMessage({ direction: 'outbound', message });
         if (this.performanceEnabled()) {
@@ -267,6 +280,11 @@ export class DashboardPanel {
           performance.finish({ status: message.status });
         }
         this.channel.postMessage(message);
+        if (cancelsRecoveryPaint) this.scheduleRecoveryInspection();
+        else if ('data' in message) {
+          if (this.recoveryInspectionAttempts > 0) this.scheduleRecoveryInspection();
+          else this.waitForRecoveryPaint();
+        }
       },
     };
     this.etagStore = new PersistentEtagStore(platform.cacheStore ?? platform.globalState);
@@ -360,6 +378,9 @@ export class DashboardPanel {
       // An in-flight pipeline run must not outlive the panel, nor try to
       // post into a webview that no longer exists.
       this.disposed = true;
+      this.clearRecoveryInspectionTimer();
+      if (this.recoveryInspectionImmediate !== undefined) clearImmediate(this.recoveryInspectionImmediate);
+      this.recoveryInspectionImmediate = undefined;
       this.controller?.dispose();
       this.controller = undefined;
       this.pending = undefined;
@@ -491,8 +512,10 @@ export class DashboardPanel {
   private async handle(message: WebviewToHostMessage): Promise<void> {
     if (message.type === 'rendered') {
       this.recordIntegrationTestMessage({ direction: 'inbound', message });
+      this.scheduleRecoveryInspection();
       return;
     }
+    if (message.type === 'refresh' && this.webviewReady) this.scheduleRecoveryInspection();
     if (this.runtimeFailed && isChangeStartingMessage(message)) {
       this.upgradeCoordinator.refuseChangeAfterFailure(message);
       return;
@@ -663,6 +686,9 @@ export class DashboardPanel {
     if (message.type === 'ready') {
       const firstReady = !this.webviewReady;
       this.webviewReady = true;
+      this.clearRecoveryInspectionTimer();
+      this.recoverySnapshotDelivered = false;
+      this.recoveryInspectionPending = true;
       try {
         await this.handleReadyMessage(firstReady);
       } finally {
@@ -672,13 +698,65 @@ export class DashboardPanel {
           this.automaticUsageReleased = true;
           if (this.automaticUsagePending) this.requestAutomaticUsageRefresh();
         }
-        await this.upgradeCoordinator.recovery.inspect();
+        // Discovery walks the workspace. Let the first table paint before it
+        // competes for I/O; empty and failed projects have no render acknowledgment.
+        if (!this.recoverySnapshotDelivered) this.scheduleRecoveryInspection();
         // A reloaded webview starts without the banner. Put it back.
         if (this.runtimeFailed) this.postRuntimeError();
       }
       return;
     }
     await this.handleOtherMessage(message);
+  }
+
+  private scheduleRecoveryInspection(retry = false): void {
+    if (!this.recoveryInspectionPending || this.recoveryInspectionScheduled || this.disposed) return;
+    this.recoveryInspectionPending = false;
+    this.clearRecoveryInspectionTimer();
+    if (!retry) this.recoveryInspectionAttempts = 0;
+    this.recoveryInspectionScheduled = true;
+    this.recoveryInspectionImmediate = setImmediate(() => {
+      this.recoveryInspectionImmediate = undefined;
+      fireAndForget(this.inspectRecoveryInBackground(), this.onBackgroundError('webview-message', false));
+    });
+  }
+
+  private async inspectRecoveryInBackground(): Promise<void> {
+    try {
+      if (this.disposed) return;
+      this.recoveryInspectionAttempts++;
+      await this.upgradeCoordinator.recovery.inspect();
+      this.recoveryInspectionAttempts = 0;
+    } catch (error) {
+      if (this.disposed) return;
+      this.recoveryInspectionPending = true;
+      if (this.recoveryInspectionAttempts < RECOVERY_INSPECTION_MAX_ATTEMPTS) {
+        this.recoveryInspectionTimer = setTimeout(() => this.scheduleRecoveryInspection(true),
+          RECOVERY_INSPECTION_RETRY_MS * this.recoveryInspectionAttempts);
+        this.recoveryInspectionTimer.unref();
+      } else {
+        this.upgradeCoordinator.recovery.reportDiscoveryFailure();
+      }
+      throw error;
+    } finally {
+      this.recoveryInspectionScheduled = false;
+    }
+    // A new ready received during discovery still needs its own presentation.
+    if (this.recoveryInspectionPending) this.scheduleRecoveryInspection();
+  }
+
+  private waitForRecoveryPaint(): void {
+    if (!this.recoveryInspectionPending || this.recoveryInspectionScheduled || this.recoveryInspectionTimer !== undefined || this.disposed) return;
+    // Start only after results are delivered. Replacing a snapshot must not
+    // extend the deadline if its acknowledgment is repeatedly canceled.
+    this.recoveryInspectionTimer = setTimeout(() => this.scheduleRecoveryInspection(), RECOVERY_PAINT_WAIT_MS);
+    this.recoveryInspectionTimer.unref();
+  }
+
+  private clearRecoveryInspectionTimer(): void {
+    if (this.recoveryInspectionTimer === undefined) return;
+    clearTimeout(this.recoveryInspectionTimer);
+    this.recoveryInspectionTimer = undefined;
   }
 
   private async handleReadyMessage(firstReady: boolean): Promise<void> {
@@ -716,7 +794,11 @@ export class DashboardPanel {
   }
 
   private async handleOtherMessage(message: Exclude<WebviewToHostMessage, { type: 'ready' }>): Promise<void> {
-    if (message.type === 'inspect-recovery') { await this.upgradeCoordinator.recovery.inspect(message.id); return; }
+    if (message.type === 'inspect-recovery') {
+      if (message.id === undefined && (this.recoveryInspectionPending || this.recoveryInspectionScheduled)) this.scheduleRecoveryInspection();
+      else await this.upgradeCoordinator.recovery.inspect(message.id);
+      return;
+    }
     if (message.type === 'start-recovery') { await this.upgradeCoordinator.recovery.start(message.stopped, message.claim); return; }
     if (message.type === 'apply-recovery') { await this.upgradeCoordinator.recovery.apply(message.choices); return; }
     if (message.type === 'dismiss-recovery') { await this.upgradeCoordinator.recovery.dismiss(message.stopped, message.discardIncomplete); return; }

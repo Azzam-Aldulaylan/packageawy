@@ -125,7 +125,6 @@ import {
 } from './upgradeAssistantOutcome.js';
 import { createRangePreservingInstall } from './rangePreservingInstall.js';
 import { UpgradeExecutionSession } from './upgradeRunner.js';
-import { findOrphanedRecoveryTarget, targetFromRecoveryFolder } from './recovery/targetDiscovery.js';
 import { RECOVERY_MESSAGES } from './recoveryCopy.js';
 import { RecoveryCoordinator } from './recovery/coordinator.js';
 import type { RecoveryTarget } from './recovery/model.js';
@@ -750,6 +749,7 @@ export class UpgradeAssistantCoordinator {
   }
 
   private async recoveryTarget(): Promise<RecoveryTarget | undefined> {
+    const { findOrphanedRecoveryTarget, targetFromRecoveryFolder } = await import('./recovery/targetDiscovery.js');
     const selected = this.options.getSelectedProject();
     if (selected === undefined) return findOrphanedRecoveryTarget(this.options.platform);
     const projectDir = selected.dir === '' ? selected.folder.path : path.join(selected.folder.path, selected.dir);

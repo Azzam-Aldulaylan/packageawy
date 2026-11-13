@@ -20,7 +20,7 @@ export function RecoveryScreen({ recovery, send, close }: {
   const request = (message: WebviewToHostMessage): void => { setBusy(true); send(message); };
   const needsDiscard = recovery.state === 'incomplete' || recovery.state === 'invalid';
   const canReview = recovery.canApply && recovery.files.length > 0;
-  const canStart = recovery.state !== 'open' && !recovery.canApply && !recovery.canDismiss && !['running', 'takeover'].includes(recovery.state);
+  const canStart = recovery.state !== 'open' && !recovery.canApply && !recovery.canDismiss && !['running', 'takeover', 'discovery-error'].includes(recovery.state);
   const patch = (id: string, fields: Partial<RecoveryChoice>): void => setChoices(previous => previous.map(choice => choice.id === id ? { ...choice, ...fields } : choice));
   return (
     <section className="recovery" aria-labelledby="recovery-title" aria-busy={busy}>
@@ -29,6 +29,7 @@ export function RecoveryScreen({ recovery, send, close }: {
         <button type="button" className="button button--secondary" onClick={close}>Close</button>
       </header>
       <p role="status">{recovery.message}</p>
+      {recovery.state === 'discovery-error' ? <button type="button" className="button button--secondary" disabled={busy} onClick={() => request({ type: 'inspect-recovery' })}>Retry discovery</button> : null}
       <p className="recovery__warning">{RECOVERY_MESSAGES.warning}</p>
       {canStart ? (
         <div className="recovery__confirmation">

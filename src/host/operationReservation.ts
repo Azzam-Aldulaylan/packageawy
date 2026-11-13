@@ -1,7 +1,7 @@
 import { lockKey } from './pathIdentity.js';
 import { RECOVERY_MESSAGES } from './recoveryCopy.js';
 import { RecoveryLock } from './recoveryLock.js';
-import { prepareJournal, type RecoveryJournal } from './recovery/journal.js';
+import type { RecoveryJournal } from './recovery/journal.js';
 import { RecoveryError, type RecoveryTarget } from './recovery/model.js';
 import type { ProjectMutationLocks } from './projectMutationLock.js';
 import type { TransactionCompletion } from './upgradeTransaction.js';
@@ -95,6 +95,8 @@ class Handle implements OwnerHandle {
     // Hold admission across the asynchronous bootstrap, including a panel close.
     this.state = 'mutating';
     try {
+      // Ordinary activation and scans never need journal filesystem machinery.
+      const { prepareJournal } = await import('./recovery/journal.js');
       this.journal = await prepareJournal(target);
       return true;
     } catch (error) {

@@ -683,7 +683,7 @@ export type ScanProgressStage =
   | 'rows';
 
 export interface RecoveryPresentation {
-  state: 'none' | 'running' | 'blocked' | 'uninitialized' | 'invalid' | 'takeover' | 'open' | 'incomplete' | 'completed' | 'removing';
+  state: 'none' | 'discovery-error' | 'running' | 'blocked' | 'uninitialized' | 'invalid' | 'takeover' | 'open' | 'incomplete' | 'completed' | 'removing';
   message: string;
   claim: string | null;
   canDismiss: boolean;
@@ -2639,7 +2639,7 @@ function isRecoveryId(value: unknown): value is string {
 }
 function isRecoveryPresentation(value: unknown): value is RecoveryPresentation {
   return isRecord(value) && hasOnlyKeys(value, ['state', 'message', 'claim', 'canDismiss', 'canApply', 'files']) &&
-    ['none', 'running', 'blocked', 'uninitialized', 'invalid', 'takeover', 'open', 'incomplete', 'completed', 'removing'].includes(value['state'] as string) &&
+    ['none', 'discovery-error', 'running', 'blocked', 'uninitialized', 'invalid', 'takeover', 'open', 'incomplete', 'completed', 'removing'].includes(value['state'] as string) &&
     typeof value['message'] === 'string' && (value['claim'] === null || isRecoveryHash(value['claim'])) && typeof value['canDismiss'] === 'boolean' && typeof value['canApply'] === 'boolean' &&
     Array.isArray(value['files']) && value['files'].length <= 1000 && value['files'].every((file: unknown) =>
       isRecord(file) && hasOnlyKeys(file, ['id', 'path', 'existed', 'backup', 'current', 'backupPreview', 'currentPreview', 'progress']) && isRecoveryId(file['id']) &&

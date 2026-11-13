@@ -514,3 +514,46 @@ test('disposal with an early-exit replay pending settles the real execution and 
   await settle();
   assert.equal(owner.state, 'unknown');
 });
+
+for (const lateReply of ['resolve', 'reject']) test(`pending VS Code startup disposal settles the owner before a late ${lateReply}`, async t => {
+  const project = await makeProject(t);
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const locks = new ProjectMutationLocks();
+  let reached;
+  const launching = new Promise(resolve => { reached = resolve; });
+  const executeTask = tasks.executeTask;
+  tasks.executeTask = task => { const pending = executeTask(task); reached(); return pending; };
+  const f = makeCoordinator(project, { mutationLocks: locks, mutationRoot: () => project.root,
+    platform: { getSetting: (_key, fallback) => fallback, isWorkspaceTrusted: () => true, showWarningMessage() {},
+      runProcess: request => platform.runProcess(request) },
+  });
+  f.coordinator.session.invocationResolver = () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' });
+  const analysisId = await review(f);
+  const confirming = f.coordinator.handleConfirmRemove({ analysisId }).then(() => 'settled');
+  await launching;
+  const owner = locks.holderOf(canonicalProjectRoot(project.root));
+  assert.equal(owner.state, 'mutating');
+  platform.dispose();
+  let timeout;
+  try {
+    assert.equal(await Promise.race([confirming,
+      new Promise(resolve => { timeout = setTimeout(() => resolve('pending'), 2000); })]), 'settled');
+  } finally { clearTimeout(timeout); }
+  assert.equal(owner.state, 'unknown');
+  assert.equal(owner.journal.data.outcome, 'unknown');
+  assert.equal(tasks.native.size, 0);
+  const before = await readFile(project.manifestPath);
+  const sequence = owner.journal.data.sequence;
+  let terminated = 0;
+  const execution = { terminate() { terminated += 1; } };
+  if (lateReply === 'resolve') tasks.starts[0].resolve(execution);
+  else tasks.starts[0].reject(new Error('late launch failure'));
+  tasks.end(execution, 0);
+  await settle();
+  assert.equal(terminated, lateReply === 'resolve' ? 1 : 0);
+  assert.equal(owner.state, 'unknown');
+  assert.equal(owner.journal.data.sequence, sequence);
+  assert.deepEqual(await readFile(project.manifestPath), before);
+  await assert.rejects(platform.runProcess(REQUEST), /disposed/);
+});

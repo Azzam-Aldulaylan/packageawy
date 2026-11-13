@@ -1,7 +1,7 @@
 /**
  * Method names and parameter shapes for the sidecar protocol described in
  * ../hostPlatform.ts. Ids for watches, progress and processes are integers
- * chosen by the sidecar. Optional fields are omitted, never null, unless the
+ * chosen by the sidecar. Process IDs must be safe positive integers. Optional fields are omitted, never null, unless the
  * type says null.
  */
 
@@ -191,6 +191,7 @@ export const Methods = {
   showQuickPick: 'window/showQuickPick',
   processStart: 'process/start',
   processDidExit: 'process/didExit',
+  processTerminate: 'process/terminate',
   openFile: 'window/openFile',
   openExternal: 'window/openExternal',
   openSettings: 'window/openSettings',

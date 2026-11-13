@@ -183,7 +183,8 @@ export function App(): ReactElement {
   const initialRenderStartedAt = useRef<number | null>(null);
   const initialRenderMeasured = useRef(false);
   const [trackSnapshotRender] = useState(() => createSnapshotRenderTracker(
-    document.body.dataset['renderAcknowledgements'] === 'true',
+    // Recovery discovery waits for this paint acknowledgment in every host.
+    true,
     (message) => vscode.postMessage(message)
   ));
   // The anchor package for the upgrade flow this webview most recently
@@ -2401,8 +2402,8 @@ export function App(): ReactElement {
           Saved recovery files: {entry.label}
         </StatusBanner>
       ))}
-      {recoveryEntries.length === 0 && recovery !== null && recovery.state !== 'none' ? (
-        <StatusBanner tone="warning" action={{ label: 'Start recovery', onClick: () => { setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
+      {recovery !== null && recovery.state !== 'none' && (recoveryEntries.length === 0 || recovery.state === 'discovery-error') ? (
+        <StatusBanner tone={recovery.state === 'discovery-error' ? 'error' : 'warning'} action={{ label: recovery.state === 'discovery-error' ? 'Retry discovery' : 'Start recovery', onClick: () => { if (recovery.state !== 'discovery-error') setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
           {recovery.message}
         </StatusBanner>
       ) : null}

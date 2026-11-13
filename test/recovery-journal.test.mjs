@@ -186,6 +186,118 @@ test('rename failure preserves current bytes with no copy fallback', async t => 
   assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
 });
 
+test('displaced bytes sync before displacement completion and replacement', async t => {
+  const f = await recoveryFixture(t);
+  await f.prepare();
+  await fs.writeFile(f.lockfile, 'external edit');
+  const events = [];
+  const session = await f.open({ fs: { ...fs,
+    open: async (name, ...args) => {
+      const handle = await fs.open(name, ...args);
+      if (path.dirname(name) !== path.join(f.folder, 'displaced') || !name.endsWith('.bin')) return handle;
+      return new Proxy(handle, { get(target, property) {
+        if (property === 'sync') return async () => { await handle.sync(); events.push('sync'); };
+        if (property === 'close') return async () => { await handle.close(); events.push('close'); };
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    },
+    rename: async (from, to) => {
+      if (to === path.join(f.folder, 'journal.json')) {
+        const data = JSON.parse(await fs.readFile(from, 'utf8'));
+        if (data.files.some(file => file.progress === 'displaced')) events.push('displaced');
+      }
+      if (to === f.lockfile) events.push('installed');
+      return fs.rename(from, to);
+    },
+  } });
+  await session.apply(choices(await session.presentation(), 'restore', true));
+  assert.deepEqual(events, ['sync', 'close', 'displaced', 'installed']);
+  assert.equal(await f.read('package-lock.json'), 'original lockfile');
+  assert.equal((await f.inspect()).view.message, RECOVERY_MESSAGES.completed);
+});
+
+test('displaced sync failure preserves bytes and stops restoration as incomplete', async t => {
+  const f = await recoveryFixture(t);
+  await f.prepare();
+  await fs.writeFile(f.lockfile, 'external edit');
+  let closed = false;
+  const session = await f.open({ fs: { ...fs, open: async (name, ...args) => {
+    const handle = await fs.open(name, ...args);
+    if (path.dirname(name) !== path.join(f.folder, 'displaced') || !name.endsWith('.bin')) return handle;
+    return new Proxy(handle, { get(target, property) {
+      if (property === 'sync') return async () => { throw failure('EIO'); };
+      if (property === 'close') return async () => { await handle.close(); closed = true; };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } } });
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { code: 'EIO' });
+  assert.equal(closed, true);
+  await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
+  const inspected = await f.inspect();
+  const file = inspected.journal.data.files.find(file => file.backup.path === 'package-lock.json');
+  assert.equal(file.progress, 'displace');
+  assert.equal(file.displacedIds.length, 1);
+  assert.equal(await fs.readFile(path.join(f.folder, 'displaced', `${file.displacedIds[0]}.bin`), 'utf8'), 'external edit');
+  assert.equal((await inspected.journal.backupState(file.backup)).contents.toString(), 'original lockfile');
+  assert.equal(inspected.journal.data.outcome, 'recovery-incomplete');
+  assert.equal(inspected.view.message, RECOVERY_MESSAGES.incomplete);
+});
+
+for (const retry of ['same claim', 'fresh claim']) test(`retry syncs the recorded displacement before replacement: ${retry}`, async t => {
+  const f = await recoveryFixture(t);
+  await f.prepare();
+  await fs.writeFile(f.lockfile, 'external edit');
+  let attempts = 0;
+  let fail = true;
+  let installed = 0;
+  const hooks = { fs: { ...fs,
+    open: async (name, ...args) => {
+      const handle = await fs.open(name, ...args);
+      if (path.dirname(name) !== path.join(f.folder, 'displaced') || !name.endsWith('.bin')) return handle;
+      return new Proxy(handle, { get(target, property) {
+        if (property === 'sync') return async () => { attempts++; if (fail) throw failure('EIO'); await handle.sync(); };
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    },
+    rename: async (from, to) => {
+      if (to === f.lockfile) { assert.equal(fail, false); installed++; }
+      return fs.rename(from, to);
+    },
+  } };
+  let session = await f.open(hooks);
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { code: 'EIO' });
+  if (retry === 'fresh claim') session = await f.open(hooks);
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), { code: 'EIO' });
+  assert.equal(attempts, 2);
+  assert.equal(installed, 0);
+  assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
+  await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
+  fail = false;
+  await session.apply(choices(await session.presentation(), 'restore', true));
+  assert.equal(attempts, 3);
+  assert.equal(installed, 1);
+  assert.equal(await f.read('package-lock.json'), 'original lockfile');
+});
+
+for (const damage of ['changed', 'missing', 'symlink']) test(`retry refuses a ${damage} displaced file`, async t => {
+  if (damage === 'symlink' && process.platform === 'win32') return t.skip();
+  const f = await recoveryFixture(t); await f.prepare(); await fs.writeFile(f.lockfile, 'external edit');
+  const first = await f.open({ boundary: async name => { if (name === 'displacement:moved') throw failure('EIO'); } });
+  await assert.rejects(first.apply(choices(await first.presentation(), 'restore', true)));
+  const file = (await f.inspect()).journal.data.files.find(file => file.move !== undefined);
+  const displaced = path.join(f.folder, 'displaced', `${file.move.id}.bin`);
+  const session = await f.open();
+  const restore = choices(await session.presentation(), 'restore', true);
+  if (damage === 'changed') await fs.writeFile(displaced, 'different bytes');
+  else { await fs.unlink(displaced); if (damage === 'symlink') await fs.symlink(f.manifest, displaced); }
+  await assert.rejects(session.apply(restore));
+  await assert.rejects(fs.stat(f.lockfile), { code: 'ENOENT' });
+  assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
+});
+
 test('repeated displacement always records a new id and keeps every earlier inode', async t => {
   const f = await recoveryFixture(t);
   await f.prepare();

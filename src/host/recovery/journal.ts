@@ -1,10 +1,11 @@
 import path from 'node:path';
+import { constants } from 'node:fs';
 import { createNodeUpgradeTransactionFileAdapter, fileStatesEqual } from '../nodeUpgradeTransactionFiles.js';
 import { canonicalPath, isMissingPathError, relatePaths } from '../pathIdentity.js';
 import type { FileState, UpgradeTransactionFileAdapter } from '../upgradeTransaction.js';
 import { Storage, type StorageHooks } from './storage.js';
 import {
-  expectation, hash, isClaim, isOwner, newId, RECOVERY_MESSAGES, RecoveryError,
+  expectation, hash, isClaim, isOwner, matches, newId, RECOVERY_MESSAGES, RecoveryError,
   type Backup, type Journal, type JournalFile, type Owner, type RecoveryTarget,
 } from './model.js';
 import { removeSavedFiles } from './removal.js';
@@ -64,11 +65,30 @@ export class RecoveryJournal {
     await this.save();
   }
 
+  private async syncDisplaced(file: JournalFile, candidate: string): Promise<void> {
+    const move = file.move;
+    if (move === undefined) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
+    const displaced = await this.storage.fs.open(await this.storage.at(`displaced/${move.id}.bin`), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      if (!(await displaced.stat()).isFile()) throw new RecoveryError(RECOVERY_MESSAGES.unsafe);
+      if (!matches(move.before, { exists: true, contents: await displaced.readFile() })) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
+      await displaced.sync();
+    } finally { await displaced.close(); }
+    await this.storage.syncDirectory(path.dirname(candidate));
+    await this.storage.syncDirectory(await this.storage.at('displaced'));
+  }
+
   /** Rename the actual displaced inode. A failed move never installs a replacement. */
   async replace(file: JournalFile, expected: FileState, replacement: FileState): Promise<'restored' | 'conflict'> {
     await this.assertOwner();
     const candidate = await this.filePath(file.backup);
     if (!fileStatesEqual(await this.files.read(candidate), expected)) return 'conflict';
+    // A failed sync leaves the source absent. Retry must make the recorded
+    // displacement durable before even an absent backup can count as restored.
+    if (file.move !== undefined && ['displace', 'displaced'].includes(file.progress)) {
+      if (await this.storage.exists(`displaced/${file.move.id}.bin`)) await this.syncDisplaced(file, candidate);
+      else if (!matches(file.move.before, expected)) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
+    }
     if (fileStatesEqual(expected, replacement)) {
       file.progress = 'restored';
       await this.save();
@@ -84,8 +104,9 @@ export class RecoveryJournal {
       if (!fileStatesEqual(await this.files.read(candidate), expected)) return 'conflict';
       if (await this.storage.exists(`displaced/${id}.bin`)) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
       await this.storage.fs.rename(await this.storage.safeAbsolute(candidate), await this.storage.at(`displaced/${id}.bin`));
-      await this.storage.syncDirectory(path.dirname(candidate));
-      await this.storage.syncDirectory(await this.storage.at('displaced'));
+      // A directory sync preserves the name, but only syncing the moved inode
+      // makes the user's bytes durable before we publish success or replace it.
+      await this.syncDisplaced(file, candidate);
       await this.storage.boundary('displacement:moved');
       file.progress = 'displaced';
       await this.save();

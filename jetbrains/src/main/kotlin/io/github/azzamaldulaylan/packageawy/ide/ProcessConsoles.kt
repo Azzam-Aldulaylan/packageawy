@@ -23,7 +23,7 @@ class ProcessConsoles(private val project: Project) {
     private val tabs = ConcurrentHashMap<String, RunContentDescriptor>()
 
     /** Throws when the process cannot start. */
-    fun start(request: ProcessStart, onExit: (Int?) -> Unit) {
+    fun start(request: ProcessStart, onExit: (Int?) -> Unit): AutoCloseable {
         val handler = launch(request, onExit)
         ApplicationManager.getApplication().invokeLater {
             if (project.isDisposed) {
@@ -39,6 +39,7 @@ class ProcessConsoles(private val project: Project) {
             tabs[request.scope] = descriptor
             handler.startNotify()
         }
+        return AutoCloseable { handler.destroyProcess() }
     }
 
     companion object {
