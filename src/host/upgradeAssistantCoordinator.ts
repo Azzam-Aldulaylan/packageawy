@@ -3395,14 +3395,11 @@ export class UpgradeAssistantCoordinator {
     // through a fresh handleAnalyzeUpgrade.
     this.analysis = undefined;
 
-    const controller = await this.options.ensureController();
-    if (controller === undefined) {
-      await this.endReservation(handle, 'not-started');
-      return;
-    }
     let completion: TransactionCompletion = 'not-started';
-
     try {
+      // Inside the try, so a rejected lookup still ends the reservation.
+      const controller = await this.options.ensureController();
+      if (controller === undefined) return;
       const selected = this.options.getSelectedProject();
       if (selected === undefined) return;
 
@@ -3739,14 +3736,11 @@ export class UpgradeAssistantCoordinator {
     // Single-use: cleared now, regardless of outcome, so a retry always goes through a fresh handleAnalyzeBulkRemove.
     this.removal = undefined;
 
-    const controller = await this.options.ensureController();
-    if (controller === undefined) {
-      await this.endReservation(handle, 'not-started');
-      return;
-    }
     let completion: TransactionCompletion = 'not-started';
-
     try {
+      // Inside the try, so a rejected lookup still ends the reservation.
+      const controller = await this.options.ensureController();
+      if (controller === undefined) return;
       const selected = this.options.getSelectedProject();
       if (selected === undefined) return;
 

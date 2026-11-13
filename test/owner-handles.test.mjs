@@ -339,3 +339,63 @@ test('reviews, a removal, a restore, cancellation and expiry each release the pr
   free();
   assert.ok(released.length >= 5, 'each release resumed background work');
 });
+
+/** A coordinator holding the shared project lock, whose controller lookup can be made to reject. */
+function rejectingLookup(project, controller) {
+  const locks = new ProjectMutationLocks();
+  const lookup = { reject: false };
+  const fixture = makeCoordinator(project, {
+    mutationLocks: locks,
+    mutationRoot: () => project.root,
+    ensureController: async () => {
+      if (lookup.reject) throw new Error('controller lookup failed');
+      return controller(fixture);
+    },
+  });
+  return { fixture, locks, lookup, key: canonicalProjectRoot(project.root) };
+}
+
+test('a removal whose controller lookup rejects releases the reservation and the project lock', async (t) => {
+  const project = await makeProject(t);
+  const { fixture, locks, lookup, key } = rejectingLookup(project, async (f) => ({
+    root: project.root,
+    upgradeSource: await f.read(),
+    validateBulkRemoveRequest: () => ({ ok: true, removals: [{ packageName: 'react', classification: 'prod' }] }),
+  }));
+  const analysisId = await review(fixture);
+  lookup.reject = true;
+  await fixture.coordinator.handleConfirmRemove({ analysisId });
+  assert.equal(fixture.messages.at(-1).status, 'remove-error', 'the confirmation is answered');
+  assert.equal(fixture.coordinator.isBusy(), false, 'the panel reservation was released');
+  assert.equal(locks.holderOf(key), undefined, 'the project lock was released');
+  assert.deepEqual(fixture.commands, []);
+});
+
+test('an upgrade whose controller lookup rejects releases the reservation and the project lock', async (t) => {
+  const project = await makeProject(t);
+  const { fixture, locks, lookup, key } = rejectingLookup(project, async (f) => ({
+    root: project.root,
+    upgradeSource: await f.read(),
+    validateBulkUpgradeRequest: () => ({ ok: true }),
+  }));
+  fixture.coordinator.analysis = {
+    id: 'upgrade-review',
+    snapshot: await fixture.read(),
+    eligibility: { packageName: 'left-pad', currentVersion: '1.3.0', target: '1.3.1', classification: 'prod' },
+    projectCompatibilityEvidenceFingerprint: null,
+    compatibilityStatus: 'compatible',
+    expiresAt: Date.now() + 60_000,
+    smartPlanProposal: null,
+    proposal: { changes: [{ packageName: 'left-pad', targetVersion: '1.3.1', classification: 'prod' }] },
+    requests: [],
+    publishedTargetsByPackage: new Map(),
+    verificationScripts: [],
+    ignoreScripts: true,
+  };
+  lookup.reject = true;
+  await fixture.coordinator.handleConfirmUpgrade({ analysisId: 'upgrade-review' });
+  assert.equal(fixture.messages.at(-1).status, 'upgrade-error', 'the confirmation is answered');
+  assert.equal(fixture.coordinator.isBusy(), false, 'the panel reservation was released');
+  assert.equal(locks.holderOf(key), undefined, 'the project lock was released');
+  assert.deepEqual(fixture.commands, []);
+});
