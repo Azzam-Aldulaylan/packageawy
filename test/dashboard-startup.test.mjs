@@ -460,8 +460,9 @@ test('closing during a mutation and reopening preserves the shared lock and read
   const s = await panel(t);
   s.gate.resolve(); await s.finished(); await s.ready();
   const owner = s.current.upgradeCoordinator;
-  assert.equal(owner.reserve('clean-pkg'), true);
-  assert.equal(owner.reservation.beginMutation('clean-pkg'), true);
+  const handle = owner.reserve('clean-pkg');
+  assert.equal(handle.ok, true);
+  assert.equal(handle.beginMutation(), true);
   await s.ready();
   assert.equal(owner.isMutationBusy(), true, 'webview reload never releases an ongoing install');
   s.close();
@@ -472,7 +473,7 @@ test('closing during a mutation and reopening preserves the shared lock and read
   await reopened.ready();
   assert.equal(reopened.current.upgradeCoordinator.isMutationBusy(), true);
   assert.equal(owner.isMutationBusy(), true);
-  await owner.reservation.release('clean-pkg');
+  await handle.complete('kept');
   assert.equal(reopened.current.upgradeCoordinator.isMutationBusy(), false);
 });
 
