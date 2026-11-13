@@ -58,12 +58,12 @@ class Handle implements OwnerHandle {
   readonly ok = true;
   state: OwnerHandleState = 'reserved';
   result: CompletionResult | undefined;
+  /** The key the project lock registry stored this handle under, or undefined for a project without a resolved target. */
+  lockKey: string | undefined;
 
   constructor(
     readonly owner: OperationReservation,
     readonly label: string,
-    /** The project lock key this handle holds, or undefined for a project without a resolved target. */
-    readonly lockKey: string | undefined,
     private readonly settle: (handle: Handle, state: 'released' | 'completed') => Promise<boolean>,
     private readonly log: (line: string) => void
   ) {}
@@ -119,12 +119,16 @@ export class OperationReservation {
    */
   reserve(label: string, targetKey: string | undefined): OwnerHandle | ReservationRefusal {
     if (this.current !== undefined) return { ok: false, reason: 'held' };
-    const handle = new Handle(this, label, targetKey, (owned, state) => this.end(owned, state), (line) => this.log(line));
-    if (targetKey !== undefined && this.options.locks.tryAcquire(targetKey, handle) === null) {
-      return { ok: false, reason: 'project-locked' };
+    const handle = new Handle(this, label, (owned, state) => this.end(owned, state), (line) => this.log(line));
+    if (targetKey !== undefined) {
+      // The registry canonicalizes what it is given. The handle keeps the key
+      // the registry actually stored, so its release always finds the entry.
+      const stored = this.options.locks.tryAcquire(targetKey, handle);
+      if (stored === null) return { ok: false, reason: 'project-locked' };
+      handle.lockKey = stored;
     }
     if (!this.options.reserve(label)) {
-      if (targetKey !== undefined) this.options.locks.release(targetKey, handle);
+      if (handle.lockKey !== undefined) this.options.locks.release(handle.lockKey, handle);
       return { ok: false, reason: 'held' };
     }
     this.current = handle;

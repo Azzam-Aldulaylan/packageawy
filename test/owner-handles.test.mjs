@@ -13,7 +13,11 @@ import { blocker, lockfile, makeCoordinator, makeProject, review } from './helpe
 const { OperationReservation } = await import('../out/host/operationReservation.js');
 const { ProjectMutationLocks, canonicalProjectRoot } = await import('../out/host/projectMutationLock.js');
 
-const KEY = '/workspace';
+// Mixed case on purpose: the registry stores a canonical, lowercased key (and
+// on Windows adds the drive), so a handle that released with the key it was
+// given would miss the entry on every platform.
+const KEY = '/Workspace';
+const LOCK = canonicalProjectRoot(KEY);
 
 function panel(locks = new ProjectMutationLocks()) {
   const calls = [];
@@ -59,7 +63,7 @@ test('a stale handle cannot end another owner reservation, even for the same pac
 
   assert.equal(reservation.held, second);
   assert.equal(second.state, 'reserved');
-  assert.equal(locks.holderOf(KEY), second, 'the project lock stores the live handle');
+  assert.equal(locks.holderOf(LOCK), second, 'the project lock stores the live handle');
   assert.deepEqual(calls, ['release:left-pad', 'flush', 'resume'], 'only the first release ran');
   assert.equal(logs.length, 4, 'every ignored call is logged');
   assert.ok(logs.every((line) => line.startsWith('Ignored ') && line.includes('released reservation for left-pad')));
@@ -78,7 +82,7 @@ test('settling twice is a logged no-op', async () => {
   assert.equal(handle.result, 'kept', 'the first known end stands');
   assert.equal(handle.state, 'completed');
   assert.equal(reservation.held, undefined);
-  assert.equal(locks.holderOf(KEY), undefined);
+  assert.equal(locks.holderOf(LOCK), undefined);
   assert.deepEqual(calls, ['release:react', 'flush', 'resume']);
   assert.equal(logs.length, 4);
 });
@@ -95,14 +99,14 @@ test('concurrent reservations on the same target admit exactly one owner', async
   assert.equal(winner.ok, true);
   assert.deepEqual(sameWindow, { ok: false, reason: 'held' });
   assert.deepEqual(otherWindow, { ok: false, reason: 'project-locked' });
-  assert.equal(locks.holderOf(KEY), winner);
+  assert.equal(locks.holderOf(LOCK), winner);
   assert.equal(right.reservation.held, undefined, 'a refused panel holds nothing');
   assert.deepEqual(right.calls, []);
 
   await winner.complete('not-started');
   const next = right.reservation.reserve('left-pad', KEY);
   assert.equal(next.ok, true, 'the project is free once the owner ends its reservation');
-  assert.equal(locks.holderOf(KEY), next);
+  assert.equal(locks.holderOf(LOCK), next);
 });
 
 test('markUnknown keeps the reservation and the project lock, and nothing else in this process can release them', async () => {
@@ -123,7 +127,7 @@ test('markUnknown keeps the reservation and the project lock, and nothing else i
 
   assert.equal(reservation.isMutationBusy, true);
   assert.equal(reservation.held, handle);
-  assert.equal(locks.holderOf(KEY), handle);
+  assert.equal(locks.holderOf(LOCK), handle);
   assert.deepEqual(reservation.reserve('react', KEY), { ok: false, reason: 'held' });
   assert.deepEqual(other.reservation.reserve('react', KEY), { ok: false, reason: 'project-locked' });
   assert.deepEqual(calls, [], 'no release, reload or disposal ran');
