@@ -14,8 +14,7 @@ import { isFsError } from './expectedFsError.js';
  * Filesystem reads only. Nothing here starts a process.
  */
 
-import { realpathSync } from 'node:fs';
-import { lstat, readFile } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -24,7 +23,8 @@ import { load as loadYaml, YAMLException } from 'js-yaml';
 import { isRecord } from '../core/validation.js';
 import { matchWorkspacePatterns } from '../core/workspace/patterns.js';
 import { PACKAGE_LOCK, PNPM_LOCK, SHRINKWRAP } from '../core/workspace/scan.js';
-import { candidateNodePaths, realListDir, rethrowUnexpectedResolverError } from './npmResolver.js';
+import { rethrowUnexpectedResolverError } from './npmResolver.js';
+import { candidateNodePathsAsync, resolverListDirAsync } from './npmResolverAsync.js';
 import { canonicalPath, isMissingPathError, relatePaths, segmentsBelow } from './pathIdentity.js';
 import {
   findPnpmLockfileOverride,
@@ -80,18 +80,18 @@ export interface ResolveMutationTargetInput {
   throwOnUnexpectedError?: boolean;
 }
 
-function nodePrefixes(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>, homeDir: string, strict: boolean): string[] {
+async function nodePrefixes(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>, homeDir: string, strict: boolean): Promise<string[]> {
   const prefixes = new Set<string>();
-  const candidates = candidateNodePaths({
+  const candidates = await candidateNodePathsAsync({
     platform,
     pathEnv: env['PATH'],
     homeDir,
     fnmDirEnv: env['FNM_DIR'],
-    listDir: candidate => realListDir(candidate, strict),
+    listDir: candidate => resolverListDirAsync(candidate, strict),
   });
   for (const candidate of candidates) {
     try {
-      const real = realpathSync.native(candidate);
+      const real = await realpath(candidate);
       prefixes.add(platform === 'win32' ? path.dirname(real) : path.dirname(path.dirname(real)));
     } catch (cause) {
       rethrowUnexpectedResolverError(cause, strict);
@@ -102,10 +102,10 @@ function nodePrefixes(platform: NodeJS.Platform, env: Readonly<Record<string, st
 }
 
 /** The real host: process environment, home directory and every Node installation a task could pick. */
-export function defaultMutationTargetEnvironment(strict = false): MutationTargetEnvironment {
+export async function defaultMutationTargetEnvironment(strict = false): Promise<MutationTargetEnvironment> {
   const env = { ...process.env };
   const homeDir = homedir();
-  return { env, homeDir, platform: process.platform, nodePrefixes: nodePrefixes(process.platform, env, homeDir, strict) };
+  return { env, homeDir, platform: process.platform, nodePrefixes: await nodePrefixes(process.platform, env, homeDir, strict) };
 }
 
 function refused(code: MutationRefusalCode, reason: string): MutationTargetResolution {
@@ -299,7 +299,7 @@ async function resolveOrRefuse(input: ResolveMutationTargetInput): Promise<Mutat
       projectDir: project,
       workspaceRoot: root,
       workspaceManifest: membership.workspaceManifest,
-      environment: input.environment ?? defaultMutationTargetEnvironment(strict),
+      environment: input.environment ?? await defaultMutationTargetEnvironment(strict),
       throwOnUnexpectedError: strict,
     });
     if (override !== null) return refused(override.code, override.reason);

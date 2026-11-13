@@ -36,10 +36,10 @@ try {
       }, () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' }));
       session.journal = journal;
       const params = { cwd: target.root, ignoreScripts: true, packageManager: 'npm' };
-      const prepared = flow === 'remediation' ? session.prepareLockfileReconciliation(params) : session.prepareManifestReconciliation({ ...params,
+      const prepared = flow === 'remediation' ? await session.prepareLockfileReconciliation(params) : await session.prepareManifestReconciliation({ ...params,
         ...(flow === 'upgrade' ? { taskTitle: 'Packageawy: Upgrade a' } : {}),
       });
-      const restyle = session.prepareManifestReconciliation({ ...params, lockfileOnly: true, taskTitle: 'Packageawy: Upgrade a (keep version ranges)' });
+      const restyle = await session.prepareManifestReconciliation({ ...params, lockfileOnly: true, taskTitle: 'Packageawy: Upgrade a (keep version ranges)' });
       const stage = { path: target.allowlistedPaths[flow === 'remediation' ? 1 : 0],
         expectedContents: (await journal.files.read(target.allowlistedPaths[flow === 'remediation' ? 1 : 0])).contents, contents: Buffer.from('staged') };
       const result = await runUpgradeTransaction({ allowlistedPaths: target.allowlistedPaths, files: journal.adapter(), journal,

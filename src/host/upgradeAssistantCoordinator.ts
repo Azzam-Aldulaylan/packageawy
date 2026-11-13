@@ -92,9 +92,9 @@ import { resolveTrustedAttributedAdvisoryUrl } from '../core/advisories/resolve.
 import type { AdvisoryLookupRequest } from '../core/advisories/resolve.js';
 import { PUBLIC_ADVISORY_CHECK_SETTING } from './dashboardController.js';
 import type { BackgroundRefreshOutcome, DashboardController, MessageSink } from './dashboardController.js';
-import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.js';
+import { ToolchainOperation } from './toolchainOperation.js';
 import { createNodeUpgradeTransactionFileAdapter } from './nodeUpgradeTransactionFiles.js';
-import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
+import { PNPM_NOT_FOUND_MESSAGE } from './pnpmResolver.js';
 import { materializeUpgradeSecurityGraph } from './upgradeSecurityGraph.js';
 import type { HostPlatform, WorkspaceFolder } from './platform/hostPlatform.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
@@ -129,7 +129,8 @@ import { UpgradeExecutionSession } from './upgradeRunner.js';
 import { RECOVERY_MESSAGES } from './recoveryCopy.js';
 import { manualReinstallNote, reinstallResultNote } from './manualReinstallCopy.js';
 import { RecoveryCoordinator } from './recovery/coordinator.js';
-import type { RecoveryTarget } from './recovery/model.js';
+import type { Operation, RecoveryTarget } from './recovery/model.js';
+import type { RecoveryJournal } from './recovery/journal.js';
 import { OperationReservation, SourceGenerationGuard } from './operationReservation.js';
 import type { OwnerHandle, ReservationRefusal } from './operationReservation.js';
 import { runUpgradeTransaction } from './upgradeTransaction.js';
@@ -681,6 +682,9 @@ export class UpgradeAssistantCoordinator {
   /** Opaque, host-owned lockfile plans. Bounded to one current plan per direct dependency. */
   private readonly remediationPlans = new Map<string, StoredRemediationPlan>();
   private readonly remediationPlanByPackage = new Map<string, string>();
+  private activeApplyDiscovery: { id: string; abort: AbortController } | undefined;
+  private readonly panelDiscoveryAbort = new AbortController();
+  private activeReinstallDiscovery: { analysisId: string | undefined; operation: Operation; abort: AbortController } | undefined;
   private activeUpgradeAnalysisAbort: AbortController | undefined;
   private activeUpgradeAdvisoryAbort: AbortController | undefined;
   /** The Manage dialog's one in-flight version list load. A newer load, a matching cancel, or disposal aborts it. */
@@ -706,9 +710,8 @@ export class UpgradeAssistantCoordinator {
       },
       removed: async () => { await this.refreshAfterCompletion(() => options.reloadFinalState()); },
       restored: async journal => {
-        const { offerFrozenReconciliation } = await import('./frozenReconciliation.js');
         this.session.observeTaskState(state => this.recovery.reportTaskState(state));
-        try { return await offerFrozenReconciliation(journal, options.platform, this.session); }
+        try { return await this.offerReinstall(journal); }
         finally { this.session.observeTaskState(state => this.reportDependencyTask(state)); }
       },
     });
@@ -823,6 +826,9 @@ export class UpgradeAssistantCoordinator {
 
   /** Dispose immediately only when no mutation is in flight. */
   disposeWhenIdle(): void {
+    // Discovery ends with the panel even while a mutation retains its session.
+    this.panelDiscoveryAbort.abort();
+    this.activeApplyDiscovery?.abort.abort();
     this.activeRemediationAbort?.abort();
     this.upgradeTargetsLoad?.abort.abort();
     this.activeUpgradeAnalysisAbort?.abort();
@@ -994,11 +1000,22 @@ export class UpgradeAssistantCoordinator {
   }
 
   /** Reinstall stays inside the owner boundary and settles before any terminal result is posted. */
-  private async reconcileRollback(handle: OwnerHandle, completion: TransactionCompletion): Promise<{ completion: TransactionCompletion; reinstall?: 'skipped' | 'succeeded' | 'failed' }> {
-    if (completion !== 'rolled-back' || handle.journal === undefined || this.options.isDisposed()) return { completion };
-    const { offerFrozenReconciliation } = await import('./frozenReconciliation.js');
+  private async offerReinstall(journal: RecoveryJournal, analysisId?: string): Promise<'skipped' | 'succeeded' | 'failed' | 'unknown'> {
+    const discovery = { analysisId, operation: journal.data.operation, abort: new AbortController() };
+    this.activeReinstallDiscovery = discovery;
     try {
-      const reconciled = await offerFrozenReconciliation(handle.journal, this.options.platform, this.session);
+      const { offerFrozenReconciliation } = await import('./frozenReconciliation.js');
+      return await offerFrozenReconciliation(journal, this.options.platform, this.session,
+        AbortSignal.any([this.panelDiscoveryAbort.signal, discovery.abort.signal]));
+    } finally {
+      if (this.activeReinstallDiscovery === discovery) this.activeReinstallDiscovery = undefined;
+    }
+  }
+
+  private async reconcileRollback(handle: OwnerHandle, completion: TransactionCompletion, analysisId: string): Promise<{ completion: TransactionCompletion; reinstall?: 'skipped' | 'succeeded' | 'failed' }> {
+    if (completion !== 'rolled-back' || handle.journal === undefined || this.options.isDisposed()) return { completion };
+    try {
+      const reconciled = await this.offerReinstall(handle.journal, analysisId);
       if (reconciled === 'unknown') { await handle.fail('The reinstall result was not observed.'); return { completion: 'unknown' }; }
       // A known optional task failure does not change the completed file restore.
       return { completion, reinstall: reconciled };
@@ -1023,6 +1040,7 @@ export class UpgradeAssistantCoordinator {
    */
   async handleWebviewReady(): Promise<void> {
     if (this.reservation.isMutationBusy) return;
+    this.activeApplyDiscovery?.abort.abort();
 
     if (this.pendingAnalyzePackage !== null) {
       this.cancelRequestedFor = this.pendingAnalyzePackage;
@@ -1567,17 +1585,9 @@ export class UpgradeAssistantCoordinator {
       });
       endGraph({ nodes: graph.nodes.size });
       const endToolchain = performance.start('package-manager resolution');
-      const npmResolution = resolveNpmInvocation(createNodeNpmResolverDeps(controller.root));
-      const packageManagerInvocation =
-        preflightProject.packageManager === 'pnpm'
-          ? resolveInstalledPnpmInvocation(npmResolution.ok ? npmResolution.invocation : null, controller.root)
-          : npmResolution.ok
-            ? {
-                executable: npmResolution.invocation.node,
-                prefixArgs: [npmResolution.invocation.npmCliJs],
-                version: npmResolution.invocation.version,
-              }
-            : null;
+      const toolchain = new ToolchainOperation(controller.root, false, analysisAbort.signal);
+      const npmResolution = await toolchain.npm();
+      const packageManagerInvocation = await toolchain.resolve(preflightProject.packageManager);
       endToolchain({ available: packageManagerInvocation !== null });
       const resolverVerifier = packageManagerInvocation !== null
         ? new IsolatedResolverVerifier({
@@ -2005,6 +2015,8 @@ export class UpgradeAssistantCoordinator {
   }
 
   async handleCancelUpgrade(message: CancelUpgradeMessage): Promise<void> {
+    if (this.activeReinstallDiscovery?.analysisId === message.analysisId) this.activeReinstallDiscovery?.abort.abort();
+    if (this.activeApplyDiscovery?.id === message.analysisId) this.activeApplyDiscovery.abort.abort();
     if (message.analysisId === null) {
       // No analysis exists yet: mark the in-flight one (if any) so
       // handleAnalyzeUpgrade drops its result instead of storing/posting
@@ -2415,6 +2427,8 @@ export class UpgradeAssistantCoordinator {
   }
 
   async handleCancelRemove(message: CancelRemoveMessage): Promise<void> {
+    if (this.activeReinstallDiscovery?.analysisId === message.analysisId) this.activeReinstallDiscovery?.abort.abort();
+    if (this.activeApplyDiscovery?.id === message.analysisId) this.activeApplyDiscovery.abort.abort();
     if (message.analysisId === null) {
       const pending = this.pendingRemovalAnalysis;
       if (
@@ -2535,10 +2549,12 @@ export class UpgradeAssistantCoordinator {
   }
 
   handleCancelRemediation(): void {
+    if (this.activeReinstallDiscovery?.operation === 'remediation') this.activeReinstallDiscovery.abort.abort();
     this.activeRemediationAbort?.abort();
   }
 
   handleCancelRemediationPlan(message: RemediationAnalysisMessage): void {
+    if (this.activeReinstallDiscovery?.analysisId === message.analysisId) this.activeReinstallDiscovery?.abort.abort();
     if (this.activeRemediationAnalysisId === message.analysisId) {
       this.activeRemediationAbort?.abort();
       return;
@@ -2712,17 +2728,8 @@ export class UpgradeAssistantCoordinator {
     }
 
     const endToolchain = performance?.start('remediation package-manager resolution') ?? (() => 0);
-    const npmResolution = resolveNpmInvocation(createNodeNpmResolverDeps(controller.root));
-    const packageManagerInvocation =
-      preflightProject.packageManager === 'pnpm'
-        ? resolveInstalledPnpmInvocation(npmResolution.ok ? npmResolution.invocation : null, controller.root)
-        : npmResolution.ok
-          ? {
-              executable: npmResolution.invocation.node,
-              prefixArgs: [npmResolution.invocation.npmCliJs],
-              version: npmResolution.invocation.version,
-            }
-          : null;
+    const toolchain = new ToolchainOperation(controller.root, false, signal);
+    const packageManagerInvocation = await toolchain.resolve(preflightProject.packageManager);
     endToolchain({ available: packageManagerInvocation !== null });
     if (packageManagerInvocation === null) {
       throw Object.assign(new Error(preflightProject.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : 'The package manager could not be located to run this check.'), {
@@ -2876,10 +2883,8 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
-      const currentNpm = resolveNpmInvocation(createNodeNpmResolverDeps(disk.root, true));
-      const currentInvocation = disk.packageManager === 'pnpm'
-        ? resolveInstalledPnpmInvocation(currentNpm.ok ? currentNpm.invocation : null, disk.root, true)
-        : currentNpm.ok ? { version: currentNpm.invocation.version } : null;
+      const toolchain = this.session.createToolchainOperation(disk.root, abort.signal);
+      const currentInvocation = await toolchain.resolve(disk.packageManager);
       if (
         currentInvocation === null ||
         (stored.packageManagerVersion !== null && currentInvocation.version !== stored.packageManagerVersion)
@@ -2902,7 +2907,8 @@ export class UpgradeAssistantCoordinator {
         request: optIn,
       });
 
-      const prepared = this.session.prepareLockfileReconciliation({
+      const prepared = await this.session.prepareLockfileReconciliation({
+        toolchain,
         cwd: disk.root,
         ignoreScripts: stored.ignoreScripts,
         packageManager: disk.packageManager,
@@ -3102,6 +3108,7 @@ export class UpgradeAssistantCoordinator {
                 phase: 'verifying-project',
               });
               const projectVerification = await this.session.verify({
+                toolchain,
                 packageName: stored.packageName,
                 cwd: disk.root,
                 packageManager: disk.packageManager,
@@ -3139,7 +3146,7 @@ export class UpgradeAssistantCoordinator {
         },
         signal: abort.signal,
       });
-      const reconciliation = await this.reconcileRollback(handle, transaction.completion);
+      const reconciliation = await this.reconcileRollback(handle, transaction.completion, stored.id);
       transaction.completion = reconciliation.completion;
       completion = transaction.completion;
       if (completion === 'unknown') return;
@@ -3337,6 +3344,8 @@ export class UpgradeAssistantCoordinator {
     this.analysis = undefined;
 
     let completion: TransactionCompletion = 'not-started';
+    const discovery = { id: analysisId, abort: new AbortController() };
+    this.activeApplyDiscovery = discovery;
     try {
       // Inside the try, so a rejected lookup still ends the reservation.
       const controller = await this.options.ensureController(true);
@@ -3419,8 +3428,10 @@ export class UpgradeAssistantCoordinator {
         allowlistedPaths,
       });
 
+      const toolchain = this.session.createToolchainOperation(controller.root, discovery.abort.signal);
       const taskTitle = `Packageawy: Upgrade ${stored.eligibility.packageName}`;
-      const prepared = this.session.prepareManifestReconciliation({
+      const prepared = await this.session.prepareManifestReconciliation({
+        toolchain,
         cwd: controller.root,
         importerId: source.importerId,
         ignoreScripts: stored.ignoreScripts,
@@ -3431,7 +3442,8 @@ export class UpgradeAssistantCoordinator {
       });
       const preparedRestyle = styledManifest === stagedManifest
         ? null
-        : this.session.prepareManifestReconciliation({
+        : await this.session.prepareManifestReconciliation({
+            toolchain,
             cwd: controller.root,
             importerId: source.importerId,
             ignoreScripts: true,
@@ -3459,6 +3471,7 @@ export class UpgradeAssistantCoordinator {
         restyle: preparedRestyle === null ? null : () => preparedRestyle.execute(),
       });
 
+      if (this.activeApplyDiscovery === discovery) this.activeApplyDiscovery = undefined;
       if (!this.sourceGeneration.isCurrent(executionSourceGeneration)) {
         this.options.sink.postMessage({
           status: 'upgrade-error',
@@ -3509,6 +3522,7 @@ export class UpgradeAssistantCoordinator {
               verifier: {
                 verify: () =>
                   this.session.verify({
+                    toolchain,
                     packageName: stored.eligibility.packageName,
                     cwd: controller.root,
                     packageManager: source.packageManager,
@@ -3528,7 +3542,7 @@ export class UpgradeAssistantCoordinator {
               },
             }),
       });
-      const reconciliation = await this.reconcileRollback(handle, transaction.completion);
+      const reconciliation = await this.reconcileRollback(handle, transaction.completion, stored.id);
       transaction.completion = reconciliation.completion;
       completion = transaction.completion;
       if (completion === 'unknown') return;
@@ -3632,6 +3646,13 @@ export class UpgradeAssistantCoordinator {
         this.options.platform.showWarningMessage(presentation.message);
       }
     } catch (cause) {
+      if (cause instanceof Error && cause.name === 'AbortError' && discovery.abort.signal.aborted) {
+        // A reload now stops discovery before beginMutation can report its usual refusal.
+        if (handle.settled && !this.options.isDisposed()) {
+          this.options.sink.postMessage({ status: 'upgrade-error', package: stored.eligibility.packageName, error: CHANGE_STOPPED_ERROR });
+        }
+        return;
+      }
       this.logChangeFailure(cause);
       if (await handle.fail('An internal error interrupted the dependency change.')) return;
       if (!this.options.isDisposed()) {
@@ -3642,6 +3663,7 @@ export class UpgradeAssistantCoordinator {
         });
       }
     } finally {
+      if (this.activeApplyDiscovery === discovery) this.activeApplyDiscovery = undefined;
       await this.endReservation(handle, completion);
     }
   }
@@ -3692,6 +3714,8 @@ export class UpgradeAssistantCoordinator {
     this.removal = undefined;
 
     let completion: TransactionCompletion = 'not-started';
+    const discovery = { id: analysisId, abort: new AbortController() };
+    this.activeApplyDiscovery = discovery;
     try {
       // Inside the try, so a rejected lookup still ends the reservation.
       const controller = await this.options.ensureController(true);
@@ -3777,7 +3801,9 @@ export class UpgradeAssistantCoordinator {
         allowlistedPaths,
       });
 
-      const prepared = this.session.prepareManifestReconciliation({
+      const toolchain = this.session.createToolchainOperation(controller.root, discovery.abort.signal);
+      const prepared = await this.session.prepareManifestReconciliation({
+        toolchain,
         cwd: controller.root,
         importerId: source.importerId,
         ignoreScripts: stored.ignoreScripts,
@@ -3793,6 +3819,7 @@ export class UpgradeAssistantCoordinator {
         return;
       }
 
+      if (this.activeApplyDiscovery === discovery) this.activeApplyDiscovery = undefined;
       if (!this.sourceGeneration.isCurrent(executionSourceGeneration)) {
         this.options.sink.postMessage({
           status: 'remove-error',
@@ -3901,6 +3928,7 @@ export class UpgradeAssistantCoordinator {
             }
             if (stored.verificationScripts.length === 0) return { status: 'passed' as const, checks };
             const scripts = await this.session.verify({
+              toolchain,
               packageName: stored.reservationKey,
               cwd: controller.root,
               packageManager: source.packageManager,
@@ -3926,7 +3954,7 @@ export class UpgradeAssistantCoordinator {
           },
         },
       });
-      const reconciliation = await this.reconcileRollback(handle, transaction.completion);
+      const reconciliation = await this.reconcileRollback(handle, transaction.completion, stored.id);
       transaction.completion = reconciliation.completion;
       completion = transaction.completion;
       if (completion === 'unknown') return;
@@ -4076,6 +4104,13 @@ export class UpgradeAssistantCoordinator {
         if (!resultInDialog) this.options.platform.showWarningMessage(presentation.message);
       }
     } catch (cause) {
+      if (cause instanceof Error && cause.name === 'AbortError' && discovery.abort.signal.aborted) {
+        // A reload now stops discovery before beginMutation can report its usual refusal.
+        if (handle.settled && !this.options.isDisposed()) {
+          this.options.sink.postMessage({ status: 'remove-error', package: stored.reservationKey, error: CHANGE_STOPPED_ERROR });
+        }
+        return;
+      }
       this.logChangeFailure(cause);
       if (await handle.fail('An internal error interrupted the dependency change.')) return;
       if (!this.options.isDisposed()) {
@@ -4086,6 +4121,7 @@ export class UpgradeAssistantCoordinator {
         });
       }
     } finally {
+      if (this.activeApplyDiscovery === discovery) this.activeApplyDiscovery = undefined;
       await this.endReservation(handle, completion);
     }
   }

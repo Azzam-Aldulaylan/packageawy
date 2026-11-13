@@ -18,7 +18,7 @@ for (const result of [0, 1, undefined, 'dispose', 'reject']) {
     });
     const session = new UpgradeExecutionSession({ isWorkspaceTrusted: () => true, runProcess: () => started }, invocation, state => states.push(state));
     let finished = false;
-    const pending = session.prepareManifestReconciliation({ cwd: '/workspace', ignoreScripts: true, packageManager: 'npm' }).execute().then(value => { finished = true; return value; });
+    const pending = (await session.prepareManifestReconciliation({ cwd: '/workspace', ignoreScripts: true, packageManager: 'npm' })).execute().then(value => { finished = true; return value; });
     await flush();
     t.mock.timers.tick(STILL_RUNNING_THRESHOLD_MS - 1);
     assert.deepEqual(states, ['running']);
@@ -44,7 +44,7 @@ test('fast completion cancels Still running before its threshold', async t => {
   const session = new UpgradeExecutionSession({ isWorkspaceTrusted: () => true, runProcess: async () => ({
     onDidExit(listener) { listener(0); return { dispose() {} }; },
   }) }, invocation, state => states.push(state));
-  await session.prepareManifestReconciliation({ cwd: '/workspace', ignoreScripts: true, packageManager: 'npm' }).execute();
+  await (await session.prepareManifestReconciliation({ cwd: '/workspace', ignoreScripts: true, packageManager: 'npm' })).execute();
   t.mock.timers.tick(STILL_RUNNING_THRESHOLD_MS);
   assert.deepEqual(states, ['running', 'idle']);
 });

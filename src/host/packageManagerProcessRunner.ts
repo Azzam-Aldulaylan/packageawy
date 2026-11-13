@@ -24,7 +24,7 @@ export class NodePackageManagerProcessRunner {
     }
   }
 
-  run(invocation: PackageManagerInvocation, args: readonly string[], cwd: string, signal?: AbortSignal): Promise<ResolverProcessResult> {
+  run(invocation: PackageManagerInvocation, args: readonly string[], cwd: string, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<ResolverProcessResult> {
     const windows = process.platform === 'win32';
     return new Promise((resolve, reject) => {
       const abortError = (): Error => Object.assign(new Error(`${this.options.description} was cancelled.`), { name: 'AbortError' });
@@ -37,6 +37,7 @@ export class NodePackageManagerProcessRunner {
         // A dedicated POSIX group survives its leader and keeps cancellation
         // away from the extension host's process group.
         detached: !windows,
+        ...(env === undefined ? {} : { env }),
       });
       const stdoutLimit = this.options.stdoutLimitBytes ?? 32_768;
       const rejectOversized = this.options.stdoutPolicy === 'reject';

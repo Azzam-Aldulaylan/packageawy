@@ -13,7 +13,7 @@ import { RestoreFileError } from '../out/host/upgradeTransaction.js';
 import { loadProject } from '../out/host/projectResolution.js';
 import { resolveMutationTarget } from '../out/host/mutationTarget.js';
 import { lockKey, authorizedRelation } from '../out/host/pathIdentity.js';
-import { createNodeNpmResolverDeps, rethrowUnexpectedResolverError } from '../out/host/npmResolver.js';
+import { rethrowUnexpectedResolverError } from '../out/host/npmResolver.js';
 import { createNodeNpmResolverAsyncDeps, resolveNpmInvocationAsync } from '../out/host/npmResolverAsync.js';
 import { ResolvedNpmAuditRunner } from '../out/host/npmAuditRunner.js';
 import { resolvePnpmInvocation } from '../out/host/pnpmResolver.js';
@@ -43,7 +43,7 @@ for (const code of codes) {
         return original(file, ...args);
       });
       if (source === 'npm discovery') {
-        for (const name of ['accessSync', 'readdirSync']) patch(t, fs, name, () => () => { hits++; throw error; });
+        for (const name of ['access', 'readdir']) patch(t, io, name, () => () => { hits++; throw error; });
       }
       if (source === 'lock key') patch(t, fs.realpathSync, 'native', () => () => { hits++; throw error; });
       const s = await panel(t, { early: false });
@@ -87,28 +87,26 @@ for (const code of codes) {
     await assert.rejects(resolveMutationTarget({ ...input, throwOnUnexpectedError: true }), cause => cause === error);
   });
 
-  test(`npm discovery preserves graceful and strict modes for every probe with ${code}`, t => {
+  test(`npm discovery preserves graceful and strict modes for every probe with ${code}`, async t => {
     for (const step of ['isExecutable', 'listDir', 'resolveRealNodePath', 'resolveGlobalNpmRoot', 'probeVersion', 'probeLoginShellNode']) {
-      const method = step === 'isExecutable' ? 'accessSync' : step === 'listDir' ? 'readdirSync' : 'execFileSync';
-      const target = method === 'execFileSync' ? childProcess : fs;
+      const method = step === 'isExecutable' ? 'access' : step === 'listDir' ? 'readdir' : 'spawn';
+      const target = method === 'spawn' ? childProcess : io;
       const original = target[method];
-      const originalExists = fs.existsSync, originalStat = fs.statSync;
+      const originalStat = io.stat;
       // Plain errno objects also get the read-only fallback.
       const error = { code };
       target[method] = () => { throw error; };
-      fs.existsSync = () => true;
-      fs.statSync = () => ({});
+      io.stat = async () => ({});
       syncBuiltinESMExports();
       try {
-        const graceful = createNodeNpmResolverDeps(process.cwd());
-        const strict = createNodeNpmResolverDeps(process.cwd(), true);
+        const graceful = createNodeNpmResolverAsyncDeps(process.cwd());
+        const strict = createNodeNpmResolverAsyncDeps(process.cwd(), undefined, true);
         const expected = step === 'isExecutable' ? false : step === 'listDir' ? [] : undefined;
-        assert.deepEqual(graceful[step]('/installation/node', '/installation/npm-cli.js'), expected);
-        assert.throws(() => strict[step]('/installation/node', '/installation/npm-cli.js'), cause => cause === error);
+        assert.deepEqual(await graceful[step]('/installation/node', '/installation/npm-cli.js'), expected);
+        await assert.rejects(async () => strict[step]('/installation/node', '/installation/npm-cli.js'), cause => cause === error);
       } finally {
         target[method] = original;
-        fs.existsSync = originalExists;
-        fs.statSync = originalStat;
+        io.stat = originalStat;
         syncBuiltinESMExports();
       }
     }
@@ -255,8 +253,8 @@ for (const code of codes) {
     else {
       f.coordinator.session.invocationResolver = undefined;
       // Keep the POSIX directory fault and reach Windows through its candidate stat.
-      for (const method of ['readdirSync', 'statSync']) {
-        patch(t, fs, method, () => () => { hits++; throw error; });
+      for (const method of ['readdir', 'stat']) {
+        patch(t, io, method, () => () => { hits++; throw error; });
       }
     }
     await f.confirm();
