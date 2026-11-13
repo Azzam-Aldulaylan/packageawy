@@ -341,7 +341,7 @@ test('all host and sidecar runtime flow sources reject synchronous filesystem an
 });
 
 function installRuntimeSyncGuard(t) {
-  const exempt = /\/out\/host\/(?:pathIdentity|platform\/fileKeyValueStore|platform\/vscode\/vsCodePlatform)\.js:/;
+  const exempt = /[\\/]out[\\/]host[\\/](?:pathIdentity|platform[\\/]fileKeyValueStore|platform[\\/]vscode[\\/]vsCodePlatform)\.js:/;
   for (const [target, names] of [[cp, ['execFileSync', 'spawnSync']],
     [fs, ['existsSync', 'statSync', 'accessSync', 'readdirSync', 'readFileSync', 'realpathSync']]]) {
     for (const name of names) {
