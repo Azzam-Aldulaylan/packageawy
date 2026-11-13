@@ -7,6 +7,8 @@
 
 import * as vscode from 'vscode';
 
+import { runtimeFailureLine } from './core/diagnostics.js';
+import { fireAndForget } from './core/fireAndForget.js';
 import { createPerformanceSession } from './core/performance/measurement.js';
 import { DashboardPanel } from './host/dashboardPanel.js';
 import type { DashboardPanelIntegrationTestSnapshot } from './host/dashboardPanel.js';
@@ -59,17 +61,22 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
         platform.showInformationMessage(OPEN_MANIFEST_UNAVAILABLE_MESSAGE);
         return;
       }
-      void openManifestInDashboard(context, platform, target.fsPath);
+      fireAndForget(openManifestInDashboard(context, platform, target.fsPath), (error) => {
+        platform.log(runtimeFailureLine('open-manifest', error));
+      });
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('packageawy.refresh', () => {
-      void DashboardPanel.refresh();
+      // The panel reports its own failures. This only catches what escapes it.
+      fireAndForget(DashboardPanel.refresh(), (error) => {
+        platform.log(runtimeFailureLine('refresh-command', error));
+      });
     })
   );
 
-  context.subscriptions.push(registerSidebar(() => showDashboard(context, platform)));
+  context.subscriptions.push(registerSidebar(() => showDashboard(context, platform), (line) => platform.log(line)));
   endActivation({ trusted: true });
   performance.finish({ trusted: true });
 

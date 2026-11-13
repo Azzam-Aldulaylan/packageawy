@@ -151,7 +151,8 @@ export class NodeAuditRunner implements AuditRunner {
         if (settled) return;
         settled = true;
         cleanup();
-        void treeTermination.then(() => reject(error));
+        // Settle on either outcome: a failed tree stop must not leave the audit hanging.
+        treeTermination.then(() => reject(error), () => reject(error));
       };
       const stop = (error: Error): void => {
         if (failure !== undefined || settled) return;

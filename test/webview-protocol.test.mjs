@@ -1133,6 +1133,10 @@ test('a variant carrying the wrong payload is rejected', () => {
   assert.equal(isHostToWebviewMessage({ status: 'ready' }), false);
   assert.equal(isHostToWebviewMessage({ status: 'ready', error: { code: 'x', message: 'y' } }), false);
   assert.equal(isHostToWebviewMessage({ status: 'fatal-error' }), false);
+  // refresh-failed carries nothing: it only ends a stale view's refreshing indicator.
+  assert.equal(isHostToWebviewMessage({ status: 'refresh-failed' }), true);
+  assert.equal(isHostToWebviewMessage({ status: 'refresh-failed', data: DATA }), false);
+  assert.equal(isHostToWebviewMessage({ status: 'refresh-failed', error: { code: 'X', message: 'y' } }), false);
   assert.equal(isHostToWebviewMessage({ status: 'fatal-error', data: DATA }), false);
   assert.equal(isHostToWebviewMessage({ status: 'ready', data: DATA, extra: 1 }), false);
 });

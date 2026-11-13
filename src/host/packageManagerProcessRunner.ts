@@ -104,7 +104,8 @@ export class NodePackageManagerProcessRunner {
           // A leader can exit before a descendant that ignored SIGTERM.
           // Force the remaining isolated group down before returning.
           if (terminationTimer !== undefined) terminate('SIGKILL');
-          void (treeTermination ?? Promise.resolve()).then(() => reject(failure));
+          // Settle on either outcome: a failed tree stop must not leave the caller hanging.
+          (treeTermination ?? Promise.resolve()).then(() => reject(failure), () => reject(failure));
         } else resolve({ exitCode: child.exitCode,
           stdout: rejectOversized ? stdout + stdoutDecoder.end() : stdoutTail.toString('utf8'),
           stderr: stderr.toString('utf8') });

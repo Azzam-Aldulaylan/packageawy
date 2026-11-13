@@ -122,6 +122,10 @@ function requestConfigureAdvisoryCheck(): void {
   vscode.postMessage({ type: 'configure-advisory-check' });
 }
 
+function requestShowLog(): void {
+  vscode.postMessage({ type: 'show-log' });
+}
+
 function smartCleanupProjectKey(data: DashboardData): string {
   return dashboardProjectKey(data.project);
 }
@@ -188,6 +192,12 @@ export function App(): ReactElement {
   const [activeUpgradeChanges, setActiveUpgradeChanges] = useState<readonly BulkUpgradeCandidate[]>([]);
   const [publisherLtsByPackage, setPublisherLtsByPackage] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [upgradeError, setUpgradeError] = useState<UpgradeErrorState | null>(null);
+  // Set once by the host after an internal error. Kept until the panel closes:
+  // later snapshots never clear it, and the host refuses new changes meanwhile.
+  const [runtimeErrorText, setRuntimeErrorText] = useState<string | null>(null);
+  // The host stops refreshing after an internal error. Stale rows stay stale,
+  // only the refreshing indicator ends. The next snapshot resets it.
+  const [refreshStopped, setRefreshStopped] = useState(false);
   // The host-owned analysis for `activeUpgrade`, once it arrives, never
   // constructed or edited here, only ever stored as received and echoed
   // back by its `analysisId` on confirm/cancel/use-smart-plan.
@@ -448,6 +458,19 @@ export function App(): ReactElement {
         return;
       }
       const incoming = event.data;
+
+      // Not a dashboard snapshot: the table and any running change stay as they are.
+      if (incoming.status === 'runtime-error') {
+        setRuntimeErrorText(incoming.message);
+        setRefreshStopped(true);
+        return;
+      }
+
+      // Sent for each failed load or refresh over stale rows. Ends only the indicator.
+      if (incoming.status === 'refresh-failed') {
+        setRefreshStopped(true);
+        return;
+      }
 
       if (incoming.status === 'update-advisories') {
         setMessage(previous => {
@@ -1157,6 +1180,8 @@ export function App(): ReactElement {
         return;
       }
 
+      // A new snapshot, including a later stale announcement, shows its own state again.
+      setRefreshStopped(false);
       // Any other message is a dashboard snapshot, not necessarily a change
       // to the review the user is reading. Background enrichment must not
       // discard its results, target choice, or request correlation.
@@ -2385,6 +2410,12 @@ export function App(): ReactElement {
         />
       ) : null}
 
+      {runtimeErrorText !== null ? (
+        <StatusBanner tone="error" action={{ label: 'Show Log', onClick: requestShowLog }}>
+          {runtimeErrorText}
+        </StatusBanner>
+      ) : null}
+
       {message !== undefined && message.status === 'fatal-error' ? (
         <StatusBanner tone="error" action={{ label: 'Retry', onClick: refresh, icon: <IconRefresh /> }}>
           {message.error.message}
@@ -2444,6 +2475,7 @@ export function App(): ReactElement {
       {message !== undefined && 'data' in message ? (
         <Dashboard
           status={message.status}
+          refreshStopped={refreshStopped}
           data={message.data}
           activeRemove={activeRemove}
           onOpenAdvisory={requestOpenAdvisory}
@@ -2544,7 +2576,6 @@ export function App(): ReactElement {
                   targetVersion: selectedManageTarget,
                   targetState: upgradeTargetState,
                   active: upgradeActive,
-                  analyzingPhase: upgradeActive ? analyzingPhase : null,
                   analysis: upgradeActive ? analysis : null,
                   sections: upgradeActive ? analysisSections : WAITING_UPGRADE_ANALYSIS_SECTIONS,
                   hardStale: upgradeActive && hardStaleAnalysisId !== null && hardStaleAnalysisId === analysis?.analysisId,
@@ -2691,6 +2722,7 @@ export function App(): ReactElement {
 
 function Dashboard({
   status,
+  refreshStopped,
   data,
   activeRemove,
   onOpenAdvisory,
@@ -2720,6 +2752,8 @@ function Dashboard({
   onOpenManage,
 }: {
   status: 'empty' | 'ready' | 'stale' | 'partial-error';
+  /** A stale view whose refresh stopped after an internal error: still stale, no longer refreshing. */
+  refreshStopped: boolean;
   data: DashboardData;
   /** Non-null while a coordinated removal holds the panel-wide lock: disables the bulk "Manage dependencies" entry point the same way a stale scan does. */
   activeRemove: string | null;
@@ -2828,7 +2862,12 @@ function Dashboard({
 
   return (
     <>
-      {status === 'stale' ? (
+      {status === 'stale' && refreshStopped ? (
+        <p className="stale-status">
+          <IconRefresh className="stale-status__icon stale-status__icon--static" />
+          Showing cached results from {formatTime(data.generatedAt)} · Refresh did not finish
+        </p>
+      ) : status === 'stale' ? (
         <p className="stale-status">
           <IconRefresh className="stale-status__icon" />
           Showing cached results from {formatTime(data.generatedAt)} · Refreshing…
@@ -2902,7 +2941,7 @@ function Dashboard({
               onChangeProject={onChangeProject}
               onRefresh={onRefresh}
               disabled={actionsDisabled}
-              refreshing={status === 'stale'}
+              refreshing={status === 'stale' && !refreshStopped}
               trailingActions={
                 <div className="toolbar__analysis-actions">
                   <button

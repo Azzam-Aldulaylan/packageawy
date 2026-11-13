@@ -19,6 +19,9 @@ import type {
   WorkspaceFolder,
 } from '../hostPlatform.js';
 import { REGISTRY_CACHE_STORAGE_KEY } from '../../../core/cache/persistentEtagStore.js';
+import { editorActionFailureText, runtimeFailureLine } from '../../../core/diagnostics.js';
+import type { RuntimeFailureContext } from '../../../core/diagnostics.js';
+import { fireAndForget } from '../../../core/fireAndForget.js';
 import { createCacheStore, migrateStoreKeys } from '../fileKeyValueStore.js';
 import { watchGitHead } from './gitHead.js';
 import { openScopedSettings } from './settingsScope.js';
@@ -59,7 +62,7 @@ export class VsCodePlatform implements HostPlatform {
     const cache = createCacheStore(vscode.Uri.joinPath(context.globalStorageUri, 'cache').fsPath, context.globalState);
     this.cacheStore = cache.store;
     if (cache.fileBacked) {
-      void migrateStoreKeys(context.globalState, this.cacheStore, [REGISTRY_CACHE_STORAGE_KEY]).catch(() => undefined);
+      migrateStoreKeys(context.globalState, this.cacheStore, [REGISTRY_CACHE_STORAGE_KEY]).catch(() => undefined);
     }
   }
 
@@ -160,16 +163,31 @@ export class VsCodePlatform implements HostPlatform {
     );
   }
 
+  // A notification that fails to show has nowhere else to go, so it is only logged.
   showInformationMessage(message: string): void {
-    void vscode.window.showInformationMessage(message);
+    fireAndForget(vscode.window.showInformationMessage(message), this.logFailure('notification'));
   }
 
   showWarningMessage(message: string): void {
-    void vscode.window.showWarningMessage(message);
+    fireAndForget(vscode.window.showWarningMessage(message), this.logFailure('notification'));
   }
 
   showErrorMessage(message: string): void {
-    void vscode.window.showErrorMessage(message);
+    fireAndForget(vscode.window.showErrorMessage(message), this.logFailure('notification'));
+  }
+
+  private logFailure(context: RuntimeFailureContext): (error: unknown) => undefined {
+    return (error) => {
+      this.log(runtimeFailureLine(context, error));
+    };
+  }
+
+  /** The user asked for this, so a refusal is logged and also said once. */
+  private reportEditorActionFailure(action: 'open-file' | 'open-link' | 'open-settings'): (error: unknown) => undefined {
+    return (error) => {
+      this.log(runtimeFailureLine(action, error));
+      this.showErrorMessage(editorActionFailureText(action));
+    };
   }
 
   async showModalWarning(message: string, detail: string, actions: readonly string[]): Promise<string | undefined> {
@@ -225,22 +243,29 @@ export class VsCodePlatform implements HostPlatform {
   }
 
   openFile(filePath: string, position?: FilePosition): void {
-    void vscode.window.showTextDocument(vscode.Uri.file(filePath)).then((editor) => {
+    fireAndForget(vscode.window.showTextDocument(vscode.Uri.file(filePath)).then((editor) => {
       if (position === undefined) return;
       const start = new vscode.Position(Math.max(0, position.line - 1), Math.max(0, position.column - 1));
       editor.selection = new vscode.Selection(start, start);
       editor.revealRange(new vscode.Range(start, start), vscode.TextEditorRevealType.InCenter);
-    });
+    }), this.reportEditorActionFailure('open-file'));
   }
 
   openExternal(url: string): void {
-    void vscode.env.openExternal(vscode.Uri.parse(url));
+    // VS Code reports a link it could not open as a resolved false, not only as a rejection.
+    const reportFailure = this.reportEditorActionFailure('open-link');
+    fireAndForget(vscode.env.openExternal(vscode.Uri.parse(url)).then((opened) => {
+      if (!opened) reportFailure(new Error('The editor did not open the link.'));
+    }), reportFailure);
   }
 
   openSettings(key: string, resourcePath?: string): void {
     const fullKey = `${SETTINGS_SECTION}.${key}`;
     if (resourcePath === undefined) {
-      void vscode.commands.executeCommand('workbench.action.openSettings', fullKey);
+      fireAndForget(
+        vscode.commands.executeCommand('workbench.action.openSettings', fullKey),
+        this.reportEditorActionFailure('open-settings')
+      );
       return;
     }
     openScopedSettings(
@@ -256,7 +281,9 @@ export class VsCodePlatform implements HostPlatform {
             return undefined;
           }
         },
-        executeCommand: (command, argument) => void vscode.commands.executeCommand(command, argument),
+        executeCommand: (command, argument) => {
+          fireAndForget(vscode.commands.executeCommand(command, argument), this.reportEditorActionFailure('open-settings'));
+        },
         openFile: (filePath, position) => this.openFile(filePath, position),
       },
       fullKey,

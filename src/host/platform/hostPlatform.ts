@@ -142,6 +142,11 @@ export interface HostPlatform {
    * src/core/diagnostics.ts's formatter: never raw errors, URLs or paths.
    */
   log?(line: string): void;
+  /**
+   * Shows the user where that log is: VS Code opens the output channel, the
+   * sidecar tells the IDE to say where its log lives.
+   */
+  showLog?(): void;
   workspaceFolders(): readonly WorkspaceFolder[];
   isWorkspaceTrusted(): boolean;
   /**

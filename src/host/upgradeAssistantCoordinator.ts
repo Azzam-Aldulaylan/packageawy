@@ -46,12 +46,18 @@ import type { CompatibilityStatus, UpgradeProposal } from '../core/compatibility
 import { RegistryPackageMetadataProvider, registryForPackage } from '../core/compatibility/registryMetadataProvider.js';
 import { FetchError } from '../core/registry/http.js';
 import {
+  CHANGES_PAUSED_CODE,
+  CHANGES_PAUSED_TEXT,
   diagnosticLine,
+  runtimeFailureLine,
   versionListFailureFromEligibility,
   versionListFailureFromFetch,
   versionListFailureText,
 } from '../core/diagnostics.js';
-import type { VersionListFailure } from '../core/diagnostics.js';
+import type { RuntimeFailureContext, VersionListFailure } from '../core/diagnostics.js';
+import { fireAndForget } from '../core/fireAndForget.js';
+import type { ChangeStartingMessage } from './webviewProtocol.js';
+import { failedRequestSettlement } from './failedRequestSettlement.js';
 import type { HttpClient } from '../core/registry/http.js';
 import { runPool } from '../core/registry/pool.js';
 import { fetchDistTags, fetchPackument } from '../core/registry/versions.js';
@@ -255,6 +261,18 @@ export interface UpgradeAssistantCoordinatorOptions {
    * the authoritative post-mutation project state.
    */
   onMutationLockReleased?(): void;
+  /**
+   * True once the panel hit an internal error. New changes are refused, and
+   * every path rechecks it right before taking the mutation boundary, so a
+   * confirmation already in preflight cannot start writing either.
+   */
+  changesPaused?(): boolean;
+  /**
+   * Hears about failed background work. `fence` marks a failure that leaves
+   * the lock or the project state in doubt, so the panel pauses changes.
+   * Without it, the failure is only logged.
+   */
+  reportBackgroundFailure?(context: RuntimeFailureContext, error: unknown, fence: boolean): void;
   performanceEnabled?(): boolean;
   /**
    * The directory whose dependency files a change here would write: the
@@ -580,9 +598,7 @@ function verifiedDeprecatedPackagesAfter(
 }
 
 function toSmartCleanupCompletionPresentation(
-  result: SmartCleanupCompletionReportResult,
-  before: SmartCleanupBeforeSnapshot,
-  after: SmartCleanupFinalRefreshEvidence
+  result: SmartCleanupCompletionReportResult
 ): SmartCleanupCompletionPresentation {
   const metrics: SmartCleanupCompletionPresentation['metrics'] = [];
   const addMetric = (
@@ -702,9 +718,12 @@ export class UpgradeAssistantCoordinator {
       }
       // This coordinator's own release already flushes through OperationReservation.
       if (owner === this.mutationOwner || key !== this.currentMutationRootKey() || this.reservation.isMutationBusy) return;
-      void this.options.flushDeferredChanges()
-        .catch(() => {})
-        .then(() => this.options.onMutationLockReleased?.());
+      fireAndForget(
+        this.options.flushDeferredChanges()
+          .catch(() => {})
+          .then(() => this.options.onMutationLockReleased?.()),
+        this.onBackgroundError('deferred-changes', true)
+      );
     });
   }
 
@@ -757,12 +776,61 @@ export class UpgradeAssistantCoordinator {
     this.discardSmartCleanupRestorePoint();
     this.remediationPlans.clear();
     this.remediationPlanByPackage.clear();
-    void this.reservation
-      .releaseCurrent()
-      .then((released) => {
+    // The panel is closing, so there is nothing left to pause. Log only.
+    fireAndForget(
+      this.reservation.releaseCurrent().then((released) => {
         if (!released) this.reservation.disposeIfIdle();
-      })
-      .catch(() => {});
+      }),
+      this.onBackgroundError('reservation-release', false)
+    );
+  }
+
+  /** Routes a background failure to the panel, or to the log when there is no panel. */
+  private onBackgroundError(context: RuntimeFailureContext, fence: boolean): (error: unknown) => undefined {
+    return (error) => {
+      if (this.options.reportBackgroundFailure !== undefined) {
+        this.options.reportBackgroundFailure(context, error, fence);
+      } else {
+        this.options.platform.log?.(runtimeFailureLine(context, error));
+      }
+    };
+  }
+
+  private changesPaused(): boolean {
+    return this.options.changesPaused?.() === true;
+  }
+
+  /**
+   * Answers a change-starting message the panel refused after an internal
+   * error, with the error type the webview already settles that request on.
+   * Nothing is reserved or consumed, so the review stays as it was.
+   */
+  refuseChangeAfterFailure(message: ChangeStartingMessage): void {
+    const answer = failedRequestSettlement(message, this.requestTarget(message),
+      { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT });
+    if (answer !== undefined) this.options.sink.postMessage(answer);
+  }
+
+  /**
+   * The package or review key a message about a stored review is about.
+   * Read before the handler runs, because confirming or retrying consumes
+   * the review. Undefined when a remediation plan id is unknown: there is no
+   * row to answer, as today.
+   */
+  requestTarget(message: ChangeStartingMessage | { type: 'retry-remediation'; analysisId: string }): string | undefined {
+    switch (message.type) {
+      case 'retry-remediation':
+        return this.remediationPlans.get(message.analysisId)?.packageName;
+      case 'confirm-upgrade':
+      case 'use-smart-plan':
+        return this.analysis?.id === message.analysisId ? this.analysis.eligibility.packageName : 'unknown';
+      case 'confirm-remove':
+        return this.removal?.id === message.analysisId ? this.removal.reservationKey : 'unknown';
+      case 'restore-smart-cleanup':
+        return this.smartCleanupRestore?.reservationKey ?? 'Smart Cleanup';
+      case 'confirm-remediation':
+        return this.remediationPlans.get(message.analysisId)?.packageName;
+    }
   }
 
   private reserve(packageName: string): boolean {
@@ -847,6 +915,14 @@ export class UpgradeAssistantCoordinator {
       const refusal = controller === undefined ? null : dependencyChangeRefusal(controller.upgradeSource);
       if (refusal !== null) {
         this.options.sink.postMessage({ status: 'remove-error', package: stored.reservationKey, error: refusal });
+        return;
+      }
+      if (this.changesPaused()) {
+        this.options.sink.postMessage({
+          status: 'remove-error',
+          package: stored.reservationKey,
+          error: { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT },
+        });
         return;
       }
       if (!this.reservation.beginMutation(stored.reservationKey)) return;
@@ -960,7 +1036,7 @@ export class UpgradeAssistantCoordinator {
   handleProjectSourceChanged(): void {
     this.sourceGeneration.advance();
     if (this.reservation.isMutationBusy) return;
-    void this.checkSmartCleanupRestorePoint();
+    fireAndForget(this.checkSmartCleanupRestorePoint(), this.onBackgroundError('restore-point-check', false));
 
 
     if (this.pendingAnalyzePackage !== null) {
@@ -995,7 +1071,9 @@ export class UpgradeAssistantCoordinator {
           message: 'Project files changed while the removal review was open. Analyze again.',
         },
       });
-      void this.releaseReservation(stored.reservationKey);
+      // Called from a watcher callback, which cannot wait. A failed release
+      // leaves the lock in doubt, so it pauses changes.
+      fireAndForget(this.releaseReservation(stored.reservationKey), this.onBackgroundError('reservation-release', true));
     }
   }
 
@@ -1031,19 +1109,21 @@ export class UpgradeAssistantCoordinator {
   }
 
   /** An abandoned analysis (modal left open, never confirmed or cancelled) reclaims its lock once its TTL passes, so a later analyze request is never permanently blocked by it. */
-  private reclaimExpiredAnalysis(): void {
-    if (this.analysis !== undefined && Date.now() >= this.analysis.expiresAt) {
-      void this.releaseReservation(this.analysis.eligibility.packageName);
-      this.analysis = undefined;
-    }
+  private async reclaimExpiredAnalysis(): Promise<void> {
+    const stored = this.analysis;
+    if (stored === undefined || Date.now() < stored.expiresAt) return;
+    // Cleared before the await, so a request arriving meanwhile cannot see it,
+    // and the release cannot clear a replacement stored after it.
+    this.analysis = undefined;
+    await this.releaseReservation(stored.eligibility.packageName);
   }
 
   /** Same reclaim as reclaimExpiredAnalysis, for an abandoned removal review. */
-  private reclaimExpiredRemoval(): void {
-    if (this.removal !== undefined && Date.now() >= this.removal.expiresAt) {
-      void this.releaseReservation(this.removal.reservationKey);
-      this.removal = undefined;
-    }
+  private async reclaimExpiredRemoval(): Promise<void> {
+    const stored = this.removal;
+    if (stored === undefined || Date.now() < stored.expiresAt) return;
+    this.removal = undefined;
+    await this.releaseReservation(stored.reservationKey);
   }
 
   /**
@@ -1079,8 +1159,16 @@ export class UpgradeAssistantCoordinator {
     // The record stays after a successful answer so a later cancel (dialog
     // closed, package switched) can still stop the version checks it started.
     // A newer load replaces it.
-    const answered = await this.loadUpgradeTargetsFor(message, abort.signal, abandoned);
-    if (!answered && this.upgradeTargetsLoad === load) this.upgradeTargetsLoad = undefined;
+    let answered = false;
+    try {
+      answered = await this.loadUpgradeTargetsFor(message, abort.signal, abandoned);
+    } catch (error) {
+      // The panel answers the request. Stop what this load started and drop it.
+      abort.abort();
+      throw error;
+    } finally {
+      if (!answered && this.upgradeTargetsLoad === load) this.upgradeTargetsLoad = undefined;
+    }
   }
 
   /** Cancels only the matching request, so a late cancel never stops a newer load. */
@@ -1169,9 +1257,11 @@ export class UpgradeAssistantCoordinator {
       requestId: message.requestId,
       targets,
     });
-    void controller.enrichUpdateVersions(targets.options.map(option => ({
+    // Advisory badges for the listed versions arrive later. The list is
+    // already shown, so a failure here is logged and the badges stay empty.
+    fireAndForget(controller.enrichUpdateVersions(targets.options.map(option => ({
       name: row.registryName ?? row.name, version: option.version,
-    })), this.options.sink, () => !abandoned());
+    })), this.options.sink, () => !abandoned()), this.onBackgroundError('update-advisories', false));
     return true;
   }
 
@@ -1254,8 +1344,8 @@ export class UpgradeAssistantCoordinator {
     requestId: string,
     messages: readonly UpgradeChangeRequest[]
   ): Promise<void> {
-    this.reclaimExpiredAnalysis();
-    this.reclaimExpiredRemoval();
+    await this.reclaimExpiredAnalysis();
+    await this.reclaimExpiredRemoval();
 
     if (this.activeRemediationAbort !== undefined) {
       this.options.sink.postMessage({
@@ -1898,7 +1988,7 @@ export class UpgradeAssistantCoordinator {
     await this.executeStoredAnalysis(message.analysisId, true, message);
   }
 
-  handleCancelUpgrade(message: CancelUpgradeMessage): void {
+  async handleCancelUpgrade(message: CancelUpgradeMessage): Promise<void> {
     if (message.analysisId === null) {
       // No analysis exists yet: mark the in-flight one (if any) so
       // handleAnalyzeUpgrade drops its result instead of storing/posting
@@ -1910,9 +2000,11 @@ export class UpgradeAssistantCoordinator {
       }
       return;
     }
-    if (this.analysis === undefined || this.analysis.id !== message.analysisId) return;
-    void this.releaseReservation(this.analysis.eligibility.packageName);
+    const stored = this.analysis;
+    if (stored === undefined || stored.id !== message.analysisId) return;
+    // Cleared before the await so a new analysis stored meanwhile is not cleared by this cancel.
     this.analysis = undefined;
+    await this.releaseReservation(stored.eligibility.packageName);
   }
 
   /**
@@ -2031,8 +2123,8 @@ export class UpgradeAssistantCoordinator {
     message: BulkRemoveMessage,
     smartCleanup?: SmartCleanupRemovalContext
   ): Promise<void> {
-    this.reclaimExpiredAnalysis();
-    this.reclaimExpiredRemoval();
+    await this.reclaimExpiredAnalysis();
+    await this.reclaimExpiredRemoval();
 
     if (this.activeRemediationAbort !== undefined) {
       this.options.sink.postMessage({
@@ -2310,7 +2402,7 @@ export class UpgradeAssistantCoordinator {
     await this.executeStoredRemoval(message.analysisId, message, message.resultInDialog === true);
   }
 
-  handleCancelRemove(message: CancelRemoveMessage): void {
+  async handleCancelRemove(message: CancelRemoveMessage): Promise<void> {
     if (message.analysisId === null) {
       const pending = this.pendingRemovalAnalysis;
       if (
@@ -2325,20 +2417,22 @@ export class UpgradeAssistantCoordinator {
         this.pendingRemovalAnalysis = undefined;
         if (pending.reservationHeld && !pending.releaseStarted) {
           pending.releaseStarted = true;
-          void this.releaseReservation(pending.packageName);
+          await this.releaseReservation(pending.packageName);
         }
         return;
       }
       const stored = this.removal;
       if (message.requestId !== undefined && stored?.smartCleanupRequestId === message.requestId) {
         this.removal = undefined;
-        void this.releaseReservation(stored.reservationKey);
+        await this.releaseReservation(stored.reservationKey);
       }
       return;
     }
-    if (this.removal === undefined || this.removal.id !== message.analysisId) return;
-    void this.releaseReservation(this.removal.reservationKey);
+    const stored = this.removal;
+    if (stored === undefined || stored.id !== message.analysisId) return;
+    // Cleared before the await so a new review stored meanwhile is not cleared by this cancel.
     this.removal = undefined;
+    await this.releaseReservation(stored.reservationKey);
   }
 
   /**
@@ -2828,6 +2922,14 @@ export class UpgradeAssistantCoordinator {
               .slice(0, MAX_REMEDIATION_PRESENTED_ADVISORIES),
             introducedAdvisories: [],
           },
+        });
+        return;
+      }
+      if (this.changesPaused()) {
+        this.options.sink.postMessage({
+          status: 'remediation-error',
+          package: stored.packageName,
+          error: { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT },
         });
         return;
       }
@@ -3345,6 +3447,14 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
+      if (this.changesPaused()) {
+        this.options.sink.postMessage({
+          status: 'upgrade-error',
+          package: stored.eligibility.packageName,
+          error: { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT },
+        });
+        return;
+      }
       if (!this.reservation.beginMutation(stored.eligibility.packageName)) return;
       const transaction = await runUpgradeTransaction({
         allowlistedPaths,
@@ -3657,6 +3767,14 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
+      if (this.changesPaused()) {
+        this.options.sink.postMessage({
+          status: 'remove-error',
+          package: stored.reservationKey,
+          error: { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT },
+        });
+        return;
+      }
       if (!this.reservation.beginMutation(stored.reservationKey)) return;
       const transaction = await runUpgradeTransaction({
         allowlistedPaths,
@@ -3852,7 +3970,7 @@ export class UpgradeAssistantCoordinator {
                     }),
                   ],
                 });
-                return toSmartCleanupCompletionPresentation(completion, stored.smartCleanupBefore, afterEvidence);
+                return toSmartCleanupCompletionPresentation(completion);
               })();
       const keepRestorePoint = (): { restoreAvailable?: true } => {
         if (restoreFiles === undefined || smartCleanupPresentation === undefined) return {};

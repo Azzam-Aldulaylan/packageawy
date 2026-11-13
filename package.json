@@ -171,6 +171,7 @@
     "build:core": "tsc -p src/core/tsconfig.json",
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
+    "lint": "eslint src webview/src --max-warnings 0",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/core/tsconfig.json && tsc --noEmit -p webview/tsconfig.json",
     "pretest": "tsc -p tsconfig.json && node esbuild.mjs",
     "test": "node --test \"test/**/*.test.mjs\"",
@@ -180,7 +181,7 @@
     "test:extension-host": "node scripts/integration/run-extension-host-tests.mjs",
     "pretest:real-projects": "tsc -p tsconfig.json",
     "test:real-projects": "node scripts/integration/run-real-project-fixtures.mjs",
-    "test:release": "npm run typecheck && npm test && npm run test:real-projects && npm run test:extension-host",
+    "test:release": "npm run lint && npm run typecheck && npm test && npm run test:real-projects && npm run test:extension-host",
     "benchmark:performance": "npm run pretest && npm run build:core && node scripts/performance/benchmark.mjs",
     "benchmark:actions": "npm run pretest && npm run build:core && node scripts/performance/action-benchmark.mjs",
     "benchmark:workspace-reads": "npm run pretest && npm run build:core && node scripts/performance/workspace-read-benchmark.mjs",
@@ -197,8 +198,10 @@
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "esbuild": "^0.28.0",
+    "eslint": "^10.14.0",
     "pnpm": "11.19.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.72.2"
   },
   "dependencies": {
     "js-yaml": "^4.3.2",

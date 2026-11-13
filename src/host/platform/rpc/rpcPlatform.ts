@@ -3,6 +3,7 @@
 import { readFile, stat } from 'node:fs/promises';
 
 import type { KeyValueStore } from '../../../core/cache/keyValueStore.js';
+import { SIDECAR_SHOW_LOG_TEXT } from '../../../core/diagnostics.js';
 import { CancellationTokenSource } from '../cancellation.js';
 import type {
   CancellationToken,
@@ -170,7 +171,11 @@ export class RpcPlatform implements HostPlatform {
   onDidChangeSetting(key: string, listener: () => void): Disposable {
     const entry = { key, listener };
     this.settingListeners.add(entry);
-    return { dispose: () => void this.settingListeners.delete(entry) };
+    return {
+      dispose: () => {
+        this.settingListeners.delete(entry);
+      },
+    };
   }
 
   async updateWorkspaceSetting(key: string, value: unknown): Promise<void> {
@@ -217,9 +222,8 @@ export class RpcPlatform implements HostPlatform {
   watchFiles(baseDir: string, glob: string, listener: (filePath: string) => void): Disposable {
     const watchId = this.nextId++;
     this.fileWatches.set(watchId, listener);
-    this.connection.sendRequest(Methods.filesWatch, { watchId, baseDir, glob }).catch((error: unknown) => {
+    this.connection.sendRequest(Methods.filesWatch, { watchId, baseDir, glob }).catch(() => {
       // No path or raw error: the IDE log can end up in bug reports.
-      void error;
       this.writeLog('files/watch failed');
     });
     return {
@@ -275,6 +279,11 @@ export class RpcPlatform implements HostPlatform {
       source.dispose();
       this.connection.sendNotification(Methods.progressEnd, { progressId });
     }
+  }
+
+  /** The sidecar cannot open the IDE log, so the IDE says where it is. No Kotlin change is needed. */
+  showLog(): void {
+    this.showMessage('info', SIDECAR_SHOW_LOG_TEXT);
   }
 
   showInformationMessage(message: string): void {

@@ -211,3 +211,102 @@ export function diagnosticLine(entry: {
   const detail = entry.detail === undefined ? '' : `, ${entry.detail}`;
   return `${entry.area}: ${subject === '' ? '' : `${subject} `}failed (${code}${detail})`;
 }
+
+/**
+ * Where an unexpected failure was caught. The log line names the place, never
+ * the error's message, which can carry paths, URLs or registry output.
+ */
+export type RuntimeFailureContext =
+  | 'webview-message'
+  | 'refresh-after-message'
+  | 'unhandled-rejection'
+  | 'background-refresh'
+  | 'usage-refresh'
+  | 'advisory-setting-refresh'
+  | 'update-advisories'
+  | 'file-reload'
+  | 'git-watcher'
+  | 'freshness-check'
+  | 'reservation-release'
+  | 'restore-point-check'
+  | 'deferred-changes'
+  | 'branch-reconcile'
+  | 'open-manifest'
+  | 'refresh-command'
+  | 'webview-delivery'
+  | 'notification'
+  | 'open-file'
+  | 'open-link'
+  | 'open-settings'
+  | 'sidebar'
+  | 'request-limiter'
+  | 'rpc-request';
+
+const RUNTIME_FAILURE_CONTEXTS: ReadonlySet<string> = new Set<RuntimeFailureContext>([
+  'webview-message', 'refresh-after-message', 'unhandled-rejection', 'background-refresh', 'usage-refresh',
+  'advisory-setting-refresh', 'update-advisories', 'file-reload', 'git-watcher', 'freshness-check',
+  'reservation-release', 'restore-point-check', 'deferred-changes', 'branch-reconcile', 'open-manifest',
+  'refresh-command', 'webview-delivery', 'notification', 'open-file', 'open-link', 'open-settings', 'sidebar',
+  'request-limiter', 'rpc-request',
+]);
+
+export function isRuntimeFailureContext(value: unknown): value is RuntimeFailureContext {
+  return typeof value === 'string' && RUNTIME_FAILURE_CONTEXTS.has(value);
+}
+
+/** Built-in error names are safe to log. A custom name could carry anything, so it is not echoed. */
+const SAFE_ERROR_KINDS: ReadonlySet<string> = new Set([
+  'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'EvalError', 'URIError',
+  'AggregateError', 'AbortError', 'TimeoutError',
+]);
+
+function runtimeErrorKind(error: unknown): string {
+  if (error instanceof Error) return SAFE_ERROR_KINDS.has(error.name) ? error.name : 'other error';
+  return error === undefined || error === null ? 'no error value' : 'non-error value';
+}
+
+/**
+ * One log line for an unexpected failure, e.g.
+ * "runtime: webview-message failed (TypeError)". Only the place and the
+ * built-in error kind appear.
+ */
+export function runtimeFailureLine(context: RuntimeFailureContext, error: unknown): string {
+  const place = isRuntimeFailureContext(context) ? context : 'unknown';
+  return `runtime: ${place} failed (${runtimeErrorKind(error)})`;
+}
+
+/** The one banner shown after an unexpected failure, with its fixed code. */
+export const RUNTIME_ERROR_CODE = 'INTERNAL_ERROR';
+
+export const RUNTIME_ERROR_TEXT =
+  'Packageawy hit an internal error. Changes are paused until you close and reopen the Packageawy panel. The Packageawy log has the details.';
+
+/** The sidecar's notification when no panel was open to pause. */
+export const RUNTIME_ERROR_WITHOUT_PANEL_TEXT =
+  'Packageawy hit an internal error. The Packageawy log has the details.';
+
+/** Ends a request whose handler hit that internal error, next to the banner. */
+export const INTERNAL_REQUEST_FAILURE_TEXT =
+  'This request stopped because of an internal error. The Packageawy log has the details.';
+
+/** Code the host attaches to a change it refused because of the failure above. */
+export const CHANGES_PAUSED_CODE = 'CHANGES_PAUSED';
+
+export const CHANGES_PAUSED_TEXT =
+  'Changes are paused after an internal error. Close and reopen the Packageawy panel, then try again.';
+
+/** The sidecar cannot open the IDE log for the user, so it says where the lines are. */
+export const SIDECAR_SHOW_LOG_TEXT =
+  'Packageawy writes its details to the IDE log. Open it from the Help menu with Show Log.';
+
+/** Shown once when the editor refuses to open something Packageawy asked it to. */
+export function editorActionFailureText(action: 'open-file' | 'open-link' | 'open-settings'): string {
+  switch (action) {
+    case 'open-file':
+      return 'Packageawy could not open the file. The Packageawy log has the details.';
+    case 'open-link':
+      return 'Packageawy could not open the link. The Packageawy log has the details.';
+    case 'open-settings':
+      return 'Packageawy could not open Settings. The Packageawy log has the details.';
+  }
+}
