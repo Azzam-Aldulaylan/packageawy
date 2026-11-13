@@ -12,23 +12,31 @@ import { removeSavedFiles } from './removal.js';
 
 export class RecoveryJournal {
   claimToken: string | null = null;
+
+  /** An old flow may observe its task end, but must never write or finish after failure. */
+  fence(): void { this.storage.fence(); }
+  /** No await may separate this local fence from dispatching a mutation. */
+  assertWritable(): void {
+    this.storage.assertWritable();
+  }
   constructor(readonly storage: Storage, readonly owner: Owner, readonly data: Journal, readonly files: UpgradeTransactionFileAdapter) {
     this.claimToken = data.claimToken;
   }
-  async assertOwner(ownsTakeover = false): Promise<void> {
+  async assertOwner(ownsTakeover = false, allowFenced = false): Promise<void> {
     // Once publication fails, later success cannot erase the last durable intent.
-    if (this.storage.publicationFailed) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+    this.storage.assertWritable(allowFenced);
     const owner = await this.storage.json('owner.json');
     const claim = await this.storage.json('claim.json');
     if (!isOwner(owner) || owner.transactionId !== this.owner.transactionId || owner.ownerToken !== this.owner.ownerToken ||
         (this.claimToken === null ? claim !== undefined || await this.storage.exists('claim.json') : !isClaim(claim) || claim.token !== this.claimToken) ||
         (!ownsTakeover && await this.storage.exists('takeover'))) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+    this.storage.assertWritable(allowFenced);
   }
   /** Only the new claimant may save while holding its own takeover directory. */
-  async save(ownsTakeover = false): Promise<void> {
+  async save(ownsTakeover = false, allowFenced = false): Promise<void> {
     this.data.sequence += 1;
     this.data.claimToken = this.claimToken;
-    await this.storage.writeJson('journal.json', this.data, false, () => this.assertOwner(ownsTakeover));
+    await this.storage.writeJson('journal.json', this.data, false, () => this.assertOwner(ownsTakeover, allowFenced), allowFenced);
   }
   async record(step: string, phase: 'intent' | 'finished'): Promise<void> {
     await this.assertOwner();
@@ -37,7 +45,12 @@ export class RecoveryJournal {
     if (phase === 'finished') {
       for (const file of this.data.files) {
         try { file.expected = expectation(await this.files.read(await this.filePath(file.backup))); }
-        catch { file.expected = { kind: 'unknown' }; }
+        catch (error) {
+          // Partial recovery omits unsafe backup paths from its choices. Their
+          // expectations stay unknown, while unexpected read errors still fail.
+          if (step !== 'recovery-completion' || !(error instanceof RecoveryError) || error.message !== RECOVERY_MESSAGES.unsafe) throw error;
+          file.expected = { kind: 'unknown' };
+        }
       }
     }
     await this.save();
@@ -61,9 +74,10 @@ export class RecoveryJournal {
     return { exists: true, contents: bytes };
   }
   async unknown(reason: string): Promise<void> {
+    this.fence();
     this.data.outcome = 'unknown';
     this.data.step = reason;
-    await this.save();
+    await this.save(false, true);
   }
 
   private async syncDisplaced(file: JournalFile, candidate: string): Promise<void> {
@@ -107,7 +121,10 @@ export class RecoveryJournal {
       await this.assertOwner();
       if (!fileStatesEqual(await this.files.read(candidate), expected)) return 'conflict';
       if (await this.storage.exists(`displaced/${id}.bin`)) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
-      await this.storage.fs.rename(await this.storage.safeAbsolute(candidate), await this.storage.at(`displaced/${id}.bin`));
+      const source = await this.storage.safeAbsolute(candidate);
+      const destination = await this.storage.at(`displaced/${id}.bin`);
+      this.assertWritable();
+      await this.storage.fs.rename(source, destination);
       // A directory sync preserves the name, but only syncing the moved inode
       // makes the user's bytes durable before we publish success or replace it.
       await this.syncDisplaced(file, candidate);
@@ -128,7 +145,10 @@ export class RecoveryJournal {
       await this.assertOwner();
       await this.filePath(file.backup);
       if ((await this.files.read(candidate)).exists) return 'conflict';
-      await this.storage.fs.rename(await this.storage.at(temporary), await this.storage.safeAbsolute(candidate));
+      const source = await this.storage.at(temporary);
+      const destination = await this.storage.safeAbsolute(candidate);
+      this.assertWritable();
+      await this.storage.fs.rename(source, destination);
       await this.storage.syncDirectory(path.dirname(candidate));
     }
     await this.storage.boundary('replacement:installed');
@@ -148,17 +168,19 @@ export class RecoveryJournal {
         if (entry === undefined) throw new RecoveryError(RECOVERY_MESSAGES.unsafe);
         if (this.data.step === 'rollback') return this.replace(entry, expected, replacement);
         await this.record(`write:${entry.backup.id}`, 'intent');
-        const result = await this.files.compareAndSwap(candidate, expected, replacement);
+        this.assertWritable();
+        const result = await this.files.compareAndSwap(candidate, expected, replacement, () => this.assertWritable());
         await this.record(`write:${entry.backup.id}`, 'finished');
         return result;
       },
     };
   }
   async finish(completion: string, retain = false): Promise<boolean> {
+    await this.assertOwner();
     this.data.outcome = completion === 'kept' ? 'completed' : completion === 'incomplete' ? 'rollback-incomplete' : 'rolled-back';
     await this.record('completion', 'finished');
     if (retain || completion === 'incomplete' || this.data.files.some((file) => file.displacedIds.length > 0)) return false;
-    await removeSavedFiles(this.storage, this.owner, this.data, null);
+    await removeSavedFiles(this.storage, this.owner, this.data, null, () => this.assertOwner());
     return true;
   }
 }
@@ -170,7 +192,9 @@ export async function prepareJournal(target: RecoveryTarget, hooks: StorageHooks
   for (const candidate of target.allowlistedPaths) {
     if (relatePaths(await canonicalPath(target.root), await canonicalPath(candidate)) !== 'inside') throw new RecoveryError(RECOVERY_MESSAGES.unsafe);
   }
-  try { await storage.fs.mkdir(await storage.safeAbsolute(storage.folder)); }
+  const folder = await storage.safeAbsolute(storage.folder);
+  storage.assertWritable();
+  try { await storage.fs.mkdir(folder); }
   catch (error) { if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST') throw new RecoveryError(RECOVERY_MESSAGES.blocked); throw error; }
   await storage.boundary('folder:created');
   await storage.syncDirectory(target.root);

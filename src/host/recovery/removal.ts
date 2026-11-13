@@ -31,7 +31,7 @@ async function inventory(storage: Storage, data: Journal | undefined): Promise<{
 }
 
 /** The identity is captured once and checked at every later durable boundary. */
-export async function removeSavedFiles(storage: Storage, identity: Owner, data: Journal | undefined, claimToken: string | null): Promise<void> {
+export async function removeSavedFiles(storage: Storage, identity: Owner, data: Journal | undefined, claimToken: string | null, assertActive?: () => Promise<void>): Promise<void> {
   const checkIdentity = async (): Promise<void> => {
     const current = await storage.json('owner.json');
     if (!isOwner(current) || current.transactionId !== identity.transactionId || current.ownerToken !== identity.ownerToken) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
@@ -44,6 +44,7 @@ export async function removeSavedFiles(storage: Storage, identity: Owner, data: 
   if (claimToken !== null && (!isClaim(initialClaim) || initialClaim.token !== claimToken)) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
   if (claimToken === null && data?.outcome !== 'removing' && claimBytes !== undefined) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
   const check = async (): Promise<void> => {
+    await assertActive?.();
     await checkIdentity();
     if (claimDeleted) return;
     const current = await storage.exists('claim.json') ? await storage.read('claim.json') : undefined;
@@ -58,7 +59,7 @@ export async function removeSavedFiles(storage: Storage, identity: Owner, data: 
     await storage.boundary('removal:7');
     await check(); await storage.unlink('owner.json');
     await storage.boundary('removal:8');
-    await storage.fs.rmdir(await storage.safeAbsolute(storage.folder));
+    await storage.removeFolder();
     await storage.syncDirectory(storage.target.root);
     await storage.boundary('removal:9');
   };
@@ -96,7 +97,7 @@ export async function removeUninitialized(storage: Storage, stopped: boolean): P
     if (name === 'backups' || name === 'displaced') await storage.rmdir(name);
     else await storage.unlink(name);
   }
-  await storage.fs.rmdir(await storage.safeAbsolute(storage.folder));
+  await storage.removeFolder();
   await storage.syncDirectory(storage.target.root);
 }
 

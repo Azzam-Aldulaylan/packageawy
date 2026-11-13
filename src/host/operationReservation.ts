@@ -48,6 +48,8 @@ export interface OwnerHandle {
    * project lock stay held, and nothing else in this process can release them.
    */
   markUnknown(reason: string): boolean;
+  /** Settle an internal failure. True means unknown; false means a clean pre-mutation stop. */
+  fail(reason: string): Promise<boolean>;
 }
 
 export interface OperationReservationOptions {
@@ -61,6 +63,7 @@ export interface OperationReservationOptions {
   isDisposed(): boolean;
   dispose(): void;
   log?(line: string): void;
+  onUnknown?(handle: OwnerHandle): Promise<void>;
 }
 
 class Handle implements OwnerHandle {
@@ -69,6 +72,7 @@ class Handle implements OwnerHandle {
   result: CompletionResult | undefined;
   journal: RecoveryJournal | undefined;
   refusal: string | undefined;
+  private invalidationReason: string | undefined;
   /** The key the project lock registry stored this handle under, or undefined for a project without a resolved target. */
   lockKey: string | undefined;
 
@@ -85,7 +89,10 @@ class Handle implements OwnerHandle {
 
   async beginMutation(target: RecoveryTarget): Promise<boolean> {
     if (this.state !== 'reserved') return this.ignored('beginMutation');
-    if (this.owner.locks.admissionClosed) { this.refusal = RECOVERY_MESSAGES.restart; return false; }
+    if (this.owner.locks.admissionClosed) {
+      this.refusal = this.owner.locks.restartRequired ? RECOVERY_MESSAGES.restartRequired : RECOVERY_MESSAGES.restart;
+      return false;
+    }
     const key = lockKey(target.root);
     if (this.lockKey === undefined) {
       const acquired = this.owner.locks.tryAcquire(target.root, this);
@@ -99,16 +106,25 @@ class Handle implements OwnerHandle {
       // Ordinary activation and scans never need journal filesystem machinery.
       const { prepareJournal } = await import('./recovery/journal.js');
       this.journal = await prepareJournal(target);
+      if (this.invalidationReason !== undefined || this.settled || this.owner.locks.restartRequired) {
+        const reason = this.invalidationReason ?? RECOVERY_MESSAGES.restartRequired;
+        this.markUnknown(reason);
+        this.journal.fence();
+        try { await this.journal.unknown(reason); } catch { /* Retain the last durable preparation. */ }
+        await this.owner.notifyUnknown(this);
+        return false;
+      }
       return true;
     } catch (error) {
       this.refusal = error instanceof RecoveryError ? error.message : RECOVERY_MESSAGES.blocked;
-      this.state = 'reserved';
+      if (!this.settled) this.state = 'reserved';
       return false;
     }
   }
 
   transferToRecovery(claimToken: string): RecoveryLock | undefined {
-    if ((this.state !== 'unknown' && this.state !== 'retained') || this.lockKey === undefined) {
+    if (this.owner.locks.admissionClosed || this.journal === undefined ||
+        (this.state !== 'unknown' && this.state !== 'retained') || this.lockKey === undefined) {
       this.ignored('transferToRecovery');
       return undefined;
     }
@@ -125,25 +141,40 @@ class Handle implements OwnerHandle {
 
   async complete(result: CompletionResult): Promise<boolean> {
     if (this.settled) return this.ignored('complete');
-    if (result === 'unknown') { this.markUnknown('The task result was not observed.'); return false; }
+    if (result === 'unknown') { await this.fail('The task result was not observed.'); return false; }
     this.result = result;
     if (this.journal !== undefined) {
       try {
         if (!await this.journal.finish(result, this.journal.data.operation === 'cleanup' && result === 'kept')) {
+          if (this.settled) return false;
           this.state = 'retained';
           return false;
         }
       } catch (error) {
-        this.markUnknown(error instanceof Error ? error.message : String(error));
+        await this.fail('The dependency change could not be settled.');
         return false;
       }
     }
+    if (this.settled) return false;
     return this.settle(this, 'completed');
+  }
+
+  async fail(reason: string): Promise<boolean> {
+    if (this.settled) return this.state === 'unknown';
+    if (this.journal === undefined && this.state !== 'mutating') { await this.complete('not-started'); return false; }
+    // Fence synchronously, before persistence or client delivery can yield.
+    this.markUnknown(reason);
+    try { await this.journal?.unknown(reason); } catch { /* The last durable intent stays blocking. */ }
+    await this.owner.notifyUnknown(this);
+    return true;
   }
 
   markUnknown(reason: string): boolean {
     if (this.settled) return this.ignored('markUnknown');
+    this.invalidationReason = reason;
     this.state = 'unknown';
+    this.result = 'unknown';
+    this.journal?.fence();
     if (this.lockKey !== undefined) this.owner.locks.reportTaskState(this.lockKey, this, 'idle');
     this.log(`Dependency change for ${this.label} has an unknown outcome and stays locked: ${reason}`);
     return true;
@@ -214,6 +245,11 @@ export class OperationReservation {
     if (this.current === undefined) this.options.dispose();
   }
 
+  async notifyUnknown(handle: OwnerHandle): Promise<void> {
+    try { await this.options.onUnknown?.(handle); }
+    catch { this.log('Could not show dependency recovery. The change stays locked.'); }
+  }
+
   /** Release synchronously, then drain once, then resume background work. */
   private async end(handle: Handle, state: 'released' | 'completed'): Promise<boolean> {
     handle.state = state;
@@ -266,4 +302,12 @@ export class SourceGenerationGuard {
     commit();
     return true;
   }
+}
+
+/** Last resort failures have no request identity and cover detached writers too. */
+export async function settleProcessFailure(locks: ProjectMutationLocks, reason: string): Promise<boolean> {
+  const active = locks.activeOwners().filter((holder): holder is Handle =>
+    holder instanceof Handle && !holder.settled && (holder.state === 'mutating' || holder.journal !== undefined));
+  await Promise.all(active.map(handle => handle.fail(reason)));
+  return active.length > 0;
 }

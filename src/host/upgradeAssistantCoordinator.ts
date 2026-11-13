@@ -711,6 +711,7 @@ export class UpgradeAssistantCoordinator {
       isDisposed: () => options.isDisposed(),
       dispose: () => { this.stopListeningForTask?.(); this.session.dispose(); },
       log: (line) => options.platform.log?.(line),
+      onUnknown: (handle) => this.showUnknown(handle),
     });
     this.projectLoader = options.loadProject ?? ((candidate) => loadProject(options.platform, candidate));
     this.withCompatibilityProgress = options.withCompatibilityProgress ??
@@ -844,6 +845,8 @@ export class UpgradeAssistantCoordinator {
     return this.options.changesPaused?.() === true;
   }
 
+  get restartRequired(): boolean { return this.mutationLocks.restartRequired; }
+
   /**
    * Answers a change-starting message the panel refused after an internal
    * error, with the error type the webview already settles that request on.
@@ -851,7 +854,7 @@ export class UpgradeAssistantCoordinator {
    */
   refuseChangeAfterFailure(message: ChangeStartingMessage): void {
     const answer = failedRequestSettlement(message, this.requestTarget(message),
-      { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT });
+      { code: CHANGES_PAUSED_CODE, message: this.mutationLocks.restartRequired ? RECOVERY_MESSAGES.restartRequired : CHANGES_PAUSED_TEXT });
     if (answer !== undefined) this.options.sink.postMessage(answer);
   }
 
@@ -880,7 +883,8 @@ export class UpgradeAssistantCoordinator {
   private async withAdmission(status: 'upgrade-error' | 'remove-error' | 'remediation-error', packageName: string, run: () => Promise<void>): Promise<void> {
     const done = this.mutationLocks.trackPending();
     if (done === undefined) {
-      this.options.sink.postMessage({ status, package: packageName, error: { code: 'OPERATION_IN_PROGRESS', message: RECOVERY_MESSAGES.restart } });
+      this.options.sink.postMessage({ status, package: packageName, error: { code: 'OPERATION_IN_PROGRESS',
+        message: this.mutationLocks.restartRequired ? RECOVERY_MESSAGES.restartRequired : RECOVERY_MESSAGES.restart } });
       return;
     }
     try { await run(); } finally { done(); }
@@ -922,26 +926,35 @@ export class UpgradeAssistantCoordinator {
     };
   }
 
-  /**
-   * Ends a change flow's own reservation from its finally block, whether or
-   * not the mutation began. The handle clears the reservation synchronously,
-   * and host follow-up work is failure-contained so a rejected reload can
-   * neither become unhandled nor poison later releases. A handle the panel
-   * already abandoned (webview reload, panel close) is left as it is.
-   */
-  private async endReservation(handle: OwnerHandle, completion: TransactionCompletion): Promise<void> {
-    if (handle.settled) return;
-    this.session.journal = undefined;
-    if (completion === 'unknown') {
-      handle.markUnknown('The task result was not observed.');
-      try { await handle.journal?.unknown('The task result was not observed.'); } catch { /* The last durable intent keeps changes blocked. */ }
+  private logChangeFailure(cause: unknown): void {
+    try { this.options.platform.log?.(runtimeFailureLine('webview-message', cause)); }
+    catch { /* Diagnostics must not interrupt handle settlement. */ }
+  }
+
+  /** Settle only the owning change; unrelated refresh failures never call this. */
+  async settleChangeFailure(): Promise<boolean> {
+    return await this.reservation.held?.fail('An internal error interrupted the dependency change.') ?? false;
+  }
+
+  private async showUnknown(handle: OwnerHandle): Promise<void> {
+    try {
       if (!this.options.isDisposed()) {
         const operation = handle.journal?.data.operation;
         const status = operation === 'upgrade' ? 'upgrade-error' : operation === 'remediation' ? 'remediation-error' : 'remove-error';
         this.options.sink.postMessage({ status, package: handle.label, error: { code: 'OUTCOME_UNKNOWN', message: RECOVERY_MESSAGES.blocked } });
       }
-    } else await handle.complete(completion);
-    if (handle.state === 'unknown' || handle.state === 'retained') await this.recovery.inspect();
+    } finally {
+      // Recovery delivery is attempted even when the request's view failed.
+      await this.recovery.inspect();
+    }
+  }
+
+  /** A known result settles explicitly; unexpected exits use fail instead. */
+  private async endReservation(handle: OwnerHandle, completion: TransactionCompletion): Promise<void> {
+    if (handle.settled) return;
+    this.session.journal = undefined;
+    await handle.complete(completion);
+    if (handle.state === 'retained') await this.recovery.inspect();
   }
 
   /**
@@ -2896,7 +2909,7 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
-      completion = 'incomplete';
+      completion = 'unknown';
       this.session.journal = handle.journal;
       this.options.sink.postMessage({
         status: 'remediation-applying',
@@ -2952,7 +2965,8 @@ export class UpgradeAssistantCoordinator {
                 applied.packageManager !== stored.snapshot.packageManager ||
                 applied.importerId !== stored.snapshot.importerId
               ) {
-                throw new Error('The installed project no longer matches the reviewed manifest and lockfile plan.');
+                securityVerificationFailed = true;
+                return { status: 'failed', checks: [{ id: 'transitive-security', status: 'failed', message: 'The installed project no longer matches the reviewed manifest and lockfile plan.' }] };
               }
               const graph = buildDependencyGraph({
                 root: applied.root,
@@ -2961,7 +2975,10 @@ export class UpgradeAssistantCoordinator {
                 packageManager: applied.packageManager,
                 importerId: applied.importerId,
               });
-              if (!this.publicAdvisoryCheckEnabled(applied.root)) throw new Error(ADVISORY_CHECK_OFF_MESSAGE);
+              if (!this.publicAdvisoryCheckEnabled(applied.root)) {
+                securityVerificationFailed = true;
+                return { status: 'failed', checks: [{ id: 'transitive-security', status: 'failed', message: ADVISORY_CHECK_OFF_MESSAGE }] };
+              }
               const npmAdvisories = await fetchBulkAdvisories(
                 this.options.httpClient,
                 buildBulkRequestBody(graph),
@@ -3009,12 +3026,12 @@ export class UpgradeAssistantCoordinator {
                   : {}),
               });
             } catch (cause) {
-              securityVerificationFailed = true;
-              checks.push({
-                id: 'transitive-security',
-                status: abort.signal.aborted ? 'cancelled' : 'failed',
-                message: cause instanceof Error ? cause.message : String(cause),
-              });
+              if (cause instanceof FetchError) {
+                securityVerificationFailed = true;
+                return { status: 'failed', checks: [{ id: 'transitive-security', status: 'failed', message: cause.message }] };
+              }
+              this.logChangeFailure(cause);
+              return { status: 'unknown', checks, message: RECOVERY_MESSAGES.blocked };
             }
 
             if (!securityVerificationFailed && stored.verificationScripts.length > 0) {
@@ -3208,6 +3225,8 @@ export class UpgradeAssistantCoordinator {
         await this.options.reloadFinalState();
       }
     } catch (cause) {
+      this.logChangeFailure(cause);
+      if (await handle.fail('An internal error interrupted the dependency change.')) return;
       if (!this.options.isDisposed() && !abort.signal.aborted) {
         this.options.sink.postMessage({
           status: 'remediation-error',
@@ -3442,7 +3461,7 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
-      completion = 'incomplete';
+      completion = 'unknown';
       this.session.journal = handle.journal;
       const transaction = await runUpgradeTransaction({
         ...(handle.journal === undefined ? {} : { journal: handle.journal }),
@@ -3497,20 +3516,14 @@ export class UpgradeAssistantCoordinator {
           classification: null,
         })),
       };
-      try {
-        if (this.options.readAndApplyMutationLocalState === undefined) {
-          finalProject = await this.projectLoader(selected);
-        } else {
-          const localRead = await this.options.readAndApplyMutationLocalState();
-          finalProject = localRead?.project;
-          structurallyCurrent = localRead?.structurallyCurrent === true;
-        }
-        if (finalProject !== undefined) appliedState = inspectAppliedUpgradeState(finalProject, proposal.changes);
-      } catch {
-        // A successful task is not enough to claim the requested state was
-        // applied. Keep the explicit unconfirmed result and let the normal
-        // enrichment reload recover/display whatever can still be read.
+      if (this.options.readAndApplyMutationLocalState === undefined) {
+        finalProject = await this.projectLoader(selected);
+      } else {
+        const localRead = await this.options.readAndApplyMutationLocalState();
+        finalProject = localRead?.project;
+        structurallyCurrent = localRead?.structurallyCurrent === true;
       }
+      if (finalProject !== undefined) appliedState = inspectAppliedUpgradeState(finalProject, proposal.changes);
 
       const usedTargetedRefresh =
         finalProject !== undefined &&
@@ -3583,6 +3596,8 @@ export class UpgradeAssistantCoordinator {
         this.options.platform.showWarningMessage(presentation.message);
       }
     } catch (cause) {
+      this.logChangeFailure(cause);
+      if (await handle.fail('An internal error interrupted the dependency change.')) return;
       if (!this.options.isDisposed()) {
         this.options.sink.postMessage({
           status: 'upgrade-error',
@@ -3783,7 +3798,7 @@ export class UpgradeAssistantCoordinator {
         });
         return;
       }
-      completion = 'incomplete';
+      completion = 'unknown';
       this.session.journal = handle.journal;
       const transaction = await runUpgradeTransaction({
         ...(handle.journal === undefined ? {} : { journal: handle.journal }),
@@ -3836,11 +3851,8 @@ export class UpgradeAssistantCoordinator {
                   : { id: 'smart-cleanup-structure', status: 'failed', message: structuralFailure });
               }
             } catch (cause) {
-              checks.push({
-                id: 'smart-cleanup-structure',
-                status: 'failed',
-                message: `Could not verify the applied dependency graph: ${cause instanceof Error ? cause.message : String(cause)}`,
-              });
+              this.logChangeFailure(cause);
+              return { status: 'unknown', checks, message: RECOVERY_MESSAGES.blocked };
             }
             if (checks.some((check) => check.status === 'failed')) {
               const message = checks.find((check) => check.status === 'failed')?.message;
@@ -4023,6 +4035,8 @@ export class UpgradeAssistantCoordinator {
         if (!resultInDialog) this.options.platform.showWarningMessage(presentation.message);
       }
     } catch (cause) {
+      this.logChangeFailure(cause);
+      if (await handle.fail('An internal error interrupted the dependency change.')) return;
       if (!this.options.isDisposed()) {
         this.options.sink.postMessage({
           status: 'remove-error',

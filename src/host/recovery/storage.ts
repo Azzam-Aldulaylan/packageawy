@@ -8,21 +8,32 @@ import { isClaim, isOwner, newId, RECOVERY_FOLDER, RECOVERY_MESSAGES, RecoveryEr
 export interface StorageHooks {
   fs?: typeof fs;
   boundary?(name: string): Promise<void>;
+  isInvalidated?(): boolean;
   platform?: NodeJS.Platform;
 }
 export function code(error: unknown): unknown {
   return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
 }
 
+/** A refused dispatch is certain, unlike an I/O failure after dispatch. */
+class StorageFenceError extends RecoveryError {}
+
 /** All journal I/O rechecks components, including existing directories and leaves. */
 export class Storage {
   readonly fs: typeof fs;
   readonly folder: string;
   publicationFailed = false;
+  private fenced = false;
   private canonicalRoot = '';
   constructor(readonly target: RecoveryTarget, readonly hooks: StorageHooks = {}) {
     this.fs = hooks.fs ?? fs;
     this.folder = path.join(target.root, RECOVERY_FOLDER);
+  }
+  fence(): void { this.fenced = true; }
+  /** Resolve paths first, then check synchronously at every mutation dispatch. */
+  assertWritable(allowFenced = false): void {
+    if (this.publicationFailed) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+    if (!allowFenced && (this.fenced || this.hooks.isInvalidated?.())) throw new StorageFenceError(RECOVERY_MESSAGES.blocked);
   }
   async initialize(): Promise<void> {
     this.canonicalRoot = await canonicalPath(this.target.workspaceRoot);
@@ -61,14 +72,31 @@ export class Storage {
   async list(relative?: string): Promise<string[]> {
     return this.fs.readdir(relative === undefined ? await this.safeAbsolute(this.folder) : await this.at(relative));
   }
-  async mkdir(relative: string): Promise<void> { await this.fs.mkdir(await this.at(relative)); }
-  async unlink(relative: string): Promise<void> {
-    try { await this.fs.unlink(await this.at(relative)); }
+  async mkdir(relative: string): Promise<void> {
+    const candidate = await this.at(relative);
+    this.assertWritable();
+    await this.fs.mkdir(candidate);
+  }
+  async unlink(relative: string, allowFenced = false): Promise<void> {
+    try {
+      const candidate = await this.at(relative);
+      this.assertWritable(allowFenced);
+      await this.fs.unlink(candidate);
+    }
     catch (error) { if (!isMissingPathError(error)) throw error; }
   }
   async rmdir(relative: string): Promise<void> {
-    try { await this.fs.rmdir(await this.at(relative)); }
+    try {
+      const candidate = await this.at(relative);
+      this.assertWritable();
+      await this.fs.rmdir(candidate);
+    }
     catch (error) { if (!isMissingPathError(error)) throw error; }
+  }
+  async removeFolder(): Promise<void> {
+    const candidate = await this.safeAbsolute(this.folder);
+    this.assertWritable();
+    await this.fs.rmdir(candidate);
   }
   async syncDirectory(candidate = this.folder): Promise<void> {
     // Node cannot fsync directories on Windows (EPERM/EISDIR). POSIX errors
@@ -82,21 +110,35 @@ export class Storage {
   async boundary(name: string): Promise<void> { await this.hooks.boundary?.(name); }
 
   /** No unlink-first or copy fallback: failed publication keeps its previous durable state. */
-  async publish(relative: string, data: Uint8Array | string, exclusive = false, guard?: () => Promise<void>, mode = 0o600): Promise<void> {
-    try { await this.publishPrepared(relative, data, exclusive, guard, mode); }
-    catch (error) { this.publicationFailed = true; throw error; }
+  async publish(relative: string, data: Uint8Array | string, exclusive = false, guard?: () => Promise<void>, mode = 0o600, allowFenced = false): Promise<void> {
+    // A local fence refusal is certain and must not prevent saving unknown.
+    this.assertWritable(allowFenced);
+    try { await this.publishPrepared(relative, data, exclusive, guard, mode, allowFenced); }
+    catch (error) {
+      if (!(error instanceof StorageFenceError)) this.publicationFailed = true;
+      throw error;
+    }
   }
 
-  private async publishPrepared(relative: string, data: Uint8Array | string, exclusive: boolean, guard: (() => Promise<void>) | undefined, mode: number): Promise<void> {
+  private async publishPrepared(relative: string, data: Uint8Array | string, exclusive: boolean, guard: (() => Promise<void>) | undefined, mode: number, allowFenced: boolean): Promise<void> {
     await guard?.();
     const temporary = `${relative}.tmp-${newId()}`;
-    const handle = await this.fs.open(await this.at(temporary), 'wx', mode);
-    try { await handle.writeFile(data); await handle.chmod(mode); await handle.sync(); }
+    const temporaryPath = await this.at(temporary);
+    this.assertWritable(allowFenced);
+    const handle = await this.fs.open(temporaryPath, 'wx', mode);
+    try {
+      this.assertWritable(allowFenced);
+      await handle.writeFile(data);
+      this.assertWritable(allowFenced);
+      await handle.chmod(mode);
+      await handle.sync();
+    }
     finally { await handle.close(); }
     await this.boundary(`synced:${relative}`);
     await guard?.();
     const source = await this.at(temporary);
     const destination = await this.at(relative);
+    this.assertWritable(allowFenced);
     if (exclusive) {
       try { await this.fs.link(source, destination); }
       catch (error) {
@@ -113,14 +155,14 @@ export class Storage {
         throw new RecoveryError(RECOVERY_MESSAGES.unsupported);
       }
       await this.boundary(`linked:${relative}`);
-      await this.unlink(temporary);
+      await this.unlink(temporary, allowFenced);
     } else {
       await this.fs.rename(source, destination);
     }
     await this.syncDirectory(path.dirname(destination));
     await this.boundary(`published:${relative}`);
   }
-  async writeJson(relative: string, value: unknown, exclusive = false, guard?: () => Promise<void>): Promise<void> {
-    await this.publish(relative, JSON.stringify(value), exclusive, guard);
+  async writeJson(relative: string, value: unknown, exclusive = false, guard?: () => Promise<void>, allowFenced = false): Promise<void> {
+    await this.publish(relative, JSON.stringify(value), exclusive, guard, 0o600, allowFenced);
   }
 }

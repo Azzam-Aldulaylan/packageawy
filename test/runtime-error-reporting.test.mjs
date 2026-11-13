@@ -13,6 +13,7 @@ import {
 } from '../out/core/diagnostics.js';
 import { RpcPlatform } from '../out/host/platform/rpc/rpcPlatform.js';
 import { isHostToWebviewMessage, isWebviewToHostMessage } from '../out/host/webviewProtocol.js';
+import { RECOVERY_MESSAGES } from '../out/host/recoveryCopy.js';
 import { createUnhandledRejectionHandler } from '../out/sidecar/unhandledRejection.js';
 
 test('the log line names the place and the built-in error kind, never the message', () => {
@@ -84,7 +85,7 @@ function handlerFixture({ panelOpen = true, failures = {} } = {}) {
   return { handler, calls };
 }
 
-test('the rejection handler pauses the panel every time and notifies once', () => {
+test('the rejection handler pauses the panel every time and notifies once', async () => {
   const { handler, calls } = handlerFixture();
   const exit = process.exit;
   let exited = false;
@@ -97,22 +98,25 @@ test('the rejection handler pauses the panel every time and notifies once', () =
   } finally {
     process.exit = exit;
   }
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(exited, false, 'the handler never exits');
   assert.equal(calls.panel.length, 2, 'each rejection reaches the panel, which keeps one failed state');
-  assert.deepEqual(calls.notify, [RUNTIME_ERROR_TEXT]);
+  assert.deepEqual(calls.notify, [RECOVERY_MESSAGES.restartRequired]);
   assert.deepEqual(calls.log, [], 'the panel writes the log line itself');
 });
 
-test('with no panel open the handler logs a safe line and says nothing is paused', () => {
+test('with no panel open the handler logs a safe line and requires restart', async () => {
   const { handler, calls } = handlerFixture({ panelOpen: false });
   handler(new RangeError('/Users/me/project'));
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls.log, ['runtime: unhandled-rejection failed (RangeError)']);
-  assert.deepEqual(calls.notify, [RUNTIME_ERROR_WITHOUT_PANEL_TEXT]);
+  assert.deepEqual(calls.notify, [RECOVERY_MESSAGES.restartRequired]);
 });
 
-test('a failing step does not skip the others or throw', () => {
+test('a failing step does not skip the others or throw', async () => {
   const { handler, calls } = handlerFixture({ failures: { panel: true } });
   assert.doesNotThrow(() => handler(new Error('x')));
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.log.length, 1, 'logged because the panel could not take it');
   assert.equal(calls.notify.length, 1);
   const quiet = handlerFixture({ panelOpen: false, failures: { log: true, notify: true } });

@@ -43,7 +43,10 @@ export class RecoverySession {
       }
       const previous = await storage.json('claim.json');
       claim.previousToken = isClaim(previous) ? previous.token : null;
-      await storage.fs.rename(await storage.at('claim.json'), await storage.at(`claim.${claim.previousToken ?? newId()}.abandoned`));
+      const source = await storage.at('claim.json');
+      const destination = await storage.at(`claim.${claim.previousToken ?? newId()}.abandoned`);
+      storage.assertWritable();
+      await storage.fs.rename(source, destination);
       await storage.syncDirectory();
       await storage.boundary('takeover:abandoned');
       await storage.writeJson('claim.json', claim, true, checkOwner);

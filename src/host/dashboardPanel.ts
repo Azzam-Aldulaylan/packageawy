@@ -371,7 +371,12 @@ export class DashboardPanel {
     this.channel.onDidReceiveMessage((raw: unknown) => {
       if (!isWebviewToHostMessage(raw)) return;
       // handle() catches and reports its own failures. This only sees what escapes that.
-      fireAndForget(this.handle(raw), this.onBackgroundError('webview-message'));
+      fireAndForget(this.handle(raw), (error) => {
+        if (isChangeStartingMessage(raw)) {
+          fireAndForget(this.upgradeCoordinator.settleChangeFailure(), this.onBackgroundError('reservation-release', false));
+        }
+        this.reportRuntimeFailure('webview-message', error);
+      });
     });
 
     this.channel.onDidDispose(() => {
@@ -516,7 +521,7 @@ export class DashboardPanel {
       return;
     }
     if (message.type === 'refresh' && this.webviewReady) this.scheduleRecoveryInspection();
-    if (this.runtimeFailed && isChangeStartingMessage(message)) {
+    if ((this.runtimeFailed || this.upgradeCoordinator.restartRequired) && isChangeStartingMessage(message)) {
       this.upgradeCoordinator.refuseChangeAfterFailure(message);
       return;
     }
@@ -525,8 +530,9 @@ export class DashboardPanel {
     try {
       await this.handleMessage(message);
     } catch (error) {
+      const unknown = isChangeStartingMessage(message) && await this.upgradeCoordinator.settleChangeFailure();
       this.reportRuntimeFailure('webview-message', error);
-      this.settleFailedRequest(message, changeTarget);
+      if (!unknown) this.settleFailedRequest(message, changeTarget);
     }
     try {
       // Setting changes retain one refresh until the active operation settles.

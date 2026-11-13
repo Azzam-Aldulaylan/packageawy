@@ -206,7 +206,8 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
   async compareAndSwap(
     candidate: string,
     expected: FileState,
-    replacement: FileState
+    replacement: FileState,
+    beforeMutation?: () => void
   ): Promise<CompareAndSwapResult> {
     const resolved = await this.resolveAllowed(candidate);
     const current = await this.read(resolved);
@@ -217,6 +218,7 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
       const justBeforeDelete = await this.read(resolved);
       if (!stateEquals(justBeforeDelete, expected)) return 'conflict';
       try {
+        beforeMutation?.();
         await unlink(resolved);
         return 'restored';
       } catch (cause) {
@@ -234,12 +236,14 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
     let temporaryCreated = false;
     let temporaryHandle;
     try {
+      beforeMutation?.();
       temporaryHandle = await open(
         temporary,
         fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
         0o600
       );
       temporaryCreated = true;
+      beforeMutation?.();
       await temporaryHandle.writeFile(replacement.contents);
 
       const justBeforeReplace = await this.readWithMode(resolved);
@@ -251,6 +255,7 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
         // existing target's safely-opened permission bits to that inode before
         // it becomes visible. chmod on the open handle avoids following a
         // workspace-controlled pathname.
+        beforeMutation?.();
         await temporaryHandle.chmod(justBeforeReplace.mode ?? 0o600);
       }
       await temporaryHandle.sync();
@@ -261,6 +266,7 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
         // Unlike rename, link never overwrites a file that appeared after the
         // comparison. Both paths are in one directory/filesystem.
         try {
+          beforeMutation?.();
           await link(temporary, resolved);
         } catch (cause) {
           const code =
@@ -275,12 +281,18 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
 
       // Same-directory rename is atomic for readers. Node/filesystems do not
       // offer a conditional rename, hence the second exact-byte check above.
+      beforeMutation?.();
       await rename(temporary, resolved);
       temporaryCreated = false;
       return 'restored';
     } finally {
       await temporaryHandle?.close().catch(() => {});
-      if (temporaryCreated) await rm(temporary, { force: true }).catch(() => {});
+      if (temporaryCreated) {
+        try {
+          beforeMutation?.();
+          await rm(temporary, { force: true });
+        } catch { /* A fenced flow also retains its temporary file. */ }
+      }
     }
   }
 }

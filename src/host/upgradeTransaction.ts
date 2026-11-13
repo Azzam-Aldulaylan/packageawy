@@ -32,7 +32,9 @@ export interface UpgradeTransactionFileAdapter {
   compareAndSwap(
     path: string,
     expected: FileState,
-    replacement: FileState
+    replacement: FileState,
+    /** Synchronous fence, called immediately before each filesystem mutation. */
+    beforeMutation?: () => void
   ): Promise<CompareAndSwapResult>;
 }
 
@@ -202,7 +204,7 @@ export interface UpgradeTransactionOptions {
   /** Canonical, host-resolved files this transaction is allowed to restore. */
   allowlistedPaths: readonly string[];
   files: UpgradeTransactionFileAdapter;
-  journal?: { record(step: string, phase: 'intent' | 'finished'): Promise<void> };
+  journal?: { record(step: string, phase: 'intent' | 'finished'): Promise<void>; assertWritable?(): void };
   /**
    * Exact host-generated package.json bytes to stage before reconciliation.
    * The path must be an existing member of `allowlistedPaths`. The state
@@ -305,13 +307,15 @@ function stableAllowlist(paths: readonly string[]): string[] {
 
 async function takeSnapshot(
   paths: readonly string[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  uncertainErrors = false
 ): Promise<{ ok: true; entries: SnapshotEntry[] } | { ok: false; result: SnapshotResult }> {
   const entries: SnapshotEntry[] = [];
   for (const path of paths) {
     try {
       entries.push({ path, before: cloneState(await files.read(path)) });
     } catch (cause) {
+      if (uncertainErrors) throw cause;
       return {
         ok: false,
         result: { status: 'failed', path, message: errorMessage(cause) },
@@ -324,7 +328,8 @@ async function takeSnapshot(
 async function stageManifest(
   stage: NonNullable<UpgradeTransactionOptions['manifestStage']>,
   entries: readonly SnapshotEntry[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  uncertainErrors = false
 ): Promise<SuccessfulManifestStage | FailedManifestStage> {
   const manifest = entries.find((entry) => entry.path === stage.path);
   if (manifest === undefined) {
@@ -388,6 +393,7 @@ async function stageManifest(
       };
     }
   } catch (cause) {
+    if (uncertainErrors) throw cause;
     return {
       ok: false,
       result: {
@@ -412,7 +418,8 @@ async function stageManifest(
 async function stageExactFile(
   stage: NonNullable<UpgradeTransactionOptions['fileStages']>[number],
   entries: readonly SnapshotEntry[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  uncertainErrors = false
 ): Promise<SuccessfulExactFileStage | FailedExactFileStage> {
   const snapshot = entries.find((entry) => entry.path === stage.path);
   if (snapshot === undefined) {
@@ -476,6 +483,7 @@ async function stageExactFile(
       };
     }
   } catch (cause) {
+    if (uncertainErrors) throw cause;
     return {
       ok: false,
       result: {
@@ -496,13 +504,15 @@ async function stageExactFile(
 
 async function captureExpectedStates(
   entries: readonly SnapshotEntry[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  uncertainErrors = false
 ): Promise<ExpectedEntry[]> {
   const expected: ExpectedEntry[] = [];
   for (const snapshot of entries) {
     try {
       expected.push({ snapshot, expected: cloneState(await files.read(snapshot.path)) });
     } catch (cause) {
+      if (uncertainErrors) throw cause;
       expected.push({ snapshot, captureError: errorMessage(cause) });
     }
   }
@@ -538,6 +548,7 @@ async function rollback(
     try {
       refusal = await beforeRestore();
     } catch (cause) {
+      if (journal !== undefined) throw cause;
       refusal = errorMessage(cause);
     }
     if (refusal !== null) {
@@ -563,6 +574,7 @@ async function rollback(
       );
       results.push({ path: entry.snapshot.path, status: result });
     } catch (cause) {
+      if (journal !== undefined) throw cause;
       results.push({
         path: entry.snapshot.path,
         status: 'failed',
@@ -611,7 +623,8 @@ async function executeVerification(verifier: UpgradeVerifier): Promise<Verificat
 async function decideAfterFailure(
   decider: VerificationFailureDecider | undefined,
   verification: Extract<VerificationResult, { status: 'failed' }>,
-  signal: AbortSignal | undefined
+  signal: AbortSignal | undefined,
+  uncertainErrors = false
 ): Promise<{ decision: VerificationFailureDecision; status: UpgradeTransactionResult['retentionDecision'] }> {
   if (decider === undefined) return { decision: 'rollback', status: 'rollback' };
   if (cancelled(signal)) return { decision: 'rollback', status: 'cancelled' };
@@ -647,7 +660,8 @@ async function decideAfterFailure(
       decision,
       status: cancelled(signal) ? 'cancelled' : decision,
     };
-  } catch {
+  } catch (cause) {
+    if (uncertainErrors) throw cause;
     return { decision: 'rollback', status: 'failed' };
   }
 }
@@ -675,7 +689,7 @@ async function executeTransaction(
     };
   }
 
-  const snapshot = await takeSnapshot(paths, options.files);
+  const snapshot = await takeSnapshot(paths, options.files, options.journal !== undefined);
   if (!snapshot.ok) {
     return {
       completion: 'not-started',
@@ -703,7 +717,7 @@ async function executeTransaction(
   const fileStages: ExactFileStageResult[] = [];
   const expectedAfterStage: ExpectedEntry[] = [];
   if (options.manifestStage !== undefined) {
-    const staged = await stageManifest(options.manifestStage, snapshot.entries, options.files);
+    const staged = await stageManifest(options.manifestStage, snapshot.entries, options.files, options.journal !== undefined);
     manifestStage = staged.result;
     if (!staged.ok) {
       return {
@@ -726,7 +740,7 @@ async function executeTransaction(
 
   for (const fileStage of options.fileStages ?? []) {
     if (cancelled(options.signal)) break;
-    const staged = await stageExactFile(fileStage, snapshot.entries, options.files);
+    const staged = await stageExactFile(fileStage, snapshot.entries, options.files, options.journal !== undefined);
     fileStages.push(staged.result);
     if (!staged.ok) {
       const rolledBack =
@@ -789,6 +803,7 @@ async function executeTransaction(
   // Once install starts it is always awaited. Cancellation is observed only
   // after it reaches this stable boundary, then handled by rollback.
   await options.journal?.record('install', 'intent');
+  options.journal?.assertWritable?.();
   const install = await executeInstall(options.install, {
     compareAndSwap: async (path, expectedState, replacement) => {
       if (!owned.has(path)) {
@@ -804,7 +819,7 @@ async function executeTransaction(
     verification: { status: 'not-run', reason: 'unknown' }, rollback: { status: 'not-needed' }, retentionDecision: 'not-needed',
   };
   await options.journal?.record('install', 'finished');
-  const expected = withOwnedStates(await captureExpectedStates(snapshot.entries, options.files), owned);
+  const expected = withOwnedStates(await captureExpectedStates(snapshot.entries, options.files, options.journal !== undefined), owned);
 
   if (install.status !== 'succeeded') {
     const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
@@ -857,6 +872,7 @@ async function executeTransaction(
   // Verification also reaches a stable boundary before cancellation can
   // initiate rollback, so rollback cannot race an in-flight verification.
   await options.journal?.record('verification', 'intent');
+  options.journal?.assertWritable?.();
   const verification = await executeVerification(options.verifier);
   if (verification.status === 'unknown') return {
     completion: 'unknown', reason: 'unknown', snapshot: snapshotResult, manifestStage, fileStages, install,
@@ -898,7 +914,8 @@ async function executeTransaction(
   const retention = await decideAfterFailure(
     options.verificationFailureDecider,
     verification,
-    options.signal
+    options.signal,
+    options.journal !== undefined
   );
   await options.journal?.record('decision', 'finished');
   if (retention.decision === 'keep' && !cancelled(options.signal)) {
@@ -935,7 +952,7 @@ export async function runUpgradeTransaction(options: UpgradeTransactionOptions):
   try {
     return await executeTransaction({ ...options, install: { execute: (context) => { dispatched = true; return options.install.execute(context); } } });
   } catch (error) {
-    if (!dispatched) throw error;
+    if (!dispatched && options.journal === undefined) throw error;
     return { completion: 'unknown', reason: 'unknown', snapshot: { status: 'not-run' }, manifestStage: { status: 'not-run' },
       install: { status: 'unknown', message: errorMessage(error) }, verification: { status: 'not-run', reason: 'unknown' },
       rollback: { status: 'not-needed' }, retentionDecision: 'not-needed' };

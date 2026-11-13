@@ -1,22 +1,10 @@
-/**
- * The sidecar's last resort for a promise rejection nothing handled.
- *
- * Without a handler Node ends the process, which would cut off a change that
- * is still installing. Instead this logs a safe line, pauses changes in the
- * open panel (which also stops its background work and shows the banner),
- * and asks the IDE to show one notification.
- *
- * It never exits, releases the project lock or rolls anything back. A change
- * that already started keeps running and releases normally: the panel only
- * refuses changes that have not started yet. A disconnect still ends the
- * process as before (see main.ts).
- *
- * Only `unhandledRejection` is handled. After `uncaughtException` Node's own
- * documentation says the process is in an undefined state, so it is left to
- * Node's default.
- */
+/** Last resort process failures fence every prepared change, including closed panels. */
 
-import { RUNTIME_ERROR_TEXT, RUNTIME_ERROR_WITHOUT_PANEL_TEXT, runtimeFailureLine } from '../core/diagnostics.js';
+import { fireAndForget } from '../core/fireAndForget.js';
+import { projectMutationLocks } from '../host/projectMutationLock.js';
+import { settleProcessFailure } from '../host/operationReservation.js';
+import { RECOVERY_MESSAGES } from '../host/recoveryCopy.js';
+import { runtimeFailureLine } from '../core/diagnostics.js';
 
 export interface UnhandledRejectionDeps {
   /** Writes one line to the IDE log (stderr). */
@@ -27,9 +15,12 @@ export interface UnhandledRejectionDeps {
   notify(message: string): void;
 }
 
-export function createUnhandledRejectionHandler(deps: UnhandledRejectionDeps): (reason: unknown) => void {
+export function createUnhandledRejectionHandler(deps: UnhandledRejectionDeps, context: 'unhandled-rejection' | 'uncaught-exception' = 'unhandled-rejection'): (reason: unknown) => void {
   let notified = false;
   return (reason) => {
+    // Unattributed process errors cannot be proved unrelated to an active writer.
+    projectMutationLocks.closeAfterFailure();
+    const settlement = settleProcessFailure(projectMutationLocks, 'An internal error interrupted the dependency change.');
     // Each step is guarded on its own: a failure in one must not skip the rest,
     // and a throw from here would only come back as another rejection.
     let paused = false;
@@ -41,19 +32,16 @@ export function createUnhandledRejectionHandler(deps: UnhandledRejectionDeps): (
     }
     if (!paused) {
       try {
-        deps.log(runtimeFailureLine('unhandled-rejection', reason));
+        deps.log(runtimeFailureLine(context, reason));
       } catch {
         // Nothing to log to.
       }
     }
     // Once per process: a burst of rejections should not stack notifications.
-    if (notified) return;
+    if (notified) { fireAndForget(settlement, () => undefined); return; }
     notified = true;
-    try {
-      // With no panel open there is nothing to pause: the next panel starts clean.
-      deps.notify(paused ? RUNTIME_ERROR_TEXT : RUNTIME_ERROR_WITHOUT_PANEL_TEXT);
-    } catch {
-      // The client is gone. Its disconnect ends the process.
-    }
+    fireAndForget(settlement.then(() => {
+      deps.notify(RECOVERY_MESSAGES.restartRequired);
+    }), () => undefined);
   };
 }

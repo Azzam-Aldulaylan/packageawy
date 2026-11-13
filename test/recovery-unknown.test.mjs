@@ -213,7 +213,7 @@ test('a transient journal failure after staging cannot become a clean not-starte
     manifestStage: { path: f.manifest, expectedContents: await readFile(f.manifest), contents: Buffer.from('staged') },
     install: { execute: async () => { assert.fail('publication failure must stop before dispatch'); } },
   });
-  assert.equal(result.completion, 'not-started');
+  assert.equal(result.completion, 'unknown');
   assert.equal(await owner.handle.complete(result.completion), false);
   assert.equal(owner.handle.state, 'unknown');
   assert.equal(owner.locks.holderOf(canonicalProjectRoot(f.root)), owner.handle);

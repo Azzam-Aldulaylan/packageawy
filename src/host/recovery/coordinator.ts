@@ -75,8 +75,13 @@ export class RecoveryCoordinator {
       if (holder?.state === 'mutating') throw new RecoveryError(RECOVERY_MESSAGES.running);
       if (holder?.state === 'reserved') await holder.releaseReadOnly();
       const { RecoverySession } = await import('./session.js');
-      if (this.options.locks.admissionClosed) throw new RecoveryError(RECOVERY_MESSAGES.restart);
-      const session = await RecoverySession.open(target, stopped, claim);
+      if (this.options.locks.admissionClosed) throw new RecoveryError(
+        this.options.locks.restartRequired ? RECOVERY_MESSAGES.restartRequired : RECOVERY_MESSAGES.restart);
+      const session = await RecoverySession.open(target, stopped, claim, {
+        isInvalidated: () => this.options.locks.restartRequired,
+      });
+      if (this.options.locks.admissionClosed) throw new RecoveryError(
+        this.options.locks.restartRequired ? RECOVERY_MESSAGES.restartRequired : RECOVERY_MESSAGES.restart);
       const token = session.token ?? `removal:${session.inspection.owner?.ownerToken ?? 'uninitialized'}`;
       if (holder !== undefined && holder.state !== 'released') {
         const lock = holder.transferToRecovery(token);
@@ -123,7 +128,11 @@ export class RecoveryCoordinator {
       this.options.platform.showWarningMessage(RECOVERY_MESSAGES.restart);
       return Promise.resolve();
     }
-    return this.enqueue(() => this.execute(run)).finally(done);
+    return this.enqueue(() => this.execute(async target => {
+      if (this.options.locks.admissionClosed) throw new RecoveryError(
+        this.options.locks.restartRequired ? RECOVERY_MESSAGES.restartRequired : RECOVERY_MESSAGES.restart);
+      await run(target);
+    })).finally(done);
   }
   private enqueue(run: () => Promise<void>): Promise<void> {
     const next = this.pending.then(run);

@@ -22,6 +22,7 @@ function makePanel(platformOverrides = {}) {
   const watches = [];
   let settingChanged;
   let disposeChannel;
+  let receive;
   const store = { get: () => undefined, update: async () => {} };
   const platform = {
     workspaceFolders: () => [],
@@ -45,7 +46,7 @@ function makePanel(platformOverrides = {}) {
       assert.ok(isHostToWebviewMessage(message), `invalid host message ${JSON.stringify(message)}`);
       posted.push(message);
     },
-    onDidReceiveMessage() {},
+    onDidReceiveMessage(listener) { receive = listener; },
     onDidDispose: (listener) => { disposeChannel = listener; },
     reveal() {},
   };
@@ -59,6 +60,7 @@ function makePanel(platformOverrides = {}) {
     watches,
     settingChanged: () => settingChanged?.(),
     close: () => disposeChannel?.(),
+    receive: message => receive(message),
     banners: () => posted.filter((message) => message.status === 'runtime-error'),
   };
 }
@@ -367,4 +369,58 @@ test('the webview keeps the banner through later snapshots and never shows a Rel
   assert.deepEqual([...app.matchAll(/setRuntimeErrorText\(([^)]*)\)/g)].map((match) => match[1]), ['incoming.message'],
     'nothing clears the banner while the panel is open');
   assert.match(app, /runtimeErrorText !== null \? \(\s*<StatusBanner tone="error" action=\{\{ label: 'Show Log', onClick: requestShowLog \}\}>/);
+});
+
+for (const escaped of [false, true]) test(`a change entry failure ${escaped ? 'outside' : 'inside'} the dispatcher settles its prepared owner`, async t => {
+  const { recoveryFixture } = await import('./helpers/recovery.mjs');
+  const f = await recoveryFixture(t);
+  const fixture = makePanel();
+  t.after(fixture.close);
+  const coordinator = fixture.panel.upgradeCoordinator;
+  const handle = coordinator.reserve('react');
+  await handle.beginMutation(f.target);
+  if (escaped) {
+    fixture.panel.requestTarget = () => { throw new TypeError('dispatch bug'); };
+    fixture.receive({ type: 'confirm-remove', analysisId: 'review' });
+    for (let i = 0; i < 100 && !fixture.posted.some(message => message.error?.code === 'OUTCOME_UNKNOWN'); i++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  } else {
+    fixture.panel.handleMessage = async () => { throw new TypeError('change bug'); };
+    await fixture.panel.handle({ type: 'confirm-remove', analysisId: 'review' });
+  }
+  assert.equal(handle.state, 'unknown');
+  assert.equal((await f.inspect()).journal.data.outcome, 'unknown');
+  assert.equal(coordinator.isMutationBusy(), true);
+  assert.equal(fixture.posted.some(message => message.error?.code === 'OUTCOME_UNKNOWN'), true);
+  assert.equal(fixture.posted.some(message => message.error?.code === 'INTERNAL_ERROR'), false, 'no ordinary failed request replaces unknown');
+});
+
+for (const phase of ['refresh', 'refresh-after-message', 'watcher']) test(`unrelated ${phase} failure during a real cleanup leaves its known outcome intact`, async t => {
+  const { makeCoordinator, makeProject, review, blocker } = await import('./helpers/removal-project.mjs');
+  const project = await makeProject(t);
+  const panel = makePanel();
+  t.after(panel.close);
+  const fixture = makeCoordinator(project);
+  panel.panel.upgradeCoordinator = fixture.coordinator;
+  const hold = blocker();
+  fixture.state.holdInstall = hold.wait;
+  fixture.coordinator.session.invocationResolver = () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' });
+  const id = await review(fixture);
+  const confirming = fixture.coordinator.handleConfirmRemove({ analysisId: id });
+  await hold.arrived;
+  const handle = fixture.coordinator.reservation.held;
+  if (phase === 'watcher') panel.panel.onBackgroundError('git-watcher')(new TypeError('watcher bug'));
+  else {
+    panel.panel.handleMessage = phase === 'refresh' ? async () => { throw new TypeError('refresh bug'); } : async () => {};
+    if (phase === 'refresh-after-message') panel.panel.flushAdvisorySettingRefresh = async () => { throw new TypeError('deferred refresh bug'); };
+    await panel.panel.handle({ type: 'refresh' });
+  }
+  assert.equal(handle.state, 'mutating');
+  hold.release();
+  await confirming;
+  assert.equal(handle.state, 'retained');
+  assert.equal(handle.result, 'kept');
+  assert.equal(fixture.messages.findLast(message => message.status === 'remove-result').result.outcome, 'verified');
+  assert.equal(panel.logs.some(line => line.startsWith('runtime:')), true);
 });

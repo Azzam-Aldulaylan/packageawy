@@ -9,7 +9,8 @@ export class RecoveryLock {
     private token: string,
     private readonly removed: () => Promise<void> = async () => {}
   ) {}
-  transferToRecovery(token: string): RecoveryLock {
+  transferToRecovery(token: string): RecoveryLock | undefined {
+    if (this.locks.admissionClosed) return undefined;
     this.token = token;
     return this;
   }

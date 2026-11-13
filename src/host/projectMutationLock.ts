@@ -18,11 +18,17 @@ export function canonicalProjectRoot(root: string): string {
  * key is the reservation's owner handle, so only that handle can free it.
  */
 export class ProjectMutationLocks {
+  private failed = false;
   private restartSession: string | undefined;
   private retiredRestartSessions: Set<string> | undefined;
   private pending = 0;
 
-  get admissionClosed(): boolean { return this.restartSession !== undefined; }
+  get admissionClosed(): boolean { return this.failed || this.restartSession !== undefined; }
+
+  get restartRequired(): boolean { return this.failed; }
+
+  /** A process failure cannot be cleared by panel disposal or restart cancellation. */
+  closeAfterFailure(): void { this.failed = true; }
 
   prepareRestart(sessionId: string): boolean {
     if (this.retiredRestartSessions?.has(sessionId)) return false;
@@ -115,10 +121,14 @@ export class ProjectMutationLocks {
 
   /** Transfer is synchronous, so admission never opens between owners. */
   transfer(key: string, previous: object, next: object): boolean {
+    if (this.admissionClosed) return false;
     if (this.holders.get(key) !== previous) return false;
     this.holders.set(key, next);
     return true;
   }
+
+  /** Snapshot only on failure, including writers detached from a closed panel. */
+  activeOwners(): readonly object[] { return [...this.holders.values()]; }
 
   holderOf(key: string): object | undefined {
     return this.holders.get(key);

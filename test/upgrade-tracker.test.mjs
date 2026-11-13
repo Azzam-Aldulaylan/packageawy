@@ -43,14 +43,6 @@ test('releasing a name that is not the current holder is a no-op', () => {
   assert.equal(lock.tryAcquire('right-pad'), false, 'left-pad still holds the lock');
 });
 
-test('clear releases the lock unconditionally, e.g. on panel disposal', () => {
-  const lock = new UpgradeLock();
-  lock.tryAcquire('left-pad');
-  lock.clear();
-  assert.equal(lock.isHeld(), false);
-  assert.equal(lock.tryAcquire('right-pad'), true);
-});
-
 test('a duplicate request is refused while the original remains the holder, not overwritten', () => {
   const lock = new UpgradeLock();
   assert.equal(lock.tryAcquire('left-pad'), true, 'the original request acquires the lock');

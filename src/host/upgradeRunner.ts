@@ -143,7 +143,7 @@ export class UpgradeExecutionSession {
   private readonly lock = new UpgradeLock();
   private readonly listeners = new Set<Disposable>();
   private readonly pendingRuns = new PendingUpgradeRuns();
-  journal: { record(step: string, phase: 'intent' | 'finished'): Promise<void> } | undefined;
+  journal: { record(step: string, phase: 'intent' | 'finished'): Promise<void>; assertWritable?(): void } | undefined;
 
   constructor(
     private readonly platform: HostPlatform,
@@ -477,7 +477,10 @@ export class UpgradeExecutionSession {
         resolve(outcome);
       };
 
-      Promise.resolve().then(() => this.platform.runProcess(request)).then(
+      Promise.resolve().then(() => {
+        this.journal?.assertWritable?.();
+        return this.platform.runProcess(request);
+      }).then(
         (started) => {
           // dispose() already settled this run (DISPOSED) while runProcess
           // was still pending: don't register a listener for a session that
@@ -529,6 +532,6 @@ export class UpgradeExecutionSession {
     // package.json/lockfile write mid-flight would be worse than letting it
     // complete after the dashboard closed.
     this.pendingRuns.settleAll();
-    this.lock.clear();
+    // The owner handle settles after observing disposal as unknown.
   }
 }
