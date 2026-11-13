@@ -163,8 +163,9 @@ test('competing complete and torn claims are serialized across two processes', a
     const runs = [child(f.target, 'claim', '', confirmed), child(f.target, 'claim', '', confirmed)];
     const results = await Promise.all(runs.map(run => run.result));
     await Promise.all(runs.map(run => run.exit));
-    assert.equal(results.filter(result => result.done).length, 1);
-    assert.equal(results.filter(result => result.error).length, 1);
+    const diagnostics = JSON.stringify(results);
+    assert.equal(results.filter(result => result.done).length, 1, diagnostics);
+    assert.equal(results.filter(result => result.error).length, 1, diagnostics);
     const claim = JSON.parse(await fs.readFile(path.join(f.folder, 'claim.json'), 'utf8'));
     assert.equal(typeof claim.token, 'string');
     assert.ok((await fs.readdir(f.folder)).some(name => name.endsWith('.abandoned')));

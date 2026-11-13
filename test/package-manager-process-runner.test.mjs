@@ -11,10 +11,11 @@ const invocation = { executable: process.execPath, prefixArgs: [] };
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function expectStopped(pid) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
     try { process.kill(pid, 0); }
     catch (error) { if (error.code === 'ESRCH') return; throw error; }
-    await pause(5);
+    await pause(10);
   }
   assert.fail(`process ${pid} survived forced termination`);
 }
@@ -74,14 +75,16 @@ test('resolver cancellation forces termination of a SIGTERM-ignoring child and b
   } finally {
     controller.abort();
     await Promise.allSettled([pending, rejection]);
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
 test('resolver cancellation also stops a descendant holding the inherited output pipe', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'packageawy-resolver-tree-'));
   const controller = new AbortController();
-  const runner = new NodeResolverProcessRunner({ timeoutMs: 5000, terminationGraceMs: 50 });
+  // Give taskkill the production grace period to start and walk the tree on
+  // Windows. The bounded-settlement tests cover a stalled tree killer.
+  const runner = new NodeResolverProcessRunner({ timeoutMs: 5000, terminationGraceMs: process.platform === 'win32' ? 1000 : 50 });
   const descendant = 'process.on("SIGTERM",()=>{});require("node:fs").writeFileSync("descendant",String(process.pid));setInterval(()=>{},1000)';
   const leader = `require("node:child_process").spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:["ignore",1,2]});` +
     'require("node:fs").writeFileSync("pid",String(process.pid));setInterval(()=>{},1000)';
@@ -89,15 +92,16 @@ test('resolver cancellation also stops a descendant holding the inherited output
   const rejection = assert.rejects(pending, { name: 'AbortError' });
   try {
     const leaderPid = Number(await readyFile(path.join(directory, 'pid')));
-    await readyFile(path.join(directory, 'descendant'));
+    const descendantPid = Number(await readyFile(path.join(directory, 'descendant')));
     controller.abort();
     await rejection;
     await expectStopped(leaderPid);
+    await expectStopped(descendantPid);
     // Settlement does not depend on inherited output handles closing.
   } finally {
     controller.abort();
     await Promise.allSettled([pending, rejection]);
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

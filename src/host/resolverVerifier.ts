@@ -316,8 +316,9 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
         tempRoot
       );
     } finally {
-      // A surviving descendant may keep temp files busy. Cleanup is best effort.
-      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+      // Windows may release process handles after settlement. Retry briefly;
+      // cleanup remains best effort even if a descendant or handle survives.
+      await rm(tempRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => undefined);
     }
   }
 
@@ -395,7 +396,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     } catch {
       return { ok: false };
     } finally {
-      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+      await rm(tempRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => undefined);
     }
   }
 
@@ -464,7 +465,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
           : cause instanceof Error ? cause.message : String(cause),
       };
     } finally {
-      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+      await rm(tempRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => undefined);
     }
   }
 }

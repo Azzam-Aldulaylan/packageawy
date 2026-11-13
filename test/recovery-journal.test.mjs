@@ -468,7 +468,53 @@ test('a stale confirmed claim cannot rename the next claimant after the ownershi
     if (name === 'takeover:created') await fs.writeFile(path.join(f.folder, 'claim.json'), JSON.stringify(next));
   } }), { message: RECOVERY_MESSAGES.blocked });
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.folder, 'claim.json'), 'utf8')), next);
-  assert.ok((await fs.stat(path.join(f.folder, 'takeover'))).isDirectory());
+  await assert.rejects(fs.stat(path.join(f.folder, 'takeover')), { code: 'ENOENT' });
+});
+
+test('a delayed stale claimant cannot block the winner after takeover serialization is released', { timeout: 5000 }, async t => {
+  const f = await recoveryFixture(t);
+  await f.prepare(); await f.open();
+  const confirmed = (await f.inspect()).view.claim;
+  let reached; let resume;
+  const waiting = new Promise(resolve => { reached = resolve; });
+  const gate = new Promise(resolve => { resume = resolve; });
+  const outcome = pending => pending.then(session => ({ session }), error => ({ error: error.message }));
+  // Inspect the old claim now, but reach mkdir only after the winner unlocks.
+  const stale = outcome(RecoverySession.open(f.target, true, confirmed, { fs: { ...fs,
+    mkdir: async (name, ...args) => { reached(); await gate; return fs.mkdir(name, ...args); },
+  } }));
+  await waiting;
+  const winner = await outcome(RecoverySession.open(f.target, true, confirmed, { fs: { ...fs,
+    rmdir: async (name, ...args) => {
+      await fs.rmdir(name, ...args);
+      resume();
+      await stale;
+    },
+  } }));
+  const loser = await stale;
+  const diagnostics = JSON.stringify([winner, loser].map(result => result.error ?? 'won'));
+  assert.ok(winner.session, diagnostics);
+  assert.equal(loser.error, RECOVERY_MESSAGES.blocked, diagnostics);
+  await assert.rejects(fs.stat(path.join(f.folder, 'takeover')), { code: 'ENOENT' });
+  await winner.session.apply(choices(await winner.session.presentation()));
+  await winner.session.dismiss(true, false);
+  assert.equal((await f.inspect()).view.state, 'none');
+});
+
+test('a failed takeover journal publication retains its serialization directory', async t => {
+  const f = await recoveryFixture(t);
+  await f.prepare(); await f.open();
+  let guarded = false;
+  await assert.rejects(f.open({ fs: { ...fs, rename: async (from, to) => {
+    if (to.endsWith('journal.json')) {
+      guarded = (await fs.stat(path.join(f.folder, 'takeover'))).isDirectory();
+      throw failure('EIO');
+    }
+    return fs.rename(from, to);
+  } } }), { code: 'EIO' });
+  assert.equal(guarded, true, 'journal publication must still hold takeover serialization');
+  assert.equal((await f.inspect()).view.message, RECOVERY_MESSAGES.interruptedTakeover);
+  assert.equal(await f.read('package-lock.json'), 'original lockfile');
 });
 
 for (const extra of ['data.bin', 'backups/data.bin', 'displaced/data.bin']) test(`uninitialized recovery with ${extra} never deletes data`, async t => {
