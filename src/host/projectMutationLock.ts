@@ -13,7 +13,8 @@ export function canonicalProjectRoot(root: string): string {
  * One dependency change per project root for the whole extension host, not
  * per panel. A transaction keeps running after its panel closes, and the
  * panel opened next gets a new coordinator, so a per-panel lock alone would
- * let a second install start in the same folder.
+ * let a second install start in the same folder. The holder stored under a
+ * key is the reservation's owner handle, so only that handle can free it.
  */
 export class ProjectMutationLocks {
   private readonly holders = new Map<string, object>();
@@ -39,6 +40,10 @@ export class ProjectMutationLocks {
         // One listener must not keep the others from hearing about the release.
       }
     }
+  }
+
+  holderOf(key: string): object | undefined {
+    return this.holders.get(key);
   }
 
   isHeldByOther(key: string, owner: object): boolean {

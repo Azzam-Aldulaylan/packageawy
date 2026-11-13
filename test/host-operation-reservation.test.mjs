@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { OperationReservation, SourceGenerationGuard } from '../out/host/operationReservation.js';
+import { ProjectMutationLocks } from '../out/host/projectMutationLock.js';
 import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 // The coordinator only reads settings from the platform in these paths.
@@ -11,6 +12,7 @@ function fixture({ flushFails = false, disposed = false } = {}) {
   let held = false;
   const calls = [];
   const lifecycle = new OperationReservation({
+    locks: new ProjectMutationLocks(),
     reserve() {
       if (held) return false;
       held = true;
@@ -35,51 +37,47 @@ function fixture({ flushFails = false, disposed = false } = {}) {
   return { lifecycle, calls };
 }
 
-for (const exit of ['cancel', 'ttl-reclaim', 'analysis-failure', 'controller-unavailable']) {
+for (const exit of ['cancel', 'analysis-failure', 'controller-unavailable']) {
   test(`${exit} releases, flushes, and resumes exactly once`, async () => {
     const { lifecycle, calls } = fixture();
-    assert.equal(lifecycle.reserve('pkg'), true);
-    assert.equal(await lifecycle.release('pkg'), true);
-    assert.equal(await lifecycle.release('pkg'), false, 'a stale second release has no side effects');
+    const handle = lifecycle.reserve('pkg', '/workspace');
+    assert.equal(handle.ok, true);
+    assert.equal(await handle.releaseReadOnly(), true);
+    assert.equal(await handle.releaseReadOnly(), false, 'a stale second release has no side effects');
     assert.deepEqual(calls, ['release:pkg', 'flush', 'resume']);
   });
 }
 
 test('read-only review ownership is not mutation ownership', () => {
   const { lifecycle } = fixture();
-  lifecycle.reserve('pkg');
+  const handle = lifecycle.reserve('pkg', '/workspace');
   assert.equal(lifecycle.isMutationBusy, false);
-  assert.equal(lifecycle.beginMutation('other'), false);
-  assert.equal(lifecycle.beginMutation('pkg'), true);
+  assert.equal(handle.beginMutation(), true);
   assert.equal(lifecycle.isMutationBusy, true);
 });
 
 test('a remounted webview releases abandoned read-only ownership but never a mutation', async () => {
   const readOnly = fixture();
-  readOnly.lifecycle.reserve('review');
-  assert.equal(await readOnly.lifecycle.releaseReadOnlyCurrent(), true);
+  readOnly.lifecycle.reserve('review', '/workspace');
+  assert.equal(await readOnly.lifecycle.held.releaseReadOnly(), true);
   assert.deepEqual(readOnly.calls, ['release:review', 'flush', 'resume']);
 
   const mutation = fixture();
-  mutation.lifecycle.reserve('install');
-  mutation.lifecycle.beginMutation('install');
-  assert.equal(await mutation.lifecycle.releaseReadOnlyCurrent(), false);
+  mutation.lifecycle.reserve('install', '/workspace').beginMutation();
+  assert.equal(await mutation.lifecycle.held.releaseReadOnly(), false);
   assert.deepEqual(mutation.calls, []);
 });
 
 test('a flush failure is contained and later release cycles still run', async () => {
   const { lifecycle, calls } = fixture({ flushFails: true });
-  lifecycle.reserve('one');
-  await lifecycle.release('one');
-  lifecycle.reserve('two');
-  await lifecycle.release('two');
+  await lifecycle.reserve('one', '/workspace').releaseReadOnly();
+  await lifecycle.reserve('two', '/workspace').complete('not-started');
   assert.deepEqual(calls, ['release:one', 'flush', 'resume', 'release:two', 'flush', 'resume']);
 });
 
 test('disposal runs after release, drain, and resume', async () => {
   const { lifecycle, calls } = fixture({ disposed: true });
-  lifecycle.reserve('pkg');
-  await lifecycle.release('pkg');
+  await lifecycle.reserve('pkg', '/workspace').releaseReadOnly();
   assert.deepEqual(calls, ['release:pkg', 'flush', 'resume', 'dispose']);
 });
 
