@@ -41,7 +41,7 @@ for (const mode of ['missing-result', 'launch-rejection', 'subscription-exceptio
   const result = await runUpgradeTransaction({ allowlistedPaths: f.target.allowlistedPaths, files: owner.handle.journal.adapter(), journal: owner.handle.journal,
     manifestStage: { path: f.manifest, expectedContents: (await readFile(f.manifest)), contents: Buffer.from('staged manifest') },
     install: { async execute() {
-      const outcome = await session.prepareManifestReconciliation(params).execute();
+      const outcome = await (await session.prepareManifestReconciliation(params)).execute();
       return outcome.ok ? { status: 'succeeded' } : outcome.status === 'unknown' ? { status: 'unknown', message: outcome.message } : { status: 'failed', code: outcome.code, message: outcome.message };
     } },
   });
@@ -96,7 +96,7 @@ test('RPC disconnect and disposal report lost results, including a listener atta
   const connection = { sendRequest: async () => null, sendNotification() {}, onNotification: (method, listener) => notifications.set(method, listener), onClose(listener) { close = listener; return { dispose() {} }; } };
   const platform = new RpcPlatform(connection, { workspaceFolders: [], isWorkspaceTrusted: true, settings: {}, workspaceState: {}, globalState: {} });
   const session = new UpgradeExecutionSession(platform, invocation);
-  const prepared = session.prepareLockfileReconciliation(params);
+  const prepared = await session.prepareLockfileReconciliation(params);
   const result = prepared.execute();
   await new Promise(resolve => setImmediate(resolve));
   close();
@@ -186,7 +186,7 @@ test('a late successful task event cannot settle an already unknown result', asy
   const session = new UpgradeExecutionSession({ isWorkspaceTrusted: () => true,
     runProcess: async () => ({ onDidExit(listener) { exit = listener; setImmediate(() => listener(undefined)); return { dispose() {} }; } }),
   }, invocation);
-  const outcome = await session.prepareManifestReconciliation(params).execute();
+  const outcome = await (await session.prepareManifestReconciliation(params)).execute();
   assert.equal(outcome.status, 'unknown'); owner.handle.markUnknown('lost');
   exit(0);
   await new Promise(resolve => setImmediate(resolve));

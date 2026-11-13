@@ -140,7 +140,7 @@ test('a prepared process dispatch rechecks its journal after task-state delivery
   }, () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' }));
   session.journal = journal;
   session.observeTaskState(state => { if (state === 'running') journal.fence(); });
-  const prepared = session.prepareManifestReconciliation({ cwd: f.root, ignoreScripts: true, packageManager: 'npm' });
+  const prepared = await session.prepareManifestReconciliation({ cwd: f.root, ignoreScripts: true, packageManager: 'npm' });
   assert.equal((await prepared.execute()).status, 'unknown');
   assert.equal(starts, 0);
 });

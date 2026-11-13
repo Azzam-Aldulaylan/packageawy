@@ -7,21 +7,17 @@ import { isHostToWebviewMessage } from '../out/host/webviewProtocol.js';
 
 // Keep the real coordinator, compatibility planner and isolated resolver. Replace
 // only toolchain discovery and the process runner, so the tests never run npm.
-const npmResolverUrl = pathToFileURL(`${process.cwd()}/out/host/npmResolver.js`).href;
 const verifierUrl = pathToFileURL(`${process.cwd()}/out/host/resolverVerifier.js`).href;
 const bundle = await build({ entryPoints: ['src/host/upgradeAssistantCoordinator.ts'], bundle: true,
   write: false, format: 'esm', platform: 'node',
   banner: { js: `import { createRequire } from 'node:module'; const require = createRequire(${JSON.stringify(`${process.cwd()}/package.json`)});` },
   plugins: [{ name: 'fake-resolver-process', setup(plugin) {
-    plugin.onResolve({ filter: /^\.\/npmResolver\.js$/ }, () => ({ path: 'toolchain', namespace: 'test' }));
+    plugin.onResolve({ filter: /^\.\/npmResolverAsync\.js$/ }, () => ({ path: 'toolchain', namespace: 'test' }));
     plugin.onResolve({ filter: /^\.\/resolverVerifier\.js$/ }, () => ({ path: 'verifier', namespace: 'test' }));
     plugin.onLoad({ filter: /.*/, namespace: 'test' }, args => ({ loader: 'js', contents: args.path === 'toolchain'
-      ? `export { rethrowUnexpectedResolverError, resolverPathExists } from '${npmResolverUrl}';
-        export const probeLoginShellPath = () => null;
-        export const createNodeNpmResolverDeps = () => ({});
-        export const candidateNodePaths = () => [];
-        export const realListDir = () => [];
-        export const resolveNpmInvocation = () => ({ ok: true, invocation: { node: '/fake/node', npmCliJs: '/fake/npm', version: '10.0.0' } });`
+      ? `export * from '${pathToFileURL(`${process.cwd()}/out/host/npmResolverAsync.js`).href}';
+        export const createNodeNpmResolverAsyncDeps = () => ({});
+        export const resolveNpmInvocationAsync = async () => ({ ok: true, invocation: { node: '/fake/node', npmCliJs: '/fake/npm', version: '10.0.0' } });`
       : `export { IsolatedResolverVerifier } from '${verifierUrl}';
         export class NodeResolverProcessRunner { run(...args) { return globalThis.__reviewSecurityRunner.run(...args); } }` }));
     plugin.onResolve({ filter: /^file:/ }, args => ({ path: args.path, external: true }));

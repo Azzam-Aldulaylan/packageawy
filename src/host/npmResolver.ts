@@ -60,7 +60,7 @@ import { isExpectedFsError, isFsError } from './expectedFsError.js';
  *     Homebrew `node` earlier in PATH than the nvm install being validated).
  *     This probe therefore runs with the candidate's directory prepended
  *     to `PATH`: an environment-variable override on a direct, non-shell
- *     `execFileSync` call, not a shell command, so nothing here is
+ *     argv-based probe, not a shell command, so nothing here is
  *     interpolated into text a shell would parse.
  * In every case the candidate path (not the resolved real path) is what
  * ends up in the returned `invocation.node`: a shim is deliberately kept as
@@ -69,8 +69,8 @@ import { isExpectedFsError, isFsError } from './expectedFsError.js';
  *
  * PROJECT-AWARE (cwd): every probe here runs with `cwd` set to the resolved
  * project root: the same value the eventual `vscode.Task`'s
- * `ProcessExecution` uses (see `createNodeNpmResolverDeps`'s call site in
- * upgradeRunner.ts), so a Volta pin (which depends on the working
+ * `ProcessExecution` uses. The async host adapter preserves that value
+ * through ToolchainOperation, so a Volta pin (which depends on the working
  * directory) resolves identically during validation and during the actual
  * task. Validating against the extension host's cwd could silently pick
  * a different pinned version than the one the task itself would run.
@@ -81,19 +81,15 @@ import { isExpectedFsError, isFsError } from './expectedFsError.js';
  * probe, and the login-shell probe are all injected, so every platform/
  * version-manager/missing-npm/broken-install/shim scenario is covered by
  * offline tests with no real filesystem or process access.
- * `createNodeNpmResolverDeps` is the one impure adapter, wiring real fs/os/
- * child_process calls. It is intentionally thin and not itself unit-tested,
- * matching this repo's src/core (pure) vs src/host (adapter) split for
- * everything else.
+ * `createNodeNpmResolverAsyncDeps` is the impure adapter, wiring real fs/os/
+ * child_process calls in npmResolverAsync.ts so host discovery yields to
+ * the editor's event loop.
  *
  * Node's path.win32/path.posix namespaces work on any host OS, so candidate
  * generation for a platform can be tested regardless of which OS the test
  * suite actually runs on.
  */
 
-import { accessSync, constants as fsConstants, existsSync, readdirSync, statSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
-import { homedir } from 'node:os';
 import * as posixPath from 'node:path/posix';
 import * as win32Path from 'node:path/win32';
 
@@ -364,107 +360,4 @@ export function rethrowUnexpectedResolverError(cause: unknown, strict = false): 
         'pid' in error && typeof error.pid === 'number' && 'stdout' in error && 'stderr' in error) return;
   }
   throw cause;
-}
-
-export function resolverPathExists(candidate: string, strict = false): boolean {
-  if (!strict) return existsSync(candidate);
-  try { statSync(candidate); return true; }
-  catch (cause) { rethrowUnexpectedResolverError(cause, strict); return false; }
-}
-
-export function realIsExecutable(path: string, strict = false): boolean {
-  try {
-    accessSync(path, fsConstants.X_OK);
-    return true;
-  } catch (cause) {
-    rethrowUnexpectedResolverError(cause, strict);
-    return false;
-  }
-}
-
-export function realListDir(dirPath: string, strict = false): string[] {
-  try {
-    return readdirSync(dirPath);
-  } catch (cause) {
-    rethrowUnexpectedResolverError(cause, strict);
-    return [];
-  }
-}
-
-function runFixedProbe(
-  executable: string,
-  args: readonly string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv },
-  strict = false
-): string | undefined {
-  try {
-    const output = execFileSync(executable, [...args], {
-      encoding: 'utf8',
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      cwd: options.cwd,
-      ...(options.env === undefined ? {} : { env: options.env }),
-    });
-    const trimmed = output.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
-  } catch (cause) {
-    rethrowUnexpectedResolverError(cause, strict);
-    return undefined;
-  }
-}
-
-function realResolveRealNodePath(node: string, cwd: string, strict: boolean): string | undefined {
-  return runFixedProbe(node, REAL_NODE_PATH_PROBE_ARGS, { cwd }, strict);
-}
-
-/** POSIX only. See the file header for why this needs PATH prepended, and why Windows never calls this at all. */
-function realResolveGlobalNpmRoot(node: string, platform: NodeJS.Platform, cwd: string, strict: boolean): string | undefined {
-  const p = pathModuleFor(platform);
-  const nodeDir = p.dirname(node);
-  const npmBin = p.join(nodeDir, 'npm'); // the co-located wrapper script, never npm.cmd, this path only runs on POSIX
-  if (!resolverPathExists(npmBin, strict)) return undefined;
-  const env = { ...process.env, PATH: prependDirToPath(nodeDir, platform, process.env['PATH']) };
-  return runFixedProbe(npmBin, NPM_ROOT_PROBE_ARGS, { cwd, env }, strict);
-}
-
-function realProbeVersion(node: string, npmCliJs: string, cwd: string, strict: boolean): string | undefined {
-  return runFixedProbe(node, [npmCliJs, NPM_VERSION_PROBE_ARG], { cwd }, strict)?.slice(0, 100);
-}
-
-function realProbeLoginShellNode(cwd: string, strict: boolean): string | undefined {
-  return probeLoginShell(cwd, LOGIN_SHELL_PROBE_ARGS, strict);
-}
-
-/** Reuse the login-shell environment probe for package managers installed outside Node. */
-export function probeLoginShellPath(cwd: string, strict = false): string | undefined {
-  return probeLoginShell(cwd, ['-lic', 'printf "%s\\n" "$PATH"'], strict);
-}
-
-function probeLoginShell(cwd: string, args: readonly string[], strict: boolean): string | undefined {
-  const shell = process.env['SHELL'] ?? '/bin/zsh';
-  const output = runFixedProbe(shell, args, { cwd }, strict);
-  return output?.split('\n').pop()?.trim() || undefined;
-}
-
-/**
- * `cwd` should be the resolved project root. See the file header's
- * "PROJECT-AWARE" note. Called from UpgradeExecutionSession.run with the
- * same `params.cwd` the eventual task's ProcessExecution uses.
- */
-export function createNodeNpmResolverDeps(cwd: string, strict = false): NpmResolverDeps {
-  const platform = process.platform;
-  return {
-    platform,
-    pathEnv: process.env['PATH'],
-    homeDir: homedir(),
-    fnmDirEnv: process.env['FNM_DIR'],
-    cwd,
-    exists: candidate => resolverPathExists(candidate, strict),
-    isExecutable: candidate => realIsExecutable(candidate, strict),
-    listDir: candidate => realListDir(candidate, strict),
-    resolveRealNodePath: (node) => realResolveRealNodePath(node, cwd, strict),
-    resolveGlobalNpmRoot: (node) => realResolveGlobalNpmRoot(node, platform, cwd, strict),
-    probeVersion: (node, npmCliJs) => realProbeVersion(node, npmCliJs, cwd, strict),
-    probeLoginShellNode: () => realProbeLoginShellNode(cwd, strict),
-  };
 }

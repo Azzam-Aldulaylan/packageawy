@@ -1,19 +1,10 @@
-/**
- * Asynchronous, cancellable twin of `resolveNpmInvocation` (npmResolver.ts),
- * for callers on a hot path such as the dashboard scan's npm audit. The
- * candidate order (`candidateNodePaths`), the npm-cli.js derivation, the
- * fixed probe arguments and the Windows "never run npm.cmd" rule are the
- * same; only the probes run through async `execFile` with a timeout and an
- * AbortSignal, so they never block the event loop. Existence checks stay
- * synchronous: they are single stat calls.
- *
- * The synchronous resolver and its callers are unchanged.
- */
+/** Cancellable installation discovery shared by audits and dependency operations. */
 
-import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { constants } from 'node:fs';
+import { access, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as posixPath from 'node:path/posix';
+import { NodePackageManagerProcessRunner } from './packageManagerProcessRunner.js';
 
 import {
   candidateNodePaths,
@@ -23,17 +14,17 @@ import {
   posixNpmCliJsFor,
   prependDirToPath,
   REAL_NODE_PATH_PROBE_ARGS,
-  realIsExecutable,
-  realListDir,
+  rethrowUnexpectedResolverError,
   windowsNpmCliJsFor,
   type CandidateEnv,
   type NpmInvocation,
   type NpmResolutionResult,
 } from './npmResolver.js';
 
-export interface NpmResolverAsyncDeps extends CandidateEnv {
-  exists: (path: string) => boolean;
-  isExecutable: (path: string) => boolean;
+export interface NpmResolverAsyncDeps extends Omit<CandidateEnv, 'listDir'> {
+  listDir: (path: string) => string[] | Promise<string[]>;
+  exists: (path: string) => boolean | Promise<boolean>;
+  isExecutable: (path: string) => boolean | Promise<boolean>;
   resolveRealNodePath: (node: string) => Promise<string | undefined>;
   /** POSIX only. Never called for a Windows candidate. */
   resolveGlobalNpmRoot: (node: string) => Promise<string | undefined>;
@@ -43,10 +34,10 @@ export interface NpmResolverAsyncDeps extends CandidateEnv {
 }
 
 function abortError(): Error {
-  return Object.assign(new Error('npm resolution was cancelled.'), { name: 'AbortError' });
+  return Object.assign(new Error('Package-manager discovery was cancelled.'), { name: 'AbortError' });
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
+export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw abortError();
 }
 
@@ -64,7 +55,7 @@ async function validatePairAsync(node: string, deps: NpmResolverAsyncDeps): Prom
     if (npmRoot === undefined) return undefined;
     npmCliJs = posixNpmCliJsFor(npmRoot);
   }
-  if (!deps.exists(npmCliJs)) return undefined;
+  if (!await deps.exists(npmCliJs)) return undefined;
   const version = await deps.probeVersion(node, npmCliJs);
   throwIfAborted(deps.signal);
   if (version === undefined) return undefined;
@@ -74,8 +65,9 @@ async function validatePairAsync(node: string, deps: NpmResolverAsyncDeps): Prom
 /** Rejects with an AbortError when `deps.signal` aborts; otherwise mirrors `resolveNpmInvocation`. */
 export async function resolveNpmInvocationAsync(deps: NpmResolverAsyncDeps): Promise<NpmResolutionResult> {
   throwIfAborted(deps.signal);
-  for (const node of candidateNodePaths(deps)) {
-    if (!deps.exists(node) || !deps.isExecutable(node)) continue;
+  for (const node of await candidateNodePathsAsync(deps)) {
+    throwIfAborted(deps.signal);
+    if (!await deps.exists(node) || !await deps.isExecutable(node)) continue;
     const invocation = await validatePairAsync(node, deps);
     if (invocation !== undefined) return { ok: true, invocation };
   }
@@ -84,61 +76,85 @@ export async function resolveNpmInvocationAsync(deps: NpmResolverAsyncDeps): Pro
 
   const probedNode = await deps.probeLoginShellNode();
   throwIfAborted(deps.signal);
-  if (probedNode !== undefined && deps.exists(probedNode) && deps.isExecutable(probedNode)) {
+  if (probedNode !== undefined && await deps.exists(probedNode) && await deps.isExecutable(probedNode)) {
     const invocation = await validatePairAsync(probedNode, deps);
     if (invocation !== undefined) return { ok: true, invocation };
   }
   return { ok: false };
 }
 
-function runFixedProbeAsync(
-  executable: string,
-  args: readonly string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
-): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    execFile(
-      executable,
-      [...args],
-      {
-        encoding: 'utf8',
-        timeout: 5000,
-        windowsHide: true,
-        cwd: options.cwd,
-        ...(options.env === undefined ? {} : { env: options.env }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      },
-      (error, stdout) => {
-        const trimmed = error ? '' : stdout.trim();
-        resolve(trimmed.length > 0 ? trimmed : undefined);
-      }
-    );
-  });
+/** Candidate ordering stays in the pure resolver; directory reads yield to the host. */
+export async function candidateNodePathsAsync(deps: Omit<CandidateEnv, 'listDir'> & {
+  listDir: (path: string) => string[] | Promise<string[]>;
+}): Promise<string[]> {
+  const directories = new Map<string, string[]>();
+  candidateNodePaths({ ...deps, listDir: dir => { directories.set(dir, []); return []; } });
+  await Promise.all([...directories.keys()].map(async dir => directories.set(dir, await deps.listDir(dir))));
+  return candidateNodePaths({ ...deps, listDir: dir => directories.get(dir) ?? [] });
 }
 
-/** Same probes as `createNodeNpmResolverDeps`, run asynchronously and stopped by `signal`. */
-export function createNodeNpmResolverAsyncDeps(cwd: string, signal?: AbortSignal): NpmResolverAsyncDeps {
+export async function resolverPathExistsAsync(candidate: string, strict = false): Promise<boolean> {
+  try { await stat(candidate); return true; }
+  catch (cause) { rethrowUnexpectedResolverError(cause, strict); return false; }
+}
+
+export async function resolverIsExecutableAsync(candidate: string, strict = false): Promise<boolean> {
+  try { await access(candidate, constants.X_OK); return true; }
+  catch (cause) { rethrowUnexpectedResolverError(cause, strict); return false; }
+}
+
+export async function resolverListDirAsync(candidate: string, strict = false): Promise<string[]> {
+  try { return await readdir(candidate); }
+  catch (cause) { rethrowUnexpectedResolverError(cause, strict); return []; }
+}
+
+/** Probes share the analysis runner's bounded process-tree cancellation lifecycle. */
+export async function runFixedProbeAsync(
+  executable: string,
+  args: readonly string[],
+  options: { cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal },
+  strict = false
+): Promise<string | undefined> {
+  throwIfAborted(options.signal);
+  try {
+    const result = await new NodePackageManagerProcessRunner({
+      description: 'Package-manager discovery', timeoutMs: 5000,
+      stdoutLimitBytes: 1_048_576, stdoutPolicy: 'reject',
+    }).run({ executable, prefixArgs: [] }, args, options.cwd, options.signal, options.env);
+    throwIfAborted(options.signal);
+    if (result.exitCode !== 0) return undefined;
+    return result.stdout.trim() || undefined;
+  } catch (cause) {
+    throwIfAborted(options.signal);
+    if (cause instanceof Error && cause.name === 'TimeoutError') return undefined;
+    rethrowUnexpectedResolverError(cause, strict);
+    return undefined;
+  }
+}
+
+/** Installation probes run asynchronously and stopped by `signal`. */
+export function createNodeNpmResolverAsyncDeps(cwd: string, signal?: AbortSignal, strict = false): NpmResolverAsyncDeps {
   const platform = process.platform;
   const probe = (executable: string, args: readonly string[], env?: NodeJS.ProcessEnv) =>
     runFixedProbeAsync(executable, args, {
       cwd,
       ...(env === undefined ? {} : { env }),
       ...(signal === undefined ? {} : { signal }),
-    });
+    }, strict);
   return {
     platform,
     pathEnv: process.env['PATH'],
     homeDir: homedir(),
     fnmDirEnv: process.env['FNM_DIR'],
-    exists: existsSync,
-    isExecutable: realIsExecutable,
-    listDir: realListDir,
+    exists: candidate => resolverPathExistsAsync(candidate, strict),
+    isExecutable: candidate => resolverIsExecutableAsync(candidate, strict),
+    listDir: candidate => resolverListDirAsync(candidate, strict),
     resolveRealNodePath: (node) => probe(node, REAL_NODE_PATH_PROBE_ARGS),
     resolveGlobalNpmRoot: async (node) => {
       // POSIX only: the co-located npm wrapper, never npm.cmd.
       const nodeDir = posixPath.dirname(node);
       const npmBin = posixPath.join(nodeDir, 'npm');
-      if (!existsSync(npmBin)) return undefined;
+      if (!await resolverPathExistsAsync(npmBin, strict)) return undefined;
       const env = { ...process.env, PATH: prependDirToPath(nodeDir, platform, process.env['PATH']) };
       return probe(npmBin, NPM_ROOT_PROBE_ARGS, env);
     },

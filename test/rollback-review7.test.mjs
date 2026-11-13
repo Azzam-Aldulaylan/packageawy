@@ -25,6 +25,7 @@ for (const packageManager of ['npm', 'pnpm']) {
         lockfileName: 'pnpm-lock.yaml', mutationTarget: resolvedTarget(f.project.root, { packageManager }) });
       f.coordinator.remediationPlans.get('plan').snapshot = await f.coordinator.projectLoader();
     }
+    f.coordinator.session.invocationResolver = undefined;
     const before = await Promise.all([f.project.manifestPath, f.project.lockfilePath].map(file => io.readFile(file, 'utf8')));
     let preparations = 0, mutations = 0, hits = 0;
     const prepare = f.coordinator.session.prepareLockfileReconciliation.bind(f.coordinator.session);
@@ -38,14 +39,14 @@ for (const packageManager of ['npm', 'pnpm']) {
     };
     const error = Object.assign(new Error(`discovery ${code}`), { code });
     // Keep the POSIX directory fault and reach Windows through its candidate stat.
-    for (const method of packageManager === 'npm' ? ['readdirSync', 'statSync'] : ['readFileSync']) {
-      const original = fs[method];
-      fs[method] = (file, ...args) => {
+    for (const method of packageManager === 'npm' ? ['readdir', 'stat'] : ['readFile']) {
+      const original = io[method];
+      io[method] = (file, ...args) => {
         if (hits === 0 && (packageManager === 'npm' || file === f.project.manifestPath)) { hits++; throw error; }
         return original(file, ...args);
       };
       syncBuiltinESMExports();
-      t.after(() => { fs[method] = original; syncBuiltinESMExports(); });
+      t.after(() => { io[method] = original; syncBuiltinESMExports(); });
     }
 
     await f.confirm();

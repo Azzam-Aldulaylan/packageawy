@@ -15,7 +15,6 @@ import {
   candidateNodePaths,
   resolveNpmInvocation,
   prependDirToPath,
-  createNodeNpmResolverDeps,
   LOGIN_SHELL_PROBE_ARGS,
   REAL_NODE_PATH_PROBE_ARGS,
   NPM_ROOT_PROBE_ARGS,
@@ -515,20 +514,6 @@ test('prependDirToPath uses the platform-correct delimiter', () => {
 test('prependDirToPath with no existing PATH is just the directory itself', () => {
   assert.equal(prependDirToPath('/a/b', 'darwin', undefined), '/a/b');
   assert.equal(prependDirToPath('/a/b', 'darwin', ''), '/a/b');
-});
-
-// ------------------------------------------------------------------ cwd
-
-test('createNodeNpmResolverDeps carries the given cwd through to the returned deps', () => {
-  const deps = createNodeNpmResolverDeps(PROJECT_CWD);
-  assert.equal(deps.cwd, PROJECT_CWD);
-});
-
-test('createNodeNpmResolverDeps with a different cwd reflects that value, not a cached one', () => {
-  const first = createNodeNpmResolverDeps('/project/a');
-  const second = createNodeNpmResolverDeps('/project/b');
-  assert.equal(first.cwd, '/project/a');
-  assert.equal(second.cwd, '/project/b');
 });
 
 // ------------------------------------------------------- probes are fixed literals

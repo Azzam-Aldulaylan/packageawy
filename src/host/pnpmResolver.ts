@@ -1,11 +1,8 @@
 /** Discover installation-owned pnpm entry points without a shell or workspace binaries. */
 
-import { execFileSync } from 'node:child_process';
-import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
 import * as path from 'node:path';
 
-import { probeLoginShellPath, resolverPathExists, rethrowUnexpectedResolverError, type NpmInvocation } from './npmResolver.js';
+import { rethrowUnexpectedResolverError, type NpmInvocation } from './npmResolver.js';
 import type { PackageManagerInvocation } from './resolverVerifier.js';
 
 export const PNPM_NOT_FOUND_MESSAGE =
@@ -42,7 +39,7 @@ export function pnpmInvocationCandidates(
   ];
 }
 
-function installationDirs(deps: PnpmResolverDeps): string[] {
+export function installationDirs(deps: Pick<PnpmResolverDeps, 'platform' | 'pathEnv' | 'pnpmHome' | 'homeDir' | 'localAppData' | 'appData'>): string[] {
   const p = deps.platform === 'win32' ? path.win32 : path.posix;
   const dirs = [...(deps.pathEnv ?? '').split(deps.platform === 'win32' ? ';' : ':')];
   if (deps.pnpmHome) dirs.push(deps.pnpmHome);
@@ -140,56 +137,4 @@ export function resolvePnpmInvocation(
     }
   }
   return fallback;
-}
-
-export function resolveInstalledPnpmInvocation(
-  npm: NpmInvocation | null,
-  cwd: string,
-  strict = false
-): PackageManagerInvocation | null {
-  let projectRoot = cwd;
-  for (let dir = cwd; ; dir = path.dirname(dir)) {
-    if (resolverPathExists(path.join(dir, 'pnpm-workspace.yaml'), strict) || resolverPathExists(path.join(dir, 'pnpm-lock.yaml'), strict)) {
-      projectRoot = dir;
-      break;
-    }
-    if (path.dirname(dir) === dir) break;
-  }
-  let packageManager: string | undefined;
-  for (let dir = cwd; ; dir = path.dirname(dir)) {
-    try {
-      const manifest: unknown = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));
-      if (typeof manifest === 'object' && manifest !== null && 'packageManager' in manifest &&
-          typeof manifest.packageManager === 'string') packageManager = manifest.packageManager;
-    } catch (cause) {
-      if (!(cause instanceof SyntaxError)) rethrowUnexpectedResolverError(cause, strict);
-      // A missing or malformed manifest leaves the version preference unset.
-    }
-    if (packageManager !== undefined || dir === projectRoot || path.dirname(dir) === dir) break;
-  }
-  // Like npm resolution, validate on every call so changed installs and project pins are reflected.
-  return resolvePnpmInvocation(npm, {
-    platform: process.platform, cwd, projectRoot, homeDir: homedir(), throwOnUnexpectedError: strict,
-    ...(process.env['PATH'] === undefined ? {} : { pathEnv: process.env['PATH'] }),
-    ...(process.env['PNPM_HOME'] === undefined ? {} : { pnpmHome: process.env['PNPM_HOME'] }),
-    ...(process.env['LOCALAPPDATA'] === undefined ? {} : { localAppData: process.env['LOCALAPPDATA'] }),
-    ...(process.env['APPDATA'] === undefined ? {} : { appData: process.env['APPDATA'] }),
-    ...(packageManager === undefined ? {} : { packageManager }),
-    exists: candidate => resolverPathExists(candidate, strict),
-    realpath: realpathSync,
-    probeLoginShellPath: () => probeLoginShellPath(cwd, strict),
-    probe(executable, prefixArgs) {
-      try {
-        accessSync(executable, constants.X_OK);
-        const output = execFileSync(executable, [...prefixArgs, '--version'], {
-          cwd, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-        });
-        const version = output.trim();
-        return version.length === 0 ? undefined : version.slice(0, 100);
-      } catch (cause) {
-        rethrowUnexpectedResolverError(cause, strict);
-        return undefined;
-      }
-    },
-  });
 }

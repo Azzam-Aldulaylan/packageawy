@@ -15,8 +15,8 @@
     "line": 66,
     "func": "offerFrozenReconciliation",
     "mode": "propagate",
-    "allowed": "none",
-    "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
+    "allowed": "AbortError after the independent discovery signal is aborted",
+    "decision": "Cancellation before execution skips the optional reinstall with the shared manual note. Unexpected errors propagate to the owner boundary.",
     "fsMode": "Strict mutation or parse boundary"
   },
   {
@@ -168,46 +168,6 @@
     "allowed": "cleanup",
     "decision": "Only the listed condition is ordinary. Every other error propagates or settles unknown and fences.",
     "fsMode": "Strict mutation or parse boundary"
-  },
-  {
-    "id": "npmResolver.ts#1",
-    "file": "src/host/npmResolver.ts",
-    "line": 372,
-    "func": "resolverPathExists",
-    "mode": "propagate",
-    "allowed": "Default: any errno. Strict: probe",
-    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
-    "fsMode": "Graceful default / explicit strict"
-  },
-  {
-    "id": "npmResolver.ts#2",
-    "file": "src/host/npmResolver.ts",
-    "line": 379,
-    "func": "realIsExecutable",
-    "mode": "propagate",
-    "allowed": "Default: any errno. Strict: probe",
-    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
-    "fsMode": "Graceful default / explicit strict"
-  },
-  {
-    "id": "npmResolver.ts#3",
-    "file": "src/host/npmResolver.ts",
-    "line": 388,
-    "func": "realListDir",
-    "mode": "propagate",
-    "allowed": "Default: any errno. Strict: probe",
-    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
-    "fsMode": "Graceful default / explicit strict"
-  },
-  {
-    "id": "npmResolver.ts#4",
-    "file": "src/host/npmResolver.ts",
-    "line": 410,
-    "func": "runFixedProbe",
-    "mode": "propagate",
-    "allowed": "Default: any errno. Strict: probe",
-    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
-    "fsMode": "Graceful default / explicit strict"
   },
   {
     "id": "operationReservation.ts#1",
@@ -362,7 +322,7 @@
   {
     "id": "pnpmResolver.ts#1",
     "file": "src/host/pnpmResolver.ts",
-    "line": 82,
+    "line": 79,
     "func": "resolvePnpmInvocation",
     "mode": "propagate",
     "allowed": "Default: any errno. Strict: probe",
@@ -372,28 +332,8 @@
   {
     "id": "pnpmResolver.ts#2",
     "file": "src/host/pnpmResolver.ts",
-    "line": 122,
+    "line": 119,
     "func": "resolvePnpmInvocation",
-    "mode": "propagate",
-    "allowed": "Default: any errno. Strict: probe",
-    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
-    "fsMode": "Graceful default / explicit strict"
-  },
-  {
-    "id": "pnpmResolver.ts#3",
-    "file": "src/host/pnpmResolver.ts",
-    "line": 164,
-    "func": "resolveInstalledPnpmInvocation",
-    "mode": "propagate",
-    "allowed": "Default: any errno. Strict: probe or SyntaxError",
-    "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
-    "fsMode": "Graceful default / explicit strict"
-  },
-  {
-    "id": "pnpmResolver.ts#4",
-    "file": "src/host/pnpmResolver.ts",
-    "line": 189,
-    "func": "probe",
     "mode": "propagate",
     "allowed": "Default: any errno. Strict: probe",
     "decision": "Default preserves the origin/main filesystem fallback. Strict propagates unlisted failures. Non-errno code failures propagate in both modes.",
@@ -542,7 +482,7 @@
   {
     "id": "upgradeRunner.ts#1",
     "file": "src/host/upgradeRunner.ts",
-    "line": 483,
+    "line": 495,
     "func": "executeTask",
     "mode": "propagate",
     "allowed": "none",
@@ -552,7 +492,7 @@
   {
     "id": "upgradeRunner.ts#2",
     "file": "src/host/upgradeRunner.ts",
-    "line": 524,
+    "line": 536,
     "func": "executeTask",
     "mode": "propagate",
     "allowed": "none",
@@ -1258,5 +1198,95 @@
     "allowed": "post-completion refresh errors",
     "decision": "Failure while reporting invalidated presentation must not change the known transaction result.",
     "fsMode": "Strict evidence read, presentation-only failure"
+  },
+  {
+    "id": "npmResolverAsync.ts#1",
+    "file": "src/host/npmResolverAsync.ts",
+    "line": 98,
+    "func": "resolverPathExistsAsync",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Graceful discovery preserves filesystem fallbacks. Strict discovery propagates unexpected failures. Cancellation always propagates.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "npmResolverAsync.ts#2",
+    "file": "src/host/npmResolverAsync.ts",
+    "line": 103,
+    "func": "resolverIsExecutableAsync",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Graceful discovery preserves filesystem fallbacks. Strict discovery propagates unexpected failures. Cancellation always propagates.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "npmResolverAsync.ts#3",
+    "file": "src/host/npmResolverAsync.ts",
+    "line": 108,
+    "func": "resolverListDirAsync",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Graceful discovery preserves filesystem fallbacks. Strict discovery propagates unexpected failures. Cancellation always propagates.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "npmResolverAsync.ts#4",
+    "file": "src/host/npmResolverAsync.ts",
+    "line": 130,
+    "func": "runFixedProbeAsync",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Graceful discovery preserves filesystem fallbacks. Strict discovery propagates unexpected failures. Cancellation always propagates.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pnpmResolverAsync.ts#1",
+    "file": "src/host/pnpmResolverAsync.ts",
+    "line": 34,
+    "func": "resolvePnpmInvocationAsync",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Graceful discovery preserves filesystem fallbacks. Strict discovery propagates unexpected failures. Cancellation always propagates.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pnpmResolverAsync.ts#2",
+    "file": "src/host/pnpmResolverAsync.ts",
+    "line": 75,
+    "func": "resolvePnpmInvocationAsync",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe",
+    "decision": "Graceful discovery preserves filesystem fallbacks. Strict discovery propagates unexpected failures. Cancellation always propagates.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "pnpmResolverAsync.ts#3",
+    "file": "src/host/pnpmResolverAsync.ts",
+    "line": 120,
+    "func": "resolveInstalledPnpmInvocationAsync",
+    "mode": "propagate",
+    "allowed": "Default: any errno. Strict: probe or SyntaxError",
+    "decision": "Graceful discovery preserves filesystem fallbacks. Strict discovery propagates unexpected failures. Cancellation always propagates.",
+    "fsMode": "Graceful default / explicit strict"
+  },
+  {
+    "id": "frozenReconciliation.ts#2",
+    "file": "src/host/frozenReconciliation.ts",
+    "line": 79,
+    "func": "offerFrozenReconciliation",
+    "mode": "propagate",
+    "allowed": "AbortError after the independent discovery signal is aborted",
+    "decision": "Cancellation before execution skips the optional reinstall with the shared manual note. Unexpected errors propagate to the owner boundary.",
+    "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeRunner.ts#3",
+    "file": "src/host/upgradeRunner.ts",
+    "line": 557,
+    "func": "workspaceManifestExists",
+    "mode": "propagate",
+    "allowed": "expected probe filesystem errors",
+    "decision": "Missing or inaccessible workspace metadata leaves workspace mode off. Unexpected filesystem and programming failures propagate.",
+    "fsMode": "Strict mutation or parse boundary"
   }
 ]

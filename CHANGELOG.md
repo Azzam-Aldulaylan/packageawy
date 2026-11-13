@@ -21,6 +21,8 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Fixed
 
+- Upgrades and removals no longer pause the editor while finding npm or pnpm.
+
 - Transitive fix analysis now stops after two minutes if the isolated package manager is still working, including children that keep its output open, and reports that project files were not changed.
 - A dependency change whose result was lost now shows the same blocked message in the dashboard and reviews, including Smart Cleanup, with a button to open recovery and no unverified restoration claims.
 - Restart in JetBrains IDEs now waits for the engine to confirm that no dependency change is running or has an unknown outcome, blocks new changes during that check, and ignores repeated requests from finished restart attempts.

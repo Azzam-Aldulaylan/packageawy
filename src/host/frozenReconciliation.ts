@@ -11,7 +11,8 @@ import type { UpgradeExecutionSession } from './upgradeRunner.js';
 export async function offerFrozenReconciliation(
   journal: RecoveryJournal,
   platform: HostPlatform,
-  session: UpgradeExecutionSession
+  session: UpgradeExecutionSession,
+  signal?: AbortSignal
 ): Promise<'skipped' | 'succeeded' | 'failed' | 'unknown'> {
   const target = journal.storage.target;
   const manifest = target.allowlistedPaths.find(candidate => path.basename(candidate) === 'package.json');
@@ -22,6 +23,8 @@ export async function offerFrozenReconciliation(
     platform.showWarningMessage(`${reason} ${manualNote}`);
     return 'skipped';
   };
+  const cancelled = (): 'skipped' => skip('Reinstall was cancelled before it started.');
+  if (signal?.aborted) return cancelled();
   if (manifest === undefined || lockfile === undefined || !(await journal.files.read(lockfile)).exists) {
     return skip('The frozen reinstall offer is unavailable without a restored manifest and lockfile.');
   }
@@ -34,6 +37,7 @@ export async function offerFrozenReconciliation(
     `Run ${command} using the restored lockfile. Install scripts stay off. ${manualNote}`,
     ['Reinstall', 'Skip']
   ) !== 'Reinstall') return 'skipped';
+  if (signal?.aborted) return cancelled();
 
   // The prompt can remain open while workspace topology or dependency files change.
   await journal.assertOwner();
@@ -48,12 +52,21 @@ export async function offerFrozenReconciliation(
   if (conflicts.length > 0) {
     return skip(`${conflicts.map(file => file.message).join(' ')} Reinstall was not started.`);
   }
-  const prepared = session.prepareLockfileReconciliation({
-    cwd: path.dirname(manifest), packageManager, ignoreScripts: true,
-    workspaceMember: current.target.workspaceMember,
-    taskTitle: 'Packageawy: Reinstall restored dependencies',
-    throwOnUnexpectedError: true,
-  });
+  let prepared;
+  try {
+    if (signal?.aborted) return cancelled();
+    prepared = await session.prepareLockfileReconciliation({
+      cwd: path.dirname(manifest), packageManager, ignoreScripts: true,
+      workspaceMember: current.target.workspaceMember,
+      taskTitle: 'Packageawy: Reinstall restored dependencies',
+      throwOnUnexpectedError: true,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (signal?.aborted) return cancelled();
+  } catch (cause) {
+    if (signal?.aborted && cause instanceof Error && cause.name === 'AbortError') return cancelled();
+    throw cause;
+  }
   if (!prepared.ok) { platform.showWarningMessage(`Reinstall could not start. ${prepared.message} ${manualNote}`); return 'failed'; }
   session.journal = journal;
   try {

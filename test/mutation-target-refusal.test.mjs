@@ -313,18 +313,18 @@ test('npm 8.5.0 is the first version that writes the workspace root lockfile fro
     { isWorkspaceTrusted: () => true, showErrorMessage: () => {}, runProcess: (request) => processes.push(request) },
     () => ({ executable: '/node', prefixArgs: ['/npm-cli.js'], version })
   );
-  const prepare = (version, workspaceMember, kind = 'manifest') => {
+  const prepare = async (version, workspaceMember, kind = 'manifest') => {
     const session = sessionFor(version);
     const params = { cwd: '/repo/packages/app', ignoreScripts: true, packageManager: 'npm', workspaceMember };
-    return kind === 'manifest' ? session.prepareManifestReconciliation(params) : session.prepareLockfileReconciliation(params);
+    return kind === 'manifest' ? await session.prepareManifestReconciliation(params) : await session.prepareLockfileReconciliation(params);
   };
   for (const kind of ['manifest', 'lockfile']) {
-    assert.equal(prepare('8.5.0', true, kind).ok, true, kind);
-    assert.deepEqual(prepare('8.4.1', true, kind), {
+    assert.equal((await prepare('8.5.0', true, kind)).ok, true, kind);
+    assert.deepEqual(await prepare('8.4.1', true, kind), {
       ok: false, code: NPM_TOO_OLD_FOR_MEMBER_CODE, message: NPM_TOO_OLD_FOR_MEMBER_MESSAGE,
     }, kind);
     // A standalone project is unaffected at any version.
-    assert.equal(prepare('6.14.18', false, kind).ok, true, kind);
+    assert.equal((await prepare('6.14.18', false, kind)).ok, true, kind);
   }
   assert.deepEqual(processes, []);
 });

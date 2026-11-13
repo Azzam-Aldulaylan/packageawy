@@ -6,6 +6,7 @@ import { recoveryFixture } from './helpers/recovery.mjs';
 import { withoutFsync } from './helpers/without-fsync.mjs';
 import { isExpectedFsError, isFsError } from '../out/host/expectedFsError.js';
 import { isMissingPathError } from '../out/host/pathIdentity.js';
+import { throwIfAborted } from '../out/host/npmResolverAsync.js';
 import { rethrowUnexpectedResolverError } from '../out/host/npmResolver.js';
 import { RecoveryJournal } from '../out/host/recovery/journal.js';
 import { Storage } from '../out/host/recovery/storage.js';
@@ -125,11 +126,12 @@ for (const row of catchTable.filter(row => row.mode !== 'refuse' && !row.mode.st
     controller: { signal: { aborted: false } }, message: { type: 'confirm-remove' }, changeTarget: 'audit',
     RECOVERY_INSPECTION_MAX_ATTEMPTS: 3, RECOVERY_INSPECTION_RETRY_MS: 250,
     processId: 'audit', run: { stopObserving() {} }, checks: [], dispatched: true, options: { journal }, RestoreConflictError, StorageFenceError, receiver, isExpectedFsError, isFsError, isMissingPathError, isMissing: cause => isExpectedFsError(cause, 'missingFile'),
-    rethrowUnexpectedResolverError, RecoveryError, RecoveryOutcomeUnknownError, UpgradeTransactionPathError, RestoreFileError, YAMLException, FetchError,
+    rethrowUnexpectedResolverError, throwIfAborted, reject: cause => { throw cause; }, RecoveryError, RecoveryOutcomeUnknownError, UpgradeTransactionPathError, RestoreFileError, YAMLException, FetchError,
     RECOVERY_MESSAGES, strict: false, input: { throwOnUnexpectedError: false }, deps: { throwOnUnexpectedError: false },
     uncertainErrors: false, step: 'recovery-completion', handle, journal, session,
     uncertain: cause => session.invalidate(cause), errorMessage: cause => cause.message,
     runtimeFailureLine: () => '', toProtocolError: cause => ({ code: cause.name, message: cause.message }),
+    discovery: { abort: { signal: { aborted: false } } },
     abort: { signal: { aborted: false } }, stored: { packageName: 'audit', eligibility: { packageName: 'audit' }, reservationKey: 'audit' },
     finish: value => value,
   };

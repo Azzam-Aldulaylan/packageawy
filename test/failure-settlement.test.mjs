@@ -172,7 +172,7 @@ test('session disposal settles its task as unknown without releasing the owner s
     runProcess: async () => ({ onDidExit() { started(); return { dispose() {} }; } }),
   }, invocation);
   session.reserve('change');
-  const running = session.prepareManifestReconciliation({ cwd: '/fixture', ignoreScripts: true, packageManager: 'npm' }).execute();
+  const running = (await session.prepareManifestReconciliation({ cwd: '/fixture', ignoreScripts: true, packageManager: 'npm' })).execute();
   await arrived;
   session.dispose();
   assert.equal((await running).status, 'unknown');

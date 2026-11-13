@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import nativeFs from 'node:fs/promises';
-import syncFs from 'node:fs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { recoveryFixture } from './helpers/recovery.mjs';
 import { resolveMutationTarget, defaultMutationTargetEnvironment } from '../out/host/mutationTarget.js';
-import { createNodeNpmResolverDeps } from '../out/host/npmResolver.js';
-import { resolvePnpmInvocation, resolveInstalledPnpmInvocation } from '../out/host/pnpmResolver.js';
+import { createNodeNpmResolverAsyncDeps } from '../out/host/npmResolverAsync.js';
+import { resolvePnpmInvocationAsync, resolveInstalledPnpmInvocationAsync } from '../out/host/pnpmResolverAsync.js';
 
 const failure = fault => fault === 'TypeError' ? new TypeError('resolver bug') : Object.assign(new Error('resolver EIO'), { code: 'EIO' });
 
@@ -60,22 +59,22 @@ for (const fault of ['EIO', 'TypeError']) {
   }
 
   for (const step of ['exists', 'isExecutable', 'listDir', 'resolveRealNodePath', 'resolveGlobalNpmRoot', 'probeVersion', 'probeLoginShellNode']) {
-    test(`strict npm discovery ${step} propagates ${fault}`, t => {
+    test(`strict npm discovery ${step} propagates ${fault}`, async t => {
       const error = failure(fault);
-      const deps = createNodeNpmResolverDeps(process.cwd(), true);
-      const method = step === 'exists' ? 'statSync' : step === 'isExecutable' ? 'accessSync' : step === 'listDir' ? 'readdirSync' : 'execFileSync';
-      patch(t, method === 'execFileSync' ? childProcess : syncFs, method, () => () => { throw error; });
+      const deps = createNodeNpmResolverAsyncDeps(process.cwd(), undefined, true);
+      const method = step === 'exists' ? 'stat' : step === 'isExecutable' ? 'access' : step === 'listDir' ? 'readdir' : 'spawn';
+      patch(t, method === 'spawn' ? childProcess : nativeFs, method, () => () => { throw error; });
       if (step === 'resolveGlobalNpmRoot') {
-        patch(t, syncFs, 'statSync', () => () => ({ isFile: () => true }));
+        patch(t, nativeFs, 'stat', () => () => ({ isFile: () => true }));
       }
-      assert.throws(() => deps[step]('/installation/node', '/installation/npm-cli.js'), cause => cause === error);
+      await assert.rejects(async () => deps[step]('/installation/node', '/installation/npm-cli.js'), cause => cause === error);
     });
   }
 
-  for (const phase of ['safe path', 'real entry point']) test(`strict pnpm discovery ${phase} propagates ${fault}`, t => {
+  for (const phase of ['safe path', 'real entry point']) test(`strict pnpm discovery ${phase} propagates ${fault}`, async t => {
     const error = failure(fault);
     let seen = false;
-    assert.throws(() => resolvePnpmInvocation(null, { platform: 'linux', cwd: '/project', pathEnv: '/installation',
+    await assert.rejects(() => resolvePnpmInvocationAsync(null, { platform: 'linux', cwd: '/project', pathEnv: '/installation',
       throwOnUnexpectedError: true, exists: () => true, probe: () => '10.0.0',
       realpath(candidate) {
         if (phase === 'safe path' || (candidate === '/installation/pnpm' && seen)) throw error;
@@ -85,36 +84,36 @@ for (const fault of ['EIO', 'TypeError']) {
     }), cause => cause === error);
   });
 
-  for (const phase of ['manifest', 'probe']) test(`strict installed pnpm ${phase} propagates ${fault}`, t => {
+  for (const phase of ['manifest', 'probe']) test(`strict installed pnpm ${phase} propagates ${fault}`, async t => {
     const error = failure(fault);
-    patch(t, syncFs, 'statSync', () => () => ({ isFile: () => true }));
-    patch(t, syncFs, 'readFileSync', original => (...args) => {
+    patch(t, nativeFs, 'stat', () => () => ({ isFile: () => true }));
+    patch(t, nativeFs, 'readFile', original => (...args) => {
       if (args[0] === path.join(process.cwd(), 'package.json')) {
         if (phase === 'manifest') throw error;
         return '{}';
       }
       return original(...args);
     });
-    patch(t, syncFs, 'realpathSync', () => candidate => candidate);
-    patch(t, syncFs, 'accessSync', () => () => {});
-    patch(t, childProcess, 'execFileSync', () => () => { throw error; });
-    assert.throws(() => resolveInstalledPnpmInvocation({ node: '/installation/node', npmCliJs: '/installation/lib/node_modules/npm/bin/npm-cli.js' }, process.cwd(), true), cause => cause === error);
+    patch(t, nativeFs, 'realpath', () => candidate => candidate);
+    patch(t, nativeFs, 'access', () => () => {});
+    patch(t, childProcess, 'spawn', () => () => { throw error; });
+    await assert.rejects(() => resolveInstalledPnpmInvocationAsync({ node: '/installation/node', npmCliJs: '/installation/lib/node_modules/npm/bin/npm-cli.js' }, process.cwd(), true), cause => cause === error);
   });
 
-  test(`strict target environment discovery propagates ${fault}`, t => {
+  test(`strict target environment discovery propagates ${fault}`, async t => {
     const error = failure(fault);
     let hits = 0;
     // Every host canonicalizes candidates. Only POSIX enumerates nvm/fnm directories.
-    patch(t, syncFs.realpathSync, 'native', () => () => { hits++; throw error; });
-    assert.throws(() => defaultMutationTargetEnvironment(true), cause => cause === error);
+    patch(t, nativeFs, 'realpath', () => () => { hits++; throw error; });
+    await assert.rejects(defaultMutationTargetEnvironment(true), cause => cause === error);
     assert.equal(hits, 1);
   });
 
   test(`strict POSIX target environment directory discovery propagates ${fault}`, {
     skip: process.platform === 'win32' && 'Windows candidates do not enumerate POSIX version managers',
-  }, t => {
+  }, async t => {
     const error = failure(fault);
-    patch(t, syncFs, 'readdirSync', () => () => { throw error; });
-    assert.throws(() => defaultMutationTargetEnvironment(true), cause => cause === error);
+    patch(t, nativeFs, 'readdir', () => () => { throw error; });
+    await assert.rejects(defaultMutationTargetEnvironment(true), cause => cause === error);
   });
 }
