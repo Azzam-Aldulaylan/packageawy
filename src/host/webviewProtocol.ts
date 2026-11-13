@@ -2060,6 +2060,7 @@ function isDependencyUsageResult(value: unknown): value is DependencyUsageResult
     Array.isArray(references) &&
     references.every(isDependencyReference) &&
     typeof value['truncated'] === 'boolean' &&
+    isAbsentOr(value['coverageReasons'], (v) => Array.isArray(v) && v.every((reason: unknown) => typeof reason === 'string')) &&
     typeof value['scannedFileCount'] === 'number' &&
     typeof value['scannedAt'] === 'string'
   );

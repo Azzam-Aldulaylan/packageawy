@@ -10,7 +10,7 @@
  * which is pure and independently testable.
  */
 
-import { packageNameTokens } from './packageNameMatch.js';
+import { packageNameTokens, specifierMatchesPackage } from './packageNameMatch.js';
 
 export const CONFIG_FILE_GLOBS: readonly string[] = [
   '.eslintrc',
@@ -24,6 +24,13 @@ export const CONFIG_FILE_GLOBS: readonly string[] = [
   'webpack.config.*',
   'vite.config.*',
   'next.config.*',
+  'nuxt.config.*',
+  'svelte.config.*',
+  'astro.config.*',
+  'playwright.config.*',
+  'cypress.config.*',
+  '.storybook/*',
+  'tsup.config.*',
   'metro.config.*',
   'react-native.config.*',
   'jest.config.*',
@@ -75,6 +82,12 @@ function eslintShorthandPatterns(packageName: string): string[] {
   if (kind === 'plugin') return [shortName, `plugin:${shortName}/${QUOTED_SEGMENT}`];
   // `@scope/foo` names `@scope/eslint-config-foo`, so a bare scope takes no subpath.
   return rest === undefined ? [shortName] : [shortName, `${shortName}/${QUOTED_SEGMENT}`];
+}
+
+/** Manifest values must be module references, since prose is not evidence of usage. */
+export function configValueReferencesPackage(value: string, packageName: string, eslintShorthand = false): boolean {
+  if (!/\s/.test(value) && specifierMatchesPackage(value, packageName)) return true;
+  return eslintShorthand && eslintShorthandPatterns(packageName).some((pattern) => new RegExp(`^(?:${pattern})$`).test(value));
 }
 
 /**

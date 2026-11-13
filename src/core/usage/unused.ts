@@ -12,6 +12,7 @@ import { typesPackageTarget } from './packageNameMatch.js';
 import type { DependencyFinding } from '../hygiene/types.js';
 import type { PeerRequirementEvidence } from '../upgrade/peerRequirement.js';
 import type { DependencyUsageResult } from './types.js';
+import { coverageExplanation } from './sourceCoverage.js';
 
 /**
  * Packages a framework loads on its own when they are installed, keyed by
@@ -70,7 +71,9 @@ export function buildUnusedFinding(
   const lowConfidence = usage.truncated || optionalPeerOwners.length > 0 || conventionPackage;
 
   const reason = usage.truncated
-    ? 'The workspace scan did not cover every eligible file, so this may be a false positive.'
+    ? usage.coverageReasons?.length
+      ? coverageExplanation(usage.coverageReasons)
+      : 'The workspace scan did not cover every eligible file, so this may be a false positive.'
     : optionalPeerOwners.length > 0
       ? `No code references found, but this package is an optional peer dependency of ${optionalPeerOwners.join(', ')}.`
       : typesTarget !== null

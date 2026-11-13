@@ -51,7 +51,7 @@ export interface LikelyUnusedEvidence {
   /** Human-readable explanation of what was/wasn't found. See unused.ts. */
   reason: string;
   scannedFileCount: number;
-  /** True when the workspace scan behind this finding was capped before covering every source file. */
+  /** True when the workspace scan behind this finding did not cover all project content. */
   truncated: boolean;
 }
 

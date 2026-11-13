@@ -6,6 +6,9 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Changed
 
+- Likely-unused results and Smart Cleanup now read the script blocks of Vue, Svelte and Astro files, and .mts and .cts files, so packages used only there are no longer suggested for removal.
+- When a project has files Packageawy does not read yet, such as .mdx, removals are not recommended automatically and the screen says why.
+- Cleanup checks now recognize more framework and tool config files, and package names in package.json tool settings.
 - Packageawy now finds the lockfile your package manager will write, including the workspace root's, and uses it for every change and rollback.
 - The Vulnerabilities column now reads No known vulnerabilities instead of Safe, which is exactly what was checked.
 

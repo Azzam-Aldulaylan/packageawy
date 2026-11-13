@@ -2158,3 +2158,19 @@ test('rendered accepts exactly a type and a non-empty generatedAt string', () =>
     { type: 'rendered', generatedAt: 'snapshot', extra: true },
   ]) assert.equal(isWebviewToHostMessage(value), false, JSON.stringify(value));
 });
+
+test('usage coverage reasons accept only an optional array of strings', () => {
+  const message = {
+    status: 'usage-result', package: 'foo', analysis: {
+      usageId: 'coverage', fromCache: false, cacheExpiresAt: '2026-08-01T00:10:00.000Z',
+      result: { packageName: 'foo', references: [], truncated: true, scannedFileCount: 1, scannedAt: '2026-08-01T00:00:00.000Z' },
+    },
+  };
+  assert.equal(isHostToWebviewMessage(message), true);
+  for (const coverageReasons of [[], ['.mdx files'], ['stylesheets with @import, @use or @plugin']]) {
+    assert.equal(isHostToWebviewMessage({ ...message, analysis: { ...message.analysis, result: { ...message.analysis.result, coverageReasons } } }), true);
+  }
+  for (const coverageReasons of [null, '.mdx files', [1], [{}], ['.mdx files', false]]) {
+    assert.equal(isHostToWebviewMessage({ ...message, analysis: { ...message.analysis, result: { ...message.analysis.result, coverageReasons } } }), false);
+  }
+});

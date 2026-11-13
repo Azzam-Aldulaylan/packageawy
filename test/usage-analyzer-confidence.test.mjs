@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { USAGE_SOURCE_FILE_GLOB, USAGE_CONFIG_FILE_GLOB } from '../out/host/usage/workspaceFiles.js';
+
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
 
 const brokenSourceFiles = ['/workspace/src/oversized.ts', '/workspace/src/unreadable.ts'];
@@ -10,7 +12,7 @@ const brokenSourceFiles = ['/workspace/src/oversized.ts', '/workspace/src/unread
 let workspace = { sourceFiles: [], configFiles: [], text: new Map() };
 
 const platform = {
-  findFiles: async (search) => search.include.includes('*.{js,jsx,ts,tsx,mjs,cjs}') ? workspace.sourceFiles : workspace.configFiles,
+  findFiles: async (search) => search.include === USAGE_SOURCE_FILE_GLOB ? workspace.sourceFiles : search.include === USAGE_CONFIG_FILE_GLOB ? workspace.configFiles : [],
   statFile: async (filePath) => ({ size: filePath.endsWith('oversized.ts') ? 3 * 1024 * 1024 : 10 }),
   readFile: async (filePath) => {
     const text = workspace.text.get(filePath);

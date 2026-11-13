@@ -41,17 +41,21 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
   const assessmentByName: ReadonlyMap<string, { assessment: RemovalAssessment; usageId: string }> = options.removalImpact.phase === 'done'
     ? options.removalImpact.assessments
     : new Map<string, { assessment: RemovalAssessment; usageId: string }>();
-  const unusedNames = new Set(
+  const unusedFindings = new Map(
     options.hygieneFindings
       .filter((finding) => finding.kind === 'likely-unused')
-      .map((finding) => finding.packageName)
+      .map((finding) => [finding.packageName, finding] as const)
   );
-  const recommendations: SmartCleanupRemovalRecommendation[] = [...unusedNames]
+  const recommendations: SmartCleanupRemovalRecommendation[] = [...unusedFindings.keys()]
     .sort((left, right) => left.localeCompare(right))
     .flatMap((packageName) => {
       const row = rowsByName.get(packageName);
       if (row === undefined) return [];
       const assessment = assessmentByName.get(packageName)?.assessment;
+      const finding = unusedFindings.get(packageName);
+      const coverageReason = finding?.evidence.kind === 'likely-unused' && finding.evidence.truncated
+        ? finding.evidence.reason
+        : undefined;
       const evidenceCapabilityReason = options.capability.executionSupported ? null : options.capability.reason;
       const confidence = evidenceCapabilityReason !== null
         ? 'blocked'
@@ -65,7 +69,7 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
       const transitive = assessment?.evidence.find((entry) => entry.kind === 'transitive-dependency');
       const evidence = evidenceCapabilityReason === null
         ? assessment?.evidence.map((entry) => entry.summary) ?? [
-        'Removal-safety evidence is incomplete, so this dependency cannot be selected.',
+        coverageReason ?? 'Removal-safety evidence is incomplete, so this dependency cannot be selected.',
           ]
         : [evidenceCapabilityReason, ...(assessment?.evidence.map((entry) => entry.summary) ?? [])];
       return [{
