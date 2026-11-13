@@ -6,9 +6,10 @@
  * refuses changes, whichever pnpm version would actually honour it. Guessing
  * precedence or version rules wrong would let an install write a lockfile
  * the transaction never captured, while a refusal only costs the user a
- * change they can make in a terminal. Sources that redirect configuration
- * (userconfig, globalconfig, prefix, workspace-dir) and code that can rewrite
- * configuration (pnpmfiles, config dependencies) are refused rather than
+ * change they can make in a terminal. A userconfig, globalconfig or
+ * prefix that names another npm config file is followed one step and that
+ * file is checked too. workspace-dir, and code that can rewrite
+ * configuration (pnpmfiles, config dependencies), are refused rather than
  * followed.
  */
 
@@ -57,7 +58,13 @@ const LOCKFILE_SETTING_DEFAULTS: ReadonlyMap<string, SettingDefault> = new Map<s
   ['virtual-store-dir', { kind: 'path', value: 'node_modules/.pnpm' }],
   ['modules-dir', { kind: 'path', value: 'node_modules' }],
 ]);
-const REDIRECTING_SETTINGS: ReadonlySet<string> = new Set(['userconfig', 'globalconfig', 'prefix', 'workspace-dir']);
+/**
+ * Settings that name another npm config file. In an .npmrc or the
+ * environment they are followed (see `followRedirect`). Anywhere else, and
+ * workspace-dir everywhere (it changes workspace discovery itself), they refuse.
+ */
+const CONFIG_LOCATION_SETTINGS: ReadonlySet<string> = new Set(['userconfig', 'globalconfig', 'prefix']);
+const REDIRECTING_SETTINGS: ReadonlySet<string> = new Set([...CONFIG_LOCATION_SETTINGS, 'workspace-dir']);
 // There is no implicit global pnpmfile: pnpm loads one only when the
 // global-pnpmfile setting names it, so checking the setting is enough.
 const PNPMFILE_SETTINGS: ReadonlySet<string> = new Set(['pnpmfile', 'global-pnpmfile']);
@@ -120,15 +127,79 @@ async function readSource(filePath: string): Promise<SourceText> {
   }
 }
 
-async function checkNpmrc(filePath: string, label: string, platform: NodeJS.Platform): Promise<PnpmSettingsRefusal | null> {
+/**
+ * One .npmrc, and any config file it names through userconfig,
+ * globalconfig or prefix. `redirected` is true for a file reached through
+ * such a setting: a second redirect from there is refused rather than
+ * followed further. A missing file is empty, as npm treats it.
+ */
+async function checkNpmrc(
+  filePath: string,
+  label: string,
+  environment: PnpmSettingsEnvironment,
+  redirected = false
+): Promise<PnpmSettingsRefusal | null> {
   const source = await readSource(filePath);
   if (source.status === 'absent') return null;
   if (source.status === 'unreadable') return undetermined(`Could not read ${label}.`);
+  const redirects: Array<{ name: string; value: string | undefined }> = [];
   for (const entry of npmrcEntries(source.text)) {
-    const refusal = settingRefusal(entry.key, entry.value, label, platform);
+    const name = normalizeSettingName(entry.key);
+    if (CONFIG_LOCATION_SETTINGS.has(name)) {
+      redirects.push({ name, value: entry.value });
+      continue;
+    }
+    const refusal = settingRefusal(entry.key, entry.value, label, environment.platform);
+    if (refusal !== null) return refusal;
+  }
+  for (const redirect of redirects) {
+    const refusal = await followRedirect(redirect.name, redirect.value, label, environment, redirected);
     if (refusal !== null) return refusal;
   }
   return null;
+}
+
+/** npm expands a leading `~` in path settings to the home directory. */
+/**
+ * npm and pnpm resolve a leading `~/` as path.resolve(home, rest), so
+ * `~//tmp/x` is /tmp/x, not a folder in home. Only exactly `~/` (and `~\\` on
+ * Windows) is expanded that way. A bare `~` or `~name` is left as it is and
+ * then refused, because it is not an absolute path.
+ */
+function expandHome(value: string, environment: PnpmSettingsEnvironment): string {
+  const prefixed = value.startsWith('~/') || (environment.platform === 'win32' && value.startsWith('~\\'));
+  return prefixed ? path.resolve(environment.homeDir, value.slice(2)) : value;
+}
+
+/**
+ * Reads the config file a userconfig, globalconfig or prefix setting names
+ * (for prefix, `<prefix>/etc/npmrc`) and checks it like every other source.
+ * npm run exports all three to the scripts it starts, and many users keep a
+ * custom prefix, so a different location is followed, not refused. Refused:
+ * a value that is not an absolute path (or `~/`), any `${...}`, and a
+ * second redirect inside a file that was itself reached by one.
+ */
+async function followRedirect(
+  name: string,
+  value: string | undefined,
+  source: string,
+  environment: PnpmSettingsEnvironment,
+  alreadyRedirected: boolean
+): Promise<PnpmSettingsRefusal | null> {
+  // npm and pnpm expand `${...}` in these values, to something unknown here.
+  const expanded = value === undefined || value.includes('${') ? undefined : expandHome(value.trim(), environment);
+  if (expanded === undefined || expanded === '' || !path.isAbsolute(expanded)) {
+    return undetermined(`Config location not resolved: ${name} in ${source}.`);
+  }
+  const target = name === 'prefix' ? path.join(expanded, 'etc', 'npmrc') : expanded;
+  // A setting that names a file already read as a default source (npm run
+  // exports userconfig as ~/.npmrc) moves nothing, so it is not a redirect,
+  // even inside a file that was itself reached by one.
+  for (const defaultSource of defaultNpmrcPaths(environment)) {
+    if ((await authorizedRelation(defaultSource, target)) === 'same') return null;
+  }
+  if (alreadyRedirected) return undetermined(`Config location set twice: ${name} in ${source}.`);
+  return checkNpmrc(target, `${target} (named by ${name} in ${source})`, environment, true);
 }
 
 function collectEntries(document: Record<string, unknown>, into: Array<{ key: string; value: string | undefined }>): void {
@@ -219,46 +290,22 @@ export function pnpmConfigDirs(environment: PnpmSettingsEnvironment): string[] {
  * `npmrc` beside it (read by loadBuiltinConfig) that sets the prefix to
  * %APPDATA%\npm, as npm's folders documentation says for Windows
  * (https://docs.npmjs.com/cli/v10/configuring-npm/folders#prefix-configuration),
- * and that is what `npm run` exports. Both are read as sources and
- * accepted as unmoved defaults.
+ * and that is what `npm run` exports. Both are read as sources. A
+ * different prefix is followed wherever it is set (see `followRedirect`).
  */
+/** The user and global npmrc files npm reads when nothing redirects it. */
+function defaultNpmrcPaths(environment: PnpmSettingsEnvironment): string[] {
+  return [
+    path.join(environment.homeDir, '.npmrc'),
+    ...npmGlobalPrefixes(environment).map((prefix) => path.join(prefix, 'etc', 'npmrc')),
+  ];
+}
+
 function npmGlobalPrefixes(environment: PnpmSettingsEnvironment): string[] {
   const prefixes = [...environment.nodePrefixes];
   const appData = environment.env['APPDATA'];
   if (environment.platform === 'win32' && appData !== undefined && appData !== '') prefixes.push(path.join(appData, 'npm'));
   return prefixes;
-}
-
-async function samePath(left: string, right: string): Promise<boolean> {
-  try {
-    return (await authorizedRelation(left, right)) === 'same';
-  } catch {
-    return false;
-  }
-}
-
-/**
- * `npm run` exports npm's own userconfig, globalconfig and prefix to every
- * script it starts, so an editor launched from one inherits them. A value
- * that names the very file (or prefix) this check already reads moves
- * nothing and is allowed. Anything else, including a relative path, is a
- * redirect and refuses.
- */
-async function namesInspectedDefault(
-  name: string,
-  value: string,
-  environment: PnpmSettingsEnvironment
-): Promise<boolean> {
-  if (!path.isAbsolute(value)) return false;
-  const defaults = name === 'userconfig'
-    ? [path.join(environment.homeDir, '.npmrc')]
-    : name === 'globalconfig'
-      ? npmGlobalPrefixes(environment).map((prefix) => path.join(prefix, 'etc', 'npmrc'))
-      : name === 'prefix' ? npmGlobalPrefixes(environment) : [];
-  for (const candidate of defaults) {
-    if (await samePath(value, candidate)) return true;
-  }
-  return false;
 }
 
 async function checkEnvironment(environment: PnpmSettingsEnvironment): Promise<PnpmSettingsRefusal | null> {
@@ -267,8 +314,10 @@ async function checkEnvironment(environment: PnpmSettingsEnvironment): Promise<P
     const prefix = lower.startsWith('npm_config_') ? 'npm_config_' : lower.startsWith('pnpm_config_') ? 'pnpm_config_' : null;
     if (prefix === null || value === undefined) continue;
     const name = normalizeSettingName(lower.slice(prefix.length));
-    if (await namesInspectedDefault(name, value, environment)) continue;
-    const refusal = settingRefusal(name, value, `the environment (${rawName})`, environment.platform);
+    const label = `the environment (${rawName})`;
+    const refusal = CONFIG_LOCATION_SETTINGS.has(name)
+      ? await followRedirect(name, value, label, environment, false)
+      : settingRefusal(name, value, label, environment.platform);
     if (refusal !== null) return refusal;
   }
   return null;
@@ -327,15 +376,14 @@ export async function findPnpmLockfileOverride(input: PnpmSettingsInput): Promis
   const npmrcSources: Array<[string, string]> = [
     [path.join(projectDir, '.npmrc'), 'the project .npmrc'],
     [path.join(workspaceRoot, '.npmrc'), 'the workspace .npmrc'],
-    [path.join(environment.homeDir, '.npmrc'), 'your user .npmrc'],
-    ...npmGlobalPrefixes(environment).map((prefix): [string, string] => [path.join(prefix, 'etc', 'npmrc'), 'the global npmrc']),
+    ...defaultNpmrcPaths(environment).map((filePath, index): [string, string] => [filePath, index === 0 ? 'your user .npmrc' : 'the global npmrc']),
   ];
   for (const configDir of pnpmConfigDirs(environment)) npmrcSources.push([path.join(configDir, 'rc'), "pnpm's global rc"]);
   const seen = new Set<string>();
   for (const [filePath, label] of npmrcSources) {
     if (seen.has(filePath)) continue;
     seen.add(filePath);
-    const refusal = await checkNpmrc(filePath, label, environment.platform);
+    const refusal = await checkNpmrc(filePath, label, environment);
     if (refusal !== null) return refusal;
   }
   for (const configDir of pnpmConfigDirs(environment)) {

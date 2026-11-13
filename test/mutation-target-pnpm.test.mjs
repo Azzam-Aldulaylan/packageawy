@@ -1,7 +1,7 @@
 /** pnpm settings, pnpmfiles and configuration plugins that can move the lockfile pnpm writes, from every source read. */
 
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 
@@ -110,17 +110,11 @@ test('a pnpm setting pnpm would expand from the environment counts as set', asyn
   assertRefused(result, 'LOCKFILE_UNDETERMINED', /Setting found: lockfile-dir in the workspace \.npmrc\./);
 });
 
-test('settings that redirect pnpm configuration or discovery are refused, not followed', async (t) => {
+test('settings that change workspace discovery or include other files are refused, not followed', async (t) => {
   const cases = [
-    ['userconfig in .npmrc', async (env, root) => { await files(root, { '.npmrc': 'userconfig=/elsewhere/.npmrc\n' }); return env; }],
-    ['globalconfig in .npmrc', async (env, root) => { await files(root, { '.npmrc': 'globalconfig=/elsewhere/npmrc\n' }); return env; }],
-    ['prefix in .npmrc', async (env) => { await writeFile(path.join(env.homeDir, '.npmrc'), 'prefix=/elsewhere\n'); return env; }],
-    ['NPM_CONFIG_PREFIX', async (env) => ({ ...env, env: { NPM_CONFIG_PREFIX: '/elsewhere' } })],
-    ['npm_config_prefix', async (env) => ({ ...env, env: { npm_config_prefix: '/elsewhere' } })],
     ['NPM_CONFIG_WORKSPACE_DIR', async (env) => ({ ...env, env: { NPM_CONFIG_WORKSPACE_DIR: '/elsewhere' } })],
     ['npm_config_workspace_dir', async (env) => ({ ...env, env: { npm_config_workspace_dir: '/elsewhere' } })],
-    ['NPM_CONFIG_USERCONFIG', async (env) => ({ ...env, env: { NPM_CONFIG_USERCONFIG: '/elsewhere/.npmrc' } })],
-    ['npm_config_globalconfig', async (env) => ({ ...env, env: { npm_config_globalconfig: '/elsewhere/npmrc' } })],
+    ['workspace-dir in .npmrc', async (env, root) => { await files(root, { '.npmrc': 'workspace-dir=/elsewhere\n' }); return env; }],
     ['include in pnpm-workspace.yaml', async (env, root) => {
       await files(root, { 'pnpm-workspace.yaml': 'packages:\n  - packages/*\ninclude:\n  - ./more.yaml\n' });
       return env;
@@ -210,25 +204,6 @@ test('only include delegates pnpm-workspace.yaml settings', async (t) => {
   }
 });
 
-test('npm config locations in the environment are allowed only when they name what is already read', async (t) => {
-  const base = await environment(t);
-  const prefix = base.nodePrefixes[0];
-  const cases = [
-    [{ npm_config_userconfig: path.join(base.homeDir, '.npmrc') }, true],
-    [{ npm_config_globalconfig: path.join(prefix, 'etc', 'npmrc') }, true],
-    [{ npm_config_prefix: prefix }, true],
-    [{ NPM_CONFIG_USERCONFIG: path.join(base.homeDir, 'other.npmrc') }, false],
-    [{ npm_config_globalconfig: path.join(base.host, 'elsewhere', 'npmrc') }, false],
-    [{ npm_config_globalconfig: 'etc/npmrc' }, false],
-    [{ npm_config_prefix: path.join(base.host, 'elsewhere') }, false],
-  ];
-  for (const [env, allowed] of cases) {
-    const root = await pnpmWorkspace(t);
-    const result = await resolve(t, { folder: root, project: path.join(root, 'packages/app'), packageManager: 'pnpm', env: { ...base, env } });
-    assert.equal(result.ok, allowed, JSON.stringify(env));
-  }
-});
-
 test('quoted and escaped .npmrc keys mean what npm and pnpm read', async (t) => {
   const cases = [
     ['"git-branch-lockfile"=true\n', 'LOCKFILE_UNDETERMINED'],
@@ -272,23 +247,128 @@ test('a backslash separates path settings only on Windows', async (t) => {
   }
 });
 
-test("on Windows, npm's default prefix under %APPDATA% counts as unmoved and its npmrc is read", async (t) => {
-  const base = await environment(t);
-  const appData = path.join(base.host, 'AppData', 'Roaming');
-  const npmPrefix = path.join(appData, 'npm');
-  const cases = [
-    ['win32', { APPDATA: appData, npm_config_globalconfig: path.join(npmPrefix, 'etc', 'npmrc') }, true],
-    ['win32', { APPDATA: appData, npm_config_prefix: npmPrefix }, true],
-    ['win32', { APPDATA: appData, npm_config_globalconfig: path.join(appData, 'elsewhere', 'npmrc') }, false],
-    ['linux', { APPDATA: appData, npm_config_globalconfig: path.join(npmPrefix, 'etc', 'npmrc') }, false],
-  ];
-  for (const [platform, env, allowed] of cases) {
-    const root = await pnpmWorkspace(t);
-    const result = await resolve(t, { folder: root, project: path.join(root, 'packages/app'), packageManager: 'pnpm', env: { ...base, platform, env } });
-    assert.equal(result.ok, allowed, `${platform} ${JSON.stringify(env)}`);
-  }
-  await files(npmPrefix, { 'etc/npmrc': 'lockfile-dir=../x\n' });
+/** Resolves the standard pnpm workspace with one host environment. */
+async function resolveWith(t, env) {
   const root = await pnpmWorkspace(t);
-  const result = await resolve(t, { folder: root, project: path.join(root, 'packages/app'), packageManager: 'pnpm', env: { ...base, platform: 'win32', env: { APPDATA: appData } } });
-  assertRefused(result, 'LOCKFILE_UNDETERMINED', /Setting found: lockfile-dir in the global npmrc\./);
+  return resolve(t, { folder: root, project: path.join(root, 'packages/app'), packageManager: 'pnpm', env });
+}
+
+test('a custom npm prefix or config file is followed and checked, not refused', async (t) => {
+  const base = await environment(t);
+  const prefix = path.join(base.host, 'npm-global');
+  // Missing etc/npmrc: npm treats it as empty.
+  for (const env of [{ npm_config_prefix: prefix }, { NPM_CONFIG_PREFIX: prefix }, { npm_config_globalconfig: path.join(prefix, 'etc', 'npmrc') }]) {
+    assert.equal((await resolveWith(t, { ...base, env })).ok, true, JSON.stringify(env));
+  }
+  await files(base.homeDir, { '.npmrc': 'prefix=~/npm-global\n' });
+  assert.equal((await resolveWith(t, base)).ok, true, 'prefix with ~ in the user .npmrc');
+  // An empty one is allowed too.
+  await files(prefix, { 'etc/npmrc': '' });
+  assert.equal((await resolveWith(t, { ...base, env: { npm_config_prefix: prefix } })).ok, true);
+});
+
+test('a lockfile setting in a followed config file refuses, naming the file', async (t) => {
+  const base = await environment(t);
+  const prefix = path.join(base.host, 'npm-global');
+  await files(prefix, { 'etc/npmrc': 'lockfile-dir=../locks\n' });
+  assertRefused(
+    await resolveWith(t, { ...base, env: { npm_config_prefix: prefix } }),
+    'LOCKFILE_UNDETERMINED',
+    new RegExp(`Setting found: lockfile-dir in .*npm-global.etc.npmrc \\(named by prefix in the environment \\(npm_config_prefix\\)\\)\\.`)
+  );
+  const userconfig = path.join(base.host, 'other.npmrc');
+  await writeFile(userconfig, 'git-branch-lockfile=true\n');
+  for (const env of [{ npm_config_userconfig: userconfig }, {}]) {
+    if (Object.keys(env).length === 0) await files(base.homeDir, { '.npmrc': `userconfig=${userconfig}\n` });
+    assertRefused(await resolveWith(t, { ...base, env }), 'LOCKFILE_UNDETERMINED', /Setting found: git-branch-lockfile in .*other\.npmrc/);
+  }
+});
+
+test('a config location that cannot be followed safely refuses', async (t) => {
+  const base = await environment(t);
+  const cases = [
+    [{ npm_config_globalconfig: 'etc/npmrc' }, /Config location not resolved: globalconfig in the environment/],
+    [{ npm_config_userconfig: '${HOME}/.npmrc' }, /Config location not resolved: userconfig/],
+  ];
+  for (const [env, reason] of cases) assertRefused(await resolveWith(t, { ...base, env }), 'LOCKFILE_UNDETERMINED', reason);
+  const root = await pnpmWorkspace(t);
+  await files(root, { '.npmrc': 'prefix=relative/dir\n' });
+  assertRefused(
+    await resolve(t, { folder: root, project: path.join(root, 'packages/app'), packageManager: 'pnpm', env: base }),
+    'LOCKFILE_UNDETERMINED',
+    /Config location not resolved: prefix in the workspace \.npmrc/
+  );
+  // A second redirect inside a followed file.
+  const first = path.join(base.host, 'first.npmrc');
+  await writeFile(first, `globalconfig=${path.join(base.host, 'second.npmrc')}\n`);
+  assertRefused(await resolveWith(t, { ...base, env: { npm_config_userconfig: first } }), 'LOCKFILE_UNDETERMINED', /Config location set twice: globalconfig in /);
+  // npm run exports userconfig as the default ~/.npmrc: not a redirect, so a prefix inside it is the first one.
+  await files(base.homeDir, { '.npmrc': 'prefix=~/npm-global\n' });
+  assert.equal((await resolveWith(t, { ...base, env: { npm_config_userconfig: path.join(base.homeDir, '.npmrc') } })).ok, true);
+});
+
+test('an existing config file that cannot be read refuses', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async (t) => {
+  const base = await environment(t);
+  const locked = path.join(base.host, 'locked.npmrc');
+  await writeFile(locked, 'registry=https://registry.npmjs.org/\n');
+  await chmod(locked, 0o000);
+  assertRefused(await resolveWith(t, { ...base, env: { npm_config_userconfig: locked } }), 'LOCKFILE_UNDETERMINED', /Could not read .*locked\.npmrc/);
+});
+
+test("the values npm run exports on GitHub's Windows runner are followed and allowed", async (t) => {
+  // A temporary directory laid out like the runner: C:\\npm\\prefix as the
+  // global prefix (no etc\\npmrc), C:\\Users\\runneradmin\\.npmrc as the user config.
+  const base = await environment(t);
+  const prefix = path.join(base.host, 'npm', 'prefix');
+  await mkdir(prefix, { recursive: true });
+  await files(base.homeDir, { '.npmrc': 'registry=https://registry.npmjs.org/\n' });
+  const env = {
+    APPDATA: path.join(base.homeDir, 'AppData', 'Roaming'),
+    npm_config_globalconfig: path.join(prefix, 'etc', 'npmrc'),
+    npm_config_prefix: prefix,
+    npm_config_userconfig: path.join(base.homeDir, '.npmrc'),
+  };
+  assert.equal((await resolveWith(t, { ...base, platform: 'win32', env })).ok, true);
+  // The same runner with a lockfile setting in the followed global config refuses.
+  await files(prefix, { 'etc/npmrc': 'shared-workspace-lockfile=false\n' });
+  assertRefused(await resolveWith(t, { ...base, platform: 'win32', env }), 'LOCKFILE_UNDETERMINED', /Setting found: shared-workspace-lockfile/);
+});
+
+
+test('a config location with ${...} is refused even when it looks absolute', async (t) => {
+  const base = await environment(t);
+  assertRefused(
+    await resolveWith(t, { ...base, env: { npm_config_userconfig: path.join(base.host, '${CONFIG_NAME}', 'npmrc') } }),
+    'LOCKFILE_UNDETERMINED',
+    /Config location not resolved: userconfig in the environment/
+  );
+});
+
+test('only exactly ~/ is expanded, the way npm and pnpm resolve it', async (t) => {
+  const base = await environment(t);
+  // ~//abs resolves to /abs, as path.resolve(home, '/abs') does, so its lockfile setting is found there.
+  const outside = path.join(base.host, 'outside.npmrc');
+  await writeFile(outside, 'lockfile-dir=../x\n');
+  // An empty file where path.join(home, rest) would point, so reading the wrong one is allowed.
+  await files(base.homeDir, { [path.join(base.host, 'outside.npmrc').slice(1)]: '' });
+  assertRefused(
+    await resolveWith(t, { ...base, env: { npm_config_userconfig: `~/${outside}` } }),
+    'LOCKFILE_UNDETERMINED',
+    /Setting found: lockfile-dir in .*outside\.npmrc/
+  );
+  for (const value of ['~', '~other/.npmrc', '~\\.npmrc']) {
+    assertRefused(
+      await resolveWith(t, { ...base, env: { npm_config_userconfig: value } }),
+      'LOCKFILE_UNDETERMINED',
+      /Config location not resolved/
+    );
+  }
+  assert.equal((await resolveWith(t, { ...base, env: { npm_config_userconfig: '~/custom.npmrc' } })).ok, true);
+});
+
+test('a followed file that names the default global npmrc is not a second redirect', async (t) => {
+  const base = await environment(t);
+  const custom = path.join(base.host, 'custom.npmrc');
+  await writeFile(custom, `globalconfig=${path.join(base.nodePrefixes[0], 'etc', 'npmrc')}\n`);
+  assert.equal((await resolveWith(t, { ...base, env: { npm_config_userconfig: custom } })).ok, true);
 });
