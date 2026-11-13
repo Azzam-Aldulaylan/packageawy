@@ -51,7 +51,7 @@ for (const timing of ['early', 'late']) {
     const client = securityClient(timing);
     const actual = await scan({ ...securityOptions, auditRunner: client }, client);
     assert.deepEqual(actual, expected, 'rows, availability, patched advisories and hygiene match the reference');
-    const display = rows => rows.map(row => ({ name: row.name, safe: severityDisplay(row.worstSeverity).label === 'Safe',
+    const display = rows => rows.map(row => ({ name: row.name, safe: severityDisplay(row.worstSeverity).label === 'No known vulnerabilities',
       vulnerable: rowHasVulnerability(row), severity: row.worstSeverity, updateAvailable: rowHasUpdate(row),
       wanted: row.wanted, latest: row.latest, upgradeTo: row.upgradeTo }));
     assert.deepEqual(display(actual.rows), display(expected.rows));

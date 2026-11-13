@@ -68,7 +68,7 @@ Settings are under **Settings**, **Tools**, **Packageawy**, with per-project opt
 | Current | The installed version, from the lockfile. Without a lockfile, the declared range is shown with a tag such as `workspace`, `git`, or `unresolved`. |
 | Wanted | The newest version your range in `package.json` allows. |
 | Latest | The registry's `latest` version. For a prerelease install, a newer prerelease on the same version line can be shown. |
-| Vulnerabilities | The worst severity found anywhere under this dependency: Critical, High, Moderate, Low, or Info. `Safe` means no known advisory. |
+| Vulnerabilities | The worst severity found anywhere under this dependency: Critical, High, Moderate, Low, or Info. `No known vulnerabilities` means no known advisory in the installed dependency tree. |
 
 These follow the same meaning as `npm outdated`.
 
