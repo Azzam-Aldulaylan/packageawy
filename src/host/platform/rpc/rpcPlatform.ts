@@ -1,6 +1,7 @@
 /** HostPlatform over the sidecar's JSON-RPC connection. See ../hostPlatform.ts for the protocol. */
 
 import { readFile, stat } from 'node:fs/promises';
+import { readFileChunks } from '../fileChunks.js';
 
 import type { KeyValueStore } from '../../../core/cache/keyValueStore.js';
 import { SIDECAR_SHOW_LOG_TEXT } from '../../../core/diagnostics.js';
@@ -87,6 +88,7 @@ function callSoon(listener: () => void): Disposable {
 }
 
 export class RpcPlatform implements HostPlatform {
+  readFileChunks = readFileChunks;
   readonly workspaceState: KeyValueStore;
   readonly globalState: KeyValueStore;
 

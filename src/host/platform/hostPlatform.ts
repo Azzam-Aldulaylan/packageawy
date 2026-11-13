@@ -170,6 +170,8 @@ export interface HostPlatform {
   findFiles(search: FileSearch, token?: CancellationToken): Promise<string[]>;
   statFile(filePath: string): Promise<{ size: number }>;
   readFile(filePath: string): Promise<Uint8Array>;
+  /** Incremental local reads; the iterator closes its file when the caller stops early. */
+  readFileChunks(filePath: string): AsyncIterable<Uint8Array>;
   /** Calls `listener` when a file matching `glob` under `baseDir` is created, changed or deleted. */
   watchFiles(baseDir: string, glob: string, listener: (filePath: string) => void): Disposable;
   /** Undefined when HEAD cannot be observed for `projectPath`. */

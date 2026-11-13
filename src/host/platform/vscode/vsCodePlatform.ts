@@ -1,6 +1,7 @@
 /** HostPlatform on the VS Code extension API. */
 
 import { readFileSync } from 'node:fs';
+import { readFileChunks } from '../fileChunks.js';
 
 import * as vscode from 'vscode';
 
@@ -134,6 +135,7 @@ class TaskRun {
 }
 
 export class VsCodePlatform implements HostPlatform {
+  readFileChunks = readFileChunks;
   /** Created on first use so a session with no failures adds no output channel. */
   private logChannel: vscode.LogOutputChannel | undefined;
   /** Every task run until the platform is disposed, so teardown can stop late callbacks. */

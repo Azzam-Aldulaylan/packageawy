@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 
-import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
+import { USAGE_SOURCE_FILE_GLOB, USAGE_CONFIG_FILE_GLOB } from '../out/host/usage/workspaceFiles.js';
 
-const brokenSourceFiles = ['/workspace/src/oversized.ts', '/workspace/src/unreadable.ts'];
+import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
+import { folder } from './helpers/usage-coverage.mjs';
+
+const workspacePath = file => path.join(folder.path, file);
+const brokenSourceFiles = ['src/oversized.ts', 'src/unreadable.ts'].map(workspacePath);
 
 // Each test sets the files the fake workspace search returns. A file with
 // no `text` reports as oversized or fails to read.
 let workspace = { sourceFiles: [], configFiles: [], text: new Map() };
 
 const platform = {
-  findFiles: async (search) => search.include.includes('*.{js,jsx,ts,tsx,mjs,cjs}') ? workspace.sourceFiles : workspace.configFiles,
+  findFiles: async (search) => search.include === USAGE_SOURCE_FILE_GLOB ? workspace.sourceFiles : search.include === USAGE_CONFIG_FILE_GLOB ? workspace.configFiles : [],
   statFile: async (filePath) => ({ size: filePath.endsWith('oversized.ts') ? 3 * 1024 * 1024 : 10 }),
   readFile: async (filePath) => {
     const text = workspace.text.get(filePath);
@@ -18,8 +23,6 @@ const platform = {
     return new TextEncoder().encode(text);
   },
 };
-
-const folder = { id: 'file:///workspace', name: 'workspace', path: '/workspace' };
 
 test('oversized and unreadable eligible files make a zero-reference usage result incomplete', async () => {
   workspace = { sourceFiles: brokenSourceFiles, configFiles: [], text: new Map() };
@@ -42,8 +45,8 @@ test('oversized and unreadable eligible files make a zero-reference usage result
 test('an ESLint extends shorthand counts as a config reference for the resolved package', async () => {
   workspace = {
     sourceFiles: [],
-    configFiles: ['/workspace/.eslintrc.json'],
-    text: new Map([['/workspace/.eslintrc.json', JSON.stringify({ extends: 'next/core-web-vitals' })]]),
+    configFiles: [workspacePath('.eslintrc.json')],
+    text: new Map([[workspacePath('.eslintrc.json'), JSON.stringify({ extends: 'next/core-web-vitals' })]]),
   };
   const results = await analyzeDependencyUsage({
     platform,
@@ -64,9 +67,9 @@ test('an ESLint extends shorthand counts as a config reference for the resolved 
 
 test('a source import of a package is usage evidence for its @types package', async () => {
   workspace = {
-    sourceFiles: ['/workspace/src/page.tsx'],
+    sourceFiles: [workspacePath('src/page.tsx')],
     configFiles: [],
-    text: new Map([['/workspace/src/page.tsx', `import { marked } from 'marked';\n`]]),
+    text: new Map([[workspacePath('src/page.tsx'), `import { marked } from 'marked';\n`]]),
   };
   const results = await analyzeDependencyUsage({
     platform,

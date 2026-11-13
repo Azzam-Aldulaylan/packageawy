@@ -1069,6 +1069,7 @@ export class UsageAnalysisCoordinator {
           usage: {
             references: usageResult.references,
             truncated: usageResult.truncated,
+            ...(usageResult.coverageReasons === undefined ? {} : { coverageReasons: usageResult.coverageReasons }),
             conventionUncertainty: isFrameworkConventionPackage(name),
           },
           peerRequirements: peerRequirementsFor(graph, name, removing, peerRequirementIndex),
