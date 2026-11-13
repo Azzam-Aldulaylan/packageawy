@@ -66,6 +66,9 @@ export interface OpenManifestParams {
   path: string;
 }
 
+export interface RestartParams { sessionId: string }
+export interface RestartResult extends RestartParams { state: 'idle' | 'busy' | 'unknown' }
+
 // Sidecar to client.
 
 /** A missing `value` removes the key. The client also treats null as removal. */
@@ -170,6 +173,9 @@ export interface SettingsUpdateParams {
 
 export const Methods = {
   initialize: 'initialize',
+  restartPrepare: 'restart/prepare',
+  restartCommit: 'restart/commit',
+  restartCancel: 'restart/cancel',
   didChangeFolders: 'workspace/didChangeFolders',
   didChangeTrust: 'workspace/didChangeTrust',
   didChangeSettings: 'settings/didChange',

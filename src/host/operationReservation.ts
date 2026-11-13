@@ -85,6 +85,7 @@ class Handle implements OwnerHandle {
 
   async beginMutation(target: RecoveryTarget): Promise<boolean> {
     if (this.state !== 'reserved') return this.ignored('beginMutation');
+    if (this.owner.locks.admissionClosed) { this.refusal = RECOVERY_MESSAGES.restart; return false; }
     const key = lockKey(target.root);
     if (this.lockKey === undefined) {
       const acquired = this.owner.locks.tryAcquire(target.root, this);
@@ -143,6 +144,7 @@ class Handle implements OwnerHandle {
   markUnknown(reason: string): boolean {
     if (this.settled) return this.ignored('markUnknown');
     this.state = 'unknown';
+    if (this.lockKey !== undefined) this.owner.locks.reportTaskState(this.lockKey, this, 'idle');
     this.log(`Dependency change for ${this.label} has an unknown outcome and stays locked: ${reason}`);
     return true;
   }
@@ -171,6 +173,7 @@ export class OperationReservation {
    * process-wide lock under that target's key. Both or neither.
    */
   reserve(label: string, targetKey: string | undefined): OwnerHandle | ReservationRefusal {
+    if (this.options.locks.admissionClosed) return { ok: false, reason: 'project-locked' };
     if (this.current !== undefined) return { ok: false, reason: 'held' };
     const handle = new Handle(this, label, (owned, state) => this.end(owned, state), (line) => this.log(line));
     if (targetKey !== undefined) {

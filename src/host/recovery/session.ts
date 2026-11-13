@@ -20,6 +20,7 @@ export class RecoverySession {
     if (owner === undefined) throw new RecoveryError(RECOVERY_MESSAGES.invalid);
     if (view.state === 'removing') return new RecoverySession(inspection, null);
     if (view.claim !== confirmedClaim) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+    if (journal === undefined) throw new RecoveryError(RECOVERY_MESSAGES.invalid);
     const token = newId();
     const claim: Claim = { token, createdAt: new Date().toISOString(), previousToken: null };
     const checkOwner = async (): Promise<void> => {
@@ -32,26 +33,35 @@ export class RecoverySession {
       await storage.boundary('takeover:created');
       await checkOwner();
       const previousBytes = await storage.read('claim.json');
-      if (hash(previousBytes) !== confirmedClaim) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+      if (hash(previousBytes) !== confirmedClaim) {
+        // This contender has changed no claim bytes. Release only the
+        // serialization directory it just created, so a stale confirmation
+        // cannot strand the winner or require manual crash recovery.
+        await storage.rmdir('takeover');
+        await storage.syncDirectory();
+        throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+      }
       const previous = await storage.json('claim.json');
       claim.previousToken = isClaim(previous) ? previous.token : null;
       await storage.fs.rename(await storage.at('claim.json'), await storage.at(`claim.${claim.previousToken ?? newId()}.abandoned`));
       await storage.syncDirectory();
       await storage.boundary('takeover:abandoned');
       await storage.writeJson('claim.json', claim, true, checkOwner);
-      // Only the creator removes its own serialization directory. Any error
-      // leaves it for the user, never for a second automatic contender.
-      await storage.rmdir('takeover');
-      await storage.syncDirectory();
     } else {
       await storage.writeJson('claim.json', claim, true, async () => {
         await checkOwner();
         if (await storage.exists('takeover')) throw new RecoveryError(RECOVERY_MESSAGES.takingOver);
       });
     }
-    if (journal === undefined) throw new RecoveryError(RECOVERY_MESSAGES.invalid);
     journal.claimToken = token;
-    await journal.save();
+    // Keep takeover serialized through both durable publications. Otherwise a
+    // delayed contender can acquire the directory and fence this save.
+    await journal.save(confirmedClaim !== null);
+    if (confirmedClaim !== null) {
+      // Publication errors retain the directory for manual crash recovery.
+      await storage.rmdir('takeover');
+      await storage.syncDirectory();
+    }
     view.state = 'open'; view.message = RECOVERY_MESSAGES.open;
     view.claim = hash(await storage.read('claim.json'));
     return new RecoverySession(inspection, token);

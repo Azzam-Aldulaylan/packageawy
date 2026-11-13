@@ -47,7 +47,11 @@ export class RecoveryCoordinator {
       if (previous !== this.selected) { this.session = undefined; this.lock = undefined; }
       await this.execute(async (target) => {
         const holder = this.options.locks.holderOf(lockKey(target.root)) as OwnerHandle | RecoveryLock | undefined;
-        if (holder?.state === 'mutating') { this.post({ state: 'running', message: RECOVERY_MESSAGES.running, files: [], claim: null, canDismiss: false, canApply: false }); return; }
+        if (holder?.state === 'mutating') {
+          this.options.post({ status: 'dependency-task', state: this.options.locks.taskState(lockKey(target.root)) });
+          this.post({ state: 'running', message: RECOVERY_MESSAGES.running, files: [], claim: null, canDismiss: false, canApply: false });
+          return;
+        }
         const view = this.session?.inspection.storage.target.identity === target.identity
           ? await this.session.presentation() : (await inspectRecovery(target)).view;
         this.post(view);
@@ -71,6 +75,7 @@ export class RecoveryCoordinator {
       if (holder?.state === 'mutating') throw new RecoveryError(RECOVERY_MESSAGES.running);
       if (holder?.state === 'reserved') await holder.releaseReadOnly();
       const { RecoverySession } = await import('./session.js');
+      if (this.options.locks.admissionClosed) throw new RecoveryError(RECOVERY_MESSAGES.restart);
       const session = await RecoverySession.open(target, stopped, claim);
       const token = session.token ?? `removal:${session.inspection.owner?.ownerToken ?? 'uninitialized'}`;
       if (holder !== undefined && holder.state !== 'released') {
@@ -113,7 +118,12 @@ export class RecoveryCoordinator {
     this.options.post({ status: 'recovery', recovery });
   }
   private perform(run: (target: RecoveryTarget) => Promise<void>): Promise<void> {
-    return this.enqueue(() => this.execute(run));
+    const done = this.options.locks.trackPending();
+    if (done === undefined) {
+      this.options.platform.showWarningMessage(RECOVERY_MESSAGES.restart);
+      return Promise.resolve();
+    }
+    return this.enqueue(() => this.execute(run)).finally(done);
   }
   private enqueue(run: () => Promise<void>): Promise<void> {
     const next = this.pending.then(run);

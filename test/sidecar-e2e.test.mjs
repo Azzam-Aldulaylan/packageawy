@@ -160,7 +160,7 @@ function startClient(home, selectedManifestPath) {
 test('dist/sidecar.js serves the dashboard to a JSON-RPC client', async (t) => {
   assert.ok(existsSync(SIDECAR), 'dist/sidecar.js is missing. npm test builds it in pretest.');
   const home = await mkdtemp(path.join(tmpdir(), 'packageawy-sidecar-'));
-  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   await writeFile(path.join(home, '.npmrc'), `registry=${OFFLINE_REGISTRY}\n`);
   const client = startClient(home);
   const exited = new Promise((resolve) => client.child.on('exit', resolve));

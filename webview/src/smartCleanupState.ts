@@ -122,6 +122,7 @@ export type SmartCleanupPhase =
   | 'complete'
   | 'cancelled-rolled-back'
   | 'incomplete'
+  | 'unknown'
   | 'failed';
 
 /** Restore point the host kept for a finished cleanup. The host stays the authority for whether it still applies. */
@@ -196,6 +197,7 @@ export type SmartCleanupAction =
   | { type: 'rollback-started'; message: string }
   | { type: 'execution-complete'; result: SmartCleanupResult }
   | { type: 'execution-incomplete'; result: SmartCleanupResult; message: string }
+  | { type: 'execution-unknown' }
   | { type: 'execution-cancelled-and-restored'; result: SmartCleanupResult }
   | { type: 'restore-available'; analysisId: string }
   | { type: 'restore-started'; analysisId: string }
@@ -405,6 +407,9 @@ export function smartCleanupReducer(state: SmartCleanupState, action: SmartClean
         : state;
     case 'reset':
       return createSmartCleanupState(state.projectName);
+    case 'execution-unknown':
+      // Unknown work has no result or restore point until recovery resolves it.
+      return { ...state, phase: 'unknown', execution: null, result: null, restore: null, message: null };
   }
 }
 

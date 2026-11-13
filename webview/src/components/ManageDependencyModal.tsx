@@ -1,3 +1,4 @@
+import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { useEffect, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
 
@@ -692,6 +693,7 @@ export function ManageDependencyModal({
           role="tabpanel"
           aria-labelledby={`manage-tab-${activeTab}`}
         >
+          <DependencyChangeStatus />
           {content}
         </div>
 

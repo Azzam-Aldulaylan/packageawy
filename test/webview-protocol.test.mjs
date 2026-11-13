@@ -2215,3 +2215,13 @@ test('recovery entries and selection use validated opaque IDs', () => {
   }
   assert.equal(isHostToWebviewMessage({ status: 'recovery-entries', entries: [{ id, label: 'project', root: '/tmp' }] }), false);
 });
+
+test('dependency task states are exact and never carry a task deadline', () => {
+  for (const state of ['running', 'still-running', 'idle']) {
+    assert.equal(isHostToWebviewMessage({ status: 'dependency-task', state }), true);
+  }
+  for (const value of [null, 0, {}, 'unknown', 'timeout']) {
+    assert.equal(isHostToWebviewMessage({ status: 'dependency-task', state: value }), false);
+  }
+  assert.equal(isHostToWebviewMessage({ status: 'dependency-task', state: 'still-running', timeoutMs: 10 }), false);
+});

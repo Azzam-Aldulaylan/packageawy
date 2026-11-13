@@ -15,19 +15,20 @@ export class RecoveryJournal {
   constructor(readonly storage: Storage, readonly owner: Owner, readonly data: Journal, readonly files: UpgradeTransactionFileAdapter) {
     this.claimToken = data.claimToken;
   }
-  async assertOwner(): Promise<void> {
+  async assertOwner(ownsTakeover = false): Promise<void> {
     // Once publication fails, later success cannot erase the last durable intent.
     if (this.storage.publicationFailed) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
     const owner = await this.storage.json('owner.json');
     const claim = await this.storage.json('claim.json');
     if (!isOwner(owner) || owner.transactionId !== this.owner.transactionId || owner.ownerToken !== this.owner.ownerToken ||
         (this.claimToken === null ? claim !== undefined || await this.storage.exists('claim.json') : !isClaim(claim) || claim.token !== this.claimToken) ||
-        await this.storage.exists('takeover')) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+        (!ownsTakeover && await this.storage.exists('takeover'))) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
   }
-  async save(): Promise<void> {
+  /** Only the new claimant may save while holding its own takeover directory. */
+  async save(ownsTakeover = false): Promise<void> {
     this.data.sequence += 1;
     this.data.claimToken = this.claimToken;
-    await this.storage.writeJson('journal.json', this.data, false, () => this.assertOwner());
+    await this.storage.writeJson('journal.json', this.data, false, () => this.assertOwner(ownsTakeover));
   }
   async record(step: string, phase: 'intent' | 'finished'): Promise<void> {
     await this.assertOwner();

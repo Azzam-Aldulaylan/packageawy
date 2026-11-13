@@ -10,6 +10,16 @@ import { analyzeCompatibility } from '../out/core/compatibility/preflight.js';
 const invocation = { executable: process.execPath, prefixArgs: [] };
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function expectStopped(pid) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); }
+    catch (error) { if (error.code === 'ESRCH') return; throw error; }
+    await pause(10);
+  }
+  assert.fail(`process ${pid} survived forced termination`);
+}
+
 async function readyFile(filename) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
@@ -49,7 +59,7 @@ test('resolver pre-cancellation prevents even attempting to spawn an unavailable
     { name: 'AbortError' });
 });
 
-test('resolver cancellation forcibly terminates a SIGTERM-ignoring child before rejecting', async () => {
+test('resolver cancellation forces termination of a SIGTERM-ignoring child and bounds settlement', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'packageawy-resolver-process-'));
   const controller = new AbortController();
   const runner = new NodeResolverProcessRunner({ timeoutMs: 5000, terminationGraceMs: 50 });
@@ -61,18 +71,20 @@ test('resolver cancellation forcibly terminates a SIGTERM-ignoring child before 
     const pid = Number(await readyFile(path.join(directory, 'pid')));
     controller.abort();
     await rejection;
-    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    await expectStopped(pid);
   } finally {
     controller.abort();
     await Promise.allSettled([pending, rejection]);
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
 test('resolver cancellation also stops a descendant holding the inherited output pipe', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'packageawy-resolver-tree-'));
   const controller = new AbortController();
-  const runner = new NodeResolverProcessRunner({ timeoutMs: 5000, terminationGraceMs: 50 });
+  // Give taskkill the production grace period to start and walk the tree on
+  // Windows. The bounded-settlement tests cover a stalled tree killer.
+  const runner = new NodeResolverProcessRunner({ timeoutMs: 5000, terminationGraceMs: process.platform === 'win32' ? 1000 : 50 });
   const descendant = 'process.on("SIGTERM",()=>{});require("node:fs").writeFileSync("descendant",String(process.pid));setInterval(()=>{},1000)';
   const leader = `require("node:child_process").spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:["ignore",1,2]});` +
     'require("node:fs").writeFileSync("pid",String(process.pid));setInterval(()=>{},1000)';
@@ -80,20 +92,20 @@ test('resolver cancellation also stops a descendant holding the inherited output
   const rejection = assert.rejects(pending, { name: 'AbortError' });
   try {
     const leaderPid = Number(await readyFile(path.join(directory, 'pid')));
-    await readyFile(path.join(directory, 'descendant'));
+    const descendantPid = Number(await readyFile(path.join(directory, 'descendant')));
     controller.abort();
     await rejection;
-    assert.throws(() => process.kill(leaderPid, 0), { code: 'ESRCH' });
-    // Returning proves all inherited stdout/stderr handles closed, including
-    // the descendant's. A child-only kill would leave this promise hanging.
+    await expectStopped(leaderPid);
+    await expectStopped(descendantPid);
+    // Settlement does not depend on inherited output handles closing.
   } finally {
     controller.abort();
     await Promise.allSettled([pending, rejection]);
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
-test('isolated resolver cleanup happens after cancelled child closure', async () => {
+test('isolated resolver cleanup follows bounded cancellation settlement', async () => {
   let directory;
   let pid;
   const controller = new AbortController();
@@ -115,7 +127,6 @@ test('isolated resolver cleanup happens after cancelled child closure', async ()
       ready();
       try { return await pending; }
       finally {
-        assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
         await access(path.join(cwd, 'package.json'));
       }
     } },
@@ -125,6 +136,7 @@ test('isolated resolver cleanup happens after cancelled child closure', async ()
   await running;
   controller.abort();
   await rejection;
+  await expectStopped(pid);
   await assert.rejects(access(directory), { code: 'ENOENT' });
 });
 

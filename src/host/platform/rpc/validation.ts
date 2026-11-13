@@ -108,3 +108,12 @@ export function parseWebviewMessage(params: unknown): WebviewMessageParams {
   if (!('message' in value)) throw invalid('message is required');
   return { message: value['message'] };
 }
+
+/** A fresh UUID identifies one restart attempt, including its cancel. */
+export function parseRestart(params: unknown): import('./protocol.js').RestartParams {
+  const value = record(params, 'restart params');
+  const sessionId = value['sessionId'];
+  if (Object.keys(value).length !== 1 || typeof sessionId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) throw invalid('sessionId must be a UUID');
+  return { sessionId };
+}

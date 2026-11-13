@@ -25,6 +25,11 @@ test('startup leaves recovery I/O unloaded and discovers an orphan after the fir
     assert.equal(require.cache[require.resolve(`../out/host/recovery/${name}.js`)], undefined, name);
   }
   assert.equal(s.posted.some(m => m.status === 'recovery-entries'), false);
+  assert.equal(s.current.upgradeCoordinator.session.onTaskState, undefined);
+  assert.equal(s.current.upgradeCoordinator.stopListeningForTask, undefined);
+  assert.equal(s.current.upgradeCoordinator.mutationLocks.tasks, undefined);
+  assert.equal(s.current.upgradeCoordinator.mutationLocks.taskListeners, undefined);
+  assert.equal(s.current.upgradeCoordinator.mutationLocks.retiredRestartSessions, undefined);
   await orphanJournal(s);
   await s.current.handle({ type: 'rendered', generatedAt: s.snapshots()[0].data.generatedAt });
   await until(() => s.posted.some(m => m.status === 'recovery'));
