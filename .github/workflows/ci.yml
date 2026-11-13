@@ -204,6 +204,17 @@ jobs:
         env:
           VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
 
+      - name: TEMP diagnostic, npm config on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          node -p "process.execPath"
+          npm config get globalconfig
+          npm config get prefix
+          npm config get userconfig
+          Write-Output "APPDATA=$env:APPDATA"
+          npm run --silent env 2>$null | Select-String -Pattern '^npm_config_(globalconfig|prefix|userconfig)='
+
       - name: Extension Host lifecycle and watcher tests (Windows)
         if: runner.os == 'Windows'
         run: npm run test:extension-host
