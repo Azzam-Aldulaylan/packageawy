@@ -1067,6 +1067,117 @@ test('a manifest edited while the panel was closed cannot produce a fresh cache 
   assert.notEqual(sink.statuses.includes('ready') || sink.statuses.includes('stale'), true);
 });
 
+for (const [change, changedOptions] of [
+  ['manifest', { manifestText: MANIFEST.replace('^1.0.0', '^1.0.1') }],
+  ['lockfile', { lockfileText: LOCKFILE.replace('"node_modules/clean-pkg":{"version":"1.0.0"', '"node_modules/clean-pkg":{"version":"1.0.2"') }],
+  ['cache key', { cacheKey: 'changed-registry', registry: 'https://registry.example.test' }],
+  ['project facts', { packageManager: 'pnpm', lockfileText: null, lockfilePath: null, lockfileName: null }],
+]) {
+  test(`a ${change} change mid-scan cannot cache older rows as current or authorize upgrades`, async () => {
+    const projectCacheStore = new PersistentProjectCacheStore(fakeKeyValueStore());
+    const options = {
+      projectCacheStore,
+      cacheKey: 'scan-start-source',
+      ttlMinutesProvider: () => 30,
+      lockfilePath: `${ROOT}/package-lock.json`,
+      lockfileName: 'package-lock.json',
+      packageManager: 'npm',
+      auditRunner: { async run() { return { stdout: '{"vulnerabilities":{}}', exitCode: 0 }; } },
+    };
+    const request = { package: 'clean-pkg', target: '1.0.1' };
+    const controller = makeController(staticClient('1.0.1'), options);
+    const initialSink = recordingSink();
+    await controller.handleReady(initialSink);
+
+    const persisted = projectCacheStore.get(options.cacheKey);
+    assert.ok(persisted, 'an unchanged scan still persists');
+    assert.equal(persisted.lockfilePath, options.lockfilePath);
+    assert.deepEqual(persisted.sourceFingerprint, computeSourceFingerprint({
+      manifestText: MANIFEST,
+      lockfileText: LOCKFILE,
+      lockfilePath: options.lockfilePath,
+    }));
+    const replay = makeController(throwingClient, options);
+    const replaySink = recordingSink();
+    await replay.handleReady(replaySink);
+    assert.deepEqual(replaySink.statuses, ['ready'], 'an unchanged scan replays without network access');
+    assert.deepEqual(replaySink.posted[0].data.rows, initialSink.posted.at(-1).data.rows);
+    assert.equal(replay.validateUpgradeRequest(request).ok, true, 'the replay can authorize a real upgrade');
+
+    const scanSink = recordingSink();
+    const pending = controller.handleRefresh(scanSink);
+    // Apply the disk reload while the asynchronous scan still uses its original inputs.
+    const newSource = {
+      root: ROOT,
+      manifestText: MANIFEST,
+      lockfileText: LOCKFILE,
+      registry: REGISTRY,
+      projectInfo: PROJECT_INFO,
+      canChangeProject: false,
+      ...options,
+      ...changedOptions,
+    };
+    updateProjectSnapshot(controller, newSource);
+    await pending;
+    const retained = projectCacheStore.get(options.cacheKey);
+    const changedKeyEntry = projectCacheStore.get(newSource.cacheKey);
+
+    const reopened = makeController(throwingClient, newSource);
+    const reopenedSink = recordingSink();
+    const reading = reopened.handleReady(reopenedSink);
+    try {
+      assert.deepEqual({
+        statuses: reopenedSink.statuses,
+        upgradeEligible: reopened.validateUpgradeRequest(request).ok,
+      }, { statuses: ['loading'], upgradeEligible: false }, 'the new source starts cold with upgrades blocked');
+    } finally {
+      await reading;
+    }
+    assert.equal(retained, persisted, 'the superseded scan leaves the existing cache entry untouched');
+    if (newSource.cacheKey !== options.cacheKey) {
+      assert.equal(changedKeyEntry, undefined, 'the superseded scan does not write under the new cache key');
+    }
+    assert.equal(reopened.validateUpgradeRequest(request).ok, false, 'failed revalidation cannot authorize the old target');
+    assert.equal(scanSink.posted.at(-1).data.packageManager, 'npm', 'the completed scan keeps its captured package manager');
+    assert.equal(scanSink.posted.at(-1).data.lockfileMissing, undefined, 'the completed scan keeps its captured lockfile facts');
+    assert.deepEqual(controller.validateUpgradeRequest(request), { ok: false, reason: 'revalidating' });
+  });
+}
+
+test('a project facts-only change mid-scan skips persistence with the same fingerprint and cache key', async () => {
+  const projectCacheStore = new PersistentProjectCacheStore(fakeKeyValueStore());
+  const source = {
+    root: ROOT,
+    manifestText: MANIFEST,
+    lockfileText: LOCKFILE,
+    lockfilePath: `${ROOT}/package-lock.json`,
+    lockfileName: 'package-lock.json',
+    packageManager: 'npm',
+    registry: REGISTRY,
+    projectInfo: PROJECT_INFO,
+    canChangeProject: false,
+    cacheKey: 'scan-start-facts-only',
+  };
+  const controller = makeController(staticClient('1.0.1'), { ...source, projectCacheStore });
+  await controller.handleReady(recordingSink());
+  const persisted = projectCacheStore.get(source.cacheKey);
+  assert.ok(persisted, 'the initial scan persists');
+  assert.equal(persisted.lockfileMissing, undefined);
+
+  const sink = recordingSink();
+  const pending = controller.handleRefresh(sink);
+  // Change only project-resolution evidence, preserving every fingerprint input.
+  const changedSource = { ...source, lockfileName: null };
+  updateProjectSnapshot(controller, changedSource);
+  await pending;
+
+  assert.equal(changedSource.cacheKey, source.cacheKey);
+  assert.deepEqual(computeSourceFingerprint(controller.upgradeSource), persisted.sourceFingerprint);
+  assert.equal(controller.upgradeSource.lockfileName, null, 'current project evidence reports a missing lockfile');
+  assert.equal(sink.posted.at(-1).data.lockfileMissing, undefined, 'the scan keeps its captured lockfile fact');
+  assert.equal(projectCacheStore.get(source.cacheKey), persisted, 'the facts-only change prevents replacing the cache entry');
+});
+
 test('a persisted blob with the wrong schema version is ignored: handleReady starts cold, not from an unreadable old-schema snapshot', async () => {
   const kv = fakeKeyValueStore();
   kv.raw.set('packageawy.projectCache', {
