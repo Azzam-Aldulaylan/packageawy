@@ -218,7 +218,9 @@ async function assertChildStopped(pid) {
 test('real runner timeout forces termination of an uncooperative process with bounded settlement', async () => {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'packageawy-runner-test-'));
   try {
-    const runner = new NodeTargetPackagePackRunner({ timeoutMs: 1500, terminationGraceMs: 50 });
+    // Node can take over a second to start on loaded Windows runners. The child
+  // must write its pid before the deadline, or the test cannot check it stopped.
+  const runner = new NodeTargetPackagePackRunner({ timeoutMs: 5000, terminationGraceMs: 50 });
     const pending = runner.run({ executable: process.execPath, prefixArgs: [] }, ['-e',
       'require("node:fs").writeFileSync("pid",String(process.pid));process.on("SIGTERM",()=>{});setInterval(()=>{},1000)',
     ], temporaryRoot);
@@ -260,7 +262,9 @@ test('real runner rejects oversized output with bounded settlement', async () =>
 test('inspector timeout cleans temporary files after bounded runner settlement', async () => {
   let temporaryRoot;
   let pid;
-  const runner = new NodeTargetPackagePackRunner({ timeoutMs: 1500, terminationGraceMs: 50 });
+  // Node can take over a second to start on loaded Windows runners. The child
+  // must write its pid before the deadline, or the test cannot check it stopped.
+  const runner = new NodeTargetPackagePackRunner({ timeoutMs: 5000, terminationGraceMs: 50 });
   const inspector = new TargetPackageInspector(
     { executable: process.execPath, prefixArgs: [] }, 'https://registry.npmjs.org/',
     { async run(invocation, _args, cwd, signal) {
@@ -270,12 +274,13 @@ test('inspector timeout cleans temporary files after bounded runner settlement',
           'require("node:fs").writeFileSync("pid",String(process.pid));process.on("SIGTERM",()=>{});setInterval(()=>{},1000)',
         ], cwd, signal);
       } finally {
-        pid = Number(await readFile(path.join(cwd, 'pid'), 'utf8'));
+        // Never let a missing pid file replace the runner's own error.
+        pid = Number(await readFile(path.join(cwd, 'pid'), 'utf8').catch(() => '0'));
       }
     } }
   );
   await assert.rejects(inspector.inspect('next', '15.5.24'), { name: 'TimeoutError' });
-  assert.ok(pid);
+  assert.ok(pid, 'the child wrote its pid before the deadline');
   await assertChildStopped(pid);
   await assert.rejects(access(temporaryRoot), { code: 'ENOENT' });
 });
