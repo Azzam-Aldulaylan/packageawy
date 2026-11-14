@@ -122,9 +122,9 @@ test('review controls and their evidence disclosure keep a readable vertical rhy
   assert.match(styles, /\.smart-cleanup-evidence li \+ li\s*\{[\s\S]*?margin-top:\s*0\.25rem;/);
 });
 
-test('execution cancellation is shown only when the host supplies a safe cancellation handler', () => {
-  assert.match(workspace, /onCancelExecution\?: \(\) => void/);
-  assert.match(workspace, /state\.phase === 'executing' && onCancelExecution !== undefined/);
+test('Smart Cleanup has no execution cancellation handler or progress bar styles', () => {
+  assert.doesNotMatch(workspace, /onCancelExecution|Cancel and restore|<progress|role="progressbar"/);
+  assert.doesNotMatch(styles, /\.smart-cleanup-execution progress|smart-cleanup-execution__progress/);
 });
 
 test('returning from package review keeps the plan visible while removal evidence refreshes', () => {

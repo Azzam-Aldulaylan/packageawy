@@ -4,6 +4,8 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+- Smart Cleanup shows the current cleanup step as it runs.
+- Upgrade errors from Manage appear once in the dialog and are dismissed when it closes.
 - Keep your chosen upgrade version when refreshing the same dependency, while that version remains eligible.
 - Pause dependency changes and offer Show Log and Reload if the dashboard receives an unrecognized host message.
 - Keep results current when dependency scans overlap a successful or failed reload.

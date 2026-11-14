@@ -279,6 +279,7 @@ test('an upgrade stopped before writing answers with a terminal message', async 
   await reloadDuringConfirm(fixture, () => fixture.coordinator.handleConfirmUpgrade({ analysisId: 'upgrade-review' }));
   assert.deepEqual(fixture.messages.at(-1), {
     status: 'upgrade-error',
+    analysisId: 'upgrade-review',
     package: 'left-pad',
     error: { code: 'CHANGE_STOPPED', message: 'This change stopped before any files were changed. Review it again to continue.' },
   });

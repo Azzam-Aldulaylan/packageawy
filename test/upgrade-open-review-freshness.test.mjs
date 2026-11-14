@@ -185,6 +185,7 @@ test('a refusal that appears before confirm is reported as itself and nothing ru
   await f.coordinator.handleConfirmUpgrade({ analysisId: f.stored.id });
   assert.deepEqual(f.messages.filter(message => message.status === 'upgrade-error').map(message => message.error),
     [{ code: 'CHANGES_UNAVAILABLE', message: reason }]);
+  assert.equal(f.messages.find(message => message.status === 'upgrade-error')?.analysisId, f.stored.id);
   assert.equal(f.coordinator.isBusy(), false);
 });
 
@@ -194,6 +195,7 @@ test('confirm during the debounce window still rejects changed dependency conten
   f.coordinator.handleProjectSourceChanged();
   await f.coordinator.handleConfirmUpgrade({ analysisId: f.stored.id });
   assert.equal(f.messages.find(message => message.status === 'upgrade-error')?.error.code, 'STALE_SOURCE');
+  assert.equal(f.messages.find(message => message.status === 'upgrade-error')?.analysisId, f.stored.id);
   assert.equal(f.coordinator.isBusy(), false);
 });
 

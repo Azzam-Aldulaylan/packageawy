@@ -38,12 +38,12 @@ export function failedRequestSettlement(
         error: error ?? { code: 'unknown', message: INTERNAL_REQUEST_FAILURE_TEXT },
       };
     case 'upgrade':
-      return { status: 'upgrade-error', package: message.package, error: failed };
+      return { status: 'upgrade-error', requestId: message.requestId, package: message.package, error: failed };
     case 'bulk-upgrade':
-      return { status: 'upgrade-error', package: message.changes[0]?.package ?? 'unknown', error: failed };
+      return { status: 'upgrade-error', requestId: message.requestId, package: message.changes[0]?.package ?? 'unknown', error: failed };
     case 'confirm-upgrade':
     case 'use-smart-plan':
-      return { status: 'upgrade-error', package: changeTarget ?? 'unknown', error: changeFailed };
+      return { status: 'upgrade-error', analysisId: message.analysisId, package: changeTarget ?? 'unknown', error: changeFailed };
     case 'bulk-remove':
       return { status: 'remove-error', package: message.changes[0]?.package ?? 'unknown', error: failed };
     case 'smart-cleanup-remove':

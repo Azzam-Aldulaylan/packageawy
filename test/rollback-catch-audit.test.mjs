@@ -56,7 +56,7 @@ for (const row of catchTable.filter(row => row.mode === 'refuse')) test(`TypeErr
   const messages = [];
   const receiver = { options: { isDisposed: () => false, sink: { postMessage: message => messages.push(message) } },
     logChangeFailure: cause => assert.equal(cause, error) };
-  const result = await injectCatchTypeError(handlers.get(row.id), { receiver, packageName: 'audit', status: 'remove-error',
+  const result = await injectCatchTypeError(handlers.get(row.id), { receiver, packageName: 'audit', status: 'remove-error', analysisId: undefined,
     toProtocolError: cause => ({ code: cause.name, message: cause.message }) }, error);
   assert.equal(result, undefined);
   assert.deepEqual(messages, [{ status: 'remove-error', package: 'audit', error: { code: 'TypeError', message: error.message } }]);
