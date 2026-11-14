@@ -519,7 +519,7 @@ test('ready replay preserves a watcher eligibility revocation while its disk rel
   s.current.controller.announceRevalidating(s.current.sink);
   const ready = s.ready();
   await until(() => s.snapshots().length > 0);
-  assert.equal(s.snapshots()[0].status, 'ready', 'time-expired complete rows replay immediately');
+  assert.equal(s.snapshots()[0].status, 'stale', 'watcher-invalidated rows replay as stale immediately');
   assert.equal(s.current.controller.isEligible(), false, 'ready cannot authorize data a watcher revoked');
   s.gate.resolve(); await ready;
 });

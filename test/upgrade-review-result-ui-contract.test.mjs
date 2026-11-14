@@ -14,7 +14,7 @@ test('dashboard enrichment cannot erase an open review or clear a structural sta
   assert.match(app, /upgradeReviewDashboardEffect\(activeUpgradeRef\.current, dashboardDataRef\.current, incoming\)/);
   const reset = app.slice(app.indexOf("if (reviewEffect === 'reset')"), app.indexOf('activeRemoveRef.current = null', app.indexOf("if (reviewEffect === 'reset')")));
   assert.match(reset, /setAnalysis\(null\)/);
-  assert.match(reset, /setSelectedManageTarget\(null\)/);
+  assert.doesNotMatch(reset, /setSelectedManageTarget\(null\)/);
   assert.match(reset, /else if \(reviewEffect === 'mark-stale'\)\s*\{[\s\S]*setHardStaleAnalysisId\(analysisIdRef.current\)/);
   assert.doesNotMatch(reset.slice(reset.indexOf('} else')), /setAnalysis\(null\)|setHardStaleAnalysisId\(null\)/);
 });

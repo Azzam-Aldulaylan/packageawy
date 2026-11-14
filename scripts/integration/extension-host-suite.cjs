@@ -43,6 +43,21 @@ function eventsAfter(snapshot, sequence) {
   return snapshot.messages.filter((event) => event.sequence > sequence);
 }
 
+async function assertSnapshotRendered(api, snapshotEvent) {
+  assert.equal(snapshotEvent.direction, 'outbound');
+  assert.equal(snapshotEvent.message.status, 'ready', 'The fixture must produce a ready snapshot.');
+  const generatedAt = snapshotEvent.message.data.generatedAt;
+  // Read the recorded inbound channel. Dispatching through the test API here
+  // would bypass the real webview and conceal a broken host message listener.
+  const acknowledgement = await waitFor(
+    () => api.dashboard.snapshot().messages.find((event) =>
+      event.direction === 'inbound' && event.sequence > snapshotEvent.sequence &&
+      event.message.type === 'rendered' && event.message.generatedAt === generatedAt),
+    `Webview did not acknowledge rendering the ready snapshot (${generatedAt})`
+  );
+  assert.equal(acknowledgement.message.generatedAt, generatedAt);
+}
+
 async function dispatchAfterRevalidation(api, message, completed) {
   let observed = [];
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -149,6 +164,7 @@ async function run() {
     'Dashboard did not produce an initial terminal state'
   );
   const firstScanMs = performance.now() - firstStarted;
+  await assertSnapshotRendered(api, first);
   let snapshot = api.dashboard.snapshot();
   assert.equal(snapshot.open, true);
   assert.equal(snapshot.disposed, false);
@@ -311,6 +327,7 @@ async function run() {
     'Reopened dashboard did not restore a terminal state'
   );
   const cachedReopenMs = performance.now() - reopenStarted;
+  await assertSnapshotRendered(api, reopened);
   assert.ok(reopened.message.data.rows.some((row) => row.name === 'is-number'));
   assert.notEqual(api.dashboard.snapshot().panelId, firstPanelId, 'Reopening after disposal should create a new panel.');
 

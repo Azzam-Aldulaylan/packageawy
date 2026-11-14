@@ -1304,8 +1304,8 @@ test('analyze-remediation never carries anything beyond a package name, no path,
   );
 });
 
-test('batch remediation accepts a bounded unique package list and a payload-free cancel', () => {
-  assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: ['alpha', 'beta'] }), true);
+test('retired batch remediation is rejected and single analysis cancel stays payload-free', () => {
+  assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: ['alpha', 'beta'] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: [] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: ['alpha', 'alpha'] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: ['alpha'], target: '2.0.0' }), false);
@@ -1354,25 +1354,6 @@ test('remediation-error mirrors upgrade-error\'s shape', () => {
       error: { code: 'STALE_SOURCE' }, // missing message
     }),
     false
-  );
-});
-
-test('batch remediation progress and completion require consistent real counts', () => {
-  assert.equal(
-    isHostToWebviewMessage({ status: 'remediation-batch-progress', completed: 1, total: 3, current: 'beta' }),
-    true
-  );
-  assert.equal(
-    isHostToWebviewMessage({ status: 'remediation-batch-complete', completed: 2, total: 3, cancelled: true }),
-    true
-  );
-  assert.equal(
-    isHostToWebviewMessage({ status: 'remediation-batch-progress', completed: 4, total: 3, current: null }),
-    false
-  );
-  assert.equal(
-    isHostToWebviewMessage({ status: 'remediation-batch-error', error: { code: 'X', message: 'Y' } }),
-    true
   );
 });
 
@@ -2224,4 +2205,16 @@ test('dependency task states are exact and never carry a task deadline', () => {
     assert.equal(isHostToWebviewMessage({ status: 'dependency-task', state: value }), false);
   }
   assert.equal(isHostToWebviewMessage({ status: 'dependency-task', state: 'still-running', timeoutMs: 10 }), false);
+});
+
+test('unhandled host reports carry no payload and retired batch statuses are rejected', () => {
+  assert.equal(isWebviewToHostMessage({ type: 'unhandled-host-message' }), true);
+  for (const extra of [{ status: 'unknown' }, { token: 'secret' }, { path: '/private/project' }, { contents: 'private' }]) {
+    assert.equal(isWebviewToHostMessage({ type: 'unhandled-host-message', ...extra }), false);
+  }
+  for (const message of [
+    { status: 'remediation-batch-progress', completed: 0, total: 1, current: 'alpha' },
+    { status: 'remediation-batch-complete', completed: 1, total: 1, cancelled: false },
+    { status: 'remediation-batch-error', error: { code: 'UNKNOWN', message: 'failed' } },
+  ]) assert.equal(isHostToWebviewMessage(message), false);
 });

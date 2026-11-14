@@ -52,7 +52,7 @@ import type {
   UpgradeAnalysisPresentation,
   UpgradeResultPresentation,
 } from '../../src/host/webviewProtocol.js';
-import { isHostToWebviewMessage } from '../../src/host/webviewProtocol.js';
+import { readHostMessage, unhandledHostMessage, UNHANDLED_HOST_MESSAGE_TEXT } from './hostMessage.js';
 import { sameUpdateAdvisoryContext } from '../../src/host/updateAdvisoryState.js';
 import { UpdateAdvisoryContext } from './components/UpdateVersionWarning.js';
 import type { UpgradeAnalysisSections } from '../../src/host/upgradeAnalysisSections.js';
@@ -158,7 +158,9 @@ export function App(): ReactElement {
   const [recoveryEntries, setRecoveryEntries] = useState<Array<{ id: string; label: string }>>([]);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [dependencyTask, setDependencyTask] = useState<DependencyTaskState>('idle');
-  const recoveryBlocked = dependencyChangesBlocked(recovery);
+  const [protocolMismatch, setProtocolMismatch] = useState(false);
+  const protocolMismatchRef = useRef(false);
+  const recoveryBlocked = dependencyChangesBlocked(recovery) || protocolMismatch;
   // Per-analysis choices among host-suggested verification scripts. Keyed by
   // host-issued analysis id, so a new review always starts unchecked.
   const [verificationOptIns, setVerificationOptIns] = useState<ReadonlyMap<string, VerificationOptInSelection>>(
@@ -347,6 +349,7 @@ export function App(): ReactElement {
   }, []);
   const [upgradeTargetState, setUpgradeTargetState] = useState<UpgradeTargetLoadState>({ phase: 'idle' });
   const [selectedManageTarget, setSelectedManageTarget] = useState<string | null>(null);
+  const targetScopeRef = useRef<string | null>(null);
   const nextTargetRequestIdRef = useRef(0);
   const activeTargetRequestIdRef = useRef<string | null>(null);
   // The load the host may still be working on. Cleared once its answer
@@ -460,145 +463,98 @@ export function App(): ReactElement {
 
   useEffect(() => {
     const onMessage = (event: MessageEvent): void => {
-      // The webview is its security context and `message` events are not
-      // exclusively ours. Anything that does not match the protocol exactly is
-      // dropped rather than partially trusted.
-      if (!isHostToWebviewMessage(event.data)) {
-        console.warn('Packageawy: dropped a message that failed validation');
-        return;
-      }
-      const incoming = event.data;
-      if (incoming.status === 'dependency-task') { setDependencyTask(incoming.state); return; }
+      const reportUnhandled = (): void => {
+        if (protocolMismatchRef.current) return;
+        protocolMismatchRef.current = true;
+        setProtocolMismatch(true);
+        vscode.postMessage({ type: 'unhandled-host-message' });
+      };
+      const incoming = readHostMessage(event);
+      if (incoming === null) return;
+      if (incoming === 'unhandled') { reportUnhandled(); return; }
       if (isUnknownChangeMessage(incoming)) {
         setDependencyTask('idle');
         setRecovery({ state: 'blocked', message: RECOVERY_MESSAGES.blocked, files: [], claim: null, canApply: false, canDismiss: false });
       }
-      if (incoming.status === 'recovery-entries') { setRecoveryEntries(incoming.entries); return; }
-      if (incoming.status === 'recovery') {
-        setRecovery(incoming.recovery);
-        if (incoming.recovery.state === 'none') setRecoveryOpen(false);
-        if (incoming.recovery.state !== 'running') setDependencyTask('idle');
-        return;
-      }
-
-      // Not a dashboard snapshot: the table and any running change stay as they are.
-      if (incoming.status === 'runtime-error') {
-        setRuntimeErrorText(incoming.message);
-        setRefreshStopped(true);
-        return;
-      }
-
-      // Sent for each failed load or refresh over stale rows. Ends only the indicator.
-      if (incoming.status === 'refresh-failed') {
-        setRefreshStopped(true);
-        return;
-      }
-
-      if (incoming.status === 'update-advisories') {
-        setMessage(previous => {
-          if (previous === undefined || !('data' in previous) ||
-              previous.data.availability.advisories === 'off' ||
-              !sameUpdateAdvisoryContext(previous.data.updateAdvisoryContext, incoming.context)) return previous;
-          return { ...previous, data: { ...previous.data, updateAdvisories: incoming.results } };
-        });
-        return;
-      }
-
-      if (incoming.status === 'scan-progress') {
-        setScanProgress({
-          stage: incoming.stage,
-          ...(incoming.completed === undefined ? {} : { completed: incoming.completed }),
-          ...(incoming.total === undefined ? {} : { total: incoming.total }),
-        });
-        return;
-      }
-
-      if (incoming.status === 'upgrade-targets-loading') {
-        if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
-          setUpgradeTargetState({ phase: 'loading' });
+      switch (incoming.status) {
+        case 'dependency-task': { setDependencyTask(incoming.state); return; }
+        case 'recovery-entries': { setRecoveryEntries(incoming.entries); return; }
+        case 'recovery': {
+          setRecovery(incoming.recovery);
+          if (incoming.recovery.state === 'none') setRecoveryOpen(false);
+          if (incoming.recovery.state !== 'running') setDependencyTask('idle');
+          return;
         }
-        return;
-      }
 
-      if (incoming.status === 'upgrade-targets') {
-        if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
-          if (pendingTargetRequestIdRef.current === incoming.requestId) pendingTargetRequestIdRef.current = null;
-          setUpgradeTargetState({ phase: 'ready', targets: incoming.targets });
+        // Not a dashboard snapshot: the table and any running change stay as they are.
+        case 'runtime-error': {
+          setRuntimeErrorText(incoming.message);
+          setRefreshStopped(true);
+          return;
         }
-        if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
-          const lts = incoming.targets.options.find(option => option.labels.includes('lts'));
-          if (lts !== undefined) {
-            setPublisherLtsByPackage(previous => new Map(previous).set(incoming.package, lts.version));
+
+        // Sent for each failed load or refresh over stale rows. Ends only the indicator.
+        case 'refresh-failed': {
+          setRefreshStopped(true);
+          return;
+        }
+
+        case 'update-advisories': {
+          setMessage(previous => {
+            if (previous === undefined || !('data' in previous) ||
+                previous.data.availability.advisories === 'off' ||
+                !sameUpdateAdvisoryContext(previous.data.updateAdvisoryContext, incoming.context)) return previous;
+            return { ...previous, data: { ...previous.data, updateAdvisories: incoming.results } };
+          });
+          return;
+        }
+
+        case 'scan-progress': {
+          setScanProgress({
+            stage: incoming.stage,
+            ...(incoming.completed === undefined ? {} : { completed: incoming.completed }),
+            ...(incoming.total === undefined ? {} : { total: incoming.total }),
+          });
+          return;
+        }
+
+        case 'upgrade-targets-loading': {
+          if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
+            setUpgradeTargetState({ phase: 'loading' });
           }
+          return;
         }
-        return;
-      }
 
-      if (incoming.status === 'upgrade-targets-error') {
-        if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
-          if (pendingTargetRequestIdRef.current === incoming.requestId) pendingTargetRequestIdRef.current = null;
-          setUpgradeTargetState({ phase: 'error', error: incoming.error });
+        case 'upgrade-targets': {
+          if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
+            if (pendingTargetRequestIdRef.current === incoming.requestId) pendingTargetRequestIdRef.current = null;
+            setUpgradeTargetState({ phase: 'ready', targets: incoming.targets });
+            setSelectedManageTarget(previous => incoming.targets.options.some(option => option.version === previous) ? previous : null);
+          }
+          if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
+            const lts = incoming.targets.options.find(option => option.labels.includes('lts'));
+            if (lts !== undefined) {
+              setPublisherLtsByPackage(previous => new Map(previous).set(incoming.package, lts.version));
+            }
+          }
+          return;
         }
-        return;
-      }
 
-      if (incoming.status === 'upgrade-result') {
-        const enrichment = beginUpgradeEnrichment(incoming.result);
-        upgradeEnrichmentRef.current = enrichment;
-        setUpgradeEnrichment(enrichment);
-        pendingEnrichmentDashboardMessageRef.current = null;
-        upgradeResultRef.current = incoming.result;
-        setUpgradeResult(incoming.result);
-        activeUpgradeRef.current = null;
-        activeRequestIdRef.current = null;
-        setActiveUpgrade(null);
-        setActiveTarget(null);
-        setActiveUpgradeChanges([]);
-        setAnalysis(null);
-        setAnalyzingPhase(null);
-        setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
-        setHardStaleAnalysisId(null);
-        setConfirmBusy(false);
-        setUpgradeError(null);
-        setMessage((previous) => {
-          if (previous === undefined || !('data' in previous)) return previous;
-          return {
-            status: 'stale',
-            data: applyUpgradeResultLocalFacts(previous.data, incoming.result),
-          };
-        });
-        return;
-      }
-
-      if (incoming.status === 'upgrade-enrichment-result') {
-        const previousEnrichment = upgradeEnrichmentRef.current;
-        const nextEnrichment = applyUpgradeEnrichmentTerminal(previousEnrichment, incoming);
-        if (nextEnrichment === previousEnrichment) return;
-        upgradeEnrichmentRef.current = nextEnrichment;
-        setUpgradeEnrichment(nextEnrichment);
-        const pendingResult = upgradeResultRef.current;
-        if (
-          pendingResult !== null &&
-          pendingResult.refreshId === incoming.refreshId &&
-          pendingResult.package === incoming.package
-        ) {
-          const completedResult = { ...pendingResult, refreshingDerivedData: false };
-          upgradeResultRef.current = completedResult;
-          setUpgradeResult(completedResult);
+        case 'upgrade-targets-error': {
+          if (upgradeAnalysisMessageMatchesRequest(activeTargetRequestIdRef.current, incoming.requestId)) {
+            if (pendingTargetRequestIdRef.current === incoming.requestId) pendingTargetRequestIdRef.current = null;
+            setUpgradeTargetState({ phase: 'error', error: incoming.error });
+          }
+          return;
         }
-        if (incoming.outcome === 'succeeded') {
-          const enrichedDashboard = pendingEnrichmentDashboardMessageRef.current;
+
+        case 'upgrade-result': {
+          const enrichment = beginUpgradeEnrichment(incoming.result);
+          upgradeEnrichmentRef.current = enrichment;
+          setUpgradeEnrichment(enrichment);
           pendingEnrichmentDashboardMessageRef.current = null;
-          if (enrichedDashboard !== null && 'data' in enrichedDashboard) setMessage(enrichedDashboard);
-        }
-        return;
-      }
-
-      if (incoming.status === 'upgrade-error') {
-        setConfirmBusy(false);
-        // Never touches `message`: the rendered table/banners are exactly
-        // what they were before this arrived.
-        if (upgradeErrorClearsActiveState(incoming.error.code)) {
+          upgradeResultRef.current = incoming.result;
+          setUpgradeResult(incoming.result);
           activeUpgradeRef.current = null;
           activeRequestIdRef.current = null;
           setActiveUpgrade(null);
@@ -609,762 +565,822 @@ export function App(): ReactElement {
           setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
           setHardStaleAnalysisId(null);
           setConfirmBusy(false);
-        }
-        if (upgradeErrorIsUserVisible(incoming.error.code)) {
-          setUpgradeError({ package: incoming.package, code: incoming.error.code, message: incoming.error.message });
-        }
-        return;
-      }
-
-      if (incoming.status === 'upgrade-analyzing') {
-        if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
-          setAnalyzingPhase(incoming.phase);
-          setAnalysisSections((previous) => markPhaseLoading(previous, incoming.phase));
-        }
-        return;
-      }
-
-      if (incoming.status === 'upgrade-analysis-partial') {
-        // Dropped when it isn't about the attempt this webview is still
-        // tracking: a late partial from a superseded/cancelled attempt
-        // (re-analyzing the same package, switching rows, etc). See
-        // requestUpgrade/requestBulkUpgrade for where a fresh requestId is
-        // minted and analysisSections reset.
-        if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
-          setAnalysisSections((previous) => applyPartialSection(previous, incoming.section));
-        }
-        return;
-      }
-
-      if (incoming.status === 'upgrade-analysis') {
-        // Ignored if it's not about the flow this webview is still tracking
-        // (e.g. a result that arrived just after a client-side cancel). See
-        // requestCancelUpgrade below for why this can still legitimately
-        // happen even though the host is also told to drop it.
-        if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
-          analysisIdRef.current = incoming.analysis.analysisId;
-          setAnalysis(incoming.analysis);
-          setAnalyzingPhase(null);
-        }
-        return;
-      }
-
-      if (incoming.status === 'upgrade-analysis-stale') {
-        // A pure UX hint, never applied to an analysis this webview isn't
-        // even showing anymore (e.g. it arrived after Cancel, or after a
-        // newer analysis already replaced it).
-        if (incoming.analysisId === analysisIdRef.current) setHardStaleAnalysisId(incoming.analysisId);
-        return;
-      }
-
-      if (incoming.status === 'remove-progress') {
-        setManageRemoval(manageRemovalAfterProgress(manageRemovalRef.current, incoming.analysisId, incoming.phase));
-        return;
-      }
-
-      if (incoming.status === 'remove-error' && incoming.error.code !== 'OUTCOME_UNKNOWN' && manageRemovalRef.current?.phase === 'running') {
-        // Show the failure in the Manage dialog that started the removal,
-        // even if a rescan during the run reset the review state or the
-        // package already left the project.
-        setManageRemoval(manageRemovalAfterError(
-          manageRemovalRef.current,
-          incoming.error,
-          dashboardDataRef.current?.rows.map((candidate) => candidate.name) ?? []
-        ));
-        removeOriginRef.current = 'manage-dependency';
-        setRemoveOrigin('manage-dependency');
-      }
-
-      if (incoming.status === 'remove-error') {
-        setRemoveBusy(false);
-        if (incoming.error.code === 'OUTCOME_UNKNOWN') setManageRemoval(null);
-        const smartCleanupRemoval = removeOriginRef.current === 'smart-cleanup';
-        // Same shared-lock discipline as upgrade-error: reused directly
-        // since UPGRADE_IN_PROGRESS is the one code both flows post when the
-        // panel-wide lock is held by the other, and neither predicate looks
-        // at anything but the code string.
-        if (upgradeErrorClearsActiveState(incoming.error.code)) {
-          activeRemoveRef.current = null;
-          setActiveRemove(null);
-          setActiveRemoveChanges([]);
-          setRemoveMatchTags(new Map());
-          setRemoveAnalysis(null);
-          setRemoveBusy(false);
-        }
-        setPendingManageRemoval(null);
-        if (!smartCleanupRemoval && upgradeErrorIsUserVisible(incoming.error.code)) {
-          setRemoveError({ package: incoming.package, code: incoming.error.code, message: incoming.error.message });
-        }
-        if (smartCleanupRemoval) {
-          if (incoming.error.code === 'OUTCOME_UNKNOWN') {
-            dispatchSmartCleanup({ type: 'execution-unknown' });
-          } else if (incoming.error.code === 'STALE_SOURCE' || incoming.error.code === 'STALE_ANALYSIS') {
-            dispatchSmartCleanup({ type: 'source-stale', message: incoming.error.message });
-          } else if (
-            incoming.error.code !== 'ROLLBACK_CONFLICT' &&
-            incoming.error.code !== 'ROLLBACK_FAILED' &&
-            incoming.error.code !== 'REMOVE_TRANSACTION_FAILED' &&
-            incoming.error.code !== 'UNKNOWN'
-          ) {
-            dispatchSmartCleanup({
-              type: 'operation-rejected',
-              message: `${incoming.error.message} No cleanup changes were made.`,
-            });
-          } else {
-            const snapshot = smartCleanupExecutionRef.current;
-            const failedIds = snapshot?.actionIds ?? [];
-            const result: SmartCleanupResult = {
-              metrics: [],
-              completedActionIds: [],
-              skippedActionIds: [],
-              failedActionIds: [...failedIds],
-              resolvedAdvisories: [],
-              introducedAdvisories: [],
-              verification: 'not-run',
-              rollback: 'incomplete',
-              detail: incoming.error.message,
+          setUpgradeError(null);
+          setMessage((previous) => {
+            if (previous === undefined || !('data' in previous)) return previous;
+            return {
+              status: 'stale',
+              data: applyUpgradeResultLocalFacts(previous.data, incoming.result),
             };
-            dispatchSmartCleanup({ type: 'execution-incomplete', result, message: incoming.error.message });
+          });
+          return;
+        }
+
+        case 'upgrade-enrichment-result': {
+          const previousEnrichment = upgradeEnrichmentRef.current;
+          const nextEnrichment = applyUpgradeEnrichmentTerminal(previousEnrichment, incoming);
+          if (nextEnrichment === previousEnrichment) return;
+          upgradeEnrichmentRef.current = nextEnrichment;
+          setUpgradeEnrichment(nextEnrichment);
+          const pendingResult = upgradeResultRef.current;
+          if (
+            pendingResult !== null &&
+            pendingResult.refreshId === incoming.refreshId &&
+            pendingResult.package === incoming.package
+          ) {
+            const completedResult = { ...pendingResult, refreshingDerivedData: false };
+            upgradeResultRef.current = completedResult;
+            setUpgradeResult(completedResult);
           }
-          smartCleanupExecutionRef.current = null;
-          activeSmartCleanupRequestIdRef.current = null;
+          if (incoming.outcome === 'succeeded') {
+            const enrichedDashboard = pendingEnrichmentDashboardMessageRef.current;
+            pendingEnrichmentDashboardMessageRef.current = null;
+            if (enrichedDashboard !== null && 'data' in enrichedDashboard) setMessage(enrichedDashboard);
+          }
+          return;
+        }
+
+        case 'upgrade-error': {
+          setConfirmBusy(false);
+          // Never touches `message`: the rendered table/banners are exactly
+          // what they were before this arrived.
+          if (upgradeErrorClearsActiveState(incoming.error.code)) {
+            activeUpgradeRef.current = null;
+            activeRequestIdRef.current = null;
+            setActiveUpgrade(null);
+            setActiveTarget(null);
+            setActiveUpgradeChanges([]);
+            setAnalysis(null);
+            setAnalyzingPhase(null);
+            setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
+            setHardStaleAnalysisId(null);
+            setConfirmBusy(false);
+          }
+          if (upgradeErrorIsUserVisible(incoming.error.code)) {
+            setUpgradeError({ package: incoming.package, code: incoming.error.code, message: incoming.error.message });
+          }
+          return;
+        }
+
+        case 'upgrade-analyzing': {
+          if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
+            setAnalyzingPhase(incoming.phase);
+            setAnalysisSections((previous) => markPhaseLoading(previous, incoming.phase));
+          }
+          return;
+        }
+
+        case 'upgrade-analysis-partial': {
+          // Dropped when it isn't about the attempt this webview is still
+          // tracking: a late partial from a superseded/cancelled attempt
+          // (re-analyzing the same package, switching rows, etc). See
+          // requestUpgrade/requestBulkUpgrade for where a fresh requestId is
+          // minted and analysisSections reset.
+          if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
+            setAnalysisSections((previous) => applyPartialSection(previous, incoming.section));
+          }
+          return;
+        }
+
+        case 'upgrade-analysis': {
+          // Ignored if it's not about the flow this webview is still tracking
+          // (e.g. a result that arrived just after a client-side cancel). See
+          // requestCancelUpgrade below for why this can still legitimately
+          // happen even though the host is also told to drop it.
+          if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
+            analysisIdRef.current = incoming.analysis.analysisId;
+            setAnalysis(incoming.analysis);
+            setAnalyzingPhase(null);
+          }
+          return;
+        }
+
+        case 'upgrade-analysis-stale': {
+          // A pure UX hint, never applied to an analysis this webview isn't
+          // even showing anymore (e.g. it arrived after Cancel, or after a
+          // newer analysis already replaced it).
+          if (incoming.analysisId === analysisIdRef.current) setHardStaleAnalysisId(incoming.analysisId);
+          return;
+        }
+
+        case 'remove-progress': {
+          setManageRemoval(manageRemovalAfterProgress(manageRemovalRef.current, incoming.analysisId, incoming.phase));
+          return;
+        }
+
+        case 'remove-error': {
+          if (incoming.error.code !== 'OUTCOME_UNKNOWN' && manageRemovalRef.current?.phase === 'running') {
+            // Show the failure in the Manage dialog that started the removal,
+            // even if a rescan during the run reset the review state or the
+            // package already left the project.
+            setManageRemoval(manageRemovalAfterError(
+              manageRemovalRef.current,
+              incoming.error,
+              dashboardDataRef.current?.rows.map((candidate) => candidate.name) ?? []
+            ));
+            removeOriginRef.current = 'manage-dependency';
+            setRemoveOrigin('manage-dependency');
+          }
+
+          setRemoveBusy(false);
+          if (incoming.error.code === 'OUTCOME_UNKNOWN') setManageRemoval(null);
+          const smartCleanupRemoval = removeOriginRef.current === 'smart-cleanup';
+          // Same shared-lock discipline as upgrade-error: reused directly
+          // since UPGRADE_IN_PROGRESS is the one code both flows post when the
+          // panel-wide lock is held by the other, and neither predicate looks
+          // at anything but the code string.
+          if (upgradeErrorClearsActiveState(incoming.error.code)) {
+            activeRemoveRef.current = null;
+            setActiveRemove(null);
+            setActiveRemoveChanges([]);
+            setRemoveMatchTags(new Map());
+            setRemoveAnalysis(null);
+            setRemoveBusy(false);
+          }
+          setPendingManageRemoval(null);
+          if (!smartCleanupRemoval && upgradeErrorIsUserVisible(incoming.error.code)) {
+            setRemoveError({ package: incoming.package, code: incoming.error.code, message: incoming.error.message });
+          }
+          if (smartCleanupRemoval) {
+            if (incoming.error.code === 'OUTCOME_UNKNOWN') {
+              dispatchSmartCleanup({ type: 'execution-unknown' });
+            } else if (incoming.error.code === 'STALE_SOURCE' || incoming.error.code === 'STALE_ANALYSIS') {
+              dispatchSmartCleanup({ type: 'source-stale', message: incoming.error.message });
+            } else if (
+              incoming.error.code !== 'ROLLBACK_CONFLICT' &&
+              incoming.error.code !== 'ROLLBACK_FAILED' &&
+              incoming.error.code !== 'REMOVE_TRANSACTION_FAILED' &&
+              incoming.error.code !== 'UNKNOWN'
+            ) {
+              dispatchSmartCleanup({
+                type: 'operation-rejected',
+                message: `${incoming.error.message} No cleanup changes were made.`,
+              });
+            } else {
+              const snapshot = smartCleanupExecutionRef.current;
+              const failedIds = snapshot?.actionIds ?? [];
+              const result: SmartCleanupResult = {
+                metrics: [],
+                completedActionIds: [],
+                skippedActionIds: [],
+                failedActionIds: [...failedIds],
+                resolvedAdvisories: [],
+                introducedAdvisories: [],
+                verification: 'not-run',
+                rollback: 'incomplete',
+                detail: incoming.error.message,
+              };
+              dispatchSmartCleanup({ type: 'execution-incomplete', result, message: incoming.error.message });
+            }
+            smartCleanupExecutionRef.current = null;
+            activeSmartCleanupRequestIdRef.current = null;
+            activeRemoveRef.current = null;
+            removeOriginRef.current = null;
+            setActiveRemove(null);
+            setActiveRemoveChanges([]);
+            setRemoveMatchTags(new Map());
+            setRemoveAnalysis(null);
+            setRemoveBusy(false);
+            setRemoveError(null);
+            setRemoveOrigin(null);
+          }
+          return;
+        }
+
+        case 'remove-analyzing': {
+          // Already reflected by removeAnalysis === null while activeRemove is
+          // set: this flow has no observable multi-phase preflight the way an
+          // upgrade's compatibility/smart-plan check does, so there's nothing
+          // further to update here.
+          return;
+        }
+
+        case 'remove-analysis': {
+          const smartSnapshot = smartCleanupExecutionRef.current;
+          const smartPackagesMatch = smartSnapshot !== null &&
+            incoming.analysis.changes.length === smartSnapshot.packages.length &&
+            incoming.analysis.changes.every((change, index) => change.packageName === smartSnapshot.packages[index]);
+          if (
+            incoming.analysis.package === activeRemoveRef.current &&
+            (removeOriginRef.current !== 'smart-cleanup' || smartPackagesMatch)
+          ) {
+            setRemoveAnalysis(incoming.analysis);
+            if (removeOriginRef.current === 'smart-cleanup') {
+              smartCleanupExecutionRef.current = smartSnapshot === null
+                ? null
+                : { ...smartSnapshot, analysisId: incoming.analysis.analysisId };
+              setRemoveBusy(false);
+            }
+          }
+          return;
+        }
+
+        case 'remove-result': {
+          if (manageRemovalRef.current?.analysisId === incoming.result.analysisId) {
+            setManageRemoval(manageRemovalAfterResult(manageRemovalRef.current, incoming.result));
+            activeRemoveRef.current = null;
+            removeOriginRef.current = null;
+            setActiveRemove(null);
+            setActiveRemoveChanges([]);
+            setRemoveMatchTags(new Map());
+            setRemoveAnalysis(null);
+            setRemoveBusy(false);
+            setRemoveError(null);
+            setRemoveOrigin(null);
+            return;
+          }
+
+          if (removeOriginRef.current === 'smart-cleanup') {
+            const snapshot = smartCleanupExecutionRef.current;
+            const resultPackagesMatch = snapshot !== null &&
+              incoming.result.analysisId === snapshot.analysisId &&
+              incoming.result.packages.length === snapshot.packages.length &&
+              incoming.result.packages.every((name, index) => name === snapshot.packages[index]);
+            if (!resultPackagesMatch) return;
+            const hostCompletion = incoming.result.smartCleanup;
+            if (snapshot !== null && hostCompletion !== undefined) {
+              const kept = incoming.result.outcome !== 'rolled-back';
+              const result: SmartCleanupResult = {
+                metrics: hostCompletion.metrics,
+                completedActionIds: kept ? hostCompletion.completedActionIds : [],
+                skippedActionIds: kept ? hostCompletion.skippedActionIds : [...snapshot.actionIds],
+                failedActionIds: kept ? hostCompletion.failedActionIds : [],
+                resolvedAdvisories: hostCompletion.removedAdvisories,
+                introducedAdvisories: hostCompletion.introducedAdvisories,
+                verification: incoming.result.verification,
+                rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
+                detail: [incoming.result.message, hostCompletion.reason].filter((part) => part !== undefined).join(' '),
+              };
+              dispatchSmartCleanup(incoming.result.outcome === 'rolled-back'
+                ? { type: 'execution-cancelled-and-restored', result }
+                : incoming.result.outcome === 'verified' && hostCompletion.status === 'verified'
+                  ? { type: 'execution-complete', result }
+                  : {
+                      type: 'execution-incomplete',
+                      result,
+                      message: hostCompletion.status === 'stale'
+                        ? 'Cleanup finished, but the final project source changed before results could be verified.'
+                        : 'Cleanup finished, but some refreshed result evidence was unavailable.',
+                    });
+              if (incoming.result.restoreAvailable === true && kept) {
+                dispatchSmartCleanup({ type: 'restore-available', analysisId: incoming.result.analysisId });
+              }
+            } else {
+            const after = dashboardDataRef.current;
+            const afterStatus = dashboardSnapshotStatusRef.current;
+            if (
+              snapshot !== null &&
+              (after === null || after === snapshot.before || afterStatus === null || afterStatus === 'stale')
+            ) {
+              const kept = incoming.result.outcome !== 'rolled-back';
+              const result: SmartCleanupResult = {
+                metrics: [],
+                completedActionIds: kept ? [...snapshot.actionIds] : [],
+                skippedActionIds: kept ? [] : [...snapshot.actionIds],
+                failedActionIds: [],
+                resolvedAdvisories: [],
+                introducedAdvisories: [],
+                verification: incoming.result.verification,
+                rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
+                detail: `${incoming.result.message} Fresh dashboard evidence was unavailable, so before/after metrics could not be verified.`,
+              };
+              dispatchSmartCleanup(
+                incoming.result.outcome === 'rolled-back'
+                  ? { type: 'execution-cancelled-and-restored', result }
+                  : {
+                      type: 'execution-incomplete',
+                      result,
+                      message: 'Cleanup finished, but the refreshed project state could not be verified.',
+                    }
+              );
+            } else if (snapshot !== null && after !== null) {
+              const kept = incoming.result.outcome !== 'rolled-back';
+              const metrics: SmartCleanupResult['metrics'] = [
+                {
+                  id: 'dependencies',
+                  label: 'Direct dependencies',
+                  before: snapshot.before.rows.length,
+                  after: after.rows.length,
+                  detail: kept
+                    ? `${Math.max(0, snapshot.before.rows.length - after.rows.length)} removed`
+                    : 'Dependency files were restored',
+                },
+                ...(snapshot.before.availability.advisories === 'complete' && after.availability.advisories === 'complete'
+                  ? [
+                      {
+                        id: 'vulnerable-dependencies' as const,
+                        label: 'Vulnerable direct dependencies',
+                        before: summaryMetrics(snapshot.before.rows).vulnerable,
+                        after: summaryMetrics(after.rows).vulnerable,
+                        detail: 'Matches the dashboard Vulnerable Dependencies count',
+                      },
+                      {
+                        id: 'advisory-findings' as const,
+                        label: 'Advisory findings',
+                        before: summaryMetrics(snapshot.before.rows).advisoryFindings,
+                        after: summaryMetrics(after.rows).advisoryFindings,
+                        detail: 'Distinct advisory records across the installed graph',
+                      },
+                    ]
+                  : []),
+              ];
+              const result: SmartCleanupResult = {
+                metrics,
+                completedActionIds: kept ? [...snapshot.actionIds] : [],
+                skippedActionIds: kept ? [] : [...snapshot.actionIds],
+                failedActionIds: [],
+                resolvedAdvisories: [],
+                introducedAdvisories: [],
+                verification: incoming.result.verification,
+                rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
+                detail: incoming.result.message,
+              };
+              dispatchSmartCleanup(incoming.result.outcome === 'rolled-back'
+                ? { type: 'execution-cancelled-and-restored', result }
+                : incoming.result.outcome === 'verified'
+                  ? { type: 'execution-complete', result }
+                  : {
+                      type: 'execution-incomplete',
+                      result,
+                      message: 'Cleanup was kept, but configured verification did not prove the result.',
+                    });
+            }
+            }
+            smartCleanupExecutionRef.current = null;
+            activeSmartCleanupRequestIdRef.current = null;
+            activeRemoveRef.current = null;
+            removeOriginRef.current = null;
+            setActiveRemove(null);
+            setActiveRemoveChanges([]);
+            setRemoveMatchTags(new Map());
+            setRemoveAnalysis(null);
+            setRemoveBusy(false);
+            setRemoveOrigin(null);
+          }
+          return;
+        }
+
+        case 'remediation-analyzing': {
+          setRemediationByPackage((previous) => {
+            const next = new Map(previous);
+            next.set(incoming.package, { phase: 'analyzing' });
+            return next;
+          });
+          return;
+        }
+
+        case 'remediation-result': {
+          setRemediationByPackage((previous) => {
+            const next = new Map(previous);
+            next.set(incoming.package, { phase: 'legacy-result', status: incoming.result.status });
+            return next;
+          });
+          return;
+        }
+
+        case 'remediation-plan': {
+          setRemediationError(null);
+          setRemediationByPackage((previous) => {
+            const next = new Map(previous);
+            next.set(incoming.package, { phase: 'plan', plan: incoming.plan, reviewed: false });
+            return next;
+          });
+          return;
+        }
+
+        case 'remediation-applying': {
+          setRemediationByPackage((previous) => {
+            const prior = previous.get(incoming.package);
+            const plan = remediationPlanFromState(prior);
+            if (plan === null || plan.analysisId !== incoming.analysisId) return previous;
+            const next = new Map(previous);
+            next.set(incoming.package, {
+              phase: 'applying',
+              plan,
+              progress: incoming.phase,
+              cancelRequested: incoming.cancelRequested ?? false,
+            });
+            return next;
+          });
+          return;
+        }
+
+        case 'remediation-stale': {
+          setRemediationByPackage((previous) => {
+            const prior = previous.get(incoming.package);
+            const plan = remediationPlanFromState(prior);
+            if (plan === null || plan.analysisId !== incoming.analysisId) return previous;
+            const next = new Map(previous);
+            next.set(incoming.package, { phase: 'stale', plan, message: incoming.message });
+            return next;
+          });
+          return;
+        }
+
+        case 'remediation-apply-result': {
+          setRemediationByPackage((previous) => {
+            const prior = previous.get(incoming.package);
+            const plan = remediationPlanFromState(prior);
+            if (plan === null || plan.analysisId !== incoming.analysisId) return previous;
+            const next = new Map(previous);
+            next.set(incoming.package, { phase: 'result', plan, result: incoming.result });
+            return next;
+          });
+          return;
+        }
+
+        case 'remediation-error': {
+          if (incoming.error.code === 'OUTCOME_UNKNOWN') {
+            setRemediationByPackage(previous => { const next = new Map(previous); next.delete(incoming.package); return next; });
+            return;
+          }
+          setRemediationByPackage((previous) => {
+            const next = new Map(previous);
+            next.set(
+              incoming.package,
+              incoming.error.code === 'NO_REMEDIATION_NEEDED'
+                ? {
+                    phase: 'not-needed',
+                    message: 'The current dependency tree has no transitive vulnerabilities that need a fix.',
+                  }
+                : { phase: 'error', message: incoming.error.message }
+            );
+            return next;
+          });
+          setRemediationError(null);
+          return;
+        }
+
+        case 'usage-analyzing': {
+          setUsageByPackage((previous) => {
+            const next = new Map(previous);
+            next.set(incoming.package, { phase: 'analyzing' });
+            return next;
+          });
+          return;
+        }
+
+        case 'usage-result': {
+          setUsageByPackage((previous) => {
+            const next = new Map(previous);
+            next.set(incoming.package, {
+              phase: 'done',
+              usageId: incoming.analysis.usageId,
+              result: incoming.analysis.result,
+              cacheExpiresAt: incoming.analysis.cacheExpiresAt,
+              fromCache: incoming.analysis.fromCache,
+            });
+            return next;
+          });
+          return;
+        }
+
+        case 'usage-error': {
+          setUsageByPackage((previous) => {
+            const next = new Map(previous);
+            next.set(incoming.package, { phase: 'error', message: incoming.error.message });
+            return next;
+          });
+          return;
+        }
+
+        case 'cleanup-analyzing': {
+          if (cleanupProgressActiveRef.current) {
+            setCleanupState({ phase: 'analyzing', scanned: incoming.scanned, total: incoming.total });
+          }
+          return;
+        }
+
+        case 'cleanup-result': {
+          cleanupProgressActiveRef.current = false;
+          setCleanupState({
+            phase: 'done',
+            analyzedAt: incoming.analyzedAt,
+            cacheExpiresAt: incoming.cacheExpiresAt,
+          });
+          setCleanupFindings(incoming.findings);
+          if (Date.parse(incoming.cacheExpiresAt) <= Date.now()) {
+            smartCleanupReviewCacheRef.current = null;
+            if (activeSmartCleanupRequestIdRef.current !== null) {
+              dispatchSmartCleanup({
+                type: 'source-stale',
+                message: 'Project source changed after this cleanup review. Analyze again to refresh the evidence.',
+              });
+            }
+          }
+          if (cleanupShouldSelectFilter.current) {
+            cleanupShouldSelectFilter.current = false;
+            setHygieneFilter('likely-unused');
+            setPage(1);
+          }
+          return;
+        }
+
+        case 'cleanup-error': {
+          cleanupProgressActiveRef.current = false;
+          cleanupShouldSelectFilter.current = false;
+          setCleanupState({ phase: 'idle' });
+          setCleanupError(incoming.error.message);
+          if (smartCleanupOpenRef.current) {
+            dispatchSmartCleanup({
+              type: incoming.error.code === 'CANCELLED' ? 'analysis-cancelled' : 'analysis-failed',
+              requestId: `smart-cleanup-${smartCleanupRequestIdRef.current}`,
+              message: incoming.error.message,
+            });
+          }
+          return;
+        }
+
+        case 'smart-cleanup-metadata-analyzing': {
+          if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
+          setSmartCleanupMetadata((previous) => ({
+            ...previous,
+            phase: 'analyzing',
+          }));
+          return;
+        }
+
+        case 'smart-cleanup-metadata-result': {
+          if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
+          setSmartCleanupMetadata({
+            phase: 'done',
+            findings: incoming.findings,
+            unavailablePackages: incoming.unavailablePackages,
+            capability: incoming.capability,
+          });
+          return;
+        }
+
+        case 'smart-cleanup-metadata-error': {
+          if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
+          setSmartCleanupMetadata({
+            phase: 'error',
+            findings: [],
+            unavailablePackages: [],
+            capability: {
+              executionSupported: false,
+              reason: 'Smart Cleanup could not verify whether this project supports automated removal.',
+            },
+            message: incoming.error.message,
+          });
+          if (incoming.error.code === 'STALE_SOURCE') {
+            dispatchSmartCleanup({ type: 'source-stale', message: incoming.error.message });
+          }
+          return;
+        }
+
+        case 'removal-impact-analyzing': {
+          const active = activeRemovalImpactRequestRef.current;
+          if (
+            active !== null &&
+            active.requestId === incoming.requestId &&
+            active.packages.length === incoming.packages.length &&
+            active.packages.every((name, index) => name === incoming.packages[index])
+          ) {
+            setRemovalImpact({
+              phase: 'analyzing',
+              requestId: incoming.requestId,
+              packages: incoming.packages,
+              scanned: incoming.scanned,
+              total: incoming.total,
+            });
+          }
+          return;
+        }
+
+        case 'removal-impact-result': {
+          const active = activeRemovalImpactRequestRef.current;
+          if (
+            active !== null &&
+            active.requestId === incoming.requestId &&
+            active.packages.length === incoming.packages.length &&
+            active.packages.every((name, index) => name === incoming.packages[index])
+          ) {
+            setRemovalImpact({
+              phase: 'done',
+              requestId: incoming.requestId,
+              packages: incoming.packages,
+              assessments: new Map(
+                incoming.assessments.map((entry) => [entry.packageName, { assessment: entry.assessment, usageId: entry.usageId }])
+              ),
+              generatedAt: incoming.generatedAt,
+            });
+          }
+          return;
+        }
+
+        case 'removal-impact-error': {
+          const active = activeRemovalImpactRequestRef.current;
+          if (
+            active !== null &&
+            active.requestId === incoming.requestId &&
+            active.packages.length === incoming.packages.length &&
+            active.packages.every((name, index) => name === incoming.packages[index])
+          ) {
+            setPendingManageRemoval(null);
+            setRemovalImpact({
+              phase: 'error',
+              requestId: incoming.requestId,
+              packages: incoming.packages,
+              message: incoming.error.message,
+            });
+            if (incoming.error.code === 'STALE_SOURCE') {
+              smartCleanupReviewCacheRef.current = null;
+              dispatchSmartCleanup({ type: 'source-stale', message: incoming.error.message });
+            }
+            if (smartCleanupOpenRef.current) {
+              if (incoming.error.code !== 'STALE_SOURCE') {
+                dispatchSmartCleanup({
+                  type: 'analysis-failed',
+                  requestId: `smart-cleanup-${smartCleanupRequestIdRef.current}`,
+                  message: incoming.error.message,
+                });
+              }
+            }
+          }
+          return;
+        }
+
+        case 'loading':
+        case 'fatal-error':
+        case 'empty':
+        case 'ready':
+        case 'stale':
+        case 'partial-error': {
+          // A new snapshot, including a later stale announcement, shows its own state again.
+          setRefreshStopped(false);
+          // A dashboard snapshot is not necessarily a change
+          // to the review the user is reading. Background enrichment must not
+          // discard its results, target choice, or request correlation.
+          const reviewEffect = upgradeReviewDashboardEffect(activeUpgradeRef.current, dashboardDataRef.current, incoming);
+          let nextMessage = incoming;
+          if ('data' in incoming) {
+            // Forget the Manage dialog when its package left this snapshot or
+            // the project changed. Otherwise a later snapshot that lists the
+            // package again (files reset outside VS Code) would reopen it.
+            const previousData = dashboardDataRef.current;
+            const rememberedManageRow = manageRowRef.current;
+            const removalHold = manageRemovalAfterSnapshot(manageRemovalRef.current, smartCleanupProjectKey(incoming.data));
+            if (removalHold !== manageRemovalRef.current) setManageRemoval(removalHold);
+            if (
+              rememberedManageRow !== null &&
+              manageRowAfterSnapshot(
+                rememberedManageRow,
+                previousData === null ? null : smartCleanupProjectKey(previousData),
+                smartCleanupProjectKey(incoming.data),
+                incoming.data.rows.map((row) => row.name),
+                manageRemovalHeldPackage(removalHold)
+              ) === null
+            ) {
+              setManageRemoval(null);
+              manageRowRef.current = null;
+              setManageRow(null);
+              setManageTab('overview');
+              smartCleanupDrilldownRef.current = null;
+            }
+            dashboardDataRef.current = incoming.data;
+            dashboardSnapshotStatusRef.current = incoming.status;
+            const cachedReview = smartCleanupReviewCacheRef.current;
+            if (
+              cachedReview !== null &&
+              (
+                cachedReview.projectKey !== smartCleanupProjectKey(incoming.data) ||
+                cachedReview.dashboardGeneratedAt !== incoming.data.generatedAt
+              )
+            ) {
+              smartCleanupReviewCacheRef.current = null;
+            }
+            if (
+              smartCleanupOpenRef.current &&
+              activeSmartCleanupRequestIdRef.current !== null &&
+              smartCleanupExecutionRef.current === null
+            ) {
+              dispatchSmartCleanup({
+                type: 'source-stale',
+                message: 'The project dependency snapshot changed. Analyze Smart Cleanup again before removing anything.',
+              });
+            }
+          }
+          const pendingUpgradeResult = upgradeResultRef.current;
+          if (pendingUpgradeResult !== null && 'data' in incoming) {
+            const enrichment = upgradeEnrichmentRef.current;
+            if (completedDashboardSnapshotAbandonsUpgradeEnrichment(enrichment, incoming.status)) {
+              // A full authoritative reload completed after the targeted refresh
+              // had already failed/cancelled/been superseded. Abandon the old
+              // targeted result instead of calling it successful. This snapshot
+              // now owns the UI and its availability flags remain honest.
+              upgradeResultRef.current = null;
+              setUpgradeResult(null);
+              upgradeEnrichmentRef.current = null;
+              setUpgradeEnrichment(null);
+              pendingEnrichmentDashboardMessageRef.current = null;
+            } else if (shouldQuarantineUpgradeDerivedData(enrichment)) {
+              // Keep every derived-data snapshot quarantined until the exact
+              // targeted lifecycle reports success. The original message is
+              // retained privately so that correlated success can publish it;
+              // unrelated dashboard traffic can neither end refreshing nor make
+              // its registry/security values appear current in the meantime.
+              pendingEnrichmentDashboardMessageRef.current = incoming;
+              nextMessage = {
+                status: 'stale',
+                data: applyUpgradeResultLocalFacts(incoming.data, pendingUpgradeResult),
+              };
+            } else if (incoming.status === 'stale') {
+              // A later structural/manual revalidation supersedes the retained
+              // completion card. Time-only refreshes do not emit stale, so the
+              // result survives its enrichment replacement.
+              upgradeResultRef.current = null;
+              setUpgradeResult(null);
+              upgradeEnrichmentRef.current = null;
+              setUpgradeEnrichment(null);
+              pendingEnrichmentDashboardMessageRef.current = null;
+            }
+          }
+          if (reviewEffect === 'reset') {
+            activeUpgradeRef.current = null;
+            activeRequestIdRef.current = null;
+            analysisIdRef.current = null;
+            setActiveUpgrade(null);
+            setActiveTarget(null);
+            setActiveUpgradeChanges([]);
+            setAnalysis(null);
+            setAnalyzingPhase(null);
+            setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
+            setHardStaleAnalysisId(null);
+            setConfirmBusy(false);
+            setUpgradeError(null);
+            setUpgradeOrigin(null);
+            // Reset the whole request lifecycle together, then ask the targets
+            // effect to run again. A repeated snapshot with the same generatedAt
+            // would not rerun it on its own, leaving the list idle with Retry blocked.
+            const previousTargets = activeTargetRequestIdRef.current;
+            if (previousTargets !== null) vscode.postMessage({ type: 'cancel-upgrade-targets', requestId: previousTargets });
+            activeTargetRequestIdRef.current = null;
+            pendingTargetRequestIdRef.current = null;
+            setUpgradeTargetState({ phase: 'idle' });
+            setTargetReloadCount((count) => count + 1);
+          } else if (reviewEffect === 'mark-stale') {
+            // Keep the evidence readable. A fresh ready snapshot must not clear
+            // this warning or re-authorize a host-revoked analysis.
+            setHardStaleAnalysisId(analysisIdRef.current);
+          }
           activeRemoveRef.current = null;
-          removeOriginRef.current = null;
           setActiveRemove(null);
           setActiveRemoveChanges([]);
           setRemoveMatchTags(new Map());
           setRemoveAnalysis(null);
           setRemoveBusy(false);
           setRemoveError(null);
-          setRemoveOrigin(null);
-        }
-        return;
-      }
-
-      if (incoming.status === 'remove-analyzing') {
-        // Already reflected by removeAnalysis === null while activeRemove is
-        // set: this flow has no observable multi-phase preflight the way an
-        // upgrade's compatibility/smart-plan check does, so there's nothing
-        // further to update here.
-        return;
-      }
-
-      if (incoming.status === 'remove-analysis') {
-        const smartSnapshot = smartCleanupExecutionRef.current;
-        const smartPackagesMatch = smartSnapshot !== null &&
-          incoming.analysis.changes.length === smartSnapshot.packages.length &&
-          incoming.analysis.changes.every((change, index) => change.packageName === smartSnapshot.packages[index]);
-        if (
-          incoming.analysis.package === activeRemoveRef.current &&
-          (removeOriginRef.current !== 'smart-cleanup' || smartPackagesMatch)
-        ) {
-          setRemoveAnalysis(incoming.analysis);
-          if (removeOriginRef.current === 'smart-cleanup') {
-            smartCleanupExecutionRef.current = smartSnapshot === null
-              ? null
-              : { ...smartSnapshot, analysisId: incoming.analysis.analysisId };
-            setRemoveBusy(false);
+          if (!(removeOriginRef.current === 'smart-cleanup' && smartCleanupExecutionRef.current !== null)) {
+            removeOriginRef.current = null;
+            setRemoveOrigin(null);
           }
-        }
-        return;
-      }
-
-      if (incoming.status === 'remove-result' && manageRemovalRef.current?.analysisId === incoming.result.analysisId) {
-        setManageRemoval(manageRemovalAfterResult(manageRemovalRef.current, incoming.result));
-        activeRemoveRef.current = null;
-        removeOriginRef.current = null;
-        setActiveRemove(null);
-        setActiveRemoveChanges([]);
-        setRemoveMatchTags(new Map());
-        setRemoveAnalysis(null);
-        setRemoveBusy(false);
-        setRemoveError(null);
-        setRemoveOrigin(null);
-        return;
-      }
-
-      if (incoming.status === 'remove-result') {
-        if (removeOriginRef.current === 'smart-cleanup') {
-          const snapshot = smartCleanupExecutionRef.current;
-          const resultPackagesMatch = snapshot !== null &&
-            incoming.result.analysisId === snapshot.analysisId &&
-            incoming.result.packages.length === snapshot.packages.length &&
-            incoming.result.packages.every((name, index) => name === snapshot.packages[index]);
-          if (!resultPackagesMatch) return;
-          const hostCompletion = incoming.result.smartCleanup;
-          if (snapshot !== null && hostCompletion !== undefined) {
-            const kept = incoming.result.outcome !== 'rolled-back';
-            const result: SmartCleanupResult = {
-              metrics: hostCompletion.metrics,
-              completedActionIds: kept ? hostCompletion.completedActionIds : [],
-              skippedActionIds: kept ? hostCompletion.skippedActionIds : [...snapshot.actionIds],
-              failedActionIds: kept ? hostCompletion.failedActionIds : [],
-              resolvedAdvisories: hostCompletion.removedAdvisories,
-              introducedAdvisories: hostCompletion.introducedAdvisories,
-              verification: incoming.result.verification,
-              rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
-              detail: [incoming.result.message, hostCompletion.reason].filter((part) => part !== undefined).join(' '),
-            };
-            dispatchSmartCleanup(incoming.result.outcome === 'rolled-back'
-              ? { type: 'execution-cancelled-and-restored', result }
-              : incoming.result.outcome === 'verified' && hostCompletion.status === 'verified'
-                ? { type: 'execution-complete', result }
-                : {
-                    type: 'execution-incomplete',
-                    result,
-                    message: hostCompletion.status === 'stale'
-                      ? 'Cleanup finished, but the final project source changed before results could be verified.'
-                      : 'Cleanup finished, but some refreshed result evidence was unavailable.',
-                  });
-            if (incoming.result.restoreAvailable === true && kept) {
-              dispatchSmartCleanup({ type: 'restore-available', analysisId: incoming.result.analysisId });
-            }
-          } else {
-          const after = dashboardDataRef.current;
-          const afterStatus = dashboardSnapshotStatusRef.current;
+          // A post-remediation dependency refresh is expected while the task is
+          // applying or immediately after it reaches a verified/restored result.
+          // Preserve those host-issued transaction states so the modal does not
+          // flash back to "Check transitive fixes" before the user can read the
+          // outcome. Read-only plans and old errors are intentionally discarded.
+          setRemediationByPackage((previous) => new Map(
+            [...previous.entries()].filter(([, state]) => state.phase === 'applying' || state.phase === 'result')
+          ));
+          setRemediationError(null);
+          setBulkActionsOpen(false);
+          // `manageRow`/`manageTab` deliberately survive this reset: this branch
+          // also fires for `status: 'stale'`, which announces structural/manual
+          // revalidation and the explicit post-mutation derived-data refresh.
+          // Cache-age-only timer refreshes deliberately stay `ready`. Closing
+          // the Manage dependency modal or
+          // snapping it back to Overview on every one of those would fight the
+          // user out of a tab they're actively reading. The modal already
+          // self-heals if its row genuinely disappears from the new data. See
+          // the `row === undefined` check around ManageDependencyModal below.
+          // Usage-analysis results and unused findings are relative to the rows
+          // a scan just replaced, never carried forward as if they still
+          // describe the current dependency set. `cleanupState` itself is left
+          // alone: a running "Analyze cleanup" scan is independent host-side
+          // work this message doesn't affect.
+          if (pendingUpgradeResult === null) setUsageByPackage(new Map());
+          setCleanupFindings([]);
+          setCleanupError(null);
+          cleanupShouldSelectFilter.current = false;
+          activeRemovalImpactRequestRef.current = null;
+          setRemovalImpact({ phase: 'idle' });
+          setPendingManageRemoval(null);
+          setCleanupState((previous) => previous.phase === 'analyzing' ? previous : { phase: 'idle' });
+          setScanProgress(undefined);
           if (
-            snapshot !== null &&
-            (after === null || after === snapshot.before || afterStatus === null || afterStatus === 'stale')
+            initialRenderStartedAt.current === null &&
+            'data' in incoming &&
+            document.body.dataset['performanceDebug'] === 'true'
           ) {
-            const kept = incoming.result.outcome !== 'rolled-back';
-            const result: SmartCleanupResult = {
-              metrics: [],
-              completedActionIds: kept ? [...snapshot.actionIds] : [],
-              skippedActionIds: kept ? [] : [...snapshot.actionIds],
-              failedActionIds: [],
-              resolvedAdvisories: [],
-              introducedAdvisories: [],
-              verification: incoming.result.verification,
-              rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
-              detail: `${incoming.result.message} Fresh dashboard evidence was unavailable, so before/after metrics could not be verified.`,
-            };
-            dispatchSmartCleanup(
-              incoming.result.outcome === 'rolled-back'
-                ? { type: 'execution-cancelled-and-restored', result }
-                : {
-                    type: 'execution-incomplete',
-                    result,
-                    message: 'Cleanup finished, but the refreshed project state could not be verified.',
-                  }
-            );
-          } else if (snapshot !== null && after !== null) {
-            const kept = incoming.result.outcome !== 'rolled-back';
-            const metrics: SmartCleanupResult['metrics'] = [
-              {
-                id: 'dependencies',
-                label: 'Direct dependencies',
-                before: snapshot.before.rows.length,
-                after: after.rows.length,
-                detail: kept
-                  ? `${Math.max(0, snapshot.before.rows.length - after.rows.length)} removed`
-                  : 'Dependency files were restored',
-              },
-              ...(snapshot.before.availability.advisories === 'complete' && after.availability.advisories === 'complete'
-                ? [
-                    {
-                      id: 'vulnerable-dependencies' as const,
-                      label: 'Vulnerable direct dependencies',
-                      before: summaryMetrics(snapshot.before.rows).vulnerable,
-                      after: summaryMetrics(after.rows).vulnerable,
-                      detail: 'Matches the dashboard Vulnerable Dependencies count',
-                    },
-                    {
-                      id: 'advisory-findings' as const,
-                      label: 'Advisory findings',
-                      before: summaryMetrics(snapshot.before.rows).advisoryFindings,
-                      after: summaryMetrics(after.rows).advisoryFindings,
-                      detail: 'Distinct advisory records across the installed graph',
-                    },
-                  ]
-                : []),
-            ];
-            const result: SmartCleanupResult = {
-              metrics,
-              completedActionIds: kept ? [...snapshot.actionIds] : [],
-              skippedActionIds: kept ? [] : [...snapshot.actionIds],
-              failedActionIds: [],
-              resolvedAdvisories: [],
-              introducedAdvisories: [],
-              verification: incoming.result.verification,
-              rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
-              detail: incoming.result.message,
-            };
-            dispatchSmartCleanup(incoming.result.outcome === 'rolled-back'
-              ? { type: 'execution-cancelled-and-restored', result }
-              : incoming.result.outcome === 'verified'
-                ? { type: 'execution-complete', result }
-                : {
-                    type: 'execution-incomplete',
-                    result,
-                    message: 'Cleanup was kept, but configured verification did not prove the result.',
-                  });
+            initialRenderStartedAt.current = performance.now();
           }
-          }
-          smartCleanupExecutionRef.current = null;
-          activeSmartCleanupRequestIdRef.current = null;
-          activeRemoveRef.current = null;
-          removeOriginRef.current = null;
-          setActiveRemove(null);
-          setActiveRemoveChanges([]);
-          setRemoveMatchTags(new Map());
-          setRemoveAnalysis(null);
-          setRemoveBusy(false);
-          setRemoveOrigin(null);
-        }
-        return;
-      }
-
-      if (incoming.status === 'remediation-analyzing') {
-        setRemediationByPackage((previous) => {
-          const next = new Map(previous);
-          next.set(incoming.package, { phase: 'analyzing' });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'remediation-result') {
-        setRemediationByPackage((previous) => {
-          const next = new Map(previous);
-          next.set(incoming.package, { phase: 'legacy-result', status: incoming.result.status });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'remediation-plan') {
-        setRemediationError(null);
-        setRemediationByPackage((previous) => {
-          const next = new Map(previous);
-          next.set(incoming.package, { phase: 'plan', plan: incoming.plan, reviewed: false });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'remediation-applying') {
-        setRemediationByPackage((previous) => {
-          const prior = previous.get(incoming.package);
-          const plan = remediationPlanFromState(prior);
-          if (plan === null || plan.analysisId !== incoming.analysisId) return previous;
-          const next = new Map(previous);
-          next.set(incoming.package, {
-            phase: 'applying',
-            plan,
-            progress: incoming.phase,
-            cancelRequested: incoming.cancelRequested ?? false,
-          });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'remediation-stale') {
-        setRemediationByPackage((previous) => {
-          const prior = previous.get(incoming.package);
-          const plan = remediationPlanFromState(prior);
-          if (plan === null || plan.analysisId !== incoming.analysisId) return previous;
-          const next = new Map(previous);
-          next.set(incoming.package, { phase: 'stale', plan, message: incoming.message });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'remediation-apply-result') {
-        setRemediationByPackage((previous) => {
-          const prior = previous.get(incoming.package);
-          const plan = remediationPlanFromState(prior);
-          if (plan === null || plan.analysisId !== incoming.analysisId) return previous;
-          const next = new Map(previous);
-          next.set(incoming.package, { phase: 'result', plan, result: incoming.result });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'remediation-error') {
-        if (incoming.error.code === 'OUTCOME_UNKNOWN') {
-          setRemediationByPackage(previous => { const next = new Map(previous); next.delete(incoming.package); return next; });
+          setMessage(nextMessage);
           return;
         }
-        setRemediationByPackage((previous) => {
-          const next = new Map(previous);
-          next.set(
-            incoming.package,
-            incoming.error.code === 'NO_REMEDIATION_NEEDED'
-              ? {
-                  phase: 'not-needed',
-                  message: 'The current dependency tree has no transitive vulnerabilities that need a fix.',
-                }
-              : { phase: 'error', message: incoming.error.message }
-          );
-          return next;
-        });
-        setRemediationError(null);
-        return;
+        default:
+          unhandledHostMessage(incoming, reportUnhandled);
       }
-
-      if (incoming.status === 'usage-analyzing') {
-        setUsageByPackage((previous) => {
-          const next = new Map(previous);
-          next.set(incoming.package, { phase: 'analyzing' });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'usage-result') {
-        setUsageByPackage((previous) => {
-          const next = new Map(previous);
-          next.set(incoming.package, {
-            phase: 'done',
-            usageId: incoming.analysis.usageId,
-            result: incoming.analysis.result,
-            cacheExpiresAt: incoming.analysis.cacheExpiresAt,
-            fromCache: incoming.analysis.fromCache,
-          });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'usage-error') {
-        setUsageByPackage((previous) => {
-          const next = new Map(previous);
-          next.set(incoming.package, { phase: 'error', message: incoming.error.message });
-          return next;
-        });
-        return;
-      }
-
-      if (incoming.status === 'cleanup-analyzing') {
-        if (cleanupProgressActiveRef.current) {
-          setCleanupState({ phase: 'analyzing', scanned: incoming.scanned, total: incoming.total });
-        }
-        return;
-      }
-
-      if (incoming.status === 'cleanup-result') {
-        cleanupProgressActiveRef.current = false;
-        setCleanupState({
-          phase: 'done',
-          analyzedAt: incoming.analyzedAt,
-          cacheExpiresAt: incoming.cacheExpiresAt,
-        });
-        setCleanupFindings(incoming.findings);
-        if (Date.parse(incoming.cacheExpiresAt) <= Date.now()) {
-          smartCleanupReviewCacheRef.current = null;
-          if (activeSmartCleanupRequestIdRef.current !== null) {
-            dispatchSmartCleanup({
-              type: 'source-stale',
-              message: 'Project source changed after this cleanup review. Analyze again to refresh the evidence.',
-            });
-          }
-        }
-        if (cleanupShouldSelectFilter.current) {
-          cleanupShouldSelectFilter.current = false;
-          setHygieneFilter('likely-unused');
-          setPage(1);
-        }
-        return;
-      }
-
-      if (incoming.status === 'cleanup-error') {
-        cleanupProgressActiveRef.current = false;
-        cleanupShouldSelectFilter.current = false;
-        setCleanupState({ phase: 'idle' });
-        setCleanupError(incoming.error.message);
-        if (smartCleanupOpenRef.current) {
-          dispatchSmartCleanup({
-            type: incoming.error.code === 'CANCELLED' ? 'analysis-cancelled' : 'analysis-failed',
-            requestId: `smart-cleanup-${smartCleanupRequestIdRef.current}`,
-            message: incoming.error.message,
-          });
-        }
-        return;
-      }
-
-      if (incoming.status === 'smart-cleanup-metadata-analyzing') {
-        if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
-        setSmartCleanupMetadata((previous) => ({
-          ...previous,
-          phase: 'analyzing',
-        }));
-        return;
-      }
-
-      if (incoming.status === 'smart-cleanup-metadata-result') {
-        if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
-        setSmartCleanupMetadata({
-          phase: 'done',
-          findings: incoming.findings,
-          unavailablePackages: incoming.unavailablePackages,
-          capability: incoming.capability,
-        });
-        return;
-      }
-
-      if (incoming.status === 'smart-cleanup-metadata-error') {
-        if (incoming.requestId !== activeSmartCleanupRequestIdRef.current) return;
-        setSmartCleanupMetadata({
-          phase: 'error',
-          findings: [],
-          unavailablePackages: [],
-          capability: {
-            executionSupported: false,
-            reason: 'Smart Cleanup could not verify whether this project supports automated removal.',
-          },
-          message: incoming.error.message,
-        });
-        if (incoming.error.code === 'STALE_SOURCE') {
-          dispatchSmartCleanup({ type: 'source-stale', message: incoming.error.message });
-        }
-        return;
-      }
-
-      if (incoming.status === 'removal-impact-analyzing') {
-        const active = activeRemovalImpactRequestRef.current;
-        if (
-          active !== null &&
-          active.requestId === incoming.requestId &&
-          active.packages.length === incoming.packages.length &&
-          active.packages.every((name, index) => name === incoming.packages[index])
-        ) {
-          setRemovalImpact({
-            phase: 'analyzing',
-            requestId: incoming.requestId,
-            packages: incoming.packages,
-            scanned: incoming.scanned,
-            total: incoming.total,
-          });
-        }
-        return;
-      }
-
-      if (incoming.status === 'removal-impact-result') {
-        const active = activeRemovalImpactRequestRef.current;
-        if (
-          active !== null &&
-          active.requestId === incoming.requestId &&
-          active.packages.length === incoming.packages.length &&
-          active.packages.every((name, index) => name === incoming.packages[index])
-        ) {
-          setRemovalImpact({
-            phase: 'done',
-            requestId: incoming.requestId,
-            packages: incoming.packages,
-            assessments: new Map(
-              incoming.assessments.map((entry) => [entry.packageName, { assessment: entry.assessment, usageId: entry.usageId }])
-            ),
-            generatedAt: incoming.generatedAt,
-          });
-        }
-        return;
-      }
-
-      if (incoming.status === 'removal-impact-error') {
-        const active = activeRemovalImpactRequestRef.current;
-        if (
-          active !== null &&
-          active.requestId === incoming.requestId &&
-          active.packages.length === incoming.packages.length &&
-          active.packages.every((name, index) => name === incoming.packages[index])
-        ) {
-          setPendingManageRemoval(null);
-          setRemovalImpact({
-            phase: 'error',
-            requestId: incoming.requestId,
-            packages: incoming.packages,
-            message: incoming.error.message,
-          });
-          if (incoming.error.code === 'STALE_SOURCE') {
-            smartCleanupReviewCacheRef.current = null;
-            dispatchSmartCleanup({ type: 'source-stale', message: incoming.error.message });
-          }
-          if (smartCleanupOpenRef.current) {
-            if (incoming.error.code !== 'STALE_SOURCE') {
-              dispatchSmartCleanup({
-                type: 'analysis-failed',
-                requestId: `smart-cleanup-${smartCleanupRequestIdRef.current}`,
-                message: incoming.error.message,
-              });
-            }
-          }
-        }
-        return;
-      }
-
-      // A new snapshot, including a later stale announcement, shows its own state again.
-      setRefreshStopped(false);
-      // Any other message is a dashboard snapshot, not necessarily a change
-      // to the review the user is reading. Background enrichment must not
-      // discard its results, target choice, or request correlation.
-      const reviewEffect = upgradeReviewDashboardEffect(activeUpgradeRef.current, dashboardDataRef.current, incoming);
-      let nextMessage = incoming;
-      if ('data' in incoming) {
-        // Forget the Manage dialog when its package left this snapshot or
-        // the project changed. Otherwise a later snapshot that lists the
-        // package again (files reset outside VS Code) would reopen it.
-        const previousData = dashboardDataRef.current;
-        const rememberedManageRow = manageRowRef.current;
-        const removalHold = manageRemovalAfterSnapshot(manageRemovalRef.current, smartCleanupProjectKey(incoming.data));
-        if (removalHold !== manageRemovalRef.current) setManageRemoval(removalHold);
-        if (
-          rememberedManageRow !== null &&
-          manageRowAfterSnapshot(
-            rememberedManageRow,
-            previousData === null ? null : smartCleanupProjectKey(previousData),
-            smartCleanupProjectKey(incoming.data),
-            incoming.data.rows.map((row) => row.name),
-            manageRemovalHeldPackage(removalHold)
-          ) === null
-        ) {
-          setManageRemoval(null);
-          manageRowRef.current = null;
-          setManageRow(null);
-          setManageTab('overview');
-          smartCleanupDrilldownRef.current = null;
-        }
-        dashboardDataRef.current = incoming.data;
-        dashboardSnapshotStatusRef.current = incoming.status;
-        const cachedReview = smartCleanupReviewCacheRef.current;
-        if (
-          cachedReview !== null &&
-          (
-            cachedReview.projectKey !== smartCleanupProjectKey(incoming.data) ||
-            cachedReview.dashboardGeneratedAt !== incoming.data.generatedAt
-          )
-        ) {
-          smartCleanupReviewCacheRef.current = null;
-        }
-        if (
-          smartCleanupOpenRef.current &&
-          activeSmartCleanupRequestIdRef.current !== null &&
-          smartCleanupExecutionRef.current === null
-        ) {
-          dispatchSmartCleanup({
-            type: 'source-stale',
-            message: 'The project dependency snapshot changed. Analyze Smart Cleanup again before removing anything.',
-          });
-        }
-      }
-      const pendingUpgradeResult = upgradeResultRef.current;
-      if (pendingUpgradeResult !== null && 'data' in incoming) {
-        const enrichment = upgradeEnrichmentRef.current;
-        if (completedDashboardSnapshotAbandonsUpgradeEnrichment(enrichment, incoming.status)) {
-          // A full authoritative reload completed after the targeted refresh
-          // had already failed/cancelled/been superseded. Abandon the old
-          // targeted result instead of calling it successful. This snapshot
-          // now owns the UI and its availability flags remain honest.
-          upgradeResultRef.current = null;
-          setUpgradeResult(null);
-          upgradeEnrichmentRef.current = null;
-          setUpgradeEnrichment(null);
-          pendingEnrichmentDashboardMessageRef.current = null;
-        } else if (shouldQuarantineUpgradeDerivedData(enrichment)) {
-          // Keep every derived-data snapshot quarantined until the exact
-          // targeted lifecycle reports success. The original message is
-          // retained privately so that correlated success can publish it;
-          // unrelated dashboard traffic can neither end refreshing nor make
-          // its registry/security values appear current in the meantime.
-          pendingEnrichmentDashboardMessageRef.current = incoming;
-          nextMessage = {
-            status: 'stale',
-            data: applyUpgradeResultLocalFacts(incoming.data, pendingUpgradeResult),
-          };
-        } else if (incoming.status === 'stale') {
-          // A later structural/manual revalidation supersedes the retained
-          // completion card. Time-only refreshes do not emit stale, so the
-          // result survives its enrichment replacement.
-          upgradeResultRef.current = null;
-          setUpgradeResult(null);
-          upgradeEnrichmentRef.current = null;
-          setUpgradeEnrichment(null);
-          pendingEnrichmentDashboardMessageRef.current = null;
-        }
-      }
-      if (reviewEffect === 'reset') {
-        activeUpgradeRef.current = null;
-        activeRequestIdRef.current = null;
-        analysisIdRef.current = null;
-        setActiveUpgrade(null);
-        setActiveTarget(null);
-        setActiveUpgradeChanges([]);
-        setAnalysis(null);
-        setAnalyzingPhase(null);
-        setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
-        setHardStaleAnalysisId(null);
-        setConfirmBusy(false);
-        setUpgradeError(null);
-        setUpgradeOrigin(null);
-        // Reset the whole request lifecycle together, then ask the targets
-        // effect to run again. A repeated snapshot with the same generatedAt
-        // would not rerun it on its own, leaving the list idle with Retry blocked.
-        const previousTargets = activeTargetRequestIdRef.current;
-        if (previousTargets !== null) vscode.postMessage({ type: 'cancel-upgrade-targets', requestId: previousTargets });
-        activeTargetRequestIdRef.current = null;
-        pendingTargetRequestIdRef.current = null;
-        setUpgradeTargetState({ phase: 'idle' });
-        setSelectedManageTarget(null);
-        setTargetReloadCount((count) => count + 1);
-      } else if (reviewEffect === 'mark-stale') {
-        // Keep the evidence readable. A fresh ready snapshot must not clear
-        // this warning or re-authorize a host-revoked analysis.
-        setHardStaleAnalysisId(analysisIdRef.current);
-      }
-      activeRemoveRef.current = null;
-      setActiveRemove(null);
-      setActiveRemoveChanges([]);
-      setRemoveMatchTags(new Map());
-      setRemoveAnalysis(null);
-      setRemoveBusy(false);
-      setRemoveError(null);
-      if (!(removeOriginRef.current === 'smart-cleanup' && smartCleanupExecutionRef.current !== null)) {
-        removeOriginRef.current = null;
-        setRemoveOrigin(null);
-      }
-      // A post-remediation dependency refresh is expected while the task is
-      // applying or immediately after it reaches a verified/restored result.
-      // Preserve those host-issued transaction states so the modal does not
-      // flash back to "Check transitive fixes" before the user can read the
-      // outcome. Read-only plans and old errors are intentionally discarded.
-      setRemediationByPackage((previous) => new Map(
-        [...previous.entries()].filter(([, state]) => state.phase === 'applying' || state.phase === 'result')
-      ));
-      setRemediationError(null);
-      setBulkActionsOpen(false);
-      // `manageRow`/`manageTab` deliberately survive this reset: this branch
-      // also fires for `status: 'stale'`, which announces structural/manual
-      // revalidation and the explicit post-mutation derived-data refresh.
-      // Cache-age-only timer refreshes deliberately stay `ready`. Closing
-      // the Manage dependency modal or
-      // snapping it back to Overview on every one of those would fight the
-      // user out of a tab they're actively reading. The modal already
-      // self-heals if its row genuinely disappears from the new data. See
-      // the `row === undefined` check around ManageDependencyModal below.
-      // Usage-analysis results and unused findings are relative to the rows
-      // a scan just replaced, never carried forward as if they still
-      // describe the current dependency set. `cleanupState` itself is left
-      // alone: a running "Analyze cleanup" scan is independent host-side
-      // work this message doesn't affect.
-      if (pendingUpgradeResult === null) setUsageByPackage(new Map());
-      setCleanupFindings([]);
-      setCleanupError(null);
-      cleanupShouldSelectFilter.current = false;
-      activeRemovalImpactRequestRef.current = null;
-      setRemovalImpact({ phase: 'idle' });
-      setPendingManageRemoval(null);
-      setCleanupState((previous) => previous.phase === 'analyzing' ? previous : { phase: 'idle' });
-      setScanProgress(undefined);
-      if (
-        initialRenderStartedAt.current === null &&
-        'data' in incoming &&
-        document.body.dataset['performanceDebug'] === 'true'
-      ) {
-        initialRenderStartedAt.current = performance.now();
-      }
-      setMessage(nextMessage);
     };
 
     // Listen before announcing readiness, so the host's reply cannot be missed.
@@ -1975,6 +1991,7 @@ export function App(): ReactElement {
       activeTargetRequestIdRef.current = null;
       setUpgradeTargetState({ phase: 'idle' });
       setSelectedManageTarget(null);
+      targetScopeRef.current = null;
       return;
     }
     const row = data?.rows.find((candidate) => candidate.name === manageRow);
@@ -1985,10 +2002,16 @@ export function App(): ReactElement {
       return;
     }
 
-    // Start on the row's host-owned target. Published choices preserve it. While a
+    // Preserve an explicit choice only within this project and package. The
+    // correlated version-list response clears it if it is no longer eligible.
+    const scope = JSON.stringify([data === undefined ? null : dashboardProjectKey(data.project), manageRow]);
+    if (targetScopeRef.current !== scope) {
+      setSelectedManageTarget(row.upgradeTo);
+      targetScopeRef.current = scope;
+    }
+    // While a
     // stale snapshot is revalidating, show the loading state but do not ask
     // the host for choices it will correctly refuse as ineligible.
-    setSelectedManageTarget(row.upgradeTo);
     setUpgradeTargetState({ phase: 'loading' });
     if (message?.status === 'stale') {
       activeTargetRequestIdRef.current = null;
@@ -1999,7 +2022,7 @@ export function App(): ReactElement {
     activeTargetRequestIdRef.current = requestId;
     pendingTargetRequestIdRef.current = requestId;
     vscode.postMessage({ type: 'load-upgrade-targets', package: row.name, requestId });
-  }, [data?.generatedAt, manageRow, message?.status, targetReloadCount]);
+  }, [data?.generatedAt, data?.project.id, data?.project.manifestPath, manageRow, message?.status, targetReloadCount]);
 
   // Retry reruns the effect above, which cancels the request it replaces and
   // sends a new request id. Ignored while a load is pending, the same as the
@@ -2392,12 +2415,22 @@ export function App(): ReactElement {
     remediationBusy ||
     cleanupState.phase === 'analyzing';
 
+  const protocolBanner = protocolMismatch ? (
+    <StatusBanner tone="error" className="banner--protocol" action={{ label: 'Show Log', onClick: requestShowLog }}>
+      {UNHANDLED_HOST_MESSAGE_TEXT}{' '}
+      <button className="button button--secondary" type="button"
+        disabled={dependencyTask !== 'idle' || confirmBusy || removeBusy ||
+          [...remediationByPackage.values()].some(state => state.phase === 'applying') || recovery?.state === 'running'}
+        onClick={() => window.location.reload()}>Reload</button>
+    </StatusBanner>
+  ) : null;
+
   if (recoveryOpen && recovery !== null && recovery.state !== 'none') {
-    return <RecoveryScreen recovery={recovery} send={message => vscode.postMessage(message)} close={() => setRecoveryOpen(false)} />;
+    return <>{protocolBanner}<RecoveryScreen recovery={recovery} changesBlocked={protocolMismatch} send={message => vscode.postMessage(message)} close={() => setRecoveryOpen(false)} /></>;
   }
 
   return (
-    <DependencyChangeContext.Provider value={{ task: dependencyTask, blocked: recoveryBlocked, message: recovery?.message ?? RECOVERY_MESSAGES.blocked, retryDiscovery: recovery?.state === 'discovery-error', openRecovery: () => { if (recovery?.state !== 'discovery-error') setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
+    <DependencyChangeContext.Provider value={{ task: dependencyTask, blocked: recoveryBlocked, protocolMismatch, message: recovery?.message ?? RECOVERY_MESSAGES.blocked, retryDiscovery: recovery?.state === 'discovery-error', openRecovery: () => { if (recovery?.state !== 'discovery-error') setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
     <UpdateAdvisoryContext.Provider value={data?.availability.advisories === 'off' ? [] : data?.updateAdvisories ?? []}>
     <VerificationOptInContext.Provider value={verificationOptInStore}>
     <main className="dashboard">
@@ -2436,6 +2469,8 @@ export function App(): ReactElement {
           }
         />
       ) : null}
+
+      {protocolBanner}
 
       {runtimeErrorText !== null ? (
         <StatusBanner tone="error" action={{ label: 'Show Log', onClick: requestShowLog }}>

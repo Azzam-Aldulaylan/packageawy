@@ -31,7 +31,6 @@ import * as path from 'node:path';
 
 import { buildDependencyGraph } from '../core/lockfile/build.js';
 import { computeSourceFingerprint } from '../core/cache/sourceFingerprint.js';
-import { runSequentialBatch } from '../core/async/sequentialBatch.js';
 import { directNodes } from '../core/lockfile/parse.js';
 import { parseManifest } from '../core/manifest/parse.js';
 import { buildBulkRequestBody, fetchBulkAdvisories } from '../core/advisories/bulk.js';
@@ -203,10 +202,6 @@ interface SmartCleanupRemovalEvidence {
 
 export interface RemediationMessage {
   package: string;
-}
-
-export interface RemediationBatchMessage {
-  packages: string[];
 }
 
 export interface RemediationAnalysisMessage extends VerificationOptInRequest {
@@ -2494,57 +2489,6 @@ export class UpgradeAssistantCoordinator {
       if (this.activeRemediationAbort === abort) this.activeRemediationAbort = undefined;
       if (this.activeRemediationPackage === message.package) this.activeRemediationPackage = undefined;
       performance.finish({ packages: 1 });
-    }
-  }
-
-  async handleAnalyzeRemediations(message: RemediationBatchMessage): Promise<void> {
-    await this.withAdmission('remediation-error', message.packages[0] ?? 'unknown', () => this.startRemediationBatch(message));
-  }
-
-  private async startRemediationBatch(message: RemediationBatchMessage): Promise<void> {
-    if (this.activeRemediationAbort !== undefined) {
-      this.options.sink.postMessage({
-        status: 'remediation-batch-error',
-        error: { code: 'ANALYSIS_IN_PROGRESS', message: 'Another remediation analysis is already in progress.' },
-      });
-      return;
-    }
-    const abort = new AbortController();
-    this.activeRemediationAbort = abort;
-    const total = message.packages.length;
-    const performance = createPerformanceSession(
-      'Packageawy bulk remediation analysis',
-      this.options.performanceEnabled?.() ?? false
-    );
-    const sharedWork: SharedRemediationWork = { performance };
-    try {
-      const result = await runSequentialBatch({
-        items: message.packages,
-        signal: abort.signal,
-        onStart: (packageName, completed) => {
-          this.options.sink.postMessage({ status: 'remediation-batch-progress', completed, total, current: packageName });
-        },
-        run: async (packageName, signal) => this.analyzeRemediation({ package: packageName }, signal, sharedWork),
-        onError: (packageName, cause) => {
-          if (!this.options.isDisposed()) {
-            this.options.sink.postMessage({
-              status: 'remediation-error',
-              package: packageName,
-              error: toProtocolError(cause),
-            });
-          }
-        },
-      });
-      this.options.sink.postMessage({
-        status: 'remediation-batch-complete',
-        completed: result.completed,
-        total,
-        cancelled: result.cancelled,
-      });
-    } finally {
-      if (this.activeRemediationAbort === abort) this.activeRemediationAbort = undefined;
-      this.activeRemediationPackage = undefined;
-      performance.finish({ packages: total });
     }
   }
 
