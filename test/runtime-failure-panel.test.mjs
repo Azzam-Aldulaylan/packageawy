@@ -176,9 +176,9 @@ test('every webview message type is classified as change-starting or read-only',
     'ready', 'rendered', 'refresh', 'change-project', 'load-upgrade-targets', 'cancel-upgrade-targets', 'upgrade',
     'bulk-upgrade', 'bulk-remove', 'smart-cleanup-remove', 'open-advisory', 'cancel-upgrade', 'retry-upgrade-enrichment',
     'cancel-remove', 'configure-verification', 'configure-advisory-check', 'analyze-remediation', 'cancel-remediation',
-    'retry-remediation', 'analyze-remediations', 'cancel-remediation-analysis', 'where-used', 'reanalyze-usage',
+    'retry-remediation', 'cancel-remediation-analysis', 'where-used', 'reanalyze-usage',
     'analyze-cleanup', 'analyze-smart-cleanup-metadata', 'cancel-smart-cleanup-metadata', 'analyze-removal-impact',
-    'cancel-removal-impact', 'cancel-usage-analysis', 'open-usage-reference', 'show-log',
+    'cancel-removal-impact', 'cancel-usage-analysis', 'open-usage-reference', 'show-log', 'unhandled-host-message',
   ]);
   const source = readFileSync('src/host/webviewProtocol.ts', 'utf8');
   const union = source.slice(source.indexOf('export type WebviewToHostMessage ='), source.indexOf('export const CHANGE_STARTING_MESSAGE_TYPES'));
@@ -365,7 +365,7 @@ test('the sidecar entry point reaches the open panel and reports when none is op
 
 test('the webview keeps the banner through later snapshots and never shows a Reload button for it', () => {
   const app = readFileSync('webview/src/App.tsx', 'utf8');
-  assert.match(app, /if \(incoming\.status === 'runtime-error'\) \{\s*setRuntimeErrorText\(incoming\.message\);\s*setRefreshStopped\(true\);\s*return;\s*\}/);
+  assert.match(app, /case 'runtime-error': \{\s*setRuntimeErrorText\(incoming\.message\);\s*setRefreshStopped\(true\);\s*return;\s*\}/);
   assert.deepEqual([...app.matchAll(/setRuntimeErrorText\(([^)]*)\)/g)].map((match) => match[1]), ['incoming.message'],
     'nothing clears the banner while the panel is open');
   assert.match(app, /runtimeErrorText !== null \? \(\s*<StatusBanner tone="error" action=\{\{ label: 'Show Log', onClick: requestShowLog \}\}>/);
@@ -423,4 +423,35 @@ for (const phase of ['refresh', 'refresh-after-message', 'watcher']) test(`unrel
   assert.equal(handle.result, 'kept');
   assert.equal(fixture.messages.findLast(message => message.status === 'remove-result').result.outcome, 'verified');
   assert.equal(panel.logs.some(line => line.startsWith('runtime:')), true);
+});
+
+test('an unhandled host report logs one fixed line and fences changes without settling a running transaction', async t => {
+  const fixture = makePanel(); t.after(fixture.close);
+  const coordinator = fixture.panel.upgradeCoordinator;
+  const { recoveryFixture } = await import('./helpers/recovery.mjs');
+  const recovery = await recoveryFixture(t);
+  const running = coordinator.reserve('react');
+  assert.equal(running.ok, true);
+  await running.beginMutation(recovery.target);
+  assert.equal(coordinator.reservation.isMutationBusy, true);
+  const logStart = fixture.logs.length;
+  coordinator.recovery.apply = async () => changes++;
+  let changes = 0, settlements = 0, logsShown = 0;
+  coordinator.handleConfirmUpgrade = async () => changes++;
+  coordinator.settleChangeFailure = async () => settlements++;
+  fixture.platform.showLog = () => logsShown++;
+  const before = fixture.posted.length;
+  await fixture.panel.handle({ type: 'unhandled-host-message' });
+  await fixture.panel.handle({ type: 'unhandled-host-message' });
+  assert.deepEqual(fixture.logs.slice(logStart), ['Packageawy: unhandled host message. Dependency changes paused until reload.']);
+  assert.deepEqual(fixture.posted.slice(before), [], 'no success, failure or recovery result is invented');
+  assert.equal(coordinator.reservation.held, running);
+  assert.equal(settlements, 0);
+  await fixture.panel.handle({ type: 'confirm-upgrade', analysisId: 'review' });
+  await fixture.panel.handle({ type: 'apply-recovery', choices: [] });
+  assert.equal(changes, 0);
+  assert.equal(coordinator.reservation.held, running);
+  assert.equal(settlements, 0);
+  await fixture.panel.handle({ type: 'show-log' });
+  assert.equal(logsShown, 1);
 });

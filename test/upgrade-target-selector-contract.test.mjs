@@ -24,10 +24,3 @@ test('target labels distinguish publisher-declared LTS from the latest stable fa
   assert.match(component, /return 'Security fix'/);
   assert.doesNotMatch(component, /return 'LTS'/);
 });
-
-test('loading published choices preserves the row target and explicit picker choices', () => {
-  const app = readFileSync(join(process.cwd(), 'webview/src/App.tsx'), 'utf8');
-  assert.match(app, /setSelectedManageTarget\(row\.upgradeTo\)/);
-  const choicesArrived = app.slice(app.indexOf("if (incoming.status === 'upgrade-targets')"), app.indexOf("if (incoming.status === 'upgrade-targets-error')"));
-  assert.doesNotMatch(choicesArrived, /setSelectedManageTarget/);
-});

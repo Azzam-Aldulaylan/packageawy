@@ -800,9 +800,6 @@ export type HostToWebviewMessage =
   | { status: 'remediation-apply-result'; package: string; analysisId: string; result: TransitiveRemediationApplyResult }
   /** `package` could not be analyzed: an ineligible/forged request, a stale project snapshot, or a resolver failure that still deserves a user-visible reason rather than silently falling back to "unknown". */
   | { status: 'remediation-error'; package: string; error: ProtocolError }
-  | { status: 'remediation-batch-progress'; completed: number; total: number; current: string | null }
-  | { status: 'remediation-batch-complete'; completed: number; total: number; cancelled: boolean }
-  | { status: 'remediation-batch-error'; error: ProtocolError }
   /** "Where is this used?" (or the per-package half of an "Analyze cleanup" run) has started for `package`. */
   | { status: 'usage-analyzing'; package: string }
   /** The host-owned usage-analysis result for `package`, ready to render as a reference list. */
@@ -844,6 +841,57 @@ export type HostToWebviewMessage =
   | { status: 'smart-cleanup-metadata-error'; requestId: string; error: ProtocolError }
 ;
 
+/** Kept complete by the compiler, used only to distinguish malformed known events. */
+export const HOST_MESSAGE_STATUSES = {
+  'dependency-task': true,
+  'recovery-entries': true,
+  'recovery': true,
+  'update-advisories': true,
+  'loading': true,
+  'scan-progress': true,
+  'empty': true,
+  'ready': true,
+  'stale': true,
+  'partial-error': true,
+  'fatal-error': true,
+  'runtime-error': true,
+  'refresh-failed': true,
+  'upgrade-targets-loading': true,
+  'upgrade-targets': true,
+  'upgrade-targets-error': true,
+  'upgrade-result': true,
+  'upgrade-enrichment-result': true,
+  'upgrade-error': true,
+  'upgrade-analyzing': true,
+  'upgrade-analysis-partial': true,
+  'upgrade-analysis': true,
+  'upgrade-analysis-stale': true,
+  'remove-analyzing': true,
+  'remove-analysis': true,
+  'remove-progress': true,
+  'remove-result': true,
+  'remove-error': true,
+  'remediation-analyzing': true,
+  'remediation-result': true,
+  'remediation-plan': true,
+  'remediation-applying': true,
+  'remediation-stale': true,
+  'remediation-apply-result': true,
+  'remediation-error': true,
+  'usage-analyzing': true,
+  'usage-result': true,
+  'usage-error': true,
+  'cleanup-analyzing': true,
+  'removal-impact-analyzing': true,
+  'removal-impact-result': true,
+  'removal-impact-error': true,
+  'cleanup-result': true,
+  'cleanup-error': true,
+  'smart-cleanup-metadata-analyzing': true,
+  'smart-cleanup-metadata-result': true,
+  'smart-cleanup-metadata-error': true,
+} satisfies Record<HostToWebviewMessage['status'], true>;
+
 /**
  * `package` and `target` are the smallest request that lets the host verify
  * the click against its last-known state. See
@@ -873,6 +921,7 @@ export type HostToWebviewMessage =
  * anything else that could be forged into execution authority. See
  * upgradeAssistantCoordinator.ts's handleConfirmUpgrade/handleUseSmartPlan.
  */
+
 export type WebviewToHostMessage =
   | { type: 'inspect-recovery'; id?: string }
   | { type: 'start-recovery'; stopped: true; claim: string | null }
@@ -936,7 +985,6 @@ export type WebviewToHostMessage =
   | ({ type: 'confirm-remediation'; analysisId: string } & ConfirmVerificationOptIn)
   | { type: 'cancel-remediation'; analysisId: string }
   | { type: 'retry-remediation'; analysisId: string }
-  | { type: 'analyze-remediations'; packages: string[] }
   | { type: 'cancel-remediation-analysis' }
   /** On-demand, single-package usage scan. See src/core/usage/ and src/host/usage/usageAnalyzer.ts. Only ever a package name. The host re-derives everything else (which project, which files) from its trusted state. */
   | { type: 'where-used'; package: string }
@@ -971,7 +1019,9 @@ export type WebviewToHostMessage =
    */
   | { type: 'open-usage-reference'; usageId: string; referenceIndex: number }
   /** Shows the Packageawy log from the internal error banner. Carries nothing else. */
-  | { type: 'show-log' };
+  | { type: 'show-log' }
+  /** A payload-free report so unrecognized data never reaches the log. */
+  | { type: 'unhandled-host-message' };
 
 /**
  * Every webview message that can start writing dependency files. After an
@@ -1110,7 +1160,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (type === 'rendered') {
     return hasOnlyKeys(value, ['type', 'generatedAt']) && isNonEmptyString(value['generatedAt']);
   }
-  if (type === 'ready' || type === 'refresh' || type === 'change-project' || type === 'show-log') {
+  if (type === 'ready' || type === 'refresh' || type === 'change-project' || type === 'show-log' || type === 'unhandled-host-message') {
     return hasOnlyKeys(value, ['type']);
   }
   if (type === 'cancel-upgrade-targets') {
@@ -1224,17 +1274,6 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   }
   if (type === 'cancel-remediation' || type === 'retry-remediation') {
     return hasOnlyKeys(value, ['type', 'analysisId']) && isNonEmptyString(value['analysisId']);
-  }
-  if (type === 'analyze-remediations') {
-    const packages = value['packages'];
-    return (
-      hasOnlyKeys(value, ['type', 'packages']) &&
-      Array.isArray(packages) &&
-      packages.length > 0 &&
-      packages.length <= MAX_BULK_UPGRADE_CHANGES &&
-      packages.every(isNonEmptyString) &&
-      new Set(packages).size === packages.length
-    );
   }
   if (type === 'cancel-remediation-analysis') return hasOnlyKeys(value, ['type']);
   if (type === 'analyze-remediation' || type === 'where-used' || type === 'reanalyze-usage') {
@@ -2495,31 +2534,6 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
       isNonEmptyString(value['package']) &&
       isProtocolError(value['error'])
     );
-  }
-  if (status === 'remediation-batch-progress') {
-    const completed = value['completed'];
-    const total = value['total'];
-    const current = value['current'];
-    return (
-      hasOnlyKeys(value, ['status', 'completed', 'total', 'current']) &&
-      typeof completed === 'number' && Number.isInteger(completed) && completed >= 0 &&
-      typeof total === 'number' && Number.isInteger(total) && total > 0 &&
-      completed <= total &&
-      (current === null || isNonEmptyString(current))
-    );
-  }
-  if (status === 'remediation-batch-complete') {
-    const completed = value['completed'];
-    const total = value['total'];
-    return (
-      hasOnlyKeys(value, ['status', 'completed', 'total', 'cancelled']) &&
-      typeof completed === 'number' && Number.isInteger(completed) && completed >= 0 &&
-      typeof total === 'number' && Number.isInteger(total) && total > 0 && completed <= total &&
-      typeof value['cancelled'] === 'boolean'
-    );
-  }
-  if (status === 'remediation-batch-error') {
-    return hasOnlyKeys(value, ['status', 'error']) && isProtocolError(value['error']);
   }
   if (status === 'usage-analyzing') {
     return hasOnlyKeys(value, ['status', 'package']) && isNonEmptyString(value['package']);

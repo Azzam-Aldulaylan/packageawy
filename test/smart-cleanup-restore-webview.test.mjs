@@ -163,7 +163,7 @@ test('the app opens recovery with a host analysis id and never starts the former
   assert.match(app, /incoming\.result\.restoreAvailable === true && kept/);
   assert.match(app, /vscode\.postMessage\(\{ type: 'restore-smart-cleanup', analysisId \}\)/);
   assert.doesNotMatch(app, /dispatchSmartCleanup\(\{ type: 'restore-started'/);
-  assert.match(app, /incoming.status === 'recovery'/);
+  assert.match(app, /case 'recovery':/);
 });
 
 for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`cleanup rollback guidance matches optional reinstall ${reinstall}`, async t => {

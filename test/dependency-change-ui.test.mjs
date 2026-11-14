@@ -68,7 +68,7 @@ function appFixture() {
     return node;
   };
   tree();
-  return { tree, receive: message => listeners.get('message')({ data: message }), html: () => renderToStaticMarkup(tree()) };
+  return { tree, receive: message => listeners.get('message')({ data: message, origin: '', source: null }), html: () => renderToStaticMarkup(tree()) };
 }
 const emptyRecovery = state => ({ status: 'recovery', recovery: { state, message: state === 'none' ? '' : RECOVERY_MESSAGES.blocked, claim: null, canApply: false, canDismiss: false, files: [] } });
 
@@ -213,4 +213,16 @@ test('Smart Cleanup open with an unknown outcome shows only the shared blocked p
   app.tree().props.value.openRecovery();
   assert.deepEqual(sent.at(-1), { type: 'inspect-recovery' });
   assert.match(app.html(), /Dependency recovery/);
+});
+
+test('unrecognized host messages render one protocol banner with no recovery or success implication', () => {
+  const app = appFixture();
+  app.receive({ status: 'future-status', token: 'secret', path: '/private/project/package.json' });
+  app.receive({ status: 'future-status' });
+  const html = app.html();
+  assert.equal((html.match(/Packageawy received something it did not understand/g) ?? []).length, 1);
+  assert.equal((html.match(/>Show Log</g) ?? []).length, 1);
+  assert.equal((html.match(/>Reload</g) ?? []).length, 1);
+  assert.doesNotMatch(html, /Start recovery|rollback|restored|success|secret|\/private\/project/);
+  assert.equal(sent.filter(message => message.type === 'unhandled-host-message').length, 1);
 });

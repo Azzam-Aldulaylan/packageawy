@@ -133,10 +133,10 @@ test('the webview ends only its refreshing indicator on the banner and keeps the
   const app = readFileSync('webview/src/App.tsx', 'utf8');
   // The banner touches no dashboard state: rows, upgrade results and the
   // enrichment quarantine stay exactly as they were.
-  assert.match(app, /if \(incoming\.status === 'runtime-error'\) \{\s*setRuntimeErrorText\(incoming\.message\);\s*setRefreshStopped\(true\);\s*return;\s*\}/);
-  assert.match(app, /if \(incoming\.status === 'refresh-failed'\) \{\s*setRefreshStopped\(true\);\s*return;\s*\}/);
+  assert.match(app, /case 'runtime-error': \{\s*setRuntimeErrorText\(incoming\.message\);\s*setRefreshStopped\(true\);\s*return;\s*\}/);
+  assert.match(app, /case 'refresh-failed': \{\s*setRefreshStopped\(true\);\s*return;\s*\}/);
   // Any later snapshot, including a new stale announcement, shows its own state again.
-  assert.match(app, /setRefreshStopped\(false\);\s*\/\/ Any other message is a dashboard snapshot/);
+  assert.match(app, /setRefreshStopped\(false\);\s*\/\/ A dashboard snapshot is not necessarily a change/);
   // Still stale: upgrades and other complete-data actions stay disabled.
   assert.match(app, /const upgradesDisabled =\s*status === 'stale' \|\|/);
   // Only the indicator changes.

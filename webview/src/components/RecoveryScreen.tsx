@@ -4,10 +4,11 @@ import type { RecoveryChoice, RecoveryPresentation, WebviewToHostMessage } from 
 import { RECOVERY_MESSAGES } from '../../../src/host/recoveryCopy.js';
 
 /** Choices belong to this visible review only. Reopening never replays an action. */
-export function RecoveryScreen({ recovery, send, close }: {
+export function RecoveryScreen({ recovery, send, close, changesBlocked = false }: {
   recovery: RecoveryPresentation;
   send(message: WebviewToHostMessage): void;
   close(): void;
+  changesBlocked?: boolean;
 }): ReactElement {
   const [stopped, setStopped] = useState(false);
   const [discard, setDiscard] = useState(false);
@@ -19,7 +20,7 @@ export function RecoveryScreen({ recovery, send, close }: {
   }, [recovery]);
   const request = (message: WebviewToHostMessage): void => { setBusy(true); send(message); };
   const needsDiscard = recovery.state === 'incomplete' || recovery.state === 'invalid';
-  const canReview = recovery.canApply && recovery.files.length > 0;
+  const canReview = !changesBlocked && recovery.canApply && recovery.files.length > 0;
   const canStart = recovery.state !== 'open' && !recovery.canApply && !recovery.canDismiss && !['running', 'takeover', 'discovery-error'].includes(recovery.state);
   const patch = (id: string, fields: Partial<RecoveryChoice>): void => setChoices(previous => previous.map(choice => choice.id === id ? { ...choice, ...fields } : choice));
   return (

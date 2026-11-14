@@ -4,6 +4,11 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+- Fix the dashboard staying blank when editor messages arrive through the webview bridge.
+- Keep your chosen upgrade version when refreshing the same dependency, while that version remains eligible.
+- Pause dependency changes and offer Show Log and Reload if the dashboard receives an unrecognized host message.
+- Keep results current when dependency scans overlap a successful or failed reload.
+
 ### Added
 
 - After a successful dependency file restore with a lockfile, Packageawy offers to reinstall node_modules with npm ci or pnpm install --frozen-lockfile. Reinstall results are reported separately from the file restore.

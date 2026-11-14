@@ -167,6 +167,7 @@ export class DashboardPanel {
    * banner stays until the panel closes. A new panel starts without it.
    */
   private runtimeFailed = false;
+  private protocolMismatch = false;
   /** Set once with runtimeFailed. Watchers, timers and scheduled scans stay off for this panel's life. */
   private backgroundStopped = false;
   private advisorySettingRefreshPending = false;
@@ -334,7 +335,7 @@ export class DashboardPanel {
           fireAndForget(this.usageCoordinator.runPendingBackgroundRefresh(), this.onBackgroundError('usage-refresh', false));
         }
       },
-      changesPaused: () => this.runtimeFailed,
+      changesPaused: () => this.runtimeFailed || this.protocolMismatch,
       reportBackgroundFailure: (context, error, fence) => this.reportRuntimeFailure(context, error, fence),
       performanceEnabled: this.performanceEnabled,
       storeProjectCompatibilityReferences: (packageName, references, folder) =>
@@ -525,8 +526,9 @@ export class DashboardPanel {
       this.scheduleRecoveryInspection();
       return;
     }
+    if (this.protocolMismatch && message.type === 'apply-recovery') return;
     if (message.type === 'refresh' && this.webviewReady) this.scheduleRecoveryInspection();
-    if ((this.runtimeFailed || this.upgradeCoordinator.restartRequired) && isChangeStartingMessage(message)) {
+    if ((this.runtimeFailed || this.protocolMismatch || this.upgradeCoordinator.restartRequired) && isChangeStartingMessage(message)) {
       this.upgradeCoordinator.refuseChangeAfterFailure(message);
       return;
     }
@@ -695,6 +697,7 @@ export class DashboardPanel {
 
   private async handleMessage(message: WebviewToHostMessage): Promise<void> {
     if (message.type === 'ready') {
+      this.protocolMismatch = false;
       const firstReady = !this.webviewReady;
       this.webviewReady = true;
       this.clearRecoveryInspectionTimer();
@@ -874,6 +877,14 @@ export class DashboardPanel {
       await this.upgradeCoordinator.handleRestoreSmartCleanup(message);
       return;
     }
+    if (message.type === 'unhandled-host-message') {
+      if (!this.protocolMismatch) {
+        this.protocolMismatch = true;
+        // Never log fields from an unrecognized message, even its status.
+        this.platform.log?.('Packageawy: unhandled host message. Dependency changes paused until reload.');
+      }
+      return;
+    }
     if (message.type === 'show-log') {
       this.platform.showLog?.();
       return;
@@ -899,17 +910,6 @@ export class DashboardPanel {
         return;
       }
       await this.upgradeCoordinator.handleAnalyzeRemediation(message);
-      return;
-    }
-    if (message.type === 'analyze-remediations') {
-      if (this.upgradeCoordinator.isMutationBusy()) {
-        this.sink.postMessage({
-          status: 'remediation-batch-error',
-          error: { code: 'UPGRADE_IN_PROGRESS', message: 'A dependency change is currently being applied to this project.' },
-        });
-        return;
-      }
-      await this.upgradeCoordinator.handleAnalyzeRemediations(message);
       return;
     }
     if (message.type === 'cancel-remediation-analysis') {
@@ -1074,6 +1074,11 @@ export class DashboardPanel {
     this.platform.openExternal(url);
   }
 
+  private reconcileControllerRoots(candidates: readonly DiscoveredProject[]): void {
+    this.controller?.reconcileProjectRoots(new Set(candidates.map(candidate =>
+      path.join(candidate.folder.path, candidate.dir))));
+  }
+
   /**
    * Re-discovers every candidate and shows the picker, regardless of how
    * many candidates existed the last time discovery ran, so a project
@@ -1096,6 +1101,8 @@ export class DashboardPanel {
     performance.finish({ candidates: candidates.length });
     if (this.disposed) return;
     this.candidateCount = candidates.length;
+
+    this.reconcileControllerRoots(candidates);
 
     if (candidates.length === 0) {
       // Extremely unlikely (a project is already selected), but handled the
@@ -1172,6 +1179,7 @@ export class DashboardPanel {
     }
     performance.finish({ candidates: candidates.length });
     if (this.disposed) return;
+    this.reconcileControllerRoots(candidates);
     const target = findProjectForManifest(candidates, manifestPath);
     if (target === undefined) {
       this.platform.showInformationMessage(OPEN_MANIFEST_UNAVAILABLE_MESSAGE);
@@ -1274,7 +1282,10 @@ export class DashboardPanel {
     const revalidation =
       controllerBeforeReload === undefined
         ? undefined
-        : { controller: controllerBeforeReload, generationAtReadStart: controllerBeforeReload.beginRevalidation() };
+        : {
+            controller: controllerBeforeReload,
+            generationAtReadStart: controllerBeforeReload.beginRevalidation(path.join(candidate.folder.path, candidate.dir)),
+          };
     revalidation?.controller.announceRevalidating(this.sink);
 
     this.reloadGeneration += 1;
@@ -1288,54 +1299,56 @@ export class DashboardPanel {
     this.fileChangeCoordinator.discardPending();
 
     let project: ResolvedProject;
-    try {
-      project = await this.loadProjectMeasured(candidate, 'Packageawy project reload', options.strict);
-    } catch (cause) {
-      if (!(cause instanceof SyntaxError) && !(options.strict ? isExpectedFsError(cause, 'read') : isFsError(cause))) throw cause;
-      if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
-      const error = toProtocolError(cause);
-      if (options.clearOnLoadFailure === true) {
-        this.clearCurrentProjectForBranch(
-          'The selected package.json disappeared while this branch was loading. Select a project and try again.',
-          'ProjectChangedDuringBranchLoadError'
-        );
+    let controller: DashboardController;
+    for (;;) {
+      try {
+        project = await this.loadProjectMeasured(candidate, 'Packageawy project reload', options.strict);
+      } catch (cause) {
+        if (!(cause instanceof SyntaxError) && !(options.strict ? isExpectedFsError(cause, 'read') : isFsError(cause))) throw cause;
+        if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
+        const error = toProtocolError(cause);
+        if (options.clearOnLoadFailure === true) {
+          this.clearCurrentProjectForBranch(
+            'The selected package.json disappeared while this branch was loading. Select a project and try again.',
+            'ProjectChangedDuringBranchLoadError'
+          );
+          return { status: 'failed', error };
+        }
+        this.sink.postMessage({ status: 'fatal-error', error });
+        if (this.controller?.lastResultEvidence() === null) this.clearCurrentProject();
         return { status: 'failed', error };
       }
-      this.sink.postMessage({ status: 'fatal-error', error });
-      if (this.controller?.lastResultEvidence() === null) this.clearCurrentProject();
-      return { status: 'failed', error };
+      if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
+      const projectInfo = toProjectInfo(candidate);
+      const canChangeProject = this.candidateCount > 1;
+      const cacheKey = this.cacheKeyFor(candidate, project);
+      if (revalidation === undefined) {
+        controller = this.buildController(project, projectInfo, canChangeProject, cacheKey);
+        this.controller = controller;
+      } else {
+        controller = revalidation.controller;
+        const update = controller.updateProjectSnapshot(
+          { ...project, projectInfo, canChangeProject, cacheKey },
+          revalidation.generationAtReadStart
+        );
+        if (!update.structurallyCurrent) {
+          // Keep the old selection and its watchers until the target's disk
+          // inputs are accepted. A newer read of this root needs a reread,
+          // even when no target watcher exists yet to queue one for us.
+          revalidation.generationAtReadStart = controller.beginRevalidation(project.root);
+          continue;
+        }
+      }
+      break;
     }
-    if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
     this.selectedProject = candidate;
-
-    const projectInfo = toProjectInfo(candidate);
-    const canChangeProject = this.candidateCount > 1;
-    const cacheKey = this.cacheKeyFor(candidate, project);
     this.setupFileWatchers(candidate, path.join(project.root, 'package.json'));
     this.selectedLockfilePath = project.lockfilePath;
 
     if (!sameProjectReload) {
-      // The watchers installed just above are now live for `candidate`, but
-      // anything pending right now, before any further await, can only be
-      // a leftover from the old (pre-switch) watchers: nothing has had a
-      // chance to fire on the new ones yet. Discard it here, synchronously,
-      // rather than at the end of this method: waiting would let it also
-      // catch a genuine new-project event that the new watchers queue
-      // while the scan below is in flight, discarding a legitimate
-      // reload instead of applying it.
+      // Before the next await, pending events can only belong to the old
+      // watchers. The accepted snapshot now owns the new selection.
       this.fileChangeCoordinator.discardPending();
-    }
-
-    let controller: DashboardController;
-    if (revalidation === undefined) {
-      controller = this.buildController(project, projectInfo, canChangeProject, cacheKey);
-      this.controller = controller;
-    } else {
-      controller = revalidation.controller;
-      controller.updateProjectSnapshot(
-        { ...project, projectInfo, canChangeProject, cacheKey },
-        revalidation.generationAtReadStart
-      );
     }
     // A same-project manual/post-action refresh already has useful rows on
     // screen. Keep them visible (marked stale by the revalidation announcement
@@ -1914,6 +1927,7 @@ export class DashboardPanel {
     // Claim this exact HEAD before any panel mutation or QuickPick. A newer
     // HEAD makes the claim fail and leaves all current state untouched.
     if (!this.branchChangeCoordinator.claim(headGeneration)) return;
+    this.reconcileControllerRoots(candidates);
     this.candidateCount = candidates.length;
 
     if (decision.kind === 'none') {

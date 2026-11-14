@@ -7,7 +7,7 @@ const modal = readFileSync(new URL('../webview/src/components/ManageDependencyMo
 const panel = readFileSync(new URL('../src/host/dashboardPanel.ts', import.meta.url), 'utf8');
 
 test('upgrade result keeps Manage context, patches local facts, and preserves usage during enrichment', () => {
-  const resultBranch = app.slice(app.indexOf("if (incoming.status === 'upgrade-result')"), app.indexOf("if (incoming.status === 'upgrade-error')"));
+  const resultBranch = app.slice(app.indexOf("case 'upgrade-result':"), app.indexOf("case 'upgrade-error':"));
   assert.match(resultBranch, /applyUpgradeResultLocalFacts/);
   assert.doesNotMatch(resultBranch, /setManageRow\(/);
   assert.doesNotMatch(resultBranch, /setManageTab\(/);
@@ -38,12 +38,12 @@ test('post-mutation panel suppresses only the pre-read watcher burst and uses lo
 
 test('only a correlated enrichment terminal, never an arbitrary dashboard snapshot, ends refreshing', () => {
   const terminalBranch = app.slice(
-    app.indexOf("if (incoming.status === 'upgrade-enrichment-result')"),
-    app.indexOf("if (incoming.status === 'upgrade-error')")
+    app.indexOf("case 'upgrade-enrichment-result':"),
+    app.indexOf("case 'upgrade-error':")
   );
   assert.match(terminalBranch, /applyUpgradeEnrichmentTerminal/);
   assert.match(terminalBranch, /pendingResult\.refreshId === incoming\.refreshId/);
-  const snapshotBranch = app.slice(app.indexOf('// Any other message is a dashboard snapshot'), app.indexOf('activeUpgradeRef.current = null', app.indexOf('// Any other message is a dashboard snapshot')));
+  const snapshotBranch = app.slice(app.indexOf('// A dashboard snapshot is not necessarily a change'), app.indexOf('activeUpgradeRef.current = null', app.indexOf('// A dashboard snapshot is not necessarily a change')));
   assert.doesNotMatch(snapshotBranch, /refreshingDerivedData: false/);
   assert.match(snapshotBranch, /completedDashboardSnapshotAbandonsUpgradeEnrichment/);
   assert.match(snapshotBranch, /setUpgradeResult\(null\)/);

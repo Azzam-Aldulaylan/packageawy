@@ -219,6 +219,8 @@ export class DashboardController {
   private lastResult: ScanSnapshot | undefined;
   /** Fingerprint captured from the exact controller inputs that produced `lastResult`. */
   private lastResultSourceFingerprint: ProjectSourceFingerprint | undefined;
+  /** Disk inputs that produced the retained rows, including in-memory ready replays. */
+  private lastResultDiskReadGeneration: number | undefined;
   private lastGeneratedAt: string | undefined;
   private inFlight: AbortController | undefined;
   private startupTask: StartupTask | undefined;
@@ -243,9 +245,8 @@ export class DashboardController {
   private declaredDependencies: DeclaredDependency[];
   /**
    * Monotonically increasing: the revalidation generation. Bumped by
-   * `beginRevalidation()`, the single explicit entry point for "eligibility
-   * must not be trusted from this point forward until a matching
-   * revalidation proves otherwise": a watcher event (called by the panel
+   * `invalidateScan()` whenever derived authority must be revoked:
+   * a watcher event (called by the panel
    * before its debounce, not after), a manual or structural reload, and a
    * project snapshot replacement. Timer/cache-age refreshes deliberately do
    * not advance this generation because age is not evidence of source
@@ -253,36 +254,29 @@ export class DashboardController {
    * half. See `isEligible`.
    */
   private revalidationGeneration = 0;
-  /**
-   * The `revalidationGeneration` value as of the last time `this.options`
-   * were confirmed to accurately describe reality: set at construction, by
-   * `updateProjectSnapshot` (an actual fresh disk read), and re-confirmed
-   * forward by a structurally-invalidating `run()` every time it grants
-   * eligibility (a granted scan proves `this.options` were still accurate
-   * as of that generation). `handleReady`'s fingerprint-matching hydration
-   * branch grants eligibility too, but never needs to touch this field
-   * itself: its precondition (`optionsGeneration ===
-   * revalidationGeneration`) is already required to hold before it grants
-   * anything, so there is nothing left to advance.
-   *
-   * `beginRevalidation()` alone does not touch `this.options` or this field:
-   * it fires the instant a watcher event arrives (or a reload attempt
-   * begins), before any disk read has happened, so right after it,
-   * `optionsGeneration < revalidationGeneration` precisely captures "we know
-   * the source may have changed, but `this.options` still holds the
-   * pre-change content." Eligibility must never be granted while that gap
-   * exists: a cold hydration (or a background-timer-triggered `run()` that
-   * races an already-pending, not-yet-applied file-change reload) would
-   * otherwise validate stale in-memory options against a
-   * `revalidationGeneration` that only coincidentally matches. See
-   * `isEligible`/`handleReady`/`run`.
-   */
+  /** Only a new disk read or file invalidation for the same root supersedes a disk read. */
+  private readonly diskReadGenerations = new Map<string, number>();
+  /** Never reuse a token after a disappeared root is rediscovered. */
+  private nextDiskReadGeneration = 0;
+
+  private get diskReadGeneration(): number {
+    return this.diskReadGenerations.get(this.options.root) ?? 0;
+  }
+  /** Generation at the last disk confirmation or completed eligible scan. */
   private optionsGeneration = 0;
+  /**
+   * Disk-read token supplying the options. Scans do not advance it, so a
+   * scan can revoke derived authority without invalidating confirmed inputs.
+   */
+  private scanInputsGeneration = 0;
+  /** Panel generation of the disk read supplying the current options. */
+  private optionsDiskGeneration: number | undefined;
   /** The `revalidationGeneration` `lastResult` was last validated against, or `undefined` if it never was: `undefined` is the explicit "revalidation in progress / not yet validated" state `validateUpgradeRequest` checks. */
   private eligibleGeneration: number | undefined;
 
   constructor(options: DashboardControllerOptions) {
     this.options = options;
+    this.optionsDiskGeneration = options.scanGeneration?.();
     this.updateAdvisories = new UpdateAdvisories(options.httpClient, () => this.publicAdvisoryCheckEnabled(),
       () => this.options.log?.(diagnosticLine({ area: 'version-advisories', code: 'UNKNOWN' })));
     this.declaredDependencies = DashboardController.parseDeclaredDependencies(options.manifestText);
@@ -364,47 +358,20 @@ export class DashboardController {
    * untouched, so ETag caching and persisted cache lookups keep working across
    * reloads.
    *
-   * @param generationAtReadStart: the caller's `beginRevalidation()`
-   *   return value, captured before the disk read that produced `snapshot`
-   *   started (not right before calling this method: before the `await`).
-   *   Required so this method can tell whether anything ELSE called
-   *   `beginRevalidation()` (a watcher event, an independent reload attempt)
-   *   while that read was in flight. If something did, `snapshot` may
-   *   already be stale relative to it: the caller's disk read could have
-   *   started before, and captured content from before, whatever change
-   *   that other call was reacting to. `snapshot` is still applied either
-   *   way (still worth showing: newer than what it replaces), but
-   *   `optionsGeneration` is only advanced (marking `this.options` as
-   *   confirmed current) when `generationAtReadStart` still matches
-   *   `revalidationGeneration` right now: proving nothing else landed in
-   *   between. Getting this wrong is exactly how a stale reload can go on
-   *   to grant Upgrade eligibility for content that predates a
-   *   since-known file change: `run()`'s grant check trusts
-   *   `optionsGeneration` completely, so if this method advanced it
-   *   unconditionally (to "whatever `revalidationGeneration` happens to be
-   *   right now"), a scan of `snapshot`'s stale content could still pass
-   *   that check purely because a later watcher event's bump got
-   *   attributed to this update instead of the change it actually
-   *   described.
+   * @param generationAtReadStart: the caller's `beginRevalidation(snapshot.root)` token,
+   * captured before reading disk. Scans only invalidate derived rows, so they
+   * cannot supersede this read. A newer read or watcher event can supersede it,
+   * in which case it must not replace newer inputs or restore their authority.
    */
   updateProjectSnapshot(snapshot: ProjectSnapshot, generationAtReadStart: number): ProjectSnapshotUpdateResult {
-    const optionsAreStillConfirmedCurrent = generationAtReadStart === this.revalidationGeneration;
+    if (generationAtReadStart !== this.diskReadGenerations.get(snapshot.root)) return { structurallyCurrent: false };
     this.options = { ...this.options, ...snapshot };
     this.declaredDependencies = DashboardController.parseDeclaredDependencies(snapshot.manifestText);
-    this.beginRevalidation();
-    if (optionsAreStillConfirmedCurrent) {
-      // Nothing called beginRevalidation() between when the disk read that
-      // produced `snapshot` started and right now: `this.options` really
-      // do reflect the freshest known state, so it's safe to mark them
-      // confirmed current as of this update's generation.
-      this.optionsGeneration = this.revalidationGeneration;
-    }
-    // else: something else landed while the read was in flight (its own
-    // beginRevalidation() call already left revalidationGeneration ahead of
-    // optionsGeneration): `snapshot` is applied for display, but
-    // optionsGeneration is deliberately left where it was, so a subsequent
-    // run() cannot mistake this update for "fully confirmed current."
-    return { structurallyCurrent: optionsAreStillConfirmedCurrent };
+    this.invalidateScan();
+    this.optionsGeneration = this.revalidationGeneration;
+    this.scanInputsGeneration = this.diskReadGeneration;
+    this.optionsDiskGeneration = this.options.scanGeneration?.();
+    return { structurallyCurrent: true };
   }
 
   /**
@@ -418,20 +385,40 @@ export class DashboardController {
    * reload it schedules both call this for what is conceptually the same
    * change.
    *
-   * Called from three kinds of places: the panel's raw watcher-event hook
-   * (before its debounce even runs: the debounce window is exactly the
-   * gap where the file has already changed on disk but `lastResult` still
-   * reflects the old content), the start of every reload attempt
-   * (`reloadAndScan`, each drained `reloadAfterFileChange` iteration, and a
-   * structural `run()`), and `updateProjectSnapshot` (a project reload must
-   * never grant eligibility: routing it through here guarantees that by
-   * construction, since this method only ever revokes).
+   * Called by the panel before raw watcher debounce and before every disk
+   * read, including drained watcher reloads and post-mutation reads. Scans
+   * and snapshot application use `invalidateScan` instead, because neither
+   * is evidence of a newer disk read or changed project files.
    *
-   * Returns the new generation for callers that need to correlate their own
-   * specific revalidation attempt against a later one superseding it
-   * (see `run()`). External callers (the panel) are free to ignore it.
+   * Returns the disk-read token. Only a newer read or project-file
+   * invalidation for the same root advances it. Pass the target root when
+   * switching projects. Watchers default to the currently selected root.
+   * Starting a scan never invalidates a disk read.
    */
-  beginRevalidation(): number {
+  beginRevalidation(root = this.options.root): number {
+    // Old watchers still belong to the selected root while a switch reads
+    // another project. They must not supersede that other project's read.
+    const generation = ++this.nextDiskReadGeneration;
+    this.diskReadGenerations.set(root, generation);
+    this.invalidateScan();
+    return generation;
+  }
+
+  /** Discovery bounds retained roots and revokes reads of disappeared projects. */
+  reconcileProjectRoots(roots: ReadonlySet<string>): void {
+    for (const root of this.diskReadGenerations.keys()) {
+      if (!roots.has(root)) this.diskReadGenerations.delete(root);
+    }
+    // Even an initial snapshot with token zero must stay revoked after removal.
+    // The absent map entry also reads as zero, so invalidate its inputs explicitly.
+    if (!roots.has(this.options.root)) {
+      this.scanInputsGeneration = -1;
+      this.invalidateScan();
+    }
+  }
+
+  /** Revoke derived authority without superseding an in-flight disk read. */
+  private invalidateScan(): number {
     this.updateAdvisories.clear();
     this.updateContext = undefined;
     this.revalidationGeneration += 1;
@@ -717,6 +704,7 @@ export class DashboardController {
     // entry written before they were persisted replay the same banner.
     this.lastResult = { ...cached, ...this.projectFacts() };
     this.lastResultSourceFingerprint = cached.sourceFingerprint;
+    this.lastResultDiskReadGeneration = this.scanInputsGeneration;
     this.lastGeneratedAt = cached.generatedAt;
   }
 
@@ -806,6 +794,7 @@ export class DashboardController {
     const freshness = classifyFreshness(this.lastGeneratedAt, this.options.ttlMinutesProvider(), this.now());
     endFreshness({ freshness });
     cachePerformance.finish({ hit: true, freshness });
+    const rowsMatchDiskRead = this.lastResultDiskReadGeneration === this.diskReadGeneration;
     if (hasCompleteCoreData(cached)) {
       // Complete, fingerprint-matching data (hydrateFromPersistedCache already
       // deleted and refused to hydrate anything that didn't match) may
@@ -820,16 +809,17 @@ export class DashboardController {
       // first `ready` arrived: all before the debounced reload ran), that
       // match is against content already known to be stale, and must not
       // grant eligibility.
-      if (this.optionsGeneration === this.revalidationGeneration) {
+      if (rowsMatchDiskRead && this.optionsGeneration === this.revalidationGeneration) {
         this.eligibleGeneration = this.revalidationGeneration;
       }
-      if (this.updateContext === undefined && this.optionsGeneration === this.revalidationGeneration) {
+      if (rowsMatchDiskRead && this.updateContext === undefined && this.optionsGeneration === this.revalidationGeneration) {
         this.updateContext = this.makeUpdateContext();
       }
       this.postSnapshot(sink,
         toHostToWebviewMessage(
           cached,
-          { isEmpty: cached.rows.length === 0, isStale: false },
+          { isEmpty: cached.rows.length === 0, isStale: !rowsMatchDiskRead || this.optionsGeneration !== this.revalidationGeneration ||
+            this.optionsDiskGeneration !== this.options.scanGeneration?.() },
           this.options.projectInfo,
           this.options.canChangeProject,
           this.options.buildInfo,
@@ -839,10 +829,9 @@ export class DashboardController {
       );
       this.enrichOfferedVersions(sink);
       if (startup?.running) return startup.promise;
-      if (freshness !== 'fresh') {
-        // Age only affects network/cache freshness. The source fingerprint
-        // already matched locally-authoritative input, so keep the snapshot
-        // usable while its derived data is refreshed in the background.
+      if ((!rowsMatchDiskRead && this.scanInputsGeneration === this.diskReadGeneration) || freshness !== 'fresh') {
+        // A confirmed newer read needs new rows even if the retained rows are
+        // young. Otherwise only age schedules this background enrichment.
         return this.run(sink, 'time');
       }
       return;
@@ -965,7 +954,7 @@ export class DashboardController {
     strict = false
   ): Promise<BackgroundRefreshOutcome> {
     if (this.disposed) return { status: 'cancelled' };
-    const scanGeneration = this.options.scanGeneration?.();
+    const scanGeneration = this.optionsDiskGeneration;
     this.scanId += 1;
     this.updateContext = undefined;
     this.updateAdvisories.clear(true);
@@ -981,41 +970,22 @@ export class DashboardController {
         : reason === 'local-mutation' && this.optionsGeneration !== this.revalidationGeneration
           ? 'structural'
           : reason;
-    // Structural runs revoke authority. Time-only runs preserve existing
-    // authority, while local-mutation waits to grant it on success.
-    // `generationBeforeThisRun` is captured
-    // before a structural run's `beginRevalidation()` call: it lets
-    // completion tell apart "nothing else was pending when I started, my own bump is the
-    // only thing that happened" from "something else had already called
-    // beginRevalidation() and `this.options` never caught up to it before I
-    // started scanning against them" (see the `optionsGeneration` check
-    // below): a plain equality check against `beginRevalidation()`'s own
-    // return value can't make that distinction, since this run's call
-    // unconditionally advances past whatever `optionsGeneration` says,
-    // every single time, even for the very first scan a fresh controller
-    // ever runs.
-    //
-    // `generationAtStart` is the post-bump structural generation, or the
-    // unchanged generation for a time-only run. Completion compares it with
-    // `this.revalidationGeneration`, so it can tell whether the
-    // source changed again (a watcher event, a project reload, another
-    // call to this same method) while this scan was still running. Not the
-    // same thing `controller.signal.aborted` guards below: that only catches
-    // an explicit newer `run()` call superseding this one. A bare
-    // `beginRevalidation()` call (e.g. from a watcher event) does not itself
-    // start a new run, and this scan's rows can still finish and be worth
-    // showing in a structural run. A time-only result is discarded when
-    // the generation moves so it cannot overwrite a hard-stale signal.
-    const generationBeforeThisRun = this.revalidationGeneration;
+    // Structural scans revoke derived authority. Disk inputs stay confirmed
+    // only if no reload or watcher invalidated them before this scan began.
+    const diskReadGeneration = this.scanInputsGeneration;
+    const sourceWasCurrent = diskReadGeneration === this.diskReadGeneration;
     const generationAtStart =
-      effectiveReason === 'structural' ? this.beginRevalidation() : this.revalidationGeneration;
+      effectiveReason === 'structural' ? this.invalidateScan() : this.revalidationGeneration;
 
     // A newer run supersedes an older one outright. Without this, two runs race
     // to post and the slower (older) one can land last and win.
     this.inFlight?.abort();
     const controller = new AbortController();
     this.inFlight = controller;
+    // Scanning cannot make older disk inputs current. This covers every run,
+    // including a structural scan started while a newer disk read is pending.
     const superseded = (): boolean => controller.signal.aborted || this.disposed ||
+      !sourceWasCurrent || generationAtStart !== this.revalidationGeneration ||
       scanGeneration !== this.options.scanGeneration?.();
     const destination = sink;
     sink = { postMessage: message => { if (!superseded()) destination.postMessage(message); } };
@@ -1027,7 +997,7 @@ export class DashboardController {
     // duplicate if an earlier call site (a watcher event, reloadAndScan's own
     // start) already announced this same revalidation. See
     // `announceRevalidating`'s doc.
-    if (effectiveReason === 'structural') this.announceRevalidating(sink);
+    if (effectiveReason === 'structural') this.announceRevalidating(destination);
 
     const scanSource: ScanSource = {
       cacheKey: this.options.cacheKey,
@@ -1074,42 +1044,19 @@ export class DashboardController {
       if (superseded()) {
         return { status: this.disposed ? 'cancelled' : 'superseded' };
       }
-      // A watcher/project mutation that lands during an age-only refresh
-      // supersedes it. Do not let its pre-mutation result overwrite the
-      // structural stale signal or the authoritative reload that follows.
-      if (effectiveReason !== 'structural' && generationAtStart !== this.revalidationGeneration) {
-        return { status: 'superseded' };
-      }
-
       const generatedAt = new Date().toISOString();
       const snapshot = toScanSnapshot({ ...result, ...scanSource.projectFacts });
       this.lastResult = snapshot;
       this.lastResultSourceFingerprint = scanSource.sourceFingerprint;
+      this.lastResultDiskReadGeneration = diskReadGeneration;
       this.lastGeneratedAt = generatedAt;
+      if (superseded()) return { status: 'superseded' };
       this.persistSnapshot(snapshot, generatedAt, scanSource, performance);
-      // Only a scan whose source didn't change out from under it restores
-      // Upgrade eligibility: if `beginRevalidation()` was called again
-      // (`revalidationGeneration` has moved) since this run started, the
-      // rows above are still worth showing (newer than what was there
-      // before), but a fresh reload for the even newer state is already on
-      // its way (a watcher event that arrived mid-scan, or an independent
-      // reload attempt) and must be the one to grant eligibility, not this
-      // now-superseded scan. The `optionsGeneration` check catches the same
-      // hazard one step earlier: this scan's `buildOptions` were captured
-      // from `this.options` above, so if a bump had already landed before
-      // this run even started (checked against `generationBeforeThisRun`,
-      // not `generationAtStart`: this run's own `beginRevalidation()` call
-      // always advances past whatever `optionsGeneration` says, even for a
-      // perfectly ordinary first scan, so comparing against the post-bump
-      // value would reject every run unconditionally) without `this.options`
-      // catching up to it yet (a scan racing an already-pending,
-      // not-yet-applied file-change reload), `this.options`, and
-      // therefore this whole scan: was stale from the moment it began,
-      // regardless of what happened afterward.
+      // Only rows from the latest confirmed disk read can grant authority.
       if (
         hasCompleteCoreData(snapshot) &&
         generationAtStart === this.revalidationGeneration &&
-        this.optionsGeneration === generationBeforeThisRun
+        sourceWasCurrent
       ) {
         this.eligibleGeneration = generationAtStart;
         // A granted structural scan is itself a re-confirmation that
@@ -1118,9 +1065,10 @@ export class DashboardController {
         this.optionsGeneration = generationAtStart;
       }
       if (generationAtStart === this.revalidationGeneration &&
-          (this.optionsGeneration === generationBeforeThisRun || this.optionsGeneration === generationAtStart)) {
+          this.scanInputsGeneration === this.diskReadGeneration) {
         this.updateContext = this.makeUpdateContext();
       }
+      if (superseded()) return { status: 'superseded' };
       this.postSnapshot(sink,
         toHostToWebviewMessage(
           snapshot,

@@ -53,8 +53,6 @@ export function failedRequestSettlement(
       return { status: 'remove-error', package: changeTarget ?? 'unknown', error: changeFailed };
     case 'analyze-remediation':
       return { status: 'remediation-error', package: message.package, error: failed };
-    case 'analyze-remediations':
-      return { status: 'remediation-batch-error', error: failed };
     case 'confirm-remediation':
     case 'retry-remediation':
       return changeTarget === undefined

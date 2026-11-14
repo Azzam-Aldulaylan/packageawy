@@ -186,7 +186,7 @@ const latestOf = (message) => message.data.rows[0].latest;
  * their explicitly-captured (and deliberately stale) token.
  */
 function updateProjectSnapshot(controller, snapshot) {
-  controller.updateProjectSnapshot(snapshot, controller.beginRevalidation());
+  controller.updateProjectSnapshot(snapshot, controller.beginRevalidation(snapshot.root));
 }
 
 // --------------------------------------------------------------- ready
@@ -1138,9 +1138,8 @@ for (const [change, changedOptions] of [
       assert.equal(changedKeyEntry, undefined, 'the superseded scan does not write under the new cache key');
     }
     assert.equal(reopened.validateUpgradeRequest(request).ok, false, 'failed revalidation cannot authorize the old target');
-    assert.equal(scanSink.posted.at(-1).data.packageManager, 'npm', 'the completed scan keeps its captured package manager');
-    assert.equal(scanSink.posted.at(-1).data.lockfileMissing, undefined, 'the completed scan keeps its captured lockfile facts');
-    assert.deepEqual(controller.validateUpgradeRequest(request), { ok: false, reason: 'revalidating' });
+    assert.deepEqual(scanSink.statuses, ['loading'], 'a superseded scan never publishes its obsolete snapshot');
+    assert.deepEqual(controller.validateUpgradeRequest(request), { ok: false, reason: 'no-scan-result' });
   });
 }
 
@@ -1174,7 +1173,7 @@ test('a project facts-only change mid-scan skips persistence with the same finge
   assert.equal(changedSource.cacheKey, source.cacheKey);
   assert.deepEqual(computeSourceFingerprint(controller.upgradeSource), persisted.sourceFingerprint);
   assert.equal(controller.upgradeSource.lockfileName, null, 'current project evidence reports a missing lockfile');
-  assert.equal(sink.posted.at(-1).data.lockfileMissing, undefined, 'the scan keeps its captured lockfile fact');
+  assert.deepEqual(sink.statuses, ['loading'], 'a superseded scan never publishes captured facts');
   assert.equal(projectCacheStore.get(source.cacheKey), persisted, 'the facts-only change prevents replacing the cache entry');
 });
 
@@ -1754,12 +1753,12 @@ test('event B (a fresh beginRevalidation()) arriving after reload A has already 
   // its result. `run()`'s drained/queued follow-up for B has not run
   // yet either, only the generation bump itself has landed so far.
   controller.beginRevalidation();
-  await reloadA; // A finishes: completes successfully, but for the pre-B state
+  assert.equal((await reloadA).status, 'superseded');
 
   assert.deepEqual(
     controller.validateUpgradeRequest({ package: 'clean-pkg', target: '1.0.1' }),
-    { ok: false, reason: 'revalidating' },
-    'the scan succeeded, but for a source state that is already known to be stale, it must not grant eligibility'
+    { ok: false, reason: 'no-scan-result' },
+    'the obsolete scan never creates an authoritative result'
   );
 });
 
@@ -1855,7 +1854,7 @@ test('a cold controller cannot be hydrated into eligibility if a watcher event b
   const sink = recordingSink();
   await controller.handleReady(sink);
 
-  assert.deepEqual(sink.statuses, ['ready'], 'sanity check: the fingerprint still matched construction-time options, so it still hydrates and renders');
+  assert.deepEqual(sink.statuses, ['stale'], 'matching construction-time inputs cannot make an invalidated snapshot ready');
   assert.deepEqual(
     controller.validateUpgradeRequest({ package: 'clean-pkg', target: '1.0.1' }),
     { ok: false, reason: 'revalidating' },
@@ -2115,4 +2114,27 @@ test('a pnpm project with a lockfile keeps suppressing the audit warning', async
   assert.equal(data.auditUnavailable, undefined);
   assert.equal(data.lockfileMissing, undefined);
   assert.equal(partialResultsText(data), null);
+});
+
+test('ready during a structural scan cannot restore cached-row eligibility before that scan completes', async () => {
+  const client = staticClient('1.0.1');
+  const controller = makeController(client, { ttlMinutesProvider: () => 30 });
+  await controller.handleReady(recordingSink());
+  assert.equal(controller.isEligible(), true);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  controller.options.httpClient = {
+    async get(...args) { await gate; return client.get(...args); },
+    async post(...args) { await gate; return client.post(...args); },
+  };
+  const refresh = controller.handleRefresh(recordingSink());
+  try {
+    const replay = recordingSink();
+    await controller.handleReady(replay);
+    assert.equal(controller.isEligible(), false, 'disk validity alone cannot authorize cached rows during a structural scan');
+    assert.deepEqual(replay.statuses, ['stale']);
+  } finally {
+    release(); await refresh;
+  }
+  assert.equal(controller.isEligible(), true);
 });

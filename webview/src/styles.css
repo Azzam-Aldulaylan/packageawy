@@ -199,9 +199,21 @@ button {
   text-align: start;
 }
 
+/* A protocol mismatch must stay visible above any open review dialog. */
+.banner--protocol {
+  position: fixed;
+  inset-block-start: 1rem;
+  inset-inline: 1rem;
+  z-index: 200;
+}
+
 .banner--error {
   border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-editorError-foreground));
   background: var(--vscode-inputValidation-errorBackground, transparent);
+}
+
+.banner--error.banner--protocol {
+  background: var(--vscode-editor-background);
 }
 
 .banner__icon {

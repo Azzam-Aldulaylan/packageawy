@@ -415,7 +415,7 @@ test('Retry cancels the request it replaces, then reloads with a new request id'
   assert.match(retry, /setTargetReloadCount\(\(count\) => count \+ 1\)/, 'the effect does the cancel and reload');
   const effect = app.slice(app.indexOf('// A full packument is fetched only'), app.indexOf('const retryUpgradeTargets'));
   assert.match(effect, /requestId = `targets-\$\{\+\+nextTargetRequestIdRef\.current\}`/);
-  assert.match(effect, /\[data\?\.generatedAt, manageRow, message\?\.status, targetReloadCount\]/);
+  assert.match(effect, /\[data\?\.generatedAt, data\?\.project.id, data\?\.project.manifestPath, manageRow, message\?\.status, targetReloadCount\]/);
 });
 
 test('closing Manage or switching package cancels the previous request, answered or not, before anything else', () => {
