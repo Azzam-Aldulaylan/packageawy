@@ -8267,14 +8267,6 @@ button {
   font-size: 0.82em;
 }
 
-.smart-cleanup-execution progress {
-  width: min(28rem, 90%);
-  height: 0.3rem;
-  border: 0;
-  color: var(--vscode-progressBar-background);
-  background: var(--vscode-progressBar-background, transparent);
-}
-
 .smart-cleanup-results__headline {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

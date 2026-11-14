@@ -1090,6 +1090,16 @@ test('a malformed upgrade-error message is rejected', () => {
   }
 });
 
+test('upgrade errors accept request and analysis correlation but reject malformed ids', () => {
+  const error = { status: 'upgrade-error', package: 'react', error: { code: 'UNKNOWN', message: 'Upgrade failed.' } };
+  for (const key of ['requestId', 'analysisId']) {
+    assert.equal(isHostToWebviewMessage({ ...error, [key]: 'upgrade-1' }), true);
+    for (const value of ['', null, 1, {}]) {
+      assert.equal(isHostToWebviewMessage({ ...error, [key]: value }), false);
+    }
+  }
+});
+
 test('the optional data fields are accepted when present and correct', () => {
   assert.equal(
     isHostToWebviewMessage({
@@ -1594,6 +1604,9 @@ test('analyze-cleanup and cancel-usage-analysis carry no payload', () => {
 });
 
 test('Smart Cleanup metadata requests require a correlation id and no forged payload', () => {
+  // Execution cancellation is not supported. Read-only analysis cancellation remains valid.
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-smart-cleanup' }), false);
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-smart-cleanup', analysisId: 'cleanup-1' }), false);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-smart-cleanup-metadata', requestId: 'cleanup-1' }), true);
   assert.equal(isWebviewToHostMessage({ type: 'cancel-smart-cleanup-metadata', requestId: 'cleanup-1' }), true);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-smart-cleanup-metadata' }), false);

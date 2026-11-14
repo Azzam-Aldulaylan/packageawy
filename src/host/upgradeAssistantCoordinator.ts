@@ -663,6 +663,8 @@ export class UpgradeAssistantCoordinator {
   private pendingRemovalAnalysis: PendingRemovalAnalysis | undefined;
   /** The package a handleAnalyzeUpgrade call is currently in flight for, or null: the target `cancel-upgrade { analysisId: null }` refers to, since no analysisId exists yet at that point. */
   private pendingAnalyzePackage: string | null = null;
+  private pendingUpgradeRequestId: string | undefined;
+  private readonly upgradeAnalysisIds = new WeakMap<OwnerHandle, string>();
   /** Set by a cancel-upgrade with `analysisId: null` that arrived mid-analysis: handleAnalyzeUpgrade checks this right before storing/posting its result and drops it instead. */
   private cancelRequestedFor: string | null = null;
   /**
@@ -893,10 +895,10 @@ export class UpgradeAssistantCoordinator {
     }
   }
 
-  private async withAdmission(status: 'upgrade-error' | 'remove-error' | 'remediation-error', packageName: string, run: () => Promise<void>): Promise<void> {
+  private async withAdmission(status: 'upgrade-error' | 'remove-error' | 'remediation-error', packageName: string, run: () => Promise<void>, requestId?: string): Promise<void> {
     const done = this.mutationLocks.trackPending();
     if (done === undefined) {
-      this.options.sink.postMessage({ status, package: packageName, error: { code: 'OPERATION_IN_PROGRESS',
+      this.options.sink.postMessage({ status, ...(requestId === undefined ? {} : { requestId }), package: packageName, error: { code: 'OPERATION_IN_PROGRESS',
         message: this.mutationLocks.restartRequired ? RECOVERY_MESSAGES.restartRequired : RECOVERY_MESSAGES.restart } });
       return;
     }
@@ -912,11 +914,15 @@ export class UpgradeAssistantCoordinator {
     return this.reservation.reserve(packageName, this.currentMutationRootKey(strict), strict);
   }
 
-  private reserveMutation(packageName: string, status: 'upgrade-error' | 'remove-error' | 'remediation-error'): OwnerHandle | ReservationRefusal | undefined {
-    try { return this.reserve(packageName, true); }
+  private reserveMutation(packageName: string, status: 'upgrade-error' | 'remove-error' | 'remediation-error', analysisId?: string): OwnerHandle | ReservationRefusal | undefined {
+    try {
+      const handle = this.reserve(packageName, true);
+      if (handle.ok && analysisId !== undefined) this.upgradeAnalysisIds.set(handle, analysisId);
+      return handle;
+    }
     catch (cause) {
       this.logChangeFailure(cause);
-      if (!this.options.isDisposed()) this.options.sink.postMessage({ status, package: packageName, error: toProtocolError(cause) });
+      if (!this.options.isDisposed()) this.options.sink.postMessage({ status, ...(analysisId === undefined ? {} : { analysisId }), package: packageName, error: toProtocolError(cause) });
       return undefined;
     }
   }
@@ -986,7 +992,8 @@ export class UpgradeAssistantCoordinator {
       if (!this.options.isDisposed()) {
         const operation = handle.journal?.data.operation;
         const status = operation === 'upgrade' ? 'upgrade-error' : operation === 'remediation' ? 'remediation-error' : 'remove-error';
-        this.options.sink.postMessage({ status, package: handle.label, error: { code: 'OUTCOME_UNKNOWN', message: RECOVERY_MESSAGES.blocked } });
+        const analysisId = this.upgradeAnalysisIds.get(handle);
+        this.options.sink.postMessage({ status, ...(analysisId === undefined ? {} : { analysisId }), package: handle.label, error: { code: 'OUTCOME_UNKNOWN', message: RECOVERY_MESSAGES.blocked } });
       }
     } finally {
       // Recovery delivery is attempted even when the request's view failed.
@@ -1080,6 +1087,7 @@ export class UpgradeAssistantCoordinator {
         this.sourceInvalidatedAnalyzePackage = packageName;
         this.options.sink.postMessage({
           status: 'upgrade-error',
+          ...(this.pendingUpgradeRequestId === undefined ? {} : { requestId: this.pendingUpgradeRequestId }),
           package: packageName,
           error: {
             code: 'STALE_SOURCE',
@@ -1360,11 +1368,11 @@ export class UpgradeAssistantCoordinator {
    * executing anything.
    */
   async handleAnalyzeUpgrade(message: UpgradeMessage): Promise<void> {
-    await this.withAdmission('upgrade-error', message.package, () => this.handleAnalyzeUpgradeRequests(message.requestId, [{ package: message.package, target: message.target }]));
+    await this.withAdmission('upgrade-error', message.package, () => this.handleAnalyzeUpgradeRequests(message.requestId, [{ package: message.package, target: message.target }]), message.requestId);
   }
 
   async handleAnalyzeBulkUpgrade(message: BulkUpgradeMessage): Promise<void> {
-    await this.withAdmission('upgrade-error', message.changes[0]?.package ?? 'unknown', () => this.handleAnalyzeUpgradeRequests(message.requestId, message.changes));
+    await this.withAdmission('upgrade-error', message.changes[0]?.package ?? 'unknown', () => this.handleAnalyzeUpgradeRequests(message.requestId, message.changes), message.requestId);
   }
 
   private async handleAnalyzeUpgradeRequests(
@@ -1376,7 +1384,7 @@ export class UpgradeAssistantCoordinator {
 
     if (this.activeRemediationAbort !== undefined) {
       this.options.sink.postMessage({
-        status: 'upgrade-error',
+        status: 'upgrade-error', requestId,
         package: messages[0]?.package ?? 'unknown',
         error: { code: 'ANALYSIS_IN_PROGRESS', message: 'Wait for remediation analysis to finish before upgrading.' },
       });
@@ -1387,7 +1395,7 @@ export class UpgradeAssistantCoordinator {
     if (controller === undefined) return;
     const required = requireMutationTarget(controller.upgradeSource);
     if (!required.ok) {
-      this.options.sink.postMessage({ status: 'upgrade-error', package: messages[0]?.package ?? 'unknown', error: required.error });
+      this.options.sink.postMessage({ status: 'upgrade-error', requestId, package: messages[0]?.package ?? 'unknown', error: required.error });
       return;
     }
     const mutationTarget = required.target;
@@ -1399,7 +1407,7 @@ export class UpgradeAssistantCoordinator {
         publishedTargetsByPackage = await this.publishedTargetsFor(controller, messages);
       } catch (cause) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', requestId,
           package: batch.packageName ?? messages[0]?.package ?? 'unknown',
           // Raw fetch errors can carry full registry URLs; send a safe reason only.
           error: versionListFetchFailure(cause).error,
@@ -1410,7 +1418,7 @@ export class UpgradeAssistantCoordinator {
     }
     if (!batch.ok) {
       this.options.sink.postMessage({
-        status: 'upgrade-error',
+        status: 'upgrade-error', requestId,
         package: batch.packageName ?? messages[0]?.package ?? 'unknown',
         error: describeBulkRejection(batch),
       });
@@ -1429,13 +1437,14 @@ export class UpgradeAssistantCoordinator {
     const handle = this.reserve(eligibility.packageName);
     if (!handle.ok) {
       this.options.sink.postMessage({
-        status: 'upgrade-error',
+        status: 'upgrade-error', requestId,
         package: eligibility.packageName,
         error: { code: 'UPGRADE_IN_PROGRESS', message: 'Another upgrade is already in progress for this project.' },
       });
       return;
     }
     this.pendingAnalyzePackage = eligibility.packageName;
+    this.pendingUpgradeRequestId = requestId;
     const analysisAbort = new AbortController();
     this.activeUpgradeAnalysisAbort = analysisAbort;
     let advisoryAbort = new AbortController();
@@ -1480,7 +1489,7 @@ export class UpgradeAssistantCoordinator {
         !sameMutationTarget(preflightProject, source)
       ) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', requestId,
           package: eligibility.packageName,
           error: { code: 'STALE_SOURCE', message: 'Project dependency files changed. Refresh and try again.' },
         });
@@ -1862,7 +1871,7 @@ export class UpgradeAssistantCoordinator {
         !resolvedProjectSourceMatches(finalDiskSnapshot, preflightProject)
       ) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', requestId,
           package: eligibility.packageName,
           error: {
             code: 'STALE_SOURCE',
@@ -1959,7 +1968,7 @@ export class UpgradeAssistantCoordinator {
       }
       if (!this.options.isDisposed()) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', requestId,
           package: eligibility.packageName,
           error:
             cause instanceof CompatibilityCancelledError
@@ -1978,7 +1987,10 @@ export class UpgradeAssistantCoordinator {
       await Promise.allSettled(pendingAnalysisWork);
       // A webview reload may already have released this handle.
       if (!handle.settled) await handle.releaseReadOnly();
-      if (this.pendingAnalyzePackage === eligibility.packageName) this.pendingAnalyzePackage = null;
+      if (this.pendingUpgradeRequestId === requestId) {
+        this.pendingAnalyzePackage = null;
+        this.pendingUpgradeRequestId = undefined;
+      }
       if (this.cancelRequestedFor === eligibility.packageName) this.cancelRequestedFor = null;
       if (this.sourceInvalidatedAnalyzePackage === eligibility.packageName) {
         this.sourceInvalidatedAnalyzePackage = null;
@@ -3247,7 +3259,7 @@ export class UpgradeAssistantCoordinator {
     });
     if (!lookup.ok || stored === undefined) {
       this.options.sink.postMessage({
-        status: 'upgrade-error',
+        status: 'upgrade-error', analysisId,
         package: stored?.eligibility.packageName ?? 'unknown',
         error: ANALYSIS_LOOKUP_ERRORS[lookup.ok ? 'STALE_ANALYSIS' : lookup.reason],
       });
@@ -3257,17 +3269,17 @@ export class UpgradeAssistantCoordinator {
     }
     if (requiresSecurityAcknowledgement(stored.security) && optIn.securityAcknowledged !== true) {
       this.options.sink.postMessage({
-        status: 'upgrade-error', package: stored.eligibility.packageName,
+        status: 'upgrade-error', analysisId, package: stored.eligibility.packageName,
         error: { code: 'SECURITY_ACKNOWLEDGEMENT_REQUIRED',
           message: 'Acknowledge the known vulnerabilities added by this upgrade before continuing.' },
       });
       return;
     }
-    const handle = this.reserveMutation(stored.eligibility.packageName, 'upgrade-error');
+    const handle = this.reserveMutation(stored.eligibility.packageName, 'upgrade-error', analysisId);
     if (handle === undefined) return;
     if (!handle.ok) {
       this.options.sink.postMessage({
-        status: 'upgrade-error',
+        status: 'upgrade-error', analysisId,
         package: stored.eligibility.packageName,
         error: {
           code: 'UPGRADE_IN_PROGRESS',
@@ -3305,7 +3317,7 @@ export class UpgradeAssistantCoordinator {
       // appeared since the review is reported as itself.
       const diskTarget = requireMutationTarget(disk);
       if (!diskTarget.ok) {
-        this.options.sink.postMessage({ status: 'upgrade-error', package: stored.eligibility.packageName, error: diskTarget.error });
+        this.options.sink.postMessage({ status: 'upgrade-error', analysisId, package: stored.eligibility.packageName, error: diskTarget.error });
         return;
       }
       const sourceStillMatches = disk.root === controller.root && resolvedProjectSourceMatches(disk, stored.snapshot);
@@ -3331,7 +3343,7 @@ export class UpgradeAssistantCoordinator {
       );
       if (!sourceStillMatches || !projectEvidenceStillMatches || !rechecked.ok) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', analysisId,
           package: stored.eligibility.packageName,
           error: {
             code: 'STALE_SOURCE',
@@ -3400,7 +3412,7 @@ export class UpgradeAssistantCoordinator {
       for (const candidate of [prepared, preparedRestyle]) {
         if (candidate === null || candidate.ok) continue;
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', analysisId,
           package: stored.eligibility.packageName,
           error: { code: candidate.code, message: candidate.message },
         });
@@ -3418,7 +3430,7 @@ export class UpgradeAssistantCoordinator {
       if (this.activeApplyDiscovery === discovery) this.activeApplyDiscovery = undefined;
       if (!this.sourceGeneration.isCurrent(executionSourceGeneration)) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', analysisId,
           package: stored.eligibility.packageName,
           error: {
             code: 'STALE_SOURCE',
@@ -3429,7 +3441,7 @@ export class UpgradeAssistantCoordinator {
       }
       if (this.changesPaused()) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', analysisId,
           package: stored.eligibility.packageName,
           error: { code: CHANGES_PAUSED_CODE, message: CHANGES_PAUSED_TEXT },
         });
@@ -3441,7 +3453,7 @@ export class UpgradeAssistantCoordinator {
         operation: 'upgrade', hostKind: this.options.platform.hostKind ?? 'vscode',
       })) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', analysisId,
           package: stored.eligibility.packageName,
           error: handle.refusal === undefined ? CHANGE_STOPPED_ERROR : { code: 'RECOVERY_BLOCKED', message: handle.refusal },
         });
@@ -3582,7 +3594,7 @@ export class UpgradeAssistantCoordinator {
         this.options.platform.showInformationMessage(presentation.message);
       } else if (presentation.kind === 'error') {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', analysisId,
           package: stored.eligibility.packageName,
           error: presentation.error,
         });
@@ -3593,7 +3605,7 @@ export class UpgradeAssistantCoordinator {
       if (cause instanceof Error && cause.name === 'AbortError' && discovery.abort.signal.aborted) {
         // A reload now stops discovery before beginMutation can report its usual refusal.
         if (handle.settled && !this.options.isDisposed()) {
-          this.options.sink.postMessage({ status: 'upgrade-error', package: stored.eligibility.packageName, error: CHANGE_STOPPED_ERROR });
+          this.options.sink.postMessage({ status: 'upgrade-error', analysisId, package: stored.eligibility.packageName, error: CHANGE_STOPPED_ERROR });
         }
         return;
       }
@@ -3601,7 +3613,7 @@ export class UpgradeAssistantCoordinator {
       if (await handle.fail('An internal error interrupted the dependency change.')) return;
       if (!this.options.isDisposed()) {
         this.options.sink.postMessage({
-          status: 'upgrade-error',
+          status: 'upgrade-error', analysisId,
           package: stored.eligibility.packageName,
           error: toProtocolError(cause),
         });

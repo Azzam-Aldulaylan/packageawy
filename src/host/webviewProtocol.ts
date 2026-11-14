@@ -742,8 +742,10 @@ export type HostToWebviewMessage =
    * validation, cancelled at the confirmation step, or the task itself
    * failed. Deliberately does not carry `data`: the existing table is never
    * touched by this message, only the requesting row's own "running" state.
+   * Analysis failures echo requestId. Execution failures echo analysisId.
+   * Optional ids preserve handling for older or otherwise untracked errors.
    */
-  | { status: 'upgrade-error'; package: string; error: ProtocolError }
+  | { status: 'upgrade-error'; package: string; error: ProtocolError; requestId?: string; analysisId?: string }
   /**
    * One of the (at most two) genuinely-observable analysis phases has
    * started, never a fabricated progress step. See spec §20. `requestId`
@@ -2399,7 +2401,9 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'upgrade-error') {
     return (
-      hasOnlyKeys(value, ['status', 'package', 'error']) &&
+      hasOnlyKeys(value, ['status', 'package', 'error', 'requestId', 'analysisId']) &&
+      (value['requestId'] === undefined || isNonEmptyString(value['requestId'])) &&
+      (value['analysisId'] === undefined || isNonEmptyString(value['analysisId'])) &&
       isNonEmptyString(value['package']) &&
       isProtocolError(value['error'])
     );

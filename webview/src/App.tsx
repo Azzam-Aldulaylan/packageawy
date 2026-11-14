@@ -46,6 +46,7 @@ import type {
   DependencyTaskState,
   HostToWebviewMessage,
   RemoveAnalysisPresentation,
+  RemoveProgressPhase,
   RecoveryPresentation,
   ScanProgressStage,
   SmartCleanupExecutionCapability,
@@ -146,7 +147,22 @@ interface SmartCleanupExecutionSnapshot {
   removalRequestId: string;
 }
 
+const CLEANUP_STEP_LABELS: Record<RemoveProgressPhase, string> = {
+  installing: 'Installing dependencies',
+  verifying: 'Verifying the project',
+  refreshing: 'Refreshing dependency data',
+};
+
+type UpgradeOrigin = 'dashboard' | 'manage-dependency';
+
+interface UpgradeRequestOwner {
+  origin: UpgradeOrigin;
+  packageName: string;
+  dismissed: boolean;
+}
+
 interface UpgradeErrorState {
+  origin: UpgradeOrigin | null;
   package: string;
   code: string;
   message: string;
@@ -258,6 +274,9 @@ export function App(): ReactElement {
   // with no security requirement for unguessability.
   const nextRequestIdRef = useRef(0);
   const activeRequestIdRef = useRef<string | null>(null);
+  // Keep ownership after cancellation so late failures cannot move to another surface.
+  const upgradeRequestOwnersRef = useRef(new Map<string, UpgradeRequestOwner>());
+  const upgradeAnalysisOwnersRef = useRef(new Map<string, UpgradeRequestOwner>());
 
   // Same anchor/lock discipline as the upgrade state above, for a
   // coordinated removal: the two share one host-side panel-wide lock, so
@@ -271,7 +290,7 @@ export function App(): ReactElement {
   const [removeMatchTags, setRemoveMatchTags] = useState<ReadonlyMap<string, readonly string[]>>(() => new Map());
   const [removeAnalysis, setRemoveAnalysis] = useState<RemoveAnalysisPresentation | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
-  const [removeError, setRemoveError] = useState<UpgradeErrorState | null>(null);
+  const [removeError, setRemoveError] = useState<Omit<UpgradeErrorState, 'origin'> | null>(null);
   // Set only when this removal review was opened from the Manage dependency
   // modal (requestRemoveFromManage): lets the review show "← Back" instead
   // of "Cancel" and return to Manage rather than the dashboard. Starting a
@@ -472,6 +491,7 @@ export function App(): ReactElement {
       const incoming = readHostMessage(event);
       if (incoming === null) return;
       if (incoming === 'unhandled') { reportUnhandled(); return; }
+      // Project recovery applies even when the request's dialog was dismissed or replaced.
       if (isUnknownChangeMessage(incoming)) {
         setDependencyTask('idle');
         setRecovery({ state: 'blocked', message: RECOVERY_MESSAGES.blocked, files: [], claim: null, canApply: false, canDismiss: false });
@@ -601,6 +621,17 @@ export function App(): ReactElement {
         }
 
         case 'upgrade-error': {
+          const upgradeErrorOwner = incoming.requestId !== undefined
+            ? upgradeRequestOwnersRef.current.get(incoming.requestId)
+            : incoming.analysisId !== undefined
+              ? upgradeAnalysisOwnersRef.current.get(incoming.analysisId)
+              : undefined;
+          // Ownership filters only local errors and dialog state after shared recovery is updated.
+          if (upgradeErrorOwner?.dismissed) return;
+          const activeOwner = activeRequestIdRef.current === null
+            ? undefined
+            : upgradeRequestOwnersRef.current.get(activeRequestIdRef.current);
+          if (upgradeErrorOwner !== undefined && activeOwner !== undefined && upgradeErrorOwner !== activeOwner) return;
           setConfirmBusy(false);
           // Never touches `message`: the rendered table/banners are exactly
           // what they were before this arrived.
@@ -617,7 +648,13 @@ export function App(): ReactElement {
             setConfirmBusy(false);
           }
           if (upgradeErrorIsUserVisible(incoming.error.code)) {
-            setUpgradeError({ package: incoming.package, code: incoming.error.code, message: incoming.error.message });
+            setUpgradeError({
+              origin: upgradeErrorOwner?.origin ?? null,
+              // An expired host review may report "unknown" while its local owner is still known.
+              package: upgradeErrorOwner?.origin === 'manage-dependency' ? upgradeErrorOwner.packageName : incoming.package,
+              code: incoming.error.code,
+              message: incoming.error.message,
+            });
           }
           return;
         }
@@ -648,6 +685,8 @@ export function App(): ReactElement {
           // requestCancelUpgrade below for why this can still legitimately
           // happen even though the host is also told to drop it.
           if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
+            const owner = upgradeRequestOwnersRef.current.get(incoming.requestId);
+            if (owner !== undefined) upgradeAnalysisOwnersRef.current.set(incoming.analysis.analysisId, owner);
             analysisIdRef.current = incoming.analysis.analysisId;
             setAnalysis(incoming.analysis);
             setAnalyzingPhase(null);
@@ -665,6 +704,14 @@ export function App(): ReactElement {
 
         case 'remove-progress': {
           setManageRemoval(manageRemovalAfterProgress(manageRemovalRef.current, incoming.analysisId, incoming.phase));
+          const snapshot = smartCleanupExecutionRef.current;
+          // A delayed step from another removal must not replace this cleanup's status.
+          if (removeOriginRef.current === 'smart-cleanup' && snapshot?.analysisId === incoming.analysisId) {
+            dispatchSmartCleanup({
+              type: 'execution-progress',
+              currentLabel: CLEANUP_STEP_LABELS[incoming.phase],
+            });
+          }
           return;
         }
 
@@ -1440,6 +1487,7 @@ export function App(): ReactElement {
     // a duplicate would still orphan the result the user is reading.
     if (!upgradeAnalysisRequestIsAllowed(activeUpgradeRef.current)) return;
     const requestId = String(++nextRequestIdRef.current);
+    upgradeRequestOwnersRef.current.set(requestId, { origin: 'manage-dependency', packageName, dismissed: false });
     activeUpgradeRef.current = packageName;
     upgradeResultRef.current = null;
     setUpgradeResult(null);
@@ -1465,6 +1513,7 @@ export function App(): ReactElement {
     const first = changes[0];
     if (first === undefined) return;
     const requestId = String(++nextRequestIdRef.current);
+    upgradeRequestOwnersRef.current.set(requestId, { origin: 'dashboard', packageName: first.packageName, dismissed: false });
     activeUpgradeRef.current = first.packageName;
     upgradeResultRef.current = null;
     setUpgradeResult(null);
@@ -1518,6 +1567,9 @@ export function App(): ReactElement {
   // analyze request so the host drops its result instead of storing it,
   // see webviewProtocol.ts on cancel-upgrade's nullable id.
   const requestCancelUpgrade = useCallback(() => {
+    const owner = upgradeRequestOwnersRef.current.get(activeRequestIdRef.current ?? '');
+    if (owner !== undefined) owner.dismissed = true;
+    setUpgradeError(null);
     vscode.postMessage({ type: 'cancel-upgrade', analysisId: analysis?.analysisId ?? null });
     setActiveUpgrade(null);
     activeUpgradeRef.current = null;
@@ -1869,6 +1921,11 @@ export function App(): ReactElement {
   // a real file-mutating install/removal or the removal-impact scan is
   // actually running.
   const closeManage = useCallback(() => {
+    // Closing dismisses even a failed request whose active state was already cleared.
+    for (const owner of upgradeRequestOwnersRef.current.values()) {
+      if (owner.origin === 'manage-dependency') owner.dismissed = true;
+    }
+    setUpgradeError((previous) => previous?.origin === 'manage-dependency' ? null : previous);
     if (removalImpact.phase === 'analyzing') requestCancelRemovalImpact();
     if (upgradeOrigin === 'manage-dependency' && activeUpgrade !== null) requestCancelUpgrade();
     if (removeOrigin === 'manage-dependency' && activeRemove !== null) requestCancelRemove();
@@ -2351,7 +2408,6 @@ export function App(): ReactElement {
     setRemoveBusy(true);
     dispatchSmartCleanup({
       type: 'execution-started',
-      total: snapshot.actionIds.length,
       currentLabel: 'Applying the reviewed cleanup actions…',
     });
     vscode.postMessage({
@@ -2484,10 +2540,8 @@ export function App(): ReactElement {
         </StatusBanner>
       ) : null}
 
-      {/* upgradeError is only ever set for a user-visible code (see
-          upgradeErrorIsUserVisible): CANCELLED and UPGRADE_IN_PROGRESS never
-          reach this state at all, so there is nothing to filter here. */}
-      {upgradeError !== null ? (
+      {/* Manage owns its upgrade error so the same failure is not shown twice. */}
+      {upgradeError !== null && upgradeError.origin !== 'manage-dependency' ? (
         <StatusBanner
           tone="error"
           action={{ label: 'Refresh', onClick: refresh, disabled: actionsDisabled, icon: <IconRefresh /> }}
@@ -2645,7 +2699,7 @@ export function App(): ReactElement {
                   hardStale: upgradeActive && hardStaleAnalysisId !== null && hardStaleAnalysisId === analysis?.analysisId,
                   busy: confirmBusy,
                   error:
-                    upgradeOrigin === 'manage-dependency' && upgradeError?.package === row.name
+                    upgradeError?.origin === 'manage-dependency' && upgradeError.package === row.name
                       ? upgradeError.message
                       : null,
                   onAnalyze: (target) => requestUpgradeFromManage(row.name, target),

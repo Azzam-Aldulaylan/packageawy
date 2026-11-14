@@ -80,7 +80,6 @@ export interface SmartCleanupWorkspaceProps {
   onBackToReview: () => void;
   onOpenDependencyReview: (packageName: string, tab: ManageTabId) => void;
   reviewEvidenceRefreshing?: boolean;
-  onCancelExecution?: () => void;
   onRestoreFiles?: (analysisId: string) => void;
 }
 
@@ -692,13 +691,11 @@ function ConfirmationView({
 function ExecutionView({ state }: { state: SmartCleanupState }): ReactElement {
   const change = useContext(DependencyChangeContext);
   const progress = state.execution;
-  const value = progress === null || progress.total === 0 ? 0 : Math.round((progress.completed / progress.total) * 100);
   return (
     <div className="smart-cleanup-execution" aria-busy="true">
       <div className="smart-cleanup-execution__mark"><IconBroom /></div>
       {change.task !== 'still-running' && !change.blocked ? <p>{state.phase === 'rolling-back' ? state.message : progress?.currentLabel ?? 'Preparing cleanup…'}</p> : null}
-      <progress max={100} value={value} aria-label="Cleanup progress">{value}%</progress>
-      <span>{state.phase === 'rolling-back' ? 'Keep this workspace open while files are restored.' : `${progress?.completed ?? 0} of ${progress?.total ?? 0} actions completed`}</span>
+      {state.phase === 'rolling-back' ? <span>Keep this workspace open while files are restored.</span> : null}
       <p className="smart-cleanup-mutation-lock-note">Close is unavailable while project files are changing. It becomes available when cleanup or restoration finishes.</p>
     </div>
   );
@@ -1012,7 +1009,6 @@ export function SmartCleanupWorkspace({
   onBackToReview,
   onOpenDependencyReview,
   reviewEvidenceRefreshing = false,
-  onCancelExecution,
   onRestoreFiles,
 }: SmartCleanupWorkspaceProps): ReactElement {
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -1173,9 +1169,6 @@ export function SmartCleanupWorkspace({
                 </button>
               )}
             </>
-          ) : null}
-          {state.phase === 'executing' && onCancelExecution !== undefined ? (
-            <button type="button" className="button button--secondary" onClick={onCancelExecution}>Cancel and restore</button>
           ) : null}
           {state.phase === 'rolling-back' ? <span className="smart-cleanup-footer__status">Restoration in progress…</span> : null}
           {showTerminal ? (

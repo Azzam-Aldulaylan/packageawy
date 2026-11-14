@@ -158,6 +158,7 @@ test('a host source change terminates a real in-flight Upgrade analysis exactly 
 
   assert.deepEqual(messages, [{
     status: 'upgrade-error',
+    requestId: 'request-1',
     package: 'dep',
     error: {
       code: 'STALE_SOURCE',
