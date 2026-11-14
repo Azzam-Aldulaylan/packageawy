@@ -82,6 +82,7 @@ The same steps can be done by hand from the repository root:
 - [ ] macOS: npm project, refresh, and one review.
 - [ ] Windows: npm project, refresh, and one review.
 - [ ] Linux: npm or pnpm project, refresh, and one review.
+- [ ] Record that the dashboard draws its dependency rows on first open and after closing and reopening it.
 
 Note the VS Code version, operating system, package manager, and VSIX SHA-256 in the release notes.
 
@@ -90,10 +91,17 @@ Note the VS Code version, operating system, package manager, and VSIX SHA-256 in
 Use throwaway projects. Run each check in VS Code and a JetBrains IDE on both macOS and Windows, and record the host, OS and package manager.
 
 - [ ] Kill the editor during an install, reopen the project and check that dependency changes stay blocked and no file restores by itself.
-- [ ] Disconnect while an install is still running. Check that its unknown result keeps the recovery folder and lock. Stop the install before confirming recovery.
+- [ ] VS Code: start a slow upgrade install from Packageawy and wait until its task is running in the terminal. Run **Developer: Restart Extension Host** from the Command Palette. Check that the install keeps running in the same terminal. Reopen Packageawy and check that the unknown outcome keeps dependency changes blocked, shows "An earlier change may still be running. Dependency changes are blocked." and offers **Start recovery**. Check that `.packageawy-recovery` and its lock remain. Stop the install in its task terminal and wait for it to exit before confirming that all writers stopped in recovery.
+- [ ] JetBrains: start a slow upgrade install from Packageawy and wait until its task is running in the Run tool window. Find the Node sidecar by its full command, which names the Packageawy plugin's `sidecar/sidecar.js`. On macOS, use `ps -axo pid,ppid,command | grep '[/]sidecar/sidecar[.]js'`. On Windows, use PowerShell `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '[\\/]sidecar[\\/]sidecar\.js' } | Select-Object ProcessId,ParentProcessId,CommandLine`. Match its parent PID to the IDE process. End only that sidecar PID with `kill -KILL <pid>` on macOS or `Stop-Process -Id <pid> -Force` in PowerShell on Windows. Check that the install keeps running in the Run tool window and that "The Packageawy engine stopped." appears. Choose **Restart** on that notification. Check that the unknown outcome keeps dependency changes blocked, shows "An earlier change may still be running. Dependency changes are blocked." and offers **Start recovery**. Check that `.packageawy-recovery` and its lock remain. Stop the install in its Run tab and wait for it to exit before confirming that all writers stopped in recovery.
+- [ ] In JetBrains, try Restart while a dependency change is running. Check for "Cannot restart while a dependency change is running or its outcome is unknown." and that the install continues.
+- [ ] In JetBrains, try Restart when idle. Check that the dashboard reloads and dependency rows appear.
+- [ ] Run a slow install. Check that "Still running" appears after about 10 seconds and clears when the task ends.
 - [ ] Open the same project in two windows, including one window in each host. Only one dependency change can acquire the recovery folder.
 - [ ] Start recovery after confirming all writers stopped. Check the running-install race warning, default Keep current choices, backup/current contents and explicit deletion approval.
 - [ ] Edit a dependency file after reviewing recovery choices. Applying the old choices must stop and keep saved files. Retry from the current contents.
+- [ ] In an empty throwaway folder, run `npm init -y` and `npm install --ignore-scripts --save-exact is-number@6.0.0`. Replace the generated `test` entry under `scripts` in `package.json` with `"test": "node -e \"process.exit(1)\""`. In VS Code, set `"packageawy.upgrade.verificationScripts": ["test"]` in workspace settings. In JetBrains, open **Settings**, **Tools**, **Packageawy**, **Project**, select **Use project-specific verification scripts** and enter `test` in **Scripts:**. Open the project in Packageawy, select `is-number` version `7.0.0`, choose **Analyze upgrade** and apply the reviewed upgrade. Wait for the test task to fail and the "The dependency installed, but post-upgrade verification failed." prompt to appear. Leave it open. From another editor or terminal, change `is-number` in `package.json` to `"6.0.0"` and save. Choose **Rollback** in the waiting prompt. Check that restore stops, names `package.json` and keeps the saved edit.
+- [ ] Restore dependency files with a lockfile and choose **Reinstall** in the frozen reinstall offer. Check that `npm ci --ignore-scripts` or `pnpm install --frozen-lockfile --ignore-scripts` runs as a visible task.
+- [ ] Repeat the restore and decline the reinstall offer. Check for the note about `node_modules` and how to reinstall by hand.
 - [ ] Interrupt recovery after a displacement. Reopen, check the recorded progress and confirm that nothing resumes automatically and the displaced contents remain saved.
 - [ ] Close recovery without dismissal. Saved files and the lock remain. Remove saved files and unlock only after reviewing the result.
 - [ ] Interrupt dismissal, reopen in a fresh editor process and finish the remaining cleanup after the stop confirmation.
