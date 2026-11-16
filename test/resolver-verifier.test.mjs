@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import path from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import io from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 
 import {
   buildLockfileMaterializationArgs,
   buildResolverArgs,
   buildTransitiveRemediationMaterializationArgs,
   IsolatedResolverVerifier,
+  isolatedRelativePath,
 } from '../out/host/resolverVerifier.js';
 
 const proposal = {
@@ -20,9 +25,12 @@ test('npm resolver argv is fixed, script-free, lockfile-free, and policy-aware',
   ]);
 });
 
-test('pnpm resolver argv confines writes to temp and never enables lifecycle scripts', () => {
+test('pnpm resolver argv confines writes to temp and never enables lifecycle scripts or pnpmfiles', () => {
   assert.deepEqual(buildResolverArgs('pnpm', 'https://registry.npmjs.org', { strictPeerDeps: false, legacyPeerDeps: false }), [
-    'install', '--ignore-scripts', '--lockfile=false', '--reporter=silent', '--registry=https://registry.npmjs.org',
+    'install', '--ignore-scripts', '--ignore-pnpmfile', '--lockfile=false', '--loglevel=error', '--registry=https://registry.npmjs.org',
+  ]);
+  assert.deepEqual(buildLockfileMaterializationArgs('pnpm', 'https://registry.npmjs.org', { strictPeerDeps: false, legacyPeerDeps: false }), [
+    'install', '--lockfile-only', '--ignore-scripts', '--ignore-pnpmfile', '--loglevel=error', '--registry=https://registry.npmjs.org',
   ]);
 });
 
@@ -144,6 +152,53 @@ test('peer resolver failures are conflicts and temporary paths are redacted and 
   assert.equal(result.status, 'conflict');
   assert.match(result.explanation, /<temporary-project>/);
   assert.ok(result.explanation.length <= 540);
+});
+
+test('pnpm diagnostics sanitize controls, credentials and private paths before truncation', async () => {
+  const secrets = ['url-user', 'url-password', 'bearer-secret', 'basic-secret', 'header-secret',
+    'config-secret', 'password-secret', 'env-secret', 'query-secret', `npm_${'n'.repeat(36)}`, `ghp_${'g'.repeat(36)}`];
+  const verifier = workspaceVerifier({}, {
+    runner: { async run(_inv, _args, cwd) {
+      return { exitCode: 1, stdout: `\n${homedir()}/private ${cwd}/package.json`, stderr: [
+        '\x1b[31mERR_PNPM_PEER_DEP_ISSUES\x1b[0m',
+        '\x1b]8;;https://hidden.example\x07visible\x1b]8;;\x1b\\',
+        '\x1bPterminal payload\x1b\\\x9b2K\x00\x08',
+        'https://url-user:url-password@registry.example/a?token=query-secret',
+        'Authorization: Bearer bearer-secret',
+        'Proxy-Authorization: Basic basic-secret',
+        '"authorization": "Custom header-secret",',
+        '//registry.example/:_authToken="config-secret"',
+        '_password=password-secret NODE_AUTH_TOKEN=env-secret',
+        `npm_${'n'.repeat(36)} ghp_${'g'.repeat(36)}`,
+      ].join('\n') };
+    } },
+  });
+  const result = await verifier.verify(workspaceProposal);
+  assert.equal(result.status, 'conflict');
+  for (const secret of secrets) assert.ok(!result.explanation.includes(secret), `leaked ${secret}`);
+  assert.ok(!result.explanation.includes(homedir()));
+  assert.doesNotMatch(result.explanation, /[\x00-\x1f\x7f-\x9f]|terminal payload|hidden\.example/);
+  assert.match(result.explanation, /<home>/);
+  assert.match(result.explanation, /<temporary-project>/);
+  assert.ok(result.explanation.length <= 540);
+
+  const boundary = workspaceVerifier({}, { runner: { async run() {
+    return { exitCode: 1, stdout: '', stderr: `${'x'.repeat(480)} npm_${'s'.repeat(36)} end` };
+  } } });
+  assert.doesNotMatch((await boundary.verify(workspaceProposal)).explanation, /npm_s|s{10}/);
+});
+
+test('pnpm diagnostics redact credential variants and unparseable URL userinfo', async () => {
+  for (const stderr of ['NPM_AUTH_TOKEN=opaqueSecret', 'npmAuthToken: opaqueSecret',
+    'YARN_NPM_AUTH_TOKEN=opaqueSecret', 'npmAuthIdent=opaqueSecret', 'NPM_CONFIG__AUTH=opaqueSecret',
+    '_auth="opaqueSecret"', 'Authorization = "Bearer opaqueSecret"', 'Bearer opaqueSecret',
+    '//url-user:opaqueSecret@registry.example', 'https://url-user:opaqueSecret@[invalid',
+    '\x1b[31m_authToken\x1b[0m=opaqueSecret']) {
+    const verifier = workspaceVerifier({}, { runner: { async run() {
+      return { exitCode: 1, stdout: '', stderr };
+    } } });
+    assert.doesNotMatch((await verifier.verify(workspaceProposal)).explanation, /opaqueSecret|url-user/, stderr);
+  }
 });
 
 test('non-peer process failures remain unknown rather than fabricated conflicts', async () => {
@@ -323,6 +378,194 @@ test('targeted transitive remediation refuses a package-manager manifest mutatio
   const result = await verifier.materializeTransitiveRemediation(['websocket-driver']);
   assert.equal(result.ok, false);
   assert.match(result.reason, /unexpectedly changed package\.json/);
+});
+
+const workspaceLock = (joseVersion) => [
+  "lockfileVersion: '9.0'",
+  '',
+  'importers:',
+  '',
+  '  .: {}',
+  '',
+  '  apps/web:',
+  '    dependencies:',
+  "      '@acme/shared':",
+  '        specifier: workspace:*',
+  '        version: link:../../packages/shared',
+  '      jose:',
+  `        specifier: ${joseVersion}`,
+  `        version: ${joseVersion}`,
+  '',
+  '  packages/shared: {}',
+  '',
+  'packages:',
+  '',
+  `  jose@${joseVersion}:`,
+  '    resolution: {integrity: sha512-test}',
+  '',
+  'snapshots:',
+  '',
+  `  jose@${joseVersion}: {}`,
+  '',
+].join('\n');
+
+const workspaceProposal = {
+  requested: { packageName: 'jose', currentVersion: '5.9.6', targetVersion: '5.10.0', classification: 'prod' },
+  changes: [{ packageName: 'jose', currentVersion: '5.9.6', targetVersion: '5.10.0', classification: 'prod' }],
+};
+
+function workspaceVerifier(observed, options = {}) {
+  return new IsolatedResolverVerifier({
+    packageManager: 'pnpm', packageManagerVersion: '9.15.1',
+    invocation: { executable: '/trusted/pnpm', prefixArgs: [] },
+    manifestText: JSON.stringify({ name: '@acme/web', dependencies: { '@acme/shared': 'workspace:*', jose: '5.9.6' } }),
+    lockfile: { name: 'pnpm-lock.yaml', text: workspaceLock('5.9.6') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    workspace: {
+      importerId: 'apps/web',
+      files: [
+        { path: 'pnpm-workspace.yaml', text: "packages:\n  - 'apps/*'\n  - 'packages/*'\n" },
+        { path: 'package.json', text: JSON.stringify({ name: 'acme', private: true }) },
+        { path: 'packages/shared/package.json', text: JSON.stringify({ name: '@acme/shared' }) },
+      ],
+    },
+    runner: {
+      async run(_invocation, args, cwd) {
+        const { readFile, readdir, writeFile } = await import('node:fs/promises');
+        observed.args = args;
+        observed.rootEntries = (await readdir(cwd)).sort();
+        observed.workspaceYaml = await readFile(`${cwd}/pnpm-workspace.yaml`, 'utf8');
+        observed.siblingManifest = JSON.parse(await readFile(`${cwd}/packages/shared/package.json`, 'utf8'));
+        observed.memberManifest = JSON.parse(await readFile(`${cwd}/apps/web/package.json`, 'utf8'));
+        observed.lockfileAtRoot = await readFile(`${cwd}/pnpm-lock.yaml`, 'utf8');
+        if (args.includes('--lockfile-only')) await writeFile(`${cwd}/pnpm-lock.yaml`, workspaceLock('5.10.0'));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    },
+    ...options,
+  });
+}
+
+for (const method of ['verify', 'materializeResolvedGraph']) {
+  for (const cancelAt of ['before staging', 'first mkdir', 'first write', 'last write']) {
+    test(`${method} cancellation at ${cancelAt} stops staging and removes the temporary project`, async t => {
+      const abort = new AbortController();
+      const originals = { mkdtemp: io.mkdtemp, mkdir: io.mkdir, writeFile: io.writeFile };
+      let tempRoot;
+      let writes = 0;
+      let directories = 0;
+      let ran = false;
+      const verifier = workspaceVerifier({}, { runner: { async run() {
+        ran = true;
+        return { exitCode: 1, stdout: '', stderr: '' };
+      } } });
+      io.mkdtemp = async (...args) => { tempRoot = await originals.mkdtemp(...args); return tempRoot; };
+      io.mkdir = async (...args) => {
+        directories += 1;
+        await originals.mkdir(...args);
+        if (cancelAt === 'first mkdir') abort.abort();
+      };
+      io.writeFile = async (...args) => {
+        writes += 1;
+        await originals.writeFile(...args);
+        if (cancelAt === 'first write' || (cancelAt === 'last write' && writes === 5)) abort.abort();
+      };
+      syncBuiltinESMExports();
+      t.after(() => { Object.assign(io, originals); syncBuiltinESMExports(); });
+      if (cancelAt === 'before staging') abort.abort();
+      if (method === 'verify') await assert.rejects(verifier[method](workspaceProposal, abort.signal), { name: 'AbortError' });
+      else assert.deepEqual(await verifier[method](workspaceProposal, abort.signal), { ok: false });
+      assert.equal(ran, false, 'the runner was invoked after cancellation');
+      assert.equal(writes, cancelAt === 'last write' ? 5 : cancelAt === 'first write' ? 1 : 0);
+      if (cancelAt === 'before staging' || cancelAt === 'first mkdir') assert.ok(directories <= 1);
+      if (tempRoot !== undefined) await assert.rejects(io.stat(tempRoot), { code: 'ENOENT' });
+    });
+  }
+}
+
+test('a pnpm workspace member resolves inside a rebuilt workspace, so workspace: dependencies are found', async () => {
+  const observed = {};
+  const verifier = workspaceVerifier(observed, { retainResolvedGraph: true });
+  const verification = await verifier.verify(workspaceProposal);
+  assert.equal(verification.status, 'compatible');
+  assert.deepEqual(observed.rootEntries, ['apps', 'package.json', 'packages', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']);
+  assert.match(observed.workspaceYaml, /packages\/\*/);
+  assert.equal(observed.siblingManifest.name, '@acme/shared');
+  assert.equal(observed.memberManifest.dependencies.jose, '5.10.0');
+  assert.equal(observed.memberManifest.dependencies['@acme/shared'], 'workspace:*');
+  assert.equal(observed.lockfileAtRoot, workspaceLock('5.9.6'));
+  assert.ok(observed.args.includes('--ignore-pnpmfile'));
+
+  const materialized = await verifier.materializeResolvedGraph(workspaceProposal);
+  assert.equal(materialized.ok, true);
+  const jose = [...materialized.graph.nodes.values()].find((node) => node.name === 'jose' && node.direct);
+  assert.equal(jose?.version, '5.10.0');
+});
+
+test('a pnpm workspace member keeps the lockfile when verifying, rather than a full fresh install', async () => {
+  const observed = {};
+  const verification = await workspaceVerifier(observed).verify(workspaceProposal);
+  assert.equal(verification.status, 'compatible');
+  assert.ok(observed.args.includes('--lockfile-only'));
+  assert.ok(!observed.args.includes('--lockfile=false'));
+});
+
+test('the security materialization of a pnpm workspace member reads the member importer', async () => {
+  const observed = {};
+  const materialized = await workspaceVerifier(observed).materializeResolvedGraph(workspaceProposal);
+  assert.equal(materialized.ok, true);
+  const direct = [...materialized.graph.nodes.values()].filter((node) => node.direct).map((node) => node.name).sort();
+  assert.deepEqual(direct, ['@acme/shared', 'jose']);
+});
+
+test('workspace paths that escape the temporary directory are refused', () => {
+  const root = path.join(tmpdir(), 'root');
+  for (const unsafe of ['../outside', 'apps/../../outside', '/etc', 'apps//web', './apps', 'C:/x', 'apps\\web', '']) {
+    assert.throws(() => isolatedRelativePath(root, unsafe), /unsafe workspace path/);
+  }
+  assert.equal(isolatedRelativePath(root, 'apps/web'), path.join(root, 'apps', 'web'));
+});
+
+test('a workspace run that leaves the reviewed member out of the lockfile is not reported as compatible', async () => {
+  const verifier = new IsolatedResolverVerifier({
+    packageManager: 'pnpm', packageManagerVersion: '9.15.1',
+    invocation: { executable: '/trusted/pnpm', prefixArgs: [] },
+    manifestText: JSON.stringify({ name: '@acme/web', dependencies: { jose: '5.9.6' } }),
+    lockfile: { name: 'pnpm-lock.yaml', text: workspaceLock('5.9.6') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    retainResolvedGraph: true,
+    workspace: { importerId: 'apps/web', files: [{ path: 'pnpm-workspace.yaml', text: '{"packages":[]}\n' }] },
+    runner: {
+      async run(_invocation, _args, cwd) {
+        const { writeFile } = await import('node:fs/promises');
+        await writeFile(`${cwd}/pnpm-lock.yaml`, "lockfileVersion: '9.0'\nimporters:\n  .: {}\n");
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    },
+  });
+  const verification = await verifier.verify(workspaceProposal);
+  assert.equal(verification.status, 'unknown');
+  assert.equal(verification.code, 'RESOLVER_FAILED');
+  assert.deepEqual(await verifier.materializeResolvedGraph(workspaceProposal), { ok: false });
+});
+
+test('a workspace that cannot be staged faithfully is unknown and never runs the package manager', async () => {
+  let ran = false;
+  const verifier = new IsolatedResolverVerifier({
+    packageManager: 'pnpm', packageManagerVersion: '9.15.1',
+    invocation: { executable: '/trusted/pnpm', prefixArgs: [] },
+    manifestText: JSON.stringify({ name: '@acme/web', dependencies: { jose: '5.9.6' } }),
+    lockfile: { name: 'pnpm-lock.yaml', text: workspaceLock('5.9.6') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    retainResolvedGraph: true,
+    workspace: { importerId: 'apps/web', files: [], unavailableReason: 'The workspace has more packages than the review can stage.' },
+    runner: { async run() { ran = true; return { exitCode: 0, stdout: '', stderr: '' }; } },
+  });
+  const verification = await verifier.verify(workspaceProposal);
+  assert.equal(verification.status, 'unknown');
+  assert.match(verification.explanation, /more packages than the review can stage/);
+  assert.deepEqual(await verifier.materializeResolvedGraph(workspaceProposal), { ok: false });
+  assert.equal(ran, false);
 });
 
 test('materializeResolvedGraph reads back the npm-shrinkwrap.json it staged, not a package-lock.json', async () => {

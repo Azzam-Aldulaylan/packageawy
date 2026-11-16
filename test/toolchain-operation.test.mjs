@@ -22,7 +22,8 @@ import '../out/host/recovery/inspection.js';
 import '../out/host/recovery/session.js';
 import '../out/host/recovery/journal.js';
 import '../out/host/frozenReconciliation.js';
-import { NodeResolverProcessRunner } from '../out/host/resolverVerifier.js';
+import { IsolatedResolverVerifier, NodeResolverProcessRunner } from '../out/host/resolverVerifier.js';
+import { readPnpmWorkspaceLayout } from '../out/host/pnpmWorkspaceLayout.js';
 import { withoutFsync } from './helpers/without-fsync.mjs';
 
 withoutFsync();
@@ -360,6 +361,40 @@ function installRuntimeSyncGuard(t) {
     }
   }
 }
+
+test('pnpm workspace discovery and isolated staging finish with synchronous runtime probes forbidden', async t => {
+  installRuntimeSyncGuard(t);
+  const root = await io.mkdtemp(path.join(os.tmpdir(), 'packageawy-guard-workspace-'));
+  t.after(() => io.rm(root, { recursive: true, force: true }));
+  const manifestText = JSON.stringify({ name: 'app', dependencies: { shared: 'workspace:*', jose: '1.0.0' } });
+  await io.writeFile(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
+  await io.writeFile(path.join(root, 'package.json'), '{"name":"root"}');
+  for (const member of ['app', 'shared']) {
+    await io.mkdir(path.join(root, 'packages', member), { recursive: true });
+    await io.writeFile(path.join(root, 'packages', member, 'package.json'), member === 'app' ? manifestText : '{"name":"shared"}');
+  }
+  const workspace = await readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'packages/app', manifestText, strict: true });
+  assert.equal(workspace.unavailableReason, undefined);
+  let ran = false;
+  const verifier = new IsolatedResolverVerifier({
+    packageManager: 'pnpm', packageManagerVersion: '9.15.1', invocation,
+    manifestText, workspace, registry: 'https://registry.npmjs.org/',
+    policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    runner: { async run(_invocation, args, cwd) {
+      ran = true;
+      assert.ok(args.includes('--loglevel=error'));
+      assert.ok(args.includes('--ignore-pnpmfile'));
+      const staged = JSON.parse(await io.readFile(path.join(cwd, 'packages/app/package.json'), 'utf8'));
+      assert.deepEqual(staged.dependencies, { shared: 'workspace:*', jose: '1.1.0' });
+      assert.equal(await io.readFile(path.join(cwd, 'packages/shared/package.json'), 'utf8'), '{"name":"shared"}');
+      await io.writeFile(path.join(cwd, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\nimporters:\n  packages/app: {}\n");
+      return { exitCode: 0, stdout: '', stderr: '' };
+    } },
+  });
+  const requested = { packageName: 'jose', currentVersion: '1.0.0', targetVersion: '1.1.0', classification: 'prod' };
+  assert.equal((await verifier.verify({ requested, changes: [requested] })).status, 'compatible');
+  assert.equal(ran, true);
+});
 
 for (const kind of ['upgrade', 'cleanup', 'transitive']) test(`complete ${kind} apply and rollback reinstall flow avoids sync probes`, async t => {
   installRuntimeSyncGuard(t);
