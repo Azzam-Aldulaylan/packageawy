@@ -98,6 +98,32 @@ test('two different registries never collide, because the full request URL (incl
   assert.equal(store.get(mirrorUrl).etag, 'W/"mirror"');
 });
 
+test('delete removes a hydrated entry immediately and persists through the batched write-back', async () => {
+  const removedUrl = 'https://registry.npmjs.org/broken';
+  const retainedUrl = 'https://registry.npmjs.org/retained';
+  const retained = { etag: '"good"', body: '{}' };
+  const kv = fakeKeyValueStore({
+    schemaVersion: 2,
+    entries: [[removedUrl, { etag: '"bad"', body: '{broken' }], [retainedUrl, retained]],
+  });
+  const scheduler = heldScheduler();
+  const store = new PersistentEtagStore(kv, undefined, { scheduler });
+
+  store.delete(removedUrl);
+  assert.equal(store.get(removedUrl), undefined);
+  assert.deepEqual(store.get(retainedUrl), retained);
+  assert.equal(kv.updates.length, 0, 'deletion uses the same batching as set');
+  scheduler.runPending();
+  await flushed();
+
+  assert.equal(kv.updates.length, 1);
+  const reloaded = persistentEtagStore(kv);
+  assert.equal(reloaded.get(removedUrl), undefined);
+  assert.deepEqual(reloaded.get(retainedUrl), retained);
+  store.dispose();
+  reloaded.dispose();
+});
+
 test('safe version data is reusable across projects: one shared panel-level store serves every controller', () => {
   const sharedStore = persistentEtagStore(fakeKeyValueStore());
   const url = 'https://registry.npmjs.org/clean-pkg/latest';

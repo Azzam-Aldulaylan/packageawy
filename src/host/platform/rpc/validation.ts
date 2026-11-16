@@ -37,6 +37,12 @@ function integer(value: unknown, what: string): number {
   return value;
 }
 
+/** Process identity must survive JSON and Kotlin without truncation or coercion. */
+export function validateProcessId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw invalid('processId must be a safe positive integer');
+  return value;
+}
+
 function folders(value: unknown): WorkspaceFolder[] {
   if (!Array.isArray(value)) throw invalid('workspaceFolders must be an array');
   return value.map((item, index) => {
@@ -80,14 +86,15 @@ export function parseFileDidChange(params: unknown): FileDidChangeParams {
 }
 
 export function parseIdParam(params: unknown, name: string): number {
-  return integer(record(params, 'params')[name], name);
+  const value = record(params, 'params')[name];
+  return name === 'processId' ? validateProcessId(value) : integer(value, name);
 }
 
 export function parseProcessDidExit(params: unknown): ProcessDidExitParams {
   const value = record(params, 'params');
   const exitCode = value['exitCode'];
   return {
-    processId: integer(value['processId'], 'processId'),
+    processId: validateProcessId(value['processId']),
     exitCode: exitCode === null || exitCode === undefined ? null : integer(exitCode, 'exitCode'),
   };
 }
@@ -100,4 +107,13 @@ export function parseWebviewMessage(params: unknown): WebviewMessageParams {
   const value = record(params, 'params');
   if (!('message' in value)) throw invalid('message is required');
   return { message: value['message'] };
+}
+
+/** A fresh UUID identifies one restart attempt, including its cancel. */
+export function parseRestart(params: unknown): import('./protocol.js').RestartParams {
+  const value = record(params, 'restart params');
+  const sessionId = value['sessionId'];
+  if (Object.keys(value).length !== 1 || typeof sessionId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) throw invalid('sessionId must be a UUID');
+  return { sessionId };
 }

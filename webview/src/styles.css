@@ -199,9 +199,21 @@ button {
   text-align: start;
 }
 
+/* A protocol mismatch must stay visible above any open review dialog. */
+.banner--protocol {
+  position: fixed;
+  inset-block-start: 1rem;
+  inset-inline: 1rem;
+  z-index: 200;
+}
+
 .banner--error {
   border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-editorError-foreground));
   background: var(--vscode-inputValidation-errorBackground, transparent);
+}
+
+.banner--error.banner--protocol {
+  background: var(--vscode-editor-background);
 }
 
 .banner__icon {
@@ -1121,8 +1133,8 @@ button {
   font-weight: 500;
 }
 
-/* The strong, primary target: the value the redesign wants a user's eye
-   drawn to first when Wanted and Latest disagree. */
+/* The strong, primary target: the offered upgrade, emphasised when the
+   latest release is a different version shown underneath. */
 .version-cell__value--primary {
   font-size: 1.05em;
   font-weight: 600;
@@ -1189,6 +1201,11 @@ button {
 }
 /* Safe: a calm, subtle green, never louder than an actual vulnerability. */
 .severity--none {
+  /* The longest label ("No known vulnerabilities") may wrap to two lines
+     rather than spill into the next column. */
+  white-space: normal;
+  max-width: 100%;
+  line-height: 1.2;
   border-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 55%, var(--vscode-panel-border, transparent));
   color: var(--vscode-charts-green, #89d185);
   font-weight: 500;
@@ -5008,6 +5025,12 @@ button {
   font-size: 0.78em;
 }
 
+.security-outcome__elsewhere {
+  margin: 0.65rem 0 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
 .security-remaining {
   margin-top: 0.65rem;
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
@@ -6592,6 +6615,18 @@ button {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+.upgrade-target-picker__row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.upgrade-target-picker__row .upgrade-target-picker__select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .upgrade-target-picker__select {
@@ -8232,14 +8267,6 @@ button {
   font-size: 0.82em;
 }
 
-.smart-cleanup-execution progress {
-  width: min(28rem, 90%);
-  height: 0.3rem;
-  border: 0;
-  color: var(--vscode-progressBar-background);
-  background: var(--vscode-progressBar-background, transparent);
-}
-
 .smart-cleanup-results__headline {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -8818,3 +8845,34 @@ button {
   margin: 0;
   color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
 }
+
+.recovery {
+  max-width: 76ch;
+  margin: 24px auto;
+  padding: 0 24px 32px;
+  color: var(--vscode-foreground);
+}
+.recovery__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.recovery__heading h1 { margin: 0; font-size: 1.5rem; }
+.recovery p { line-height: 1.6; }
+.recovery__warning { color: var(--vscode-foreground); }
+.recovery__confirmation, .recovery__choices { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; margin: 24px 0; }
+.recovery label { display: flex; gap: 8px; align-items: baseline; line-height: 1.5; }
+.recovery input { flex-shrink: 0; accent-color: var(--vscode-focusBorder); }
+.recovery__file { border: 1px solid var(--vscode-panel-border); margin: 24px 0; padding: 16px; min-width: 0; }
+.recovery__file legend { font-weight: 600; overflow-wrap: anywhere; padding: 0 6px; }
+.recovery__comparison { margin: 0; }
+.recovery__comparison div { margin: 0 0 12px; }
+.recovery__comparison dt { font-weight: 600; }
+.recovery__comparison dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.recovery button:focus-visible, .recovery input:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+@media (max-width: 480px) { .recovery { padding: 0 12px 24px; } .recovery__heading { align-items: flex-start; } }
+
+.recovery__contents summary { cursor: pointer; padding: 8px 0; }
+.recovery__contents h2 { font-size: 1rem; margin: 16px 0 8px; }
+.recovery__contents pre { overflow: auto; max-height: 20rem; padding: 12px; background: var(--vscode-textCodeBlock-background); color: var(--vscode-foreground); font-size: 0.9em; tab-size: 2; }

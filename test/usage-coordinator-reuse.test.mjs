@@ -54,19 +54,19 @@ test('coordinator reuses a real cleanup scan and immediately supersedes rendered
   const { coordinator, messages } = fixture();
 
   assert.equal(await coordinator.handleAnalyzeCleanup({ background: true }), true);
-  assert.equal(findFilesCalls, 2, 'cleanup performs one concurrent source/config discovery pair');
+  assert.equal(findFilesCalls, 3, 'cleanup performs one concurrent source/config/coverage discovery pass');
 
   await coordinator.handleWhereUsed({ package: 'react' });
   const usage = messages.findLast((message) => message.status === 'usage-result');
   assert.equal(usage.analysis.fromCache, true);
-  assert.equal(findFilesCalls, 2, 'where-used reuses cleanup instead of scanning');
+  assert.equal(findFilesCalls, 3, 'where-used reuses cleanup instead of scanning');
 
   await coordinator.handleAnalyzeRemovalImpact({ requestId: 'impact-1', packages: ['react'] });
   const impact = messages.findLast((message) => message.status === 'removal-impact-result');
   assert.equal(impact.requestId, 'impact-1');
   assert.deepEqual(impact.packages, ['react']);
   assert.equal(impact.assessments.length, 1);
-  assert.equal(findFilesCalls, 2, 'removal impact reuses the complete cleanup entry');
+  assert.equal(findFilesCalls, 3, 'removal impact reuses the complete cleanup entry');
 
   const beforeInvalidation = messages.length;
   assert.equal(coordinator.invalidateProjectSource('project-a'), 1);
@@ -91,9 +91,9 @@ test('an explicit cleanup pass satisfies the project-wide background reuse gate'
   const { coordinator } = fixture();
 
   assert.equal(await coordinator.handleAnalyzeCleanup(), true);
-  assert.equal(findFilesCalls, 2);
+  assert.equal(findFilesCalls, 3);
   await coordinator.requestBackgroundUsageRefresh();
-  assert.equal(findFilesCalls, 2, 'the same project does not rescan before its one-hour reuse window expires');
+  assert.equal(findFilesCalls, 3, 'the same project does not rescan before its one-hour reuse window expires');
 
   coordinator.dispose();
 });

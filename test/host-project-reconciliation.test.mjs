@@ -43,8 +43,12 @@ test('branch fatal-state Retry re-enters project discovery when no selection rem
   );
   assert.match(
     refreshBranch,
-    /if \(this\.selectedProject === undefined\) \{[\s\S]*?await this\.ensureController\(\)[\s\S]*?controller\.handleReady\(this\.sink\)/,
+    /if \(this\.selectedProject === undefined\) \{\s*await this\.presentDashboard\(true\)/,
     'Retry must rediscover branch candidates instead of calling reloadAndScan(undefined)'
+  );
+  assert.match(
+    panel.slice(panel.indexOf('private async presentDashboard('), panel.indexOf('private async handleOtherMessage(')),
+    /await this\.ensureController\(\)[\s\S]*?controller\.handleReady\(this\.sink\)/
   );
   assert.match(
     refreshBranch,

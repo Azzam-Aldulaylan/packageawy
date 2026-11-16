@@ -127,7 +127,6 @@ test('confirmation and protected execution states preserve the close safety boun
   const confirming = state.smartCleanupReducer(ready, { type: 'show-confirmation' });
   const executing = state.smartCleanupReducer(confirming, {
     type: 'execution-started',
-    total: 1,
     currentLabel: 'Removing package-0',
   });
   const rollingBack = state.smartCleanupReducer(executing, {

@@ -211,6 +211,10 @@ export class PersistentEtagStore implements EtagStore {
     this.cache.set(key, value);
   }
 
+  delete(key: string): void {
+    this.cache.delete(key);
+  }
+
   dispose(): void {
     this.cache.dispose();
   }

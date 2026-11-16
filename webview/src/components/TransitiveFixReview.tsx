@@ -1,3 +1,5 @@
+import { useContext } from 'react';
+import { DependencyChangeContext } from './DependencyChangeStatus.js';
 import type { ReactElement } from 'react';
 
 import type {
@@ -229,6 +231,7 @@ export function TransitiveFixReview({
   onRetry: (analysisId: string) => void;
   onOpenAdvisory: OpenAdvisoryHandler;
 }): ReactElement {
+  const change = useContext(DependencyChangeContext);
   if (state === undefined) {
     return (
       <div className="transitive-review">
@@ -302,10 +305,10 @@ export function TransitiveFixReview({
   if (state.phase === 'applying') {
     return (
       <div className="transitive-review">
-        <p className="transitive-review__progress" role="status" aria-live="polite">
+        {change.task !== 'still-running' && !change.blocked ? <p className="transitive-review__progress" role="status" aria-live="polite">
           <IconRefresh className="banner__icon--spin" />
           {state.cancelRequested ? 'Stopping at a safe point, then restoring if needed…' : PROGRESS_LABEL[state.progress]}
-        </p>
+        </p> : null}
         <DetailedPlan plan={plan} onOpenAdvisory={onOpenAdvisory} />
         <button type="button" className="button button--secondary" disabled={state.cancelRequested} onClick={() => onCancel(plan.analysisId)}>
           {state.cancelRequested ? 'Cancelling…' : 'Cancel fix'}

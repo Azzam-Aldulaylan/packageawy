@@ -1,3 +1,6 @@
+import { isExpectedFsError } from './expectedFsError.js';
+import { precheckRestore } from './restorePrecheck.js';
+
 /**
  * Transactional orchestration for a dependency upgrade.
  *
@@ -18,12 +21,21 @@ export type FileState =
 
 export type CompareAndSwapResult = 'restored' | 'conflict';
 
+/** Only an ordinary project-file move failure may settle a journal rollback as incomplete. */
+export class RestoreFileError extends Error {
+  readonly code: string | undefined;
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'string' ? cause.code : undefined;
+  }
+}
+
 export interface UpgradeTransactionFileAdapter {
   /** Read exact bytes, or report that the allowlisted file does not exist. */
   read(path: string): Promise<FileState>;
   /**
-   * Atomically, or with the strongest equivalent protection the host can
-   * provide, replace `expected` with `replacement`. The transaction assumes
+   * Compare current bytes with `expected` before installing `replacement`.
+   * The journal retains displaced files during rollback. The transaction assumes
    * `restored` means the replacement is committed before this promise settles.
    * A mismatch must return `conflict` without modifying the file. This is the
    * safety boundary used both for pre-install manifest staging and rollback;
@@ -32,7 +44,9 @@ export interface UpgradeTransactionFileAdapter {
   compareAndSwap(
     path: string,
     expected: FileState,
-    replacement: FileState
+    replacement: FileState,
+    /** Synchronous fence, called immediately before each filesystem mutation. */
+    beforeMutation?: () => void
   ): Promise<CompareAndSwapResult>;
 }
 
@@ -44,7 +58,8 @@ export type InstallExecutionResult =
       message: string;
       exitCode?: number | null;
     }
-  | { status: 'cancelled'; message: string; exitCode?: number | null };
+  | { status: 'cancelled'; message: string; exitCode?: number | null }
+  | { status: 'unknown'; message: string };
 
 /**
  * Writes an install step makes to a host-staged file go through this, so the
@@ -73,6 +88,7 @@ export interface VerificationCheckResult {
 }
 
 export type VerificationExecutionResult =
+  | { status: 'unknown'; checks: readonly VerificationCheckResult[]; message: string }
   | { status: 'passed'; checks: readonly VerificationCheckResult[] }
   | { status: 'failed'; checks: readonly VerificationCheckResult[]; message?: string }
   | { status: 'cancelled'; checks: readonly VerificationCheckResult[]; message?: string };
@@ -142,7 +158,7 @@ export type InstallResult =
 export type VerificationResult =
   | {
       status: 'not-run';
-      reason: 'not-configured' | 'manifest-stage-failed' | 'file-stage-failed' | 'install-failed' | 'cancelled';
+      reason: 'not-configured' | 'manifest-stage-failed' | 'file-stage-failed' | 'install-failed' | 'cancelled' | 'unknown';
     }
   | VerificationExecutionResult;
 
@@ -159,9 +175,10 @@ export type RollbackResult =
       files: readonly RollbackFileResult[];
     };
 
-export type TransactionCompletion = 'kept' | 'rolled-back' | 'not-started' | 'incomplete';
+export type TransactionCompletion = 'kept' | 'rolled-back' | 'not-started' | 'incomplete' | 'unknown';
 
 export type TransactionReason =
+  | 'unknown'
   | 'verified'
   | 'verification-not-configured'
   | 'verification-failed'
@@ -199,6 +216,7 @@ export interface UpgradeTransactionOptions {
   /** Canonical, host-resolved files this transaction is allowed to restore. */
   allowlistedPaths: readonly string[];
   files: UpgradeTransactionFileAdapter;
+  journal?: { record(step: string, phase: 'intent' | 'finished'): Promise<void>; assertWritable?(): void };
   /**
    * Exact host-generated package.json bytes to stage before reconciliation.
    * The path must be an existing member of `allowlistedPaths`. The state
@@ -219,6 +237,14 @@ export interface UpgradeTransactionOptions {
   verifier?: UpgradeVerifier;
   /** Defaults to rollback when omitted. */
   verificationFailureDecider?: VerificationFailureDecider;
+  /**
+   * Called right before any automatic restore. A message refuses the
+   * restore: the files are left as they are and every one is reported as a
+   * failed restore with that message. The host resolves its mutation target
+   * again here, so a topology or settings change during the install never
+   * lets a restore write a file the package manager no longer owns.
+   */
+  beforeRestore?: () => Promise<string | null>;
   signal?: AbortSignal;
 }
 
@@ -293,13 +319,15 @@ function stableAllowlist(paths: readonly string[]): string[] {
 
 async function takeSnapshot(
   paths: readonly string[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  uncertainErrors = false
 ): Promise<{ ok: true; entries: SnapshotEntry[] } | { ok: false; result: SnapshotResult }> {
   const entries: SnapshotEntry[] = [];
   for (const path of paths) {
     try {
       entries.push({ path, before: cloneState(await files.read(path)) });
     } catch (cause) {
+      if (uncertainErrors || !isExpectedFsError(cause, 'read')) throw cause;
       return {
         ok: false,
         result: { status: 'failed', path, message: errorMessage(cause) },
@@ -312,7 +340,8 @@ async function takeSnapshot(
 async function stageManifest(
   stage: NonNullable<UpgradeTransactionOptions['manifestStage']>,
   entries: readonly SnapshotEntry[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  uncertainErrors = false
 ): Promise<SuccessfulManifestStage | FailedManifestStage> {
   const manifest = entries.find((entry) => entry.path === stage.path);
   if (manifest === undefined) {
@@ -376,6 +405,7 @@ async function stageManifest(
       };
     }
   } catch (cause) {
+    if (uncertainErrors || !isExpectedFsError(cause, 'restoreRename')) throw cause;
     return {
       ok: false,
       result: {
@@ -400,7 +430,8 @@ async function stageManifest(
 async function stageExactFile(
   stage: NonNullable<UpgradeTransactionOptions['fileStages']>[number],
   entries: readonly SnapshotEntry[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  uncertainErrors = false
 ): Promise<SuccessfulExactFileStage | FailedExactFileStage> {
   const snapshot = entries.find((entry) => entry.path === stage.path);
   if (snapshot === undefined) {
@@ -464,6 +495,7 @@ async function stageExactFile(
       };
     }
   } catch (cause) {
+    if (uncertainErrors || !isExpectedFsError(cause, 'restoreRename')) throw cause;
     return {
       ok: false,
       result: {
@@ -484,13 +516,15 @@ async function stageExactFile(
 
 async function captureExpectedStates(
   entries: readonly SnapshotEntry[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  uncertainErrors = false
 ): Promise<ExpectedEntry[]> {
   const expected: ExpectedEntry[] = [];
   for (const snapshot of entries) {
     try {
       expected.push({ snapshot, expected: cloneState(await files.read(snapshot.path)) });
     } catch (cause) {
+      if (uncertainErrors || !isExpectedFsError(cause, 'read')) throw cause;
       expected.push({ snapshot, captureError: errorMessage(cause) });
     }
   }
@@ -515,36 +549,48 @@ function withOwnedStates(
 
 async function rollback(
   entries: readonly ExpectedEntry[],
-  files: UpgradeTransactionFileAdapter
+  files: UpgradeTransactionFileAdapter,
+  beforeRestore?: () => Promise<string | null>,
+  journal?: UpgradeTransactionOptions['journal']
 ): Promise<RollbackResult> {
+  await journal?.record('rollback', 'intent');
   const results: RollbackFileResult[] = [];
-
-  for (const entry of entries) {
-    if ('captureError' in entry) {
-      results.push({
-        path: entry.snapshot.path,
-        status: 'failed',
-        message: `Could not capture post-install state: ${entry.captureError}`,
-      });
-      continue;
-    }
-
+  if (beforeRestore !== undefined && entries.length > 0) {
+    let refusal: string | null;
     try {
-      const result = await files.compareAndSwap(
-        entry.snapshot.path,
-        cloneState(entry.expected),
-        cloneState(entry.snapshot.before)
-      );
-      results.push({ path: entry.snapshot.path, status: result });
+      refusal = await beforeRestore();
     } catch (cause) {
-      results.push({
-        path: entry.snapshot.path,
-        status: 'failed',
-        message: errorMessage(cause),
-      });
+      throw cause;
+    }
+    if (refusal !== null) {
+      return { status: 'failed', files: entries.map((entry) => ({ path: entry.snapshot.path, status: 'failed', message: refusal })) };
     }
   }
 
+  const issues = await precheckRestore(entries.map(entry => ({
+    path: entry.snapshot.path,
+    check: async () => {
+      if ('captureError' in entry) throw new Error(entry.captureError);
+      return statesEqual(await files.read(entry.snapshot.path), entry.expected);
+    },
+  })));
+  if (issues.length > 0) return { status: issues.some(issue => issue.status === 'failed') ? 'failed' : 'conflict', files: issues };
+
+  for (const entry of entries) {
+    if ('captureError' in entry) continue;
+    try {
+      const result = await files.compareAndSwap(entry.snapshot.path, cloneState(entry.expected), cloneState(entry.snapshot.before));
+      results.push({ path: entry.snapshot.path, status: result });
+      if (result !== 'restored') break;
+    } catch (cause) {
+      if (!(cause instanceof RestoreFileError)) throw cause;
+      results.push({ path: entry.snapshot.path, status: 'failed', message: errorMessage(cause) });
+      break;
+    }
+  }
+
+  // A partial restore retains its last expectations for manual recovery.
+  if (results.every(result => result.status === 'restored')) await journal?.record('rollback', 'finished');
   if (results.some((result) => result.status === 'failed')) {
     return { status: 'failed', files: results };
   }
@@ -565,7 +611,7 @@ async function executeInstall(
   try {
     return await executor.execute(context);
   } catch (cause) {
-    return { status: 'failed', code: 'INSTALL_EXECUTOR_ERROR', message: errorMessage(cause) };
+    return { status: 'unknown', message: errorMessage(cause) };
   }
 }
 
@@ -574,7 +620,7 @@ async function executeVerification(verifier: UpgradeVerifier): Promise<Verificat
     return await verifier.verify();
   } catch (cause) {
     return {
-      status: 'failed',
+      status: 'unknown',
       checks: [],
       message: `Verification could not run: ${errorMessage(cause)}`,
     };
@@ -620,13 +666,13 @@ async function decideAfterFailure(
       decision,
       status: cancelled(signal) ? 'cancelled' : decision,
     };
-  } catch {
-    return { decision: 'rollback', status: 'failed' };
+  } catch (cause) {
+    throw cause;
   }
 }
 
 /** Run one complete upgrade transaction without throwing operational failures. */
-export async function runUpgradeTransaction(
+async function executeTransaction(
   options: UpgradeTransactionOptions
 ): Promise<UpgradeTransactionResult> {
   const paths = stableAllowlist(options.allowlistedPaths);
@@ -648,7 +694,7 @@ export async function runUpgradeTransaction(
     };
   }
 
-  const snapshot = await takeSnapshot(paths, options.files);
+  const snapshot = await takeSnapshot(paths, options.files, options.journal !== undefined);
   if (!snapshot.ok) {
     return {
       completion: 'not-started',
@@ -676,7 +722,7 @@ export async function runUpgradeTransaction(
   const fileStages: ExactFileStageResult[] = [];
   const expectedAfterStage: ExpectedEntry[] = [];
   if (options.manifestStage !== undefined) {
-    const staged = await stageManifest(options.manifestStage, snapshot.entries, options.files);
+    const staged = await stageManifest(options.manifestStage, snapshot.entries, options.files, options.journal !== undefined);
     manifestStage = staged.result;
     if (!staged.ok) {
       return {
@@ -699,13 +745,13 @@ export async function runUpgradeTransaction(
 
   for (const fileStage of options.fileStages ?? []) {
     if (cancelled(options.signal)) break;
-    const staged = await stageExactFile(fileStage, snapshot.entries, options.files);
+    const staged = await stageExactFile(fileStage, snapshot.entries, options.files, options.journal !== undefined);
     fileStages.push(staged.result);
     if (!staged.ok) {
       const rolledBack =
         expectedAfterStage.length === 0
           ? { status: 'not-needed' as const }
-          : await rollback(expectedAfterStage, options.files);
+          : await rollback(expectedAfterStage, options.files, options.beforeRestore, options.journal);
       return {
         completion:
           rolledBack.status === 'not-needed'
@@ -745,7 +791,7 @@ export async function runUpgradeTransaction(
         retentionDecision: 'not-needed',
       };
     }
-    const rolledBack = await rollback(expectedAfterStage, options.files);
+    const rolledBack = await rollback(expectedAfterStage, options.files, options.beforeRestore, options.journal);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -761,6 +807,8 @@ export async function runUpgradeTransaction(
 
   // Once install starts it is always awaited. Cancellation is observed only
   // after it reaches this stable boundary, then handled by rollback.
+  await options.journal?.record('install', 'intent');
+  options.journal?.assertWritable?.();
   const install = await executeInstall(options.install, {
     compareAndSwap: async (path, expectedState, replacement) => {
       if (!owned.has(path)) {
@@ -771,10 +819,15 @@ export async function runUpgradeTransaction(
       return result;
     },
   });
-  const expected = withOwnedStates(await captureExpectedStates(snapshot.entries, options.files), owned);
+  if (install.status === 'unknown') return {
+    completion: 'unknown', reason: 'unknown', snapshot: snapshotResult, manifestStage, fileStages, install,
+    verification: { status: 'not-run', reason: 'unknown' }, rollback: { status: 'not-needed' }, retentionDecision: 'not-needed',
+  };
+  await options.journal?.record('install', 'finished');
+  const expected = withOwnedStates(await captureExpectedStates(snapshot.entries, options.files, options.journal !== undefined), owned);
 
   if (install.status !== 'succeeded') {
-    const rolledBack = await rollback(expected, options.files);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: install.status === 'cancelled' || cancelled(options.signal) ? 'cancelled' : 'install-failed',
@@ -792,7 +845,7 @@ export async function runUpgradeTransaction(
   }
 
   if (cancelled(options.signal)) {
-    const rolledBack = await rollback(expected, options.files);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -823,10 +876,17 @@ export async function runUpgradeTransaction(
 
   // Verification also reaches a stable boundary before cancellation can
   // initiate rollback, so rollback cannot race an in-flight verification.
+  await options.journal?.record('verification', 'intent');
+  options.journal?.assertWritable?.();
   const verification = await executeVerification(options.verifier);
+  if (verification.status === 'unknown') return {
+    completion: 'unknown', reason: 'unknown', snapshot: snapshotResult, manifestStage, fileStages, install,
+    verification, rollback: { status: 'not-needed' }, retentionDecision: 'not-needed',
+  };
+  await options.journal?.record('verification', 'finished');
 
   if (cancelled(options.signal) || verification.status === 'cancelled') {
-    const rolledBack = await rollback(expected, options.files);
+    const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
     return {
       completion: completionAfterRollback(rolledBack),
       reason: 'cancelled',
@@ -855,11 +915,13 @@ export async function runUpgradeTransaction(
     };
   }
 
+  await options.journal?.record('decision', 'intent');
   const retention = await decideAfterFailure(
     options.verificationFailureDecider,
     verification,
     options.signal
   );
+  await options.journal?.record('decision', 'finished');
   if (retention.decision === 'keep' && !cancelled(options.signal)) {
     return {
       completion: 'kept',
@@ -875,7 +937,7 @@ export async function runUpgradeTransaction(
     };
   }
 
-  const rolledBack = await rollback(expected, options.files);
+  const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);
   return {
     completion: completionAfterRollback(rolledBack),
     reason: cancelled(options.signal) ? 'cancelled' : 'verification-failed',
@@ -887,4 +949,16 @@ export async function runUpgradeTransaction(
     rollback: rolledBack,
     retentionDecision: retention.status,
   };
+}
+
+export async function runUpgradeTransaction(options: UpgradeTransactionOptions): Promise<UpgradeTransactionResult> {
+  let dispatched = false;
+  try {
+    return await executeTransaction({ ...options, install: { execute: (context) => { dispatched = true; return options.install.execute(context); } } });
+  } catch (error) {
+    if (!dispatched && options.journal === undefined) throw error;
+    return { completion: 'unknown', reason: 'unknown', snapshot: { status: 'not-run' }, manifestStage: { status: 'not-run' },
+      install: { status: 'unknown', message: errorMessage(error) }, verification: { status: 'not-run', reason: 'unknown' },
+      rollback: { status: 'not-needed' }, retentionDecision: 'not-needed' };
+  }
 }

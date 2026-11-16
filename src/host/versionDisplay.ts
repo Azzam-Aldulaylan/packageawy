@@ -1,52 +1,58 @@
 /**
  * Pure display decision for the Available column.
  *
- * Wanted and Latest are the same value for most packages: the version list
- * is only fetched when they can differ, so the common case is a single
- * compact line. They diverge exactly when a newer release exists outside
- * the declared range: Latest becomes the strong, primary value (it is what
- * the user would actually get by widening the range or running an
- * out-of-range install) and Wanted survives as "the most a plain install
- * gets you today."
+ * The bold value is the version the Upgrade button and the upgrade review
+ * start on (`upgradeTo`), so the table, the action and the review always
+ * name the same version. Rows with no offered upgrade (already current,
+ * npm aliases, catalog-owned versions) fall back to Latest, then Wanted.
+ * When the offered version is not the latest, Latest is shown underneath.
  *
  * See severityDisplay.ts for why this lives under src/host rather than
  * webview/src.
  */
 
-import type { UnresolvableReason } from '../core/types.js';
+import type { PackageRow, UnresolvableReason } from '../core/types.js';
 import type { UpdateKind } from './updateClassification.js';
 import { classifyUpdate } from './updateClassification.js';
 
+export type AvailableVersionCaption =
+  /** The bold value is the latest release, ahead of what is installed. */
+  | { kind: 'latest' }
+  /** As above, and a plain install within the declared range already gets it. */
+  | { kind: 'latest-within-range' }
+  /** The bold value is an offered upgrade that is not the latest release. */
+  | { kind: 'other-latest'; version: string };
+
 export type AvailableVersionDisplay =
   | { kind: 'dash' }
-  /** Wanted === Latest: nothing outside the current range to call out. */
-  | { kind: 'single'; value: string; hasUpdate: boolean; updateKind: UpdateKind | null }
-  /** Wanted !== Latest: a real release exists past what the declared range allows. */
-  | { kind: 'split'; value: string; withinRange: string; updateKind: UpdateKind | null };
+  | {
+      kind: 'version';
+      value: string;
+      /** True when `value` is the offered upgrade (`upgradeTo`). */
+      suggested: boolean;
+      caption: AvailableVersionCaption | null;
+      updateKind: UpdateKind | null;
+    };
 
-function classifyAgainst(current: string | null, target: string): UpdateKind | null {
-  return current === null ? null : classifyUpdate(current, target);
+type AvailableVersionFields = Pick<PackageRow, 'current' | 'wanted' | 'latest' | 'upgradeTo'>;
+
+/** The single version the Available column shows and sorts by. */
+export function availablePrimaryVersion(row: Pick<PackageRow, 'wanted' | 'latest' | 'upgradeTo'>): string | null {
+  return row.upgradeTo ?? row.latest ?? row.wanted ?? null;
 }
 
-export function availableVersionDisplay(
-  current: string | null,
-  wanted: string | null,
-  latest: string | null
-): AvailableVersionDisplay {
-  if (wanted === null && latest === null) return { kind: 'dash' };
+export function availableVersionDisplay(row: AvailableVersionFields): AvailableVersionDisplay {
+  const value = availablePrimaryVersion(row);
+  if (value === null) return { kind: 'dash' };
 
-  if (wanted === latest) {
-    // Both null is excluded above, and equal values can't be "one null, one
-    // not", so whichever local variable is read below is the shared,
-    // non-null value itself.
-    const value = wanted ?? latest ?? '—';
-    const hasUpdate = current !== null && value !== current;
-    return { kind: 'single', value, hasUpdate, updateKind: hasUpdate ? classifyAgainst(current, value) : null };
-  }
+  const { current, wanted, latest } = row;
+  const hasUpdate = current !== null && value !== current;
+  const updateKind = hasUpdate && current !== null ? classifyUpdate(current, value) : null;
+  let caption: AvailableVersionCaption | null = null;
+  if (latest !== null && value !== latest) caption = { kind: 'other-latest', version: latest };
+  else if (hasUpdate && value === latest) caption = wanted === latest ? { kind: 'latest-within-range' } : { kind: 'latest' };
 
-  const value = latest ?? wanted ?? '—';
-  const withinRange = wanted ?? '—';
-  return { kind: 'split', value, withinRange, updateKind: classifyAgainst(current, value) };
+  return { kind: 'version', value, suggested: row.upgradeTo !== null, caption, updateKind };
 }
 
 /**

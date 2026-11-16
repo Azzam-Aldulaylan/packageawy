@@ -60,7 +60,7 @@ test('enrichment preserves open dialogs, reviews, picker selection and all other
   render();
   hooks.effects.find(effect => effect.toString().includes('addEventListener("message"'))();
   assert.equal(typeof receive, 'function');
-  receive({ data: { status: 'ready', data } });
+  receive({ origin: '', source: null, data: { status: 'ready', data } });
   let tree = render();
   findProp(tree, 'onOpenManage')('app');
   tree = render();
@@ -74,18 +74,18 @@ test('enrichment preserves open dialogs, reviews, picker selection and all other
   assert.equal(findProp(tree, 'upgrade').targetVersion, '1.9.0');
   const before = [...hooks.slots];
   hooks.writes = [];
-  receive({ data: { status: 'update-advisories', context, results } });
+  receive({ origin: '', source: null, data: { status: 'update-advisories', context, results } });
   assert.deepEqual([...new Set(hooks.writes)], [0], 'only dashboard facts change');
   assert.deepEqual(hooks.slots[0].data.updateAdvisories, results);
   before.slice(1).forEach((value, index) => assert.equal(hooks.slots[index + 1], value));
   assert.equal(hooks.slots[0].data.generatedAt, data.generatedAt);
   for (const [field, value] of [['scanId', 2], ['projectId', 'other'], ['sourceGeneration', 2], ['settingsGeneration', 1]]) {
     const current = hooks.slots[0];
-    receive({ data: { status: 'update-advisories', context: { ...context, [field]: value }, results: [] } });
+    receive({ origin: '', source: null, data: { status: 'update-advisories', context: { ...context, [field]: value }, results: [] } });
     assert.equal(hooks.slots[0], current, `stale ${field} is ignored`);
   }
   hooks.slots[0] = { status: 'ready', data: { ...data, availability: { ...data.availability, advisories: 'off' } } };
   const off = hooks.slots[0];
-  receive({ data: { status: 'update-advisories', context, results } });
+  receive({ origin: '', source: null, data: { status: 'update-advisories', context, results } });
   assert.equal(hooks.slots[0], off, 'Off never accepts warning results');
 });

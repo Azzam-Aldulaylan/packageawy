@@ -13,6 +13,7 @@
  * once, here, so no caller can accidentally post a class instance.
  */
 
+import { safeDiagnosticCode } from '../core/diagnostics.js';
 import type { ScanSnapshot } from '../core/cache/schema.js';
 import type { DashboardData, HostToWebviewMessage, SelectedProjectInfo } from './webviewProtocol.js';
 import { updatesSettled } from './registrySignIn.js';
@@ -51,12 +52,16 @@ export function toDashboardData(
     builtAt: buildInfo.builtAt,
   };
   if (result.advisoriesError !== undefined) {
-    data.advisoriesError = {
-      code: result.advisoriesError.code,
-      message: result.advisoriesError.message,
-    };
+    // The raw message can carry full registry URLs; send only a safe code.
+    const code = safeDiagnosticCode(result.advisoriesError.code);
+    data.advisoriesError = { code, message: `Vulnerability data could not be loaded (${code}).` };
   }
-  if (result.auditUnavailable === true) data.auditUnavailable = true;
+  if (result.auditUnavailable === true) {
+    data.auditUnavailable = true;
+    data.auditUnavailableReason = result.auditUnavailableReason ?? 'failed';
+  }
+  if (result.packageManager !== undefined) data.packageManager = result.packageManager;
+  if (result.lockfileMissing === true) data.lockfileMissing = true;
   if (readOnlyReason !== undefined) data.readOnlyReason = readOnlyReason;
   return data;
 }

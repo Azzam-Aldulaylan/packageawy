@@ -34,8 +34,8 @@
 - **Upgrade Review.** Before an upgrade, Packageawy checks peer dependencies, Node engine ranges, package exports, and your own imports. When peers conflict, it looks for a set of upgrades that works together. It also checks the proposed dependency tree for known vulnerabilities and shows any the upgrade would add. The version list marks Security fix, Publisher LTS, and Latest stable versions.
 - **Upgrades that keep your style.** `^` and `~` ranges stay `^` and `~`, and `package.json` keeps its key order, indentation, and line endings.
 - **Transitive fixes.** When a vulnerable package sits deep in the tree, Packageawy can often move just that package to a patched version without touching its parent.
-- **Removal Review and Smart Cleanup.** Find packages that look unused and deprecated versions, with the evidence for each one. Nothing is removed until you confirm. A removal shows its progress and result in the dialog, and after a kept Smart Cleanup, **Restore dependency files** puts `package.json` and the lockfile back.
-- **Safe by default.** Install scripts are off by default, changes run as a visible task, and dependency files are restored after a failed install. If verification fails, you choose whether to keep the change or roll back. When no verification scripts are set, reviews suggest the project's `typecheck`, `build`, `test`, and `lint` scripts.
+- **Removal Review and Smart Cleanup.** Find packages that look unused and deprecated versions, with the evidence for each one. Nothing is removed until you confirm. A removal shows its progress and result in the dialog, and after a kept Smart Cleanup, **Restore dependency files** opens recovery to review `package.json` and the lockfile.
+- **Safe by default.** Install scripts are off by default, changes run as a visible task, and Packageawy checks dependency files before restoring them after a failed install. If verification fails, you choose whether to keep the change or roll back. When no verification scripts are set, reviews suggest the project's `typecheck`, `build`, `test`, and `lint` scripts.
 - **Monorepos.** Pick any `package.json` in the workspace, or right-click one and choose **Open in Packageawy**. npm workspaces and pnpm importers are supported, and each npm workspace member shows its own installed versions.
 - **Private registries.** Scoped registries from `.npmrc` are used for lookups. When a registry asks for sign-in, Packageawy says which one and keeps upgrades available for every other package.
 - **Yarn and Bun projects.** Their dependencies are shown in the same table. Changes are available for npm and pnpm projects.
@@ -68,7 +68,7 @@ Settings are under **Settings**, **Tools**, **Packageawy**, with per-project opt
 | Current | The installed version, from the lockfile. Without a lockfile, the declared range is shown with a tag such as `workspace`, `git`, or `unresolved`. |
 | Wanted | The newest version your range in `package.json` allows. |
 | Latest | The registry's `latest` version. For a prerelease install, a newer prerelease on the same version line can be shown. |
-| Vulnerabilities | The worst severity found anywhere under this dependency: Critical, High, Moderate, Low, or Info. `Safe` means no known advisory. |
+| Vulnerabilities | The worst severity found anywhere under this dependency: Critical, High, Moderate, Low, or Info. `No known vulnerabilities` means no known advisory in the installed dependency tree. |
 
 These follow the same meaning as `npm outdated`.
 
@@ -86,7 +86,7 @@ These follow the same meaning as `npm outdated`.
 4. After you confirm, it re-reads your project to make sure nothing changed, then saves a copy of `package.json` and the lockfile.
 5. The install runs as a visible VS Code task or in the JetBrains Run tool window.
 6. If you listed verification scripts (for example `test` or `build`), they run next. If you haven't, the review lists the project's `typecheck`, `build`, `test`, and `lint` scripts so you can check the ones to run, and "Remember for this project" saves your choice. Without any, the upgrade is reported as unverified.
-7. If the install fails, or you choose to roll back after a failed verification, the saved files are restored. Rollback never overwrites edits you made in the meantime.
+7. If the install fails, or you choose to roll back after a failed verification, Packageawy restores your dependency files and stops if it sees they changed. After a successful restore with a lockfile, you can choose a frozen reinstall of `node_modules`.
 
 Only one change runs at a time.
 
@@ -140,7 +140,7 @@ Package names and versions are still information about your project, so check yo
 ## Requirements
 
 - VS Code 1.90 or newer, on desktop, or a JetBrains IDE 2026.1 or newer with a JCEF-enabled runtime.
-- In JetBrains IDEs, Node.js. Packageawy uses the Node.js interpreter configured in the IDE, or `node` on PATH.
+- In JetBrains IDEs, Node.js. Packageawy requires a stable Node.js release: 18.17.x through 18.x, or 20.5.0 or newer. It uses the Node.js interpreter configured in the IDE, or `node` on PATH.
 - An npm or pnpm project. For pnpm, a lockfile from pnpm 9 or newer.
 - Registry sign-in stays with your package manager. Packageawy never reads or stores auth tokens.
 

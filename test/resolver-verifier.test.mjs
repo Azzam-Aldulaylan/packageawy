@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 
 import {
   buildLockfileMaterializationArgs,
@@ -431,10 +433,11 @@ test('the security materialization of a pnpm workspace member reads the member i
 });
 
 test('workspace paths that escape the temporary directory are refused', () => {
+  const root = path.join(tmpdir(), 'root');
   for (const unsafe of ['../outside', 'apps/../../outside', '/etc', 'apps//web', './apps', 'C:/x', 'apps\\web', '']) {
-    assert.throws(() => isolatedRelativePath('/tmp/root', unsafe), /unsafe workspace path/);
+    assert.throws(() => isolatedRelativePath(root, unsafe), /unsafe workspace path/);
   }
-  assert.equal(isolatedRelativePath('/tmp/root', 'apps/web'), '/tmp/root/apps/web');
+  assert.equal(isolatedRelativePath(root, 'apps/web'), path.join(root, 'apps', 'web'));
 });
 
 test('a workspace run that leaves the reviewed member out of the lockfile is not reported as compatible', async () => {
@@ -477,4 +480,30 @@ test('a workspace that cannot be staged faithfully is unknown and never runs the
   assert.match(verification.explanation, /more packages than the review can stage/);
   assert.deepEqual(await verifier.materializeResolvedGraph(workspaceProposal), { ok: false });
   assert.equal(ran, false);
+});
+
+test('materializeResolvedGraph reads back the npm-shrinkwrap.json it staged, not a package-lock.json', async () => {
+  const manifestText = JSON.stringify({ dependencies: { 'left-pad': '^1.3.0' } }, null, 2);
+  const shrinkwrap = (version) => JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/left-pad': { version } } });
+  const verifier = new IsolatedResolverVerifier({
+    packageManager: 'npm', packageManagerVersion: '10.0.0',
+    invocation: { executable: '/trusted/node', prefixArgs: ['/trusted/npm-cli.js'] },
+    manifestText,
+    lockfile: { name: 'npm-shrinkwrap.json', text: shrinkwrap('1.2.0') },
+    registry: 'https://registry.npmjs.org', policy: { strictPeerDeps: false, legacyPeerDeps: false },
+    runner: {
+      async run(_invocation, _args, cwd) {
+        const { writeFile } = await import('node:fs/promises');
+        // npm updates the shrinkwrap in place and writes no package-lock.json.
+        await writeFile(`${cwd}/npm-shrinkwrap.json`, shrinkwrap('1.3.0'));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    },
+  });
+  const result = await verifier.materializeResolvedGraph({
+    requested: { packageName: 'left-pad', currentVersion: '1.2.0', targetVersion: '1.2.0', classification: 'prod' },
+    changes: [],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.graph.nodes.get('node_modules/left-pad').version, '1.3.0');
 });

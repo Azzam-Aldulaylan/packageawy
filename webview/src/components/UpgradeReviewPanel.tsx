@@ -3,6 +3,7 @@ import type { ReactElement, RefObject } from 'react';
 
 import { UpgradeSecurityAcknowledgement, useUpgradeSecurityAcknowledgement } from './UpgradeSecurityAcknowledgement.js';
 import type { PackageRow } from '../../../src/core/types.js';
+import { noUpgradeExplanation } from '../../../src/host/upgradeAction.js';
 import { semanticButtonClassName, upgradeConfirmationAction } from '../../../src/host/actionButtonSemantics.js';
 import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
 import type { UpgradeAnalysisSections as UpgradeAnalysisSectionsState } from '../../../src/host/upgradeAnalysisSections.js';
@@ -297,7 +298,7 @@ const UpgradeReviewDetails = memo(function UpgradeReviewDetails({
         ) : analysis.compatibility.status === 'conflict' ? (
           <CoordinationUnavailableCard row={row} changes={analysis.changes} />
         ) : (
-          <SimpleUpgradePlanCard row={row} changes={analysis.changes} />
+          <SimpleUpgradePlanCard changes={analysis.changes} />
         )}
       </UpgradeReviewDisclosure>
       <UpgradeReviewDisclosure
@@ -385,7 +386,6 @@ export function UpgradeReviewPanel({
   active,
   targetVersion,
   targetState,
-  analyzingPhase,
   analysis,
   sections,
   hardStale,
@@ -403,6 +403,10 @@ export function UpgradeReviewPanel({
   onCancel,
   onConfigureVerification,
   onRefresh,
+  onRetryTargets,
+  onRefreshDashboard,
+  updateResolutionAvailable = true,
+  refreshDisabled,
   onChangeTab,
   onOpenAdvisory,
   onOpenUsageReference,
@@ -412,7 +416,6 @@ export function UpgradeReviewPanel({
   /** The upgrade target this row currently offers, or null when none is available. */
   targetVersion: string | null;
   targetState: UpgradeTargetLoadState;
-  analyzingPhase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
   analysis: UpgradeAnalysisPresentation | null;
   /** Per-section progressive state, rendered while `analysis` is still null. See src/host/upgradeAnalysisSections.ts. */
   sections: UpgradeAnalysisSectionsState;
@@ -432,6 +435,18 @@ export function UpgradeReviewPanel({
   onCancel: () => void;
   onConfigureVerification: () => void;
   onRefresh: () => void;
+  /** Loads the version list again after it failed. */
+  onRetryTargets?: (() => void) | undefined;
+  /** Refreshes the dashboard when the version list failed because the project changed. */
+  onRefreshDashboard?: (() => void) | undefined;
+  /** False when this package's update check failed in the last scan. */
+  updateResolutionAvailable?: boolean;
+  /**
+   * Disables the Refresh buttons (the dashboard's own rule). Separate from
+   * `disabled`: upgrades are disabled after an incomplete scan, which is
+   * exactly when Refresh is needed. Retry keeps `disabled`.
+   */
+  refreshDisabled?: boolean;
   onChangeTab: (tab: ManageTabId) => void;
   onOpenAdvisory?: ((packageName: string, advisoryId: string | number, path: string[], reference?: string) => void) | undefined;
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
@@ -467,7 +482,10 @@ export function UpgradeReviewPanel({
       fallbackVersion={row.upgradeTo}
       fallbackReason={row.upgradeReason}
       disabled={busy || disabled}
+      {...(refreshDisabled === undefined ? {} : { refreshDisabled })}
       onChange={onTargetChange}
+      {...(onRetryTargets === undefined ? {} : { onRetry: onRetryTargets })}
+      {...(onRefreshDashboard === undefined ? {} : { onRefreshDashboard })}
     />
   );
   const withTargetSelector = (content: ReactElement): ReactElement => (
@@ -493,6 +511,7 @@ export function UpgradeReviewPanel({
 
   if (!active) {
     if (row.upgradeTo === null) {
+      const noUpgrade = noUpgradeExplanation(row, updateResolutionAvailable);
       return withTargetSelector(
         <div className="review-panel__empty review-panel__empty--upgrade">
           <span className="review-panel__empty-icon" aria-hidden="true">
@@ -500,7 +519,12 @@ export function UpgradeReviewPanel({
           </span>
           <h3 className="review-panel__empty-heading">Upgrade review</h3>
           <p className="review-panel__empty-versions">{row.current ?? row.range}</p>
-          <p className="review-panel__empty-status">No newer version is currently available for {row.name}.</p>
+          <p className="review-panel__empty-status">{noUpgrade.text}</p>
+          {noUpgrade.refresh && onRefreshDashboard !== undefined ? (
+            <button type="button" className="button button--secondary" disabled={refreshDisabled ?? disabled} onClick={onRefreshDashboard}>
+              Refresh
+            </button>
+          ) : null}
         </div>
       );
     }

@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import type { PackageRow } from '../../../src/core/types.js';
 import type { DependencyFinding } from '../../../src/core/hygiene/types.js';
 import type { DependencyReference, DependencyUsageResult } from '../../../src/core/usage/types.js';
+import { coverageExplanation } from '../../../src/core/usage/sourceCoverage.js';
 import {
   deprecatedFindingFor,
   usageSignificanceCopy,
@@ -178,9 +179,15 @@ function WhereUsedCard({
                   <IconChevronRight className="usage-show-all__icon" />
                 </button>
               ) : null}
-              {usage.result.truncated ? <p className="usage-card__truncated">Scan was capped, so results may be incomplete.</p> : null}
             </>
           )}
+          {usage.result.truncated ? (
+            <p className="usage-card__truncated">
+              {usage.result.coverageReasons?.length
+                ? coverageExplanation(usage.result.coverageReasons)
+                : 'The scan did not cover every file, so results may be incomplete.'}
+            </p>
+          ) : null}
         </>
       )}
     </section>

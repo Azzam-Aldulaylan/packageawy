@@ -4,6 +4,7 @@ import test from 'node:test';
 import { UpgradeAssistantCoordinator } from '../out/host/upgradeAssistantCoordinator.js';
 import { MemoryEtagStore } from '../out/core/registry/versions.js';
 import { isHostToWebviewMessage } from '../out/host/webviewProtocol.js';
+import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 function fixture(get, count = 1) {
   const messages = [];
@@ -14,7 +15,7 @@ function fixture(get, count = 1) {
     sink: { postMessage: message => messages.push(message) },
     httpClient: { get }, etagStore: new MemoryEtagStore(),
     ensureController: async () => ({
-      upgradeSource: { resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} } },
+      upgradeSource: { resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} }, mutationTarget: resolvedTarget('/workspace') },
       lastResultRows: () => changes.map(change => ({
         name: change.package, current: '1.0.0', upgradeTo: '3.0.0', upgradeReason: 'update',
       })),

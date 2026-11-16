@@ -54,7 +54,9 @@ function securityRecommendation(security: SecurityOutcome | null | undefined): s
   if (parts.length === 0) {
     parts.push(security.status === 'not-applicable'
       ? 'No known vulnerabilities were reported for this review.'
-      : 'Security impact could not be confirmed. Review Security outcome.');
+      : security.status === 'resolved'
+        ? 'Known vulnerabilities counted before this upgrade are no longer reached through it.'
+        : 'Security impact could not be confirmed. Review Security outcome.');
   }
   return parts.join(' ');
 }

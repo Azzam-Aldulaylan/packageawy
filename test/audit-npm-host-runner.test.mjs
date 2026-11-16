@@ -72,7 +72,7 @@ test('resolution is cached per project root across scans', async () => {
 
 test('on Windows, an unresolved npm makes audit unavailable instead of spawning npm.cmd with a shell', async () => {
   const { runner, calls } = harness({ platform: 'win32', resolutions: [{ ok: false }, RESOLVED] });
-  await assert.rejects(runner.run('/project'), AuditUnavailableError);
+  await assert.rejects(runner.run('/project'), (error) => error instanceof AuditUnavailableError && error.reason === 'npm-not-found');
   assert.deepEqual(calls.create, []);
   // Not cached: a later scan picks up a newly installed Node.
   await runner.run('/project');

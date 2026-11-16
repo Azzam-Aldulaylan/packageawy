@@ -35,7 +35,7 @@ for (const scenario of ['workspace root', 'workspace member', 'standalone']) {
           target: '2.0.0', classification: 'prod', ignoreScripts: true, coordinatedChanges,
         }), { ok: true });
       }
-      const removal = session.prepareManifestReconciliation({ cwd, importerId, packageManager, ignoreScripts: true });
+      const removal = await session.prepareManifestReconciliation({ cwd, importerId, packageManager, ignoreScripts: true });
       assert.equal(removal.ok, true);
       assert.deepEqual(await removal.execute(), { ok: true });
       for (const request of requests.splice(0)) {

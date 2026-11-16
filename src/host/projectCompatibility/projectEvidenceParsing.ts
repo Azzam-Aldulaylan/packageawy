@@ -35,7 +35,8 @@ export function parseProjectManifestCompatibilityEvidence(manifestText: string):
   let parsed: unknown;
   try {
     parsed = JSON.parse(manifestText);
-  } catch {
+  } catch (cause) {
+    if (!(cause instanceof SyntaxError)) throw cause;
     return { scripts: {}, declaredDependencies: {}, projectNodeRange: null };
   }
   if (typeof parsed !== 'object' || parsed === null) {

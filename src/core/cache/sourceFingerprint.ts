@@ -25,6 +25,8 @@ export interface ProjectSourceFingerprint {
   lockfilePath: string | null;
   packageManager?: PackageManagerKind;
   importerId?: string;
+  /** Which directory and lockfile a change writes, or why changes are refused. A topology or configuration change that moves either invalidates the entry. */
+  mutationTargetIdentity?: string;
 }
 
 function sha256(text: string): string {
@@ -37,6 +39,7 @@ export function computeSourceFingerprint(input: {
   lockfilePath: string | null;
   packageManager?: PackageManagerKind;
   importerId?: string;
+  mutationTargetIdentity?: string;
 }): ProjectSourceFingerprint {
   return {
     manifestHash: sha256(input.manifestText),
@@ -44,6 +47,7 @@ export function computeSourceFingerprint(input: {
     lockfilePath: input.lockfilePath,
     packageManager: input.packageManager ?? 'npm',
     importerId: input.importerId ?? '.',
+    ...(input.mutationTargetIdentity === undefined ? {} : { mutationTargetIdentity: input.mutationTargetIdentity }),
   };
 }
 
@@ -53,7 +57,8 @@ export function sourceFingerprintsMatch(a: ProjectSourceFingerprint, b: ProjectS
     a.lockfileHash === b.lockfileHash &&
     a.lockfilePath === b.lockfilePath &&
     (a.packageManager ?? 'npm') === (b.packageManager ?? 'npm') &&
-    (a.importerId ?? '.') === (b.importerId ?? '.')
+    (a.importerId ?? '.') === (b.importerId ?? '.') &&
+    a.mutationTargetIdentity === b.mutationTargetIdentity
   );
 }
 
@@ -64,6 +69,7 @@ export function isSourceFingerprint(value: unknown): value is ProjectSourceFinge
     (value['lockfileHash'] === null || typeof value['lockfileHash'] === 'string') &&
     (value['lockfilePath'] === null || typeof value['lockfilePath'] === 'string') &&
     (value['packageManager'] === undefined || value['packageManager'] === 'npm' || value['packageManager'] === 'pnpm') &&
-    (value['importerId'] === undefined || typeof value['importerId'] === 'string')
+    (value['importerId'] === undefined || typeof value['importerId'] === 'string') &&
+    (value['mutationTargetIdentity'] === undefined || typeof value['mutationTargetIdentity'] === 'string')
   );
 }

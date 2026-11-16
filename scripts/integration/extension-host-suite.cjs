@@ -43,6 +43,21 @@ function eventsAfter(snapshot, sequence) {
   return snapshot.messages.filter((event) => event.sequence > sequence);
 }
 
+async function assertSnapshotRendered(api, snapshotEvent) {
+  assert.equal(snapshotEvent.direction, 'outbound');
+  assert.equal(snapshotEvent.message.status, 'ready', 'The fixture must produce a ready snapshot.');
+  const generatedAt = snapshotEvent.message.data.generatedAt;
+  // Read the recorded inbound channel. Dispatching through the test API here
+  // would bypass the real webview and conceal a broken host message listener.
+  const acknowledgement = await waitFor(
+    () => api.dashboard.snapshot().messages.find((event) =>
+      event.direction === 'inbound' && event.sequence > snapshotEvent.sequence &&
+      event.message.type === 'rendered' && event.message.generatedAt === generatedAt),
+    `Webview did not acknowledge rendering the ready snapshot (${generatedAt})`
+  );
+  assert.equal(acknowledgement.message.generatedAt, generatedAt);
+}
+
 async function dispatchAfterRevalidation(api, message, completed) {
   let observed = [];
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -64,6 +79,64 @@ async function dispatchAfterRevalidation(api, message, completed) {
   return { result: undefined, observed };
 }
 
+/** The promise's value, or 'timeout' when it takes longer than `milliseconds`. */
+async function within(promise, milliseconds) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A task that exits at once, subscribed to only after VS Code reported the
+ * exit, still reports it through the real adapter.
+ */
+async function checkEarlyTaskExit(api, cwd) {
+  const nodePath = process.env['PACKAGEAWY_NODE_PATH'];
+  assert.ok(nodePath && path.isAbsolute(nodePath), 'The launcher did not pass an absolute Node path.');
+  const title = 'Packageawy: early exit probe';
+  let observed;
+  const exitObserved = new Promise((resolve) => {
+    observed = vscode.tasks.onDidEndTaskProcess((event) => {
+      if (event.execution.task.name === title) resolve(event.exitCode);
+    });
+  });
+  try {
+    const running = await api.runProcessForTest({
+      executable: nodePath,
+      args: ['-e', 'process.exit(0)'],
+      cwd,
+      title,
+      scope: 'early-exit-probe',
+    });
+    assert.equal(
+      await within(exitObserved, HOST_TIMEOUT_MS),
+      0,
+      'VS Code did not report the probe task exit.'
+    );
+    let subscription;
+    const reported = new Promise((resolve) => {
+      subscription = running.onDidExit(resolve);
+    });
+    try {
+      assert.equal(
+        await within(reported, 5_000),
+        0,
+        'An exit that happened before subscribing was not reported.'
+      );
+    } finally {
+      subscription.dispose();
+    }
+  } finally {
+    observed.dispose();
+  }
+}
+
 async function run() {
   const packageManager = process.env['PACKAGEAWY_FIXTURE_MANAGER'];
   const fixtureRoot = process.env['PACKAGEAWY_FIXTURE_ROOT'];
@@ -82,6 +155,7 @@ async function run() {
   assert.ok(extension, 'Packageawy extension was not loaded by the test host.');
   const api = await extension.activate();
   assert.ok(api && api.dashboard, 'The Extension Host test API was not returned during test activation.');
+  await checkEarlyTaskExit(api, fixtureRoot);
 
   const firstStarted = performance.now();
   await vscode.commands.executeCommand('packageawy.open');
@@ -90,6 +164,7 @@ async function run() {
     'Dashboard did not produce an initial terminal state'
   );
   const firstScanMs = performance.now() - firstStarted;
+  await assertSnapshotRendered(api, first);
   let snapshot = api.dashboard.snapshot();
   assert.equal(snapshot.open, true);
   assert.equal(snapshot.disposed, false);
@@ -252,6 +327,7 @@ async function run() {
     'Reopened dashboard did not restore a terminal state'
   );
   const cachedReopenMs = performance.now() - reopenStarted;
+  await assertSnapshotRendered(api, reopened);
   assert.ok(reopened.message.data.rows.some((row) => row.name === 'is-number'));
   assert.notEqual(api.dashboard.snapshot().panelId, firstPanelId, 'Reopening after disposal should create a new panel.');
 

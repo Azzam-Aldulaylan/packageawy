@@ -154,10 +154,35 @@ export function selectUpgradeTargetsFromDistTags(
 }
 
 /**
+ * Failures where the small dist-tags document may still load. Auth, rate
+ * limits, bad URLs and a missing package would fail the same way again, and
+ * a cancelled request must stop, so those are never retried.
+ */
+const DIST_TAG_FALLBACK_CODES: ReadonlySet<string> = new Set([
+  'TOO_LARGE',
+  'TIMEOUT',
+  'NETWORK',
+  'REGISTRY_5XX',
+  'PARSE_ERROR',
+]);
+
+/** A function, so TypeScript does not keep a narrowing of `aborted` across awaits. */
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+export function canFallBackToDistTags(cause: unknown): cause is FetchError {
+  return cause instanceof FetchError && DIST_TAG_FALLBACK_CODES.has(cause.code);
+}
+
+/**
  * Prefer the complete abbreviated packument, but degrade to npm's tiny
- * dist-tags endpoint when the decompressed history exceeds the HTTP safety
- * budget. Network, auth, parse, and registry errors remain real errors. Only
- * the known size condition takes this narrower path.
+ * dist-tags endpoint once when the packument is too large or fails in a way
+ * a smaller request may survive. The result is then marked `tagsOnly`. When
+ * the fallback fails too, the packument's error is reported, since it is the
+ * one that explains why the full list is missing. A too-large history is
+ * expected for some packages and is not marked. A cancelled fallback still
+ * throws its own CANCELLED error so callers end quietly.
  */
 export async function loadUpgradeTargets(
   client: HttpClient,
@@ -167,16 +192,30 @@ export async function loadUpgradeTargets(
   installed: string,
   existingFallback: string | null,
   signal?: AbortSignal,
-  fallbackReason: UpgradeReason | null = null
-): Promise<UpgradeTargetSelection> {
+  fallbackReason: UpgradeReason | null = null,
+  /** Told the packument's error code when a real failure was covered by the tags fallback. */
+  onFallback?: (code: string) => void
+): Promise<UpgradeTargetSelection & { tagsOnly?: true }> {
+  let packument: PackumentDoc;
   try {
-    const packument = await fetchPackument(client, store, registry, name, signal);
-    return selectUpgradeTargets(packument, installed, existingFallback, fallbackReason);
+    packument = await fetchPackument(client, store, registry, name, signal);
   } catch (cause) {
-    if (!(cause instanceof FetchError) || cause.code !== 'TOO_LARGE') throw cause;
-    const distTags = await fetchDistTags(client, store, registry, name, signal);
-    return selectUpgradeTargetsFromDistTags(distTags, installed, existingFallback, fallbackReason);
+    if (!canFallBackToDistTags(cause) || isAborted(signal)) throw cause;
+    let distTags: Record<string, string>;
+    try {
+      distTags = await fetchDistTags(client, store, registry, name, signal);
+    } catch (fallbackCause) {
+      throw isAborted(signal) ? fallbackCause : cause;
+    }
+    const selection = selectUpgradeTargetsFromDistTags(distTags, installed, existingFallback, fallbackReason);
+    // A package whose history is simply too large (next, for example) always
+    // takes this path, and nothing failed, so it keeps the quiet "recent and
+    // tagged releases" note. Only a real failure is called out.
+    if (cause.code === 'TOO_LARGE') return selection;
+    onFallback?.(cause.code);
+    return { ...selection, tagsOnly: true };
   }
+  return selectUpgradeTargets(packument, installed, existingFallback, fallbackReason);
 }
 
 /**

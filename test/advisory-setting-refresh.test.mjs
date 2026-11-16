@@ -4,7 +4,7 @@ import { DashboardPanel } from '../out/host/dashboardPanel.js';
 
 // Exercise the real setting subscription and message dispatcher. Replace only
 // the operation and reload boundaries so no disk or network scan is needed.
-for (const type of ['upgrade', 'analyze-remediation', 'analyze-remediations']) {
+for (const type of ['upgrade', 'analyze-remediation']) {
   test(`setting refresh waits for ${type} to settle and coalesces changes`, async () => {
     globalThis.__BUILD_TIME__ = 'test';
     let settingChanged;
@@ -26,7 +26,6 @@ for (const type of ['upgrade', 'analyze-remediation', 'analyze-remediations']) {
     coordinator.isRemediationBusy = () => busy && type !== 'upgrade';
     coordinator.handleAnalyzeUpgrade = run;
     coordinator.handleAnalyzeRemediation = run;
-    coordinator.handleAnalyzeRemediations = run;
     const scans = [];
     let invalidations = 0;
     panel.controller = { root: '/fixture', upgradeSource: { lockfilePath: null }, handleAdvisorySettingChanged: () => invalidations++, dispose() {} };

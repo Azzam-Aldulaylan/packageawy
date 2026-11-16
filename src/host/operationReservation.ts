@@ -1,49 +1,263 @@
+import { lockKey } from './pathIdentity.js';
+import { RECOVERY_MESSAGES } from './recoveryCopy.js';
+import { RecoveryLock } from './recoveryLock.js';
+import type { RecoveryJournal } from './recovery/journal.js';
+import { RecoveryError, type RecoveryTarget } from './recovery/model.js';
+import type { ProjectMutationLocks } from './projectMutationLock.js';
+import type { TransactionCompletion } from './upgradeTransaction.js';
+
+/** Settlement reported by the transaction. Unknown outcomes retain ownership. */
+export type CompletionResult = TransactionCompletion;
+
+export type OwnerHandleState = 'reserved' | 'mutating' | 'released' | 'completed' | 'unknown' | 'retained' | 'transferred';
+
+export interface ReservationRefusal {
+  readonly ok: false;
+  /**
+   * `held`: this panel already has a review or change in progress.
+   * `project-locked`: another panel in this process holds the project.
+   */
+  readonly reason: 'held' | 'project-locked';
+}
+
+/**
+ * The only way to end a reservation. Each handle is single-use: once it is
+ * settled, every further call is a logged no-op, so a late or duplicated
+ * call from a finished flow can never end another owner's reservation.
+ */
+export interface OwnerHandle {
+  readonly ok: true;
+  readonly label: string;
+  readonly state: OwnerHandleState;
+  /** Released, completed or unknown. Nothing on this handle can change the reservation any more. */
+  readonly settled: boolean;
+  /** The known end passed to `complete`, once it was called. */
+  readonly result: CompletionResult | undefined;
+  /** A durable prepared journal is the authority to change project files. */
+  readonly journal: RecoveryJournal | undefined;
+  readonly refusal: string | undefined;
+  /** Files may change only after this returns true. */
+  beginMutation(target: RecoveryTarget): Promise<boolean>;
+  transferToRecovery(claimToken: string): RecoveryLock | undefined;
+  /** Ends a reservation that never began a mutation. Refused once a mutation began. */
+  releaseReadOnly(): Promise<boolean>;
+  /** A known end, whether or not a mutation began. Releases the reservation. */
+  complete(result: CompletionResult): Promise<boolean>;
+  /**
+   * The outcome is not known. The handle settles, but the reservation and the
+   * project lock stay held, and nothing else in this process can release them.
+   */
+  markUnknown(reason: string): boolean;
+  /** Settle an internal failure. True means unknown; false means a clean pre-mutation stop. */
+  fail(reason: string): Promise<boolean>;
+}
+
 export interface OperationReservationOptions {
-  reserve(packageName: string): boolean;
-  release(packageName: string): void;
+  /** The process-wide project locks. A handle is stored there under its target's lock key. */
+  locks: ProjectMutationLocks;
+  /** The panel's own single slot, taken and freed together with the handle. */
+  reserve(label: string): boolean;
+  release(label: string): void;
   flushDeferredChanges(): Promise<void>;
   resumePendingBackground(): void;
   isDisposed(): boolean;
   dispose(): void;
+  log?(line: string): void;
+  onUnknown?(handle: OwnerHandle): Promise<void>;
+}
+
+class Handle implements OwnerHandle {
+  readonly ok = true;
+  state: OwnerHandleState = 'reserved';
+  result: CompletionResult | undefined;
+  journal: RecoveryJournal | undefined;
+  refusal: string | undefined;
+  private invalidationReason: string | undefined;
+  /** The key the project lock registry stored this handle under, or undefined for a project without a resolved target. */
+  lockKey: string | undefined;
+
+  constructor(
+    readonly owner: OperationReservation,
+    readonly label: string,
+    private readonly settle: (handle: Handle, state: 'released' | 'completed') => Promise<boolean>,
+    private readonly log: (line: string) => void
+  ) {}
+
+  get settled(): boolean {
+    return ['released', 'completed', 'unknown', 'retained', 'transferred'].includes(this.state);
+  }
+
+  async beginMutation(target: RecoveryTarget): Promise<boolean> {
+    if (this.state !== 'reserved') return this.ignored('beginMutation');
+    if (this.owner.locks.admissionClosed) {
+      this.refusal = this.owner.locks.restartRequired ? RECOVERY_MESSAGES.restartRequired : RECOVERY_MESSAGES.restart;
+      return false;
+    }
+    const key = lockKey(target.root, true);
+    if (this.lockKey === undefined) {
+      const acquired = this.owner.locks.tryAcquire(target.root, this, true);
+      if (acquired === null) { this.refusal = RECOVERY_MESSAGES.blocked; return false; }
+      this.lockKey = acquired;
+    }
+    if (this.lockKey !== key) { this.refusal = RECOVERY_MESSAGES.unsafe; return false; }
+    // Hold admission across the asynchronous bootstrap, including a panel close.
+    this.state = 'mutating';
+    try {
+      // Ordinary activation and scans never need journal filesystem machinery.
+      const { prepareJournal } = await import('./recovery/journal.js');
+      this.journal = await prepareJournal(target);
+      if (this.invalidationReason !== undefined || this.settled || this.owner.locks.restartRequired) {
+        const reason = this.invalidationReason ?? RECOVERY_MESSAGES.restartRequired;
+        this.markUnknown(reason);
+        this.journal.fence();
+        try { await this.journal.unknown(reason); } catch { /* Retain the last durable preparation. */ }
+        await this.owner.notifyUnknown(this);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      this.refusal = error instanceof RecoveryError ? error.message : RECOVERY_MESSAGES.blocked;
+      if (!(error instanceof RecoveryError)) {
+        await this.fail('The recovery preparation could not be established.');
+      } else if (!this.settled) this.state = 'reserved';
+      return false;
+    }
+  }
+
+  transferToRecovery(claimToken: string): RecoveryLock | undefined {
+    if (this.owner.locks.admissionClosed || this.journal === undefined ||
+        (this.state !== 'unknown' && this.state !== 'retained') || this.lockKey === undefined) {
+      this.ignored('transferToRecovery');
+      return undefined;
+    }
+    const lock = new RecoveryLock(this.owner.locks, this.lockKey, claimToken, async () => { await this.settle(this, 'completed'); });
+    if (!this.owner.locks.transfer(this.lockKey, this, lock)) return undefined;
+    this.state = 'transferred';
+    return lock;
+  }
+
+  async releaseReadOnly(): Promise<boolean> {
+    if (this.state !== 'reserved') return this.ignored('releaseReadOnly');
+    return this.settle(this, 'released');
+  }
+
+  async complete(result: CompletionResult): Promise<boolean> {
+    if (this.settled) return this.ignored('complete');
+    if (result === 'unknown') { await this.fail('The task result was not observed.'); return false; }
+    this.result = result;
+    if (this.journal !== undefined) {
+      try {
+        if (!await this.journal.finish(result, this.journal.data.operation === 'cleanup' && result === 'kept')) {
+          if (this.settled) return false;
+          this.state = 'retained';
+          return false;
+        }
+      } catch (error) {
+        await this.fail('The dependency change could not be settled.');
+        return false;
+      }
+    }
+    if (this.settled) return false;
+    return this.settle(this, 'completed');
+  }
+
+  async fail(reason: string): Promise<boolean> {
+    if (this.settled) return this.state === 'unknown';
+    if (this.journal === undefined && this.state !== 'mutating') { await this.complete('not-started'); return false; }
+    // Fence synchronously, before persistence or client delivery can yield.
+    this.markUnknown(reason);
+    try { await this.journal?.unknown(reason); } catch { /* The last durable intent stays blocking. */ }
+    await this.owner.notifyUnknown(this);
+    return true;
+  }
+
+  markUnknown(reason: string): boolean {
+    if (this.settled) return this.ignored('markUnknown');
+    this.invalidationReason = reason;
+    this.state = 'unknown';
+    this.result = 'unknown';
+    this.journal?.fence();
+    if (this.lockKey !== undefined) this.owner.locks.reportTaskState(this.lockKey, this, 'idle');
+    this.log(`Dependency change for ${this.label} has an unknown outcome and stays locked: ${reason}`);
+    return true;
+  }
+
+  private ignored(method: string): false {
+    this.log(`Ignored ${method} on the ${this.state} reservation for ${this.label}.`);
+    return false;
+  }
 }
 
 /**
- * Injected, deterministic lifecycle for the panel's one dependency-operation
- * reservation. It deliberately distinguishes a read-only review reservation
- * from the short mutation boundary that actually owns dependency files.
+ * The panel's one dependency-operation reservation. `reserve` hands out an
+ * owner handle, and only that handle can end it. A read-only review and the
+ * short mutation boundary that actually owns dependency files are separate
+ * states of the same handle.
  */
 export class OperationReservation {
-  private heldPackage: string | undefined;
-  private mutating = false;
+  private current: Handle | undefined;
 
   constructor(private readonly options: OperationReservationOptions) {}
 
-  reserve(packageName: string): boolean {
-    if (!this.options.reserve(packageName)) return false;
-    this.heldPackage = packageName;
-    return true;
+  get locks(): ProjectMutationLocks { return this.options.locks; }
+
+  /**
+   * Takes the panel slot and, when the project has a resolved target, the
+   * process-wide lock under that target's key. Both or neither.
+   */
+  reserve(label: string, targetKey: string | undefined, strict = false): OwnerHandle | ReservationRefusal {
+    if (this.options.locks.admissionClosed) return { ok: false, reason: 'project-locked' };
+    if (this.current !== undefined) return { ok: false, reason: 'held' };
+    const handle = new Handle(this, label, (owned, state) => this.end(owned, state), (line) => this.log(line));
+    if (targetKey !== undefined) {
+      // The registry canonicalizes what it is given. The handle keeps the key
+      // the registry actually stored, so its release always finds the entry.
+      const stored = this.options.locks.tryAcquire(targetKey, handle, strict);
+      if (stored === null) return { ok: false, reason: 'project-locked' };
+      handle.lockKey = stored;
+    }
+    if (!this.options.reserve(label)) {
+      if (handle.lockKey !== undefined) this.options.locks.release(handle.lockKey, handle);
+      return { ok: false, reason: 'held' };
+    }
+    this.current = handle;
+    return handle;
   }
 
-  beginMutation(packageName: string): boolean {
-    if (this.heldPackage !== packageName) return false;
-    this.mutating = true;
-    return true;
+  /**
+   * The live handle, for the panel's own abandonment paths (webview reload,
+   * panel close). They can only call `releaseReadOnly` on it, which refuses
+   * once a mutation began or the outcome is unknown.
+   */
+  get held(): OwnerHandle | undefined {
+    return this.current;
   }
 
+  /** Mutating, or settled as unknown: dependency files may be changing or in doubt. */
   get isMutationBusy(): boolean {
-    return this.mutating;
+    return this.current !== undefined && ['mutating', 'unknown', 'retained', 'transferred'].includes(this.current.state);
   }
 
-  get currentPackage(): string | undefined {
-    return this.heldPackage;
+  /** Whether a lock holder found in the shared registry is one of this panel's handles. */
+  issued(holder: object): boolean {
+    return holder instanceof Handle && holder.owner === this;
+  }
+
+  disposeIfIdle(): void {
+    if (this.current === undefined) this.options.dispose();
+  }
+
+  async notifyUnknown(handle: OwnerHandle): Promise<void> {
+    try { await this.options.onUnknown?.(handle); }
+    catch { this.log('Could not show dependency recovery. The change stays locked.'); }
   }
 
   /** Release synchronously, then drain once, then resume background work. */
-  async release(packageName: string): Promise<boolean> {
-    if (this.heldPackage !== packageName) return false;
-    this.heldPackage = undefined;
-    this.mutating = false;
-    this.options.release(packageName);
+  private async end(handle: Handle, state: 'released' | 'completed'): Promise<boolean> {
+    handle.state = state;
+    if (this.current === handle) this.current = undefined;
+    this.options.release(handle.label);
+    if (handle.lockKey !== undefined) this.options.locks.release(handle.lockKey, handle);
     try {
       await this.options.flushDeferredChanges();
     } catch {
@@ -58,18 +272,12 @@ export class OperationReservation {
     return true;
   }
 
-  async releaseCurrent(): Promise<boolean> {
-    return this.heldPackage === undefined ? false : this.release(this.heldPackage);
-  }
-
-  /** A remounted webview may abandon a review, but must never interrupt file mutation. */
-  async releaseReadOnlyCurrent(): Promise<boolean> {
-    if (this.mutating) return false;
-    return this.releaseCurrent();
-  }
-
-  disposeIfIdle(): void {
-    if (this.heldPackage === undefined) this.options.dispose();
+  private log(line: string): void {
+    try {
+      this.options.log?.(line);
+    } catch {
+      // Logging is diagnostic only and must never change the reservation.
+    }
   }
 }
 
@@ -96,4 +304,12 @@ export class SourceGenerationGuard {
     commit();
     return true;
   }
+}
+
+/** Last resort failures have no request identity and cover detached writers too. */
+export async function settleProcessFailure(locks: ProjectMutationLocks, reason: string): Promise<boolean> {
+  const active = locks.activeOwners().filter((holder): holder is Handle =>
+    holder instanceof Handle && !holder.settled && (holder.state === 'mutating' || holder.journal !== undefined));
+  await Promise.all(active.map(handle => handle.fail(reason)));
+  return active.length > 0;
 }

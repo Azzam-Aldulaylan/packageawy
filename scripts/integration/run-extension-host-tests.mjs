@@ -47,6 +47,9 @@ for (const packageManager of managers) {
         PACKAGEAWY_FIXTURE_CURRENT_VERSION: FIXTURE_BASELINE_VERSION,
         PACKAGEAWY_FIXTURE_UPGRADE_VERSION: FIXTURE_TARGET_VERSION,
         PACKAGEAWY_HOST_REPORT: reportPath,
+        // The Extension Host's own executable is the editor, so the early
+        // exit check gets a real Node from here.
+        PACKAGEAWY_NODE_PATH: process.execPath,
         PACKAGEAWY_HOST_SOAK_MS: process.env['PACKAGEAWY_HOST_SOAK_MS'] ?? '1500',
       },
       launchArgs: [

@@ -2,7 +2,7 @@ import type { ReactElement } from 'react';
 
 import type { PackageRow } from '../../../src/core/types.js';
 import type { UpdateKind } from '../../../src/host/updateClassification.js';
-import type { CurrentVersionTag } from '../../../src/host/versionDisplay.js';
+import type { AvailableVersionCaption, CurrentVersionTag } from '../../../src/host/versionDisplay.js';
 import { availableVersionDisplay, currentVersionDisplay } from '../../../src/host/versionDisplay.js';
 import { SIGN_IN_CELL_LABEL, registrySignInCellTitle } from '../../../src/host/registrySignIn.js';
 import { StatusBadge } from './StatusBadge.js';
@@ -26,6 +26,8 @@ const TAG_LABELS: Record<CurrentVersionTag, string> = {
 const CURRENT_EXPLANATION = 'Version installed according to the lockfile.';
 const WANTED_EXPLANATION = 'Newest version allowed by the range in package.json.';
 const LATEST_EXPLANATION = 'Newest stable version published to npm.';
+const SUGGESTED_EXPLANATION =
+  'The version shown in bold is the one the Upgrade button installs. It is usually the latest, or a smaller security fix when one is available.';
 
 const CLASSIFICATION_LABEL: Record<UpdateKind, string> = { major: 'Major', minor: 'Minor', patch: 'Patch' };
 /** Only Major gets a colour accent: routine minor/patch bumps stay neutral so the row isn't shouting. */
@@ -51,13 +53,17 @@ export function CurrentVersionCell({ row }: { row: PackageRow }): ReactElement {
   );
 }
 
+function availableCaptionText(caption: AvailableVersionCaption): string {
+  if (caption.kind === 'latest') return 'Latest';
+  if (caption.kind === 'latest-within-range') return 'Latest · within range';
+  return `Latest: ${caption.version}`;
+}
+
 /**
- * The Available column's compact rendering. See availableVersionDisplay
- * for the underlying decision. Wanted === Latest collapses to one line;
- * otherwise Latest is the strong, primary value with Wanted demoted to a
- * muted "within current range" caption, matching the redesign's intent
- * that a user is never told "you're behind" when a plain install already
- * gets them nothing more.
+ * The Available column. The bold value is the version the Upgrade button
+ * installs (see availableVersionDisplay), and only that offered version gets
+ * a warning triangle when it has known vulnerabilities. The installed
+ * version's own findings stay in the Vulnerabilities column.
  */
 export function AvailableVersionCell({
   row,
@@ -69,43 +75,36 @@ export function AvailableVersionCell({
   /** Registry host that asked for sign-in for this package, if any. */
   signInHost?: string | undefined;
 }): ReactElement {
-  if (!resolutionAvailable && signInHost !== undefined) {
-    return (
-      <span className="version-cell__caption" title={registrySignInCellTitle(signInHost)}>
-        {SIGN_IN_CELL_LABEL}
-      </span>
-    );
-  }
-  if (!resolutionAvailable) return <span className="version-cell__caption">Unavailable</span>;
-  const display = availableVersionDisplay(row.current, row.wanted, row.latest);
+  const name = row.registryName ?? row.name;
+  const unavailable = resolutionAvailable ? null : signInHost !== undefined ? (
+    <span className="version-cell__caption" title={registrySignInCellTitle(signInHost)}>
+      {SIGN_IN_CELL_LABEL}
+    </span>
+  ) : (
+    <span className="version-cell__caption">Unavailable</span>
+  );
+  // Without registry metadata only an audit-found security fix still stands:
+  // show it with the metadata problem as its caption.
+  if (unavailable !== null && row.upgradeTo === null) return unavailable;
 
+  const display = availableVersionDisplay(row);
   if (display.kind === 'dash') return <span aria-hidden="true">—</span>;
 
-  if (display.kind === 'single') {
-    return (
-      <span className="version-cell">
-        <span className="version-cell__row">
-          <span className="version-cell__value">{display.value}</span>
-          <UpdateVersionWarning name={row.registryName ?? row.name} version={display.value} />
-          <ClassificationBadge kind={display.updateKind} />
-        </span>
-        {display.hasUpdate ? <span className="version-cell__caption">Latest · within range</span> : null}
-      </span>
-    );
-  }
-
+  const { caption } = display;
   return (
     <span className="version-cell">
       <span className="version-cell__row">
-        <span className="version-cell__value version-cell__value--primary">{display.value}</span>
-        <UpdateVersionWarning name={row.registryName ?? row.name} version={display.value} />
+        <span className={caption?.kind === 'other-latest' ? 'version-cell__value version-cell__value--primary' : 'version-cell__value'}>
+          {display.value}
+        </span>
+        {display.suggested ? <UpdateVersionWarning name={name} version={display.value} current={row.current} /> : null}
         <ClassificationBadge kind={display.updateKind} />
       </span>
-      <span className="version-cell__caption">Latest</span>
-      <span className="version-cell__caption version-cell__caption--muted">
-        Within current range: {display.withinRange}
-        <UpdateVersionWarning name={row.registryName ?? row.name} version={display.withinRange} />
-      </span>
+      {unavailable ?? (caption === null ? null : (
+        <span className={caption.kind === 'other-latest' ? 'version-cell__caption version-cell__caption--muted' : 'version-cell__caption'}>
+          {availableCaptionText(caption)}
+        </span>
+      ))}
     </span>
   );
 }
@@ -156,6 +155,8 @@ export function AvailableHeaderInfo(): ReactElement {
           <dd>{WANTED_EXPLANATION}</dd>
           <dt>Latest</dt>
           <dd>{LATEST_EXPLANATION}</dd>
+          <dt>Suggested</dt>
+          <dd>{SUGGESTED_EXPLANATION}</dd>
         </dl>
       }
     />

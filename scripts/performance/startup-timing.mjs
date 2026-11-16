@@ -20,12 +20,15 @@
 //                       extension active. VS Code usually activates it before
 //                       the suite loads, so this is an upper bound that also
 //                       includes VS Code's own startup.
+//   open to panel created From the open command to panel creation.
+//   open to painted rows From the open command to the first matching webview
+//                       acknowledgement after the snapshot's second frame.
 //   open to first rows  From "Open in Packageawy" on the project's root
 //                       package.json (or --manifest) to the first dashboard
 //                       message with rows (ready, partial-error, stale, empty).
 //   open to scan result To the last scan result (a warm start with an
 //                       expired cache posts the cached rows, then fresh ones).
-//   open to complete    Until both the scan and the likely-unused analysis
+//   open to complete    Until the paint acknowledgement, scan and likely-unused analysis
 //                       that follows it have signalled that they finished
 //                       (see startup-timing-completion.cjs). A run that does
 //                       not finish within 180 s fails instead of guessing.
@@ -308,7 +311,9 @@ async function launchOnce({ vscodeExecutablePath, runnerDir, extensionsDir, user
     launchToActiveMs:
       report.activation?.seenActiveAt === undefined ? undefined : report.activation.seenActiveAt - launchStartedAt,
     activeBeforeSuiteLoaded: report.activation?.alreadyActive,
+    openToPanelCreatedMs: report.scan?.openToPanelCreatedMs,
     openToFirstRowsMs: report.scan?.openToFirstRowsMs,
+    openToPaintedRowsMs: report.scan?.openToPaintedRowsMs,
     openToScanResultMs: report.scan?.openToScanResultMs,
     openToCompleteMs: report.scan?.openToCompleteMs,
     firstRowsStatus: report.scan?.firstRowsStatus,
@@ -446,7 +451,8 @@ try {
         console.log(
           `[timing] ${project.name} ${mode} ${index}/${runs}: ` +
             (sample.ok
-              ? `activation ${Math.round(sample.activationMs ?? NaN)} ms, first rows ${sample.openToFirstRowsMs} ms, ` +
+              ? `activation ${Math.round(sample.activationMs ?? NaN)} ms, panel created ${sample.openToPanelCreatedMs} ms, ` +
+                `first rows ${sample.openToFirstRowsMs} ms, painted rows ${sample.openToPaintedRowsMs} ms, ` +
                 `complete ${sample.openToCompleteMs} ms (${sample.finalStatus}, ${sample.rows} rows)`
               : `failed: ${sample.error}`)
         );

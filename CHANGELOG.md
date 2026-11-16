@@ -4,15 +4,83 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+- Smart Cleanup shows the current cleanup step as it runs.
+- Upgrade errors from Manage appear once in the dialog and are dismissed when it closes.
+- Keep your chosen upgrade version when refreshing the same dependency, while that version remains eligible.
+- Pause dependency changes and offer Show Log and Reload if the dashboard receives an unrecognized host message.
+- Keep results current when dependency scans overlap a successful or failed reload.
+
+### Added
+
+- After a successful dependency file restore with a lockfile, Packageawy offers to reinstall node_modules with npm ci or pnpm install --frozen-lockfile. Reinstall results are reported separately from the file restore.
+- A long dependency change now shows Still running, explaining why Packageawy waits for the package manager before allowing another change or a rollback.
+- If VS Code or a JetBrains IDE closes during a dependency change, Packageawy now keeps a recovery record in the project and offers to restore each file the next time you open it.
+
+### Changed
+
+- Rollback restores your dependency files and stops if it sees they changed. It checks all files before starting and keeps saved and displaced files until you remove them.
+- Likely-unused results and Smart Cleanup now read the script blocks of Vue, Svelte and Astro files, and .mts and .cts files, so packages used only there are no longer suggested for removal.
+- When a project has files Packageawy does not read yet, such as .mdx, removals are not recommended automatically and the screen says why.
+- Cleanup checks now recognize more framework and tool config files, and package names in package.json tool settings.
+- Packageawy now finds the lockfile your package manager will write, including the workspace root's, and uses it for every change and rollback.
+- The Vulnerabilities column now reads No known vulnerabilities instead of Safe, which is exactly what was checked.
+
+### Fixed
+
+- Upgrades and removals no longer pause the editor while finding npm or pnpm.
+
+- Transitive fix analysis now stops after two minutes if the isolated package manager is still working, including children that keep its output open, and reports that project files were not changed.
+- A dependency change whose result was lost now shows the same blocked message in the dashboard and reviews, including Smart Cleanup, with a button to open recovery and no unverified restoration claims.
+- Restart in JetBrains IDEs now waits for the engine to confirm that no dependency change is running or has an unknown outcome, blocks new changes during that check, and ignores repeated requests from finished restart attempts.
+- Changing package.json or the lockfile while a scan is running no longer lets the dashboard reuse the older results as if they were current.
+- In a workspace where the lockfile sits above the opened folder, changes are now turned off with the reason shown, instead of rewriting a file Packageawy could not restore.
+- Vulnerability checks for update versions keep working after an internal error, instead of stopping until the dashboard is refreshed.
+- Internal errors now appear in the dashboard with a Show Log button. An error during a dependency change keeps its recovery files and blocks further changes until recovery. Unrelated background errors let the change finish and pause new changes until you reopen the panel. Refresh and reviews keep working.
+- An unhandled internal error in the JetBrains engine now blocks dependency changes until the engine restarts, including after closing and reopening the panel. Read-only scans can continue.
+- Opening a file, a link or Settings from Packageawy now says so when the editor could not open it, and the Packageawy log records the failure.
+- An install or check that finishes immediately no longer leaves the project waiting and locked in VS Code.
+- A confirmed upgrade, removal or Smart Cleanup restore that stops before changing any files, because the Packageawy view reloaded, now says so instead of waiting with no answer.
+
+## [0.9.7] - 2026-11-12
+
+### Added
+
+- A Packageawy log records registry and npm audit failures, to help with troubleshooting. It names the package, the registry host and the kind of failure only. In VS Code, open it with Packageawy: Show Log. In JetBrains IDEs, the lines are in the IDE log.
+
+### Changed
+
+- When an upgrade is offered, the Available column shows the version the Upgrade button installs. When latest-version information is available and differs, the latest is shown under it.
+- The upgrade version list shows a short tag for vulnerable versions, for example 3 vulnerabilities (high). The full details for the selected version appear on hover, focus or click on the warning beside the list.
+- When the upgrade version list cannot load, it says why (for example, the registry timed out or needs sign-in) and offers Retry, or Refresh when the project changed. If the full list fails, the tagged releases are shown instead.
+- The partial results message says what is missing and what to do, for example No package-lock.json found. Run npm install, then refresh. When update checks fail, it points to the Packageawy log for the reason.
+
+### Fixed
+
+- The vulnerability warning in the Available column now follows the suggested upgrade version. The installed version is no longer marked there.
+- A registry response saved in the cache that could not be read is now replaced automatically instead of failing every time.
+- When a registry is configured with http://, the Packageawy log now says so instead of reporting a generic failure. Packageawy only connects to registries over https.
+- The upgrade review no longer says there is no newer version when the version check failed or the package has no installed version. It says what happened, and offers Refresh where trying again can help.
+- The Updates card no longer reads Up to date when some packages were not checked, for example in a project without a lockfile.
+
+## [0.9.6] - 2026-11-11
+
+### Changed
+
+- The dashboard opens faster on a project without saved results. VS Code starts reading the project as soon as the panel opens, exact version pins on the public npm registry are confirmed with one small request instead of the full version list, and fixed versions for vulnerable packages are looked up as soon as the vulnerability results arrive.
+
+### Fixed
+
+- Upgrade reviews count only the vulnerabilities this upgrade affects. Unrelated vulnerabilities elsewhere in the project are no longer listed as remaining, and the review notes how many there are.
+
 ## [0.9.5] - 2026-11-10
 
 ### Added
 
-- Right-click a `package.json` in the file tree or on its editor tab and choose **Open in Packageawy** to open the dashboard on that project. This works in VS Code and JetBrains IDEs.
+- Right-click a `package.json` in the file tree or on its editor tab and choose **Open in Packageawy** to open the dashboard on that project. This works in VS Code and JetBrains IDEs. Suggested by [@Abdulhakiem](https://github.com/Abdulhakiem).
 - The `packageawy.security.publicAdvisoryCheck` setting turns the vulnerability checks, identifier lookups and npm audit on or off for each project. When it is off, the Vulnerabilities column reads Off. JetBrains IDEs have the same option under the project's Security settings.
 - When no verification scripts are set, reviews for upgrades, removals, and transitive fixes list the project's `typecheck`, `build`, `test`, and `lint` scripts as checkboxes. Checked scripts run after that change, with the same Rollback choice if one fails. Scripts that watch files or start a server are not listed.
 - "Remember for this project" saves the checked scripts as the project's verification scripts. In JetBrains IDEs they appear under Settings, Tools, Packageawy, Project.
-- After a kept Smart Cleanup, **Restore dependency files** puts `package.json` and the lockfile back as they were before the cleanup.
+- After a kept Smart Cleanup, **Restore dependency files** opens recovery to review the saved `package.json` and lockfile.
 - Yarn and Bun projects open with their dependencies shown and a note that changes are available for npm and pnpm projects.
 - Registries that ask for sign-in get one note per registry, and their packages read **Sign-in needed**. Upgrades for every other package stay available.
 - The VSIX and the JetBrains plugin include `ThirdPartyNotices.txt` with the licenses of bundled packages.
@@ -117,8 +185,10 @@ First public pre-release.
 
 - Runs only in trusted workspaces.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
-- Re-reads the project right before every change and refuses to roll back over edits made in the meantime.
+- Re-reads the project right before every change and stops rollback if it sees dependency files changed.
 
+[0.9.7]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.7
+[0.9.6]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.6
 [0.9.5]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.5
 [0.9.4]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.4
 [0.9.3]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.3

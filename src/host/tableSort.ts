@@ -11,6 +11,7 @@ import semver from 'semver';
 import type { PackageRow, Severity } from '../core/types.js';
 import type { SummaryFilterId } from './summaryMetrics.js';
 import { UPDATE_KIND_RANK, classifyRowUpdate } from './updateClassification.js';
+import { availablePrimaryVersion } from './versionDisplay.js';
 
 export type SortColumn = 'package' | 'current' | 'available' | 'vulnerabilities' | 'type';
 export type SortDirection = 'asc' | 'desc';
@@ -78,9 +79,9 @@ function compareVersions(a: string | null, b: string | null): number {
   return semver.compare(a as string, b as string);
 }
 
-/** The single version this row's "Available" column represents, for sorting purposes only. */
+/** The version this row's "Available" column shows, so sorting matches the table. */
 function availableSortValue(row: PackageRow): string | null {
-  return row.latest ?? row.wanted ?? null;
+  return availablePrimaryVersion(row);
 }
 
 const COLUMN_COMPARATORS: Record<SortColumn, (a: PackageRow, b: PackageRow) => number> = {
@@ -94,7 +95,7 @@ const COLUMN_COMPARATORS: Record<SortColumn, (a: PackageRow, b: PackageRow) => n
 /**
  * Whether a row has no sortable value at all for a column: a missing
  * current/available version, never a "worst" position on some real scale
- * (a clean `worstSeverity: null` row is a legitimate, sortable "Safe", not
+ * (a clean `worstSeverity: null` row is a legitimate, sortable "No known vulnerabilities", not
  * empty). Only these two columns need this: their rows must stay pinned
  * after every real value in both directions, which a plain sign flip on
  * the base comparator cannot express: negating "always last" for a

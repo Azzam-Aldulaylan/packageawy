@@ -1,5 +1,5 @@
 /**
- * The Available column's Wanted/Latest split decision: pure, no React/DOM
+ * The Available column's display decision: pure, no React/DOM
  * involved. See upgrade-action.test.mjs for why this repo tests presentation
  * logic this way instead of rendering components.
  */
@@ -7,69 +7,63 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { currentVersionDisplay, availableVersionDisplay } from '../out/host/versionDisplay.js';
+import { currentVersionDisplay, availableVersionDisplay, availablePrimaryVersion } from '../out/host/versionDisplay.js';
+
+const fields = (current, wanted, latest, upgradeTo = null) => ({ current, wanted, latest, upgradeTo });
 
 test('neither value present renders an em dash', () => {
-  assert.deepEqual(availableVersionDisplay('1.0.0', null, null), { kind: 'dash' });
+  assert.deepEqual(availableVersionDisplay(fields('1.0.0', null, null)), { kind: 'dash' });
 });
 
-test('identical wanted and latest, matching current, collapse to a single value with no update', () => {
-  assert.deepEqual(availableVersionDisplay('20.19.43', '20.19.43', '20.19.43'), {
-    kind: 'single',
-    value: '20.19.43',
-    hasUpdate: false,
-    updateKind: null,
+test('up to date: the single value has no caption and no update', () => {
+  assert.deepEqual(availableVersionDisplay(fields('20.19.43', '20.19.43', '20.19.43')), {
+    kind: 'version', value: '20.19.43', suggested: false, caption: null, updateKind: null,
   });
 });
 
-test('identical wanted and latest, ahead of current, collapse to a single value flagged as an update', () => {
-  assert.deepEqual(availableVersionDisplay('20.0.0', '20.19.43', '20.19.43'), {
-    kind: 'single',
-    value: '20.19.43',
-    hasUpdate: true,
-    updateKind: 'minor',
+test('offered upgrade equal to latest and wanted keeps the "Latest · within range" caption', () => {
+  assert.deepEqual(availableVersionDisplay(fields('20.0.0', '20.19.43', '20.19.43', '20.19.43')), {
+    kind: 'version', value: '20.19.43', suggested: true, caption: { kind: 'latest-within-range' }, updateKind: 'minor',
   });
 });
 
-test('a single-value update is classified major/minor/patch relative to current', () => {
-  assert.equal(availableVersionDisplay('1.0.0', '2.0.0', '2.0.0').updateKind, 'major');
-  assert.equal(availableVersionDisplay('1.0.0', '1.0.1', '1.0.1').updateKind, 'patch');
-});
-
-test('no resolved current version never classifies an update, even when wanted/latest differ from nothing', () => {
-  assert.deepEqual(availableVersionDisplay(null, '20.19.43', '20.19.43'), {
-    kind: 'single',
-    value: '20.19.43',
-    hasUpdate: false,
-    updateKind: null,
+test('offered upgrade equal to latest but outside the range is captioned "Latest" only', () => {
+  assert.deepEqual(availableVersionDisplay(fields('20.19.43', '20.19.43', '26.1.2', '26.1.2')), {
+    kind: 'version', value: '26.1.2', suggested: true, caption: { kind: 'latest' }, updateKind: 'major',
   });
 });
 
-test('differing wanted and latest split: latest is the primary value, wanted is the in-range fallback', () => {
-  assert.deepEqual(availableVersionDisplay('20.19.43', '20.19.43', '26.1.2'), {
-    kind: 'split',
-    value: '26.1.2',
-    withinRange: '20.19.43',
-    updateKind: 'major',
+test('an offered upgrade that is not the latest is the bold value, with the latest underneath (axios case)', () => {
+  assert.deepEqual(availableVersionDisplay(fields('0.21.1', '0.21.1', '1.21.1', '0.21.4')), {
+    kind: 'version', value: '0.21.4', suggested: true, caption: { kind: 'other-latest', version: '1.21.1' }, updateKind: 'patch',
   });
 });
 
-test('a missing side of a differing pair falls back to an em dash for that side', () => {
-  assert.deepEqual(availableVersionDisplay('1.0.0', null, '26.1.2'), {
-    kind: 'split',
-    value: '26.1.2',
-    withinRange: '—',
-    updateKind: 'major',
-  });
-  assert.deepEqual(availableVersionDisplay('20.19.43', '20.19.43', null), {
-    kind: 'split',
-    value: '20.19.43',
-    withinRange: '20.19.43',
-    updateKind: null,
+test('no offered upgrade falls back to latest, then wanted, and is not marked suggested', () => {
+  const alias = availableVersionDisplay(fields('1.0.0', '1.0.0', '2.0.0'));
+  assert.equal(alias.value, '2.0.0');
+  assert.equal(alias.suggested, false);
+  assert.deepEqual(alias.caption, { kind: 'latest' });
+  assert.equal(availableVersionDisplay(fields('1.0.0', '1.2.0', null)).value, '1.2.0');
+});
+
+test('the within-range line is gone: no caption ever names the wanted version', () => {
+  const display = availableVersionDisplay(fields('20.19.43', '20.19.43', '26.1.2', '26.1.2'));
+  assert.ok(!JSON.stringify(display).includes('withinRange'));
+});
+
+test('no resolved current version never classifies an update', () => {
+  assert.deepEqual(availableVersionDisplay(fields(null, '20.19.43', '20.19.43')), {
+    kind: 'version', value: '20.19.43', suggested: false, caption: null, updateKind: null,
   });
 });
 
-// ------------------------------------------------- currentVersionDisplay
+test('availablePrimaryVersion prefers the offered upgrade, then latest, then wanted', () => {
+  assert.equal(availablePrimaryVersion({ upgradeTo: '0.21.4', latest: '1.21.1', wanted: '0.21.1' }), '0.21.4');
+  assert.equal(availablePrimaryVersion({ upgradeTo: null, latest: '1.21.1', wanted: '0.21.1' }), '1.21.1');
+  assert.equal(availablePrimaryVersion({ upgradeTo: null, latest: null, wanted: '0.21.1' }), '0.21.1');
+  assert.equal(availablePrimaryVersion({ upgradeTo: null, latest: null, wanted: null }), null);
+});
 
 test('a resolved current version with no unresolvable reason is shown as-is, untagged', () => {
   assert.deepEqual(currentVersionDisplay('1.0.0', '^1.0.0', undefined), {

@@ -9,6 +9,38 @@
  */
 
 import { packageNameTokens } from './packageNameMatch.js';
+import { configValueReferencesPackage } from './configHeuristics.js';
+
+/** Manifest metadata and dependency declarations are not evidence of tool configuration. */
+const MANIFEST_METADATA = new Set([
+  'name', 'version', 'description', 'keywords', 'homepage', 'bugs', 'license', 'licenses',
+  'author', 'contributors', 'funding', 'files', 'main', 'module', 'browser', 'types', 'typings',
+  'exports', 'imports', 'bin', 'man', 'directories', 'repository', 'scripts',
+  'dependencies', 'devDependencies', 'peerDependencies', 'peerDependenciesMeta', 'optionalDependencies',
+  'bundledDependencies', 'bundleDependencies', 'overrides', 'resolutions', 'engines', 'devEngines',
+  'os', 'cpu', 'libc', 'private', 'publishConfig', 'workspaces', 'packageManager', 'type', 'sideEffects',
+]);
+
+/** Tool-owned keys, including nested object keys, can name packages without imports. */
+export function findPackageInManifestConfig(manifestText: string, packageName: string): string[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(manifestText);
+  } catch {
+    return [];
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return [];
+  const references = (config: unknown, eslint: boolean, field = ''): boolean => {
+    if (typeof config === 'string') return configValueReferencesPackage(config, packageName, eslint && (field === 'extends' || field === 'plugins'));
+    if (Array.isArray(config)) return config.some((entry: unknown) => references(entry, eslint, field));
+    if (typeof config !== 'object' || config === null) return false;
+    return Object.entries(config).some(([key, entry]) => key === packageName || references(entry, eslint, key));
+  };
+  return Object.entries(value).flatMap(([key, config]) => {
+    if (MANIFEST_METADATA.has(key)) return [];
+    return key === packageName || references(config, key === 'eslintConfig') ? [key] : [];
+  });
+}
 
 function readScripts(manifestText: string): Record<string, string> {
   let json: unknown;

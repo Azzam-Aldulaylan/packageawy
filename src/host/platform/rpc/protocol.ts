@@ -1,7 +1,7 @@
 /**
  * Method names and parameter shapes for the sidecar protocol described in
  * ../hostPlatform.ts. Ids for watches, progress and processes are integers
- * chosen by the sidecar. Optional fields are omitted, never null, unless the
+ * chosen by the sidecar. Process IDs must be safe positive integers. Optional fields are omitted, never null, unless the
  * type says null.
  */
 
@@ -65,6 +65,9 @@ export interface WebviewMessageParams {
 export interface OpenManifestParams {
   path: string;
 }
+
+export interface RestartParams { sessionId: string }
+export interface RestartResult extends RestartParams { state: 'idle' | 'busy' | 'unknown' }
 
 // Sidecar to client.
 
@@ -170,6 +173,9 @@ export interface SettingsUpdateParams {
 
 export const Methods = {
   initialize: 'initialize',
+  restartPrepare: 'restart/prepare',
+  restartCommit: 'restart/commit',
+  restartCancel: 'restart/cancel',
   didChangeFolders: 'workspace/didChangeFolders',
   didChangeTrust: 'workspace/didChangeTrust',
   didChangeSettings: 'settings/didChange',
@@ -191,6 +197,7 @@ export const Methods = {
   showQuickPick: 'window/showQuickPick',
   processStart: 'process/start',
   processDidExit: 'process/didExit',
+  processTerminate: 'process/terminate',
   openFile: 'window/openFile',
   openExternal: 'window/openExternal',
   openSettings: 'window/openSettings',

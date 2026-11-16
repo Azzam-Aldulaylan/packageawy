@@ -29,11 +29,6 @@ export class UpgradeLock {
   isHeld(): boolean {
     return this.heldBy !== undefined;
   }
-
-  /** Unconditional release, for panel disposal: the holder no longer matters. */
-  clear(): void {
-    this.heldBy = undefined;
-  }
 }
 
 /**

@@ -32,6 +32,7 @@ import type {
 } from '../core/types.js';
 import type { DependencyFinding } from '../core/hygiene/types.js';
 import type { DependencyReference, DependencyUsageResult } from '../core/usage/types.js';
+import { RUNTIME_ERROR_CODE, RUNTIME_ERROR_TEXT } from '../core/diagnostics.js';
 import {
   isAbsentOr,
   isAdvisory,
@@ -44,6 +45,8 @@ import {
   isScanDataAvailability,
 } from '../core/validation.js';
 import type { ProtocolError } from '../core/validation.js';
+import { isAuditUnavailableReason } from '../core/diagnostics.js';
+import type { AuditUnavailableReason } from '../core/diagnostics.js';
 import { MAX_BULK_REMOVE_CHANGES, MAX_BULK_UPGRADE_CHANGES } from '../core/upgrade/validate.js';
 
 /**
@@ -148,6 +151,10 @@ export interface SecurityOutcome {
   remaining: RemainingVulnerability[];
   introduced?: RemainingVulnerability[];
   checkState?: 'complete' | 'unavailable' | 'off';
+  /** Upgrade review only: known vulnerabilities elsewhere in the project that this upgrade does not touch. Never counted as remaining. */
+  unaffectedElsewhereCount?: number;
+  /** Upgrade review only: findings before the upgrade that this review covers, fixed ones included. */
+  beforeCount?: number;
   /** Optional richer graph context. Older/remediation outcomes remain protocol-compatible without it. */
   contexts?: VulnerabilityContext[];
 }
@@ -422,6 +429,8 @@ export interface UpgradeTargetOptions {
   recommendedVersion: string | null;
   options: UpgradeTargetOption[];
   truncated: boolean;
+  /** Only the tagged releases could be loaded (the full version list failed). */
+  tagsOnly?: true;
 }
 
 export interface UpgradeResultChange {
@@ -446,6 +455,8 @@ export interface UpgradeResultPresentation {
   refreshId: string;
   install: 'succeeded' | 'failed';
   application: 'applied' | 'unconfirmed' | 'rolled-back';
+  /** Reinstall guidance for a completed rollback, supplied by the host. */
+  rollbackMessage?: string;
   verification: 'passed' | 'not-configured' | 'failed' | 'not-run';
   changes: UpgradeResultChange[];
   refreshingDerivedData: boolean;
@@ -648,6 +659,12 @@ export interface DashboardData {
   advisoriesError?: ProtocolError;
   /** `npm audit` enrichment was skipped or failed. Upgrade targets are self-computed. */
   auditUnavailable?: boolean;
+  /** Why `auditUnavailable` is set. Missing means a generic failure. */
+  auditUnavailableReason?: AuditUnavailableReason;
+  /** The project's package manager, for wording such as which lockfile to install. */
+  packageManager?: SupportedPackageManager;
+  /** The project has no lockfile at all (package-lock.json, npm-shrinkwrap.json or pnpm-lock.yaml). */
+  lockfileMissing?: boolean;
   /** Set when another package manager owns this project: dependencies are shown and changes stay off. */
   readOnlyReason?: string;
   /** Deprecated findings, computed fresh with every scan. See src/core/hygiene/index.ts. Likely-unused findings are never included here. See 'cleanup-result' below. */
@@ -667,7 +684,27 @@ export type ScanProgressStage =
   | 'npm-audit'
   | 'rows';
 
+export interface RecoveryPresentation {
+  state: 'none' | 'discovery-error' | 'running' | 'blocked' | 'uninitialized' | 'invalid' | 'takeover' | 'open' | 'incomplete' | 'completed' | 'removing';
+  message: string;
+  claim: string | null;
+  canDismiss: boolean;
+  canApply: boolean;
+  files: Array<{ id: string; path: string; existed: boolean; backup: string; current: string; backupPreview: string; currentPreview: string; progress: string }>;
+}
+export interface RecoveryChoice {
+  id: string;
+  current: string;
+  action: 'keep' | 'restore';
+  approveDeletion: boolean;
+}
+
+export type DependencyTaskState = 'running' | 'still-running' | 'idle';
+
 export type HostToWebviewMessage =
+  | { status: 'dependency-task'; state: DependencyTaskState }
+  | { status: 'recovery-entries'; entries: Array<{ id: string; label: string }> }
+  | { status: 'recovery'; recovery: RecoveryPresentation }
   | { status: 'update-advisories'; context: UpdateAdvisoryContext; results: UpdateAdvisoryResult[] }
   | { status: 'loading' }
   | { status: 'scan-progress'; stage: ScanProgressStage; completed?: number; total?: number }
@@ -676,6 +713,18 @@ export type HostToWebviewMessage =
   | { status: 'stale'; data: DashboardData }
   | { status: 'partial-error'; data: DashboardData }
   | { status: 'fatal-error'; error: ProtocolError }
+  /**
+   * An internal error was caught. The dashboard stays and the banner stays
+   * until the panel closes. The code and text are fixed (see
+   * src/core/diagnostics.ts), so nothing from the error itself reaches here.
+   */
+  | { status: 'runtime-error'; code: typeof RUNTIME_ERROR_CODE; message: typeof RUNTIME_ERROR_TEXT }
+  /**
+   * A load or refresh failed while stale rows were on screen. Sent for every
+   * such failure, unlike the one banner, so each one ends the refreshing
+   * indicator. The rows stay stale. Carries nothing else.
+   */
+  | { status: 'refresh-failed' }
   | { status: 'upgrade-targets-loading'; package: string; requestId: string }
   | { status: 'upgrade-targets'; package: string; requestId: string; targets: UpgradeTargetOptions }
   | { status: 'upgrade-targets-error'; package: string; requestId: string; error: ProtocolError }
@@ -693,8 +742,10 @@ export type HostToWebviewMessage =
    * validation, cancelled at the confirmation step, or the task itself
    * failed. Deliberately does not carry `data`: the existing table is never
    * touched by this message, only the requesting row's own "running" state.
+   * Analysis failures echo requestId. Execution failures echo analysisId.
+   * Optional ids preserve handling for older or otherwise untracked errors.
    */
-  | { status: 'upgrade-error'; package: string; error: ProtocolError }
+  | { status: 'upgrade-error'; package: string; error: ProtocolError; requestId?: string; analysisId?: string }
   /**
    * One of the (at most two) genuinely-observable analysis phases has
    * started, never a fabricated progress step. See spec §20. `requestId`
@@ -751,9 +802,6 @@ export type HostToWebviewMessage =
   | { status: 'remediation-apply-result'; package: string; analysisId: string; result: TransitiveRemediationApplyResult }
   /** `package` could not be analyzed: an ineligible/forged request, a stale project snapshot, or a resolver failure that still deserves a user-visible reason rather than silently falling back to "unknown". */
   | { status: 'remediation-error'; package: string; error: ProtocolError }
-  | { status: 'remediation-batch-progress'; completed: number; total: number; current: string | null }
-  | { status: 'remediation-batch-complete'; completed: number; total: number; cancelled: boolean }
-  | { status: 'remediation-batch-error'; error: ProtocolError }
   /** "Where is this used?" (or the per-package half of an "Analyze cleanup" run) has started for `package`. */
   | { status: 'usage-analyzing'; package: string }
   /** The host-owned usage-analysis result for `package`, ready to render as a reference list. */
@@ -795,6 +843,57 @@ export type HostToWebviewMessage =
   | { status: 'smart-cleanup-metadata-error'; requestId: string; error: ProtocolError }
 ;
 
+/** Kept complete by the compiler, used only to distinguish malformed known events. */
+export const HOST_MESSAGE_STATUSES = {
+  'dependency-task': true,
+  'recovery-entries': true,
+  'recovery': true,
+  'update-advisories': true,
+  'loading': true,
+  'scan-progress': true,
+  'empty': true,
+  'ready': true,
+  'stale': true,
+  'partial-error': true,
+  'fatal-error': true,
+  'runtime-error': true,
+  'refresh-failed': true,
+  'upgrade-targets-loading': true,
+  'upgrade-targets': true,
+  'upgrade-targets-error': true,
+  'upgrade-result': true,
+  'upgrade-enrichment-result': true,
+  'upgrade-error': true,
+  'upgrade-analyzing': true,
+  'upgrade-analysis-partial': true,
+  'upgrade-analysis': true,
+  'upgrade-analysis-stale': true,
+  'remove-analyzing': true,
+  'remove-analysis': true,
+  'remove-progress': true,
+  'remove-result': true,
+  'remove-error': true,
+  'remediation-analyzing': true,
+  'remediation-result': true,
+  'remediation-plan': true,
+  'remediation-applying': true,
+  'remediation-stale': true,
+  'remediation-apply-result': true,
+  'remediation-error': true,
+  'usage-analyzing': true,
+  'usage-result': true,
+  'usage-error': true,
+  'cleanup-analyzing': true,
+  'removal-impact-analyzing': true,
+  'removal-impact-result': true,
+  'removal-impact-error': true,
+  'cleanup-result': true,
+  'cleanup-error': true,
+  'smart-cleanup-metadata-analyzing': true,
+  'smart-cleanup-metadata-result': true,
+  'smart-cleanup-metadata-error': true,
+} satisfies Record<HostToWebviewMessage['status'], true>;
+
 /**
  * `package` and `target` are the smallest request that lets the host verify
  * the click against its last-known state. See
@@ -824,12 +923,20 @@ export type HostToWebviewMessage =
  * anything else that could be forged into execution authority. See
  * upgradeAssistantCoordinator.ts's handleConfirmUpgrade/handleUseSmartPlan.
  */
+
 export type WebviewToHostMessage =
+  | { type: 'inspect-recovery'; id?: string }
+  | { type: 'start-recovery'; stopped: true; claim: string | null }
+  | { type: 'apply-recovery'; choices: RecoveryChoice[] }
+  | { type: 'dismiss-recovery'; stopped: true; discardIncomplete: boolean }
   | { type: 'ready' }
+  | { type: 'rendered'; generatedAt: string }
   | { type: 'refresh' }
   | { type: 'change-project' }
   /** On-demand, bounded published-version choices for one host-owned direct dependency. */
   | { type: 'load-upgrade-targets'; package: string; requestId: string }
+  /** Stops a version list load the webview no longer needs (dialog closed, package changed, retry). */
+  | { type: 'cancel-upgrade-targets'; requestId: string }
   /** `requestId` is a client-minted correlation nonce for this analysis attempt, never trust/execution surface, never stored on the host's analysis, and never compared against anything. It exists only so the webview can tell which `upgrade-analyzing`/`upgrade-analysis-partial`/`upgrade-analysis` messages belong to this attempt versus a superseded one (e.g. re-analyzing the same package after Cancel). Distinct from `analysisId`, which is host-minted, execution-trusted, and doesn't exist until the analysis completes. */
   | { type: 'upgrade'; package: string; target: string; requestId: string }
   | { type: 'bulk-upgrade'; changes: Array<{ package: string; target: string }>; requestId: string }
@@ -880,7 +987,6 @@ export type WebviewToHostMessage =
   | ({ type: 'confirm-remediation'; analysisId: string } & ConfirmVerificationOptIn)
   | { type: 'cancel-remediation'; analysisId: string }
   | { type: 'retry-remediation'; analysisId: string }
-  | { type: 'analyze-remediations'; packages: string[] }
   | { type: 'cancel-remediation-analysis' }
   /** On-demand, single-package usage scan. See src/core/usage/ and src/host/usage/usageAnalyzer.ts. Only ever a package name. The host re-derives everything else (which project, which files) from its trusted state. */
   | { type: 'where-used'; package: string }
@@ -913,7 +1019,34 @@ export type WebviewToHostMessage =
    * path or line number the webview constructed itself. See
    * src/host/usage/usageReferenceStore.ts for the trust boundary.
    */
-  | { type: 'open-usage-reference'; usageId: string; referenceIndex: number };
+  | { type: 'open-usage-reference'; usageId: string; referenceIndex: number }
+  /** Shows the Packageawy log from the internal error banner. Carries nothing else. */
+  | { type: 'show-log' }
+  /** A payload-free report so unrecognized data never reaches the log. */
+  | { type: 'unhandled-host-message' };
+
+/**
+ * Every webview message that can start writing dependency files. After an
+ * internal error the host refuses these and keeps answering the rest.
+ * Smart Cleanup executes through `confirm-remove`. `smart-cleanup-remove`
+ * and `upgrade` only prepare a review. A test fails when a new message type
+ * is added without being placed here or in its read-only list.
+ */
+export const CHANGE_STARTING_MESSAGE_TYPES = [
+  'confirm-upgrade',
+  'use-smart-plan',
+  'confirm-remove',
+  'confirm-remediation',
+  'restore-smart-cleanup',
+] as const;
+
+export type ChangeStartingMessage = Extract<WebviewToHostMessage, { type: typeof CHANGE_STARTING_MESSAGE_TYPES[number] }>;
+
+const CHANGE_STARTING_TYPES: ReadonlySet<string> = new Set(CHANGE_STARTING_MESSAGE_TYPES);
+
+export function isChangeStartingMessage(message: WebviewToHostMessage): message is ChangeStartingMessage {
+  return CHANGE_STARTING_TYPES.has(message.type);
+}
 
 const DATA_STATUSES: ReadonlySet<string> = new Set(['empty', 'ready', 'stale', 'partial-error']);
 const SCAN_PROGRESS_STAGES: ReadonlySet<string> = new Set<ScanProgressStage>([
@@ -952,6 +1085,9 @@ function isDashboardData(value: unknown): value is DashboardData {
     typeof value['canChangeProject'] === 'boolean' &&
     isAbsentOr(value['advisoriesError'], isProtocolError) &&
     isAbsentOr(value['auditUnavailable'], (v) => typeof v === 'boolean') &&
+    isAbsentOr(value['auditUnavailableReason'], isAuditUnavailableReason) &&
+    isAbsentOr(value['packageManager'], (v) => v === 'npm' || v === 'pnpm') &&
+    isAbsentOr(value['lockfileMissing'], (v) => typeof v === 'boolean') &&
     isAbsentOr(value['readOnlyReason'], isNonEmptyString) &&
     Array.isArray(hygieneFindings) &&
     hygieneFindings.every(isDependencyFinding) &&
@@ -1016,8 +1152,21 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (!isRecord(value)) return false;
 
   const type = value['type'];
-  if (type === 'ready' || type === 'refresh' || type === 'change-project') {
+  if (type === 'inspect-recovery') return hasOnlyKeys(value, ['type', 'id']) && (value['id'] === undefined || isRecoveryHash(value['id']));
+  if (type === 'start-recovery') return hasOnlyKeys(value, ['type', 'stopped', 'claim']) && value['stopped'] === true &&
+    (value['claim'] === null || isRecoveryHash(value['claim']));
+  if (type === 'dismiss-recovery') return hasOnlyKeys(value, ['type', 'stopped', 'discardIncomplete']) && value['stopped'] === true && typeof value['discardIncomplete'] === 'boolean';
+  if (type === 'apply-recovery') return hasOnlyKeys(value, ['type', 'choices']) && Array.isArray(value['choices']) && value['choices'].length <= 1000 && value['choices'].every((choice: unknown) =>
+    isRecord(choice) && hasOnlyKeys(choice, ['id', 'current', 'action', 'approveDeletion']) && isRecoveryId(choice['id']) &&
+    (choice['current'] === 'absent' || isRecoveryHash(choice['current'])) && (choice['action'] === 'keep' || choice['action'] === 'restore') && typeof choice['approveDeletion'] === 'boolean');
+  if (type === 'rendered') {
+    return hasOnlyKeys(value, ['type', 'generatedAt']) && isNonEmptyString(value['generatedAt']);
+  }
+  if (type === 'ready' || type === 'refresh' || type === 'change-project' || type === 'show-log' || type === 'unhandled-host-message') {
     return hasOnlyKeys(value, ['type']);
+  }
+  if (type === 'cancel-upgrade-targets') {
+    return hasOnlyKeys(value, ['type', 'requestId']) && isNonEmptyString(value['requestId']);
   }
   if (type === 'load-upgrade-targets') {
     return (
@@ -1127,17 +1276,6 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   }
   if (type === 'cancel-remediation' || type === 'retry-remediation') {
     return hasOnlyKeys(value, ['type', 'analysisId']) && isNonEmptyString(value['analysisId']);
-  }
-  if (type === 'analyze-remediations') {
-    const packages = value['packages'];
-    return (
-      hasOnlyKeys(value, ['type', 'packages']) &&
-      Array.isArray(packages) &&
-      packages.length > 0 &&
-      packages.length <= MAX_BULK_UPGRADE_CHANGES &&
-      packages.every(isNonEmptyString) &&
-      new Set(packages).size === packages.length
-    );
   }
   if (type === 'cancel-remediation-analysis') return hasOnlyKeys(value, ['type']);
   if (type === 'analyze-remediation' || type === 'where-used' || type === 'reanalyze-usage') {
@@ -1398,7 +1536,7 @@ function isVulnerabilityContext(value: unknown): value is VulnerabilityContext {
 }
 
 function isSecurityOutcome(value: unknown): value is SecurityOutcome {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['status', 'resolvedAdvisories', 'remaining', 'contexts', 'introduced', 'checkState'])) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['status', 'resolvedAdvisories', 'remaining', 'contexts', 'introduced', 'checkState', 'unaffectedElsewhereCount', 'beforeCount'])) return false;
   const status = value['status'];
   const resolvedAdvisories = value['resolvedAdvisories'];
   const remaining = value['remaining'];
@@ -1411,6 +1549,8 @@ function isSecurityOutcome(value: unknown): value is SecurityOutcome {
     remaining.every(isRemainingVulnerability) &&
     isAbsentOr(value['introduced'], (entries) => Array.isArray(entries) && entries.every(isRemainingVulnerability)) &&
     isAbsentOr(value['checkState'], (state) => state === 'complete' || state === 'unavailable' || state === 'off') &&
+    isAbsentOr(value['unaffectedElsewhereCount'], (count) => typeof count === 'number' && Number.isInteger(count) && count > 0) &&
+    isAbsentOr(value['beforeCount'], (count) => typeof count === 'number' && Number.isInteger(count) && count >= 0) &&
     isAbsentOr(value['contexts'], (contexts) => Array.isArray(contexts) && contexts.length <= 500 && contexts.every(isVulnerabilityContext))
   );
 }
@@ -1994,6 +2134,7 @@ function isDependencyUsageResult(value: unknown): value is DependencyUsageResult
     Array.isArray(references) &&
     references.every(isDependencyReference) &&
     typeof value['truncated'] === 'boolean' &&
+    isAbsentOr(value['coverageReasons'], (v) => Array.isArray(v) && v.every((reason: unknown) => typeof reason === 'string')) &&
     typeof value['scannedFileCount'] === 'number' &&
     typeof value['scannedAt'] === 'string'
   );
@@ -2072,7 +2213,7 @@ function isUpgradeTargetOption(value: unknown): value is UpgradeTargetOption {
 }
 
 function isUpgradeTargetOptions(value: unknown): value is UpgradeTargetOptions {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['recommendedVersion', 'options', 'truncated'])) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['recommendedVersion', 'options', 'truncated', 'tagsOnly'])) return false;
   const recommendedVersion = value['recommendedVersion'];
   const options = value['options'];
   return (
@@ -2081,6 +2222,7 @@ function isUpgradeTargetOptions(value: unknown): value is UpgradeTargetOptions {
     options.every(isUpgradeTargetOption) &&
     new Set(options.map((option) => option.version)).size === options.length &&
     typeof value['truncated'] === 'boolean' &&
+    isAbsentOr(value['tagsOnly'], (v) => v === true) &&
     (recommendedVersion === null || options.some((option) => option.version === recommendedVersion))
   );
 }
@@ -2162,6 +2304,12 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   const status = value['status'];
   if (typeof status !== 'string') return false;
 
+  if (status === 'dependency-task') return hasOnlyKeys(value, ['status', 'state']) &&
+    ['running', 'still-running', 'idle'].includes(value['state'] as string);
+  if (status === 'recovery-entries') return hasOnlyKeys(value, ['status', 'entries']) &&
+    Array.isArray(value['entries']) && value['entries'].length <= 1000 && value['entries'].every((entry: unknown) =>
+      isRecord(entry) && hasOnlyKeys(entry, ['id', 'label']) && isRecoveryHash(entry['id']) && typeof entry['label'] === 'string');
+  if (status === 'recovery') return hasOnlyKeys(value, ['status', 'recovery']) && isRecoveryPresentation(value['recovery']);
   if (status === 'update-advisories') {
     return hasOnlyKeys(value, ['status', 'context', 'results']) &&
       isUpdateAdvisoryContext(value['context']) && isUpdateAdvisoryResults(value['results']);
@@ -2182,6 +2330,11 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'fatal-error') {
     return hasOnlyKeys(value, ['status', 'error']) && isProtocolError(value['error']);
+  }
+  if (status === 'refresh-failed') return hasOnlyKeys(value, ['status']);
+  if (status === 'runtime-error') {
+    return hasOnlyKeys(value, ['status', 'code', 'message']) &&
+      value['code'] === RUNTIME_ERROR_CODE && value['message'] === RUNTIME_ERROR_TEXT;
   }
   if (status === 'upgrade-targets-loading') {
     return (
@@ -2208,7 +2361,7 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'upgrade-result') {
     const result = value['result'];
-    if (!isRecord(result) || !hasOnlyKeys(result, ['package', 'refreshId', 'install', 'application', 'verification', 'changes', 'refreshingDerivedData'])) {
+    if (!isRecord(result) || !hasOnlyKeys(result, ['package', 'refreshId', 'install', 'application', 'rollbackMessage', 'verification', 'changes', 'refreshingDerivedData'])) {
       return false;
     }
     const changes = result['changes'];
@@ -2231,6 +2384,7 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
         (change['declaredRange'] === null || typeof change['declaredRange'] === 'string') &&
         (change['classification'] === null || change['classification'] === 'prod' || change['classification'] === 'dev' || change['classification'] === 'optional')
       ) &&
+      (result['rollbackMessage'] === undefined || (result['application'] === 'rolled-back' && isNonEmptyString(result['rollbackMessage']))) &&
       typeof result['refreshingDerivedData'] === 'boolean'
     );
   }
@@ -2247,7 +2401,9 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'upgrade-error') {
     return (
-      hasOnlyKeys(value, ['status', 'package', 'error']) &&
+      hasOnlyKeys(value, ['status', 'package', 'error', 'requestId', 'analysisId']) &&
+      (value['requestId'] === undefined || isNonEmptyString(value['requestId'])) &&
+      (value['analysisId'] === undefined || isNonEmptyString(value['analysisId'])) &&
       isNonEmptyString(value['package']) &&
       isProtocolError(value['error'])
     );
@@ -2383,31 +2539,6 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
       isProtocolError(value['error'])
     );
   }
-  if (status === 'remediation-batch-progress') {
-    const completed = value['completed'];
-    const total = value['total'];
-    const current = value['current'];
-    return (
-      hasOnlyKeys(value, ['status', 'completed', 'total', 'current']) &&
-      typeof completed === 'number' && Number.isInteger(completed) && completed >= 0 &&
-      typeof total === 'number' && Number.isInteger(total) && total > 0 &&
-      completed <= total &&
-      (current === null || isNonEmptyString(current))
-    );
-  }
-  if (status === 'remediation-batch-complete') {
-    const completed = value['completed'];
-    const total = value['total'];
-    return (
-      hasOnlyKeys(value, ['status', 'completed', 'total', 'cancelled']) &&
-      typeof completed === 'number' && Number.isInteger(completed) && completed >= 0 &&
-      typeof total === 'number' && Number.isInteger(total) && total > 0 && completed <= total &&
-      typeof value['cancelled'] === 'boolean'
-    );
-  }
-  if (status === 'remediation-batch-error') {
-    return hasOnlyKeys(value, ['status', 'error']) && isProtocolError(value['error']);
-  }
   if (status === 'usage-analyzing') {
     return hasOnlyKeys(value, ['status', 'package']) && isNonEmptyString(value['package']);
   }
@@ -2524,4 +2655,20 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
     return hasOnlyKeys(value, ['status', 'data']) && isDashboardData(value['data']);
   }
   return false;
+}
+
+function isRecoveryHash(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+function isRecoveryId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+}
+function isRecoveryPresentation(value: unknown): value is RecoveryPresentation {
+  return isRecord(value) && hasOnlyKeys(value, ['state', 'message', 'claim', 'canDismiss', 'canApply', 'files']) &&
+    ['none', 'discovery-error', 'running', 'blocked', 'uninitialized', 'invalid', 'takeover', 'open', 'incomplete', 'completed', 'removing'].includes(value['state'] as string) &&
+    typeof value['message'] === 'string' && (value['claim'] === null || isRecoveryHash(value['claim'])) && typeof value['canDismiss'] === 'boolean' && typeof value['canApply'] === 'boolean' &&
+    Array.isArray(value['files']) && value['files'].length <= 1000 && value['files'].every((file: unknown) =>
+      isRecord(file) && hasOnlyKeys(file, ['id', 'path', 'existed', 'backup', 'current', 'backupPreview', 'currentPreview', 'progress']) && isRecoveryId(file['id']) &&
+      isNonEmptyString(file['path']) && typeof file['existed'] === 'boolean' && (file['backup'] === 'absent' || isRecoveryHash(file['backup'])) &&
+      (file['current'] === 'absent' || isRecoveryHash(file['current'])) && typeof file['backupPreview'] === 'string' && file['backupPreview'].length <= 5000 && typeof file['currentPreview'] === 'string' && file['currentPreview'].length <= 5000 && typeof file['progress'] === 'string');
 }

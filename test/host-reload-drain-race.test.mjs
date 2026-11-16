@@ -187,11 +187,10 @@ test('a watcher event arriving during reloadAndScan\'s own disk read is drained 
   await controller.handleRefresh(recordingSink());
   assert.deepEqual(
     controller.validateUpgradeRequest({ package: 'clean-pkg', target: '1.6.0' }),
-    { ok: false, reason: 'revalidating' },
+    { ok: false, reason: 'no-scan-result' },
     'a scan of stale (pre-event) content must never grant eligibility, even when nothing raced the scan itself'
   );
-  // And the row data itself still reflects the stale content, proving this
-  // isn't a vacuous check against an already-fresh scan.
+  // No scan result is retained for the obsolete disk read.
   assert.equal(controller.validateUpgradeRequest({ package: 'clean-pkg', target: '1.6.0' }).ok, false);
 
   // Step 8: mirrors reloadAndScan's end-of-method step, post-Fix-1: this
@@ -236,7 +235,7 @@ test('a watcher event arriving during a reloadAndScan for a DIFFERENT project (a
   });
   await controller.handleReady(recordingSink());
 
-  const generationAtReadStart = controller.beginRevalidation();
+  const generationAtReadStart = controller.beginRevalidation('/tmp/other-project');
 
   let resolveSwitchLoadProject;
   const switchLoadProjectHeldOpen = new Promise((resolve) => {
@@ -363,7 +362,7 @@ test('project B changes after B\'s watchers are installed but while B\'s own sca
   //      arrived on the NEW (B's) watchers, never discarding it
   // ----
 
-  const generationAtReadStart = controller.beginRevalidation();
+  const generationAtReadStart = controller.beginRevalidation('/tmp/project-b');
   controller.announceRevalidating(recordingSink());
 
   let reloadCalls = 0;
@@ -800,7 +799,7 @@ test('an old A watcher reload starts while B is loading and resolves after B bec
       canChangeProject: true,
       cacheKey: 'project-b::' + REGISTRY,
     },
-    controller.beginRevalidation()
+    controller.beginRevalidation('/tmp/project-b')
   );
 
   // A's held-open disk read finally resolves: well after B became selected.
@@ -947,7 +946,7 @@ test('an old A watcher reload passes its own isStillCurrent check, then is super
       canChangeProject: true,
       cacheKey: 'project-b::' + REGISTRY,
     },
-    controller.beginRevalidation()
+    controller.beginRevalidation('/tmp/project-b')
   );
 
   // A's network scan finally resolves: well after B became selected.

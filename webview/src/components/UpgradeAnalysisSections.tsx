@@ -152,7 +152,10 @@ function securityReviewSignal(
   const resolved = security?.resolvedAdvisories.length ?? 0;
   const value = unavailable ? 'Security check unavailable'
     : summary === null ? 'Security check unavailable'
-      : summary.beforeCount === 0 && summary.introducedCount === 0 ? 'No known vulnerabilities reported'
+      : summary.beforeCount === 0 && summary.introducedCount === 0 && summary.confirmedRemainingCount === 0 &&
+          summary.unknownCount === 0 ? 'No known vulnerabilities reported'
+        : resolved + summary.introducedCount + summary.confirmedRemainingCount + summary.unknownCount === 0
+          ? 'No longer reached through this upgrade'
         : [
             resolved > 0 ? `${resolved} resolved` : null,
             summary.introducedCount > 0 ? `${summary.introducedCount} introduced` : null,
@@ -295,7 +298,7 @@ export function UpgradeAnalysisSections({
               <CoordinatedUpgradePlanCard requestedChanges={overview.value.changes} smartPlan={smartPlan.value} compatibility={compatibility.value} />
             ) : compatibility.status === 'complete' && compatibility.value.status === 'conflict' ? (
               <CoordinationUnavailableCard row={row} changes={overview.value.changes} />
-            ) : <SimpleUpgradePlanCard row={row} changes={overview.value.changes} />
+            ) : <SimpleUpgradePlanCard changes={overview.value.changes} />
           ) : <SectionPlaceholder label={smartPlan.status === 'loading' ? PHASE_LABEL['smart-plan'] : 'Waiting for compatibility results…'} />}
         </UpgradeReviewDisclosure>
 

@@ -1,7 +1,10 @@
+import { recoveryFixture } from './helpers/recovery.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { OperationReservation, SourceGenerationGuard } from '../out/host/operationReservation.js';
+import { ProjectMutationLocks } from '../out/host/projectMutationLock.js';
+import { resolvedTarget } from './helpers/mutation-target.mjs';
 
 // The coordinator only reads settings from the platform in these paths.
 const platform = { getSetting: (_key, fallback) => fallback };
@@ -10,6 +13,7 @@ function fixture({ flushFails = false, disposed = false } = {}) {
   let held = false;
   const calls = [];
   const lifecycle = new OperationReservation({
+    locks: new ProjectMutationLocks(),
     reserve() {
       if (held) return false;
       held = true;
@@ -34,51 +38,49 @@ function fixture({ flushFails = false, disposed = false } = {}) {
   return { lifecycle, calls };
 }
 
-for (const exit of ['cancel', 'ttl-reclaim', 'analysis-failure', 'controller-unavailable']) {
+for (const exit of ['cancel', 'analysis-failure', 'controller-unavailable']) {
   test(`${exit} releases, flushes, and resumes exactly once`, async () => {
     const { lifecycle, calls } = fixture();
-    assert.equal(lifecycle.reserve('pkg'), true);
-    assert.equal(await lifecycle.release('pkg'), true);
-    assert.equal(await lifecycle.release('pkg'), false, 'a stale second release has no side effects');
+    const handle = lifecycle.reserve('pkg', '/workspace');
+    assert.equal(handle.ok, true);
+    assert.equal(await handle.releaseReadOnly(), true);
+    assert.equal(await handle.releaseReadOnly(), false, 'a stale second release has no side effects');
     assert.deepEqual(calls, ['release:pkg', 'flush', 'resume']);
   });
 }
 
-test('read-only review ownership is not mutation ownership', () => {
+test('read-only review ownership is not mutation ownership', async t => {
+  const f = await recoveryFixture(t);
   const { lifecycle } = fixture();
-  lifecycle.reserve('pkg');
+  const handle = lifecycle.reserve('pkg', f.root);
   assert.equal(lifecycle.isMutationBusy, false);
-  assert.equal(lifecycle.beginMutation('other'), false);
-  assert.equal(lifecycle.beginMutation('pkg'), true);
+  assert.equal(await handle.beginMutation(f.target), true);
   assert.equal(lifecycle.isMutationBusy, true);
 });
 
-test('a remounted webview releases abandoned read-only ownership but never a mutation', async () => {
+test('a remounted webview releases abandoned read-only ownership but never a mutation', async t => {
+  const f = await recoveryFixture(t);
   const readOnly = fixture();
-  readOnly.lifecycle.reserve('review');
-  assert.equal(await readOnly.lifecycle.releaseReadOnlyCurrent(), true);
+  readOnly.lifecycle.reserve('review', '/workspace');
+  assert.equal(await readOnly.lifecycle.held.releaseReadOnly(), true);
   assert.deepEqual(readOnly.calls, ['release:review', 'flush', 'resume']);
 
   const mutation = fixture();
-  mutation.lifecycle.reserve('install');
-  mutation.lifecycle.beginMutation('install');
-  assert.equal(await mutation.lifecycle.releaseReadOnlyCurrent(), false);
+  await mutation.lifecycle.reserve('install', f.root).beginMutation(f.target);
+  assert.equal(await mutation.lifecycle.held.releaseReadOnly(), false);
   assert.deepEqual(mutation.calls, []);
 });
 
 test('a flush failure is contained and later release cycles still run', async () => {
   const { lifecycle, calls } = fixture({ flushFails: true });
-  lifecycle.reserve('one');
-  await lifecycle.release('one');
-  lifecycle.reserve('two');
-  await lifecycle.release('two');
+  await lifecycle.reserve('one', '/workspace').releaseReadOnly();
+  await lifecycle.reserve('two', '/workspace').complete('not-started');
   assert.deepEqual(calls, ['release:one', 'flush', 'resume', 'release:two', 'flush', 'resume']);
 });
 
 test('disposal runs after release, drain, and resume', async () => {
   const { lifecycle, calls } = fixture({ disposed: true });
-  lifecycle.reserve('pkg');
-  await lifecycle.release('pkg');
+  await lifecycle.reserve('pkg', '/workspace').releaseReadOnly();
   assert.deepEqual(calls, ['release:pkg', 'flush', 'resume', 'dispose']);
 });
 
@@ -118,6 +120,7 @@ test('a host source change terminates a real in-flight Upgrade analysis exactly 
     etagStore: {},
     ensureController: async () => ({
       lastResultRows: () => [],
+      upgradeSource: { mutationTarget: resolvedTarget('/workspace') },
       validateBulkUpgradeRequest: () => ({
         ok: true,
         upgrades: [{ packageName: 'dep', currentVersion: '1.0.0', target: '2.0.0', classification: 'major' }],
@@ -155,6 +158,7 @@ test('a host source change terminates a real in-flight Upgrade analysis exactly 
 
   assert.deepEqual(messages, [{
     status: 'upgrade-error',
+    requestId: 'request-1',
     package: 'dep',
     error: {
       code: 'STALE_SOURCE',
@@ -181,6 +185,7 @@ test('a webview remount abandons an in-flight read-only review without publishin
     etagStore: {},
     ensureController: async () => ({
       lastResultRows: () => [],
+      upgradeSource: { mutationTarget: resolvedTarget('/workspace') },
       validateBulkUpgradeRequest: () => ({
         ok: true,
         upgrades: [{ packageName: 'dep', currentVersion: '1.0.0', target: '2.0.0', classification: 'major' }],
@@ -236,7 +241,7 @@ for (const flow of ['single', 'bulk']) for (const [current, target, upgradeReaso
       },
       etagStore: { get: () => undefined, set: () => {} },
       ensureController: async () => ({
-        upgradeSource: { resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} } },
+        upgradeSource: { resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} }, mutationTarget: resolvedTarget('/workspace') },
         lastResultRows: () => [{ name: 'pkg', current, upgradeTo: target, upgradeReason }],
         validateBulkUpgradeRequest: requests => {
           validatedRequests.push(requests);
@@ -295,6 +300,7 @@ test('publisher LTS lookup uses bounded registry concurrency', async () => {
     ensureController: async () => ({
       upgradeSource: {
         resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} },
+        mutationTarget: resolvedTarget('/workspace'),
       },
       lastResultRows: () => rows,
       validateBulkUpgradeRequest: (requests) => {
@@ -344,6 +350,7 @@ test('cancel-remove with a null id cancels a pending project load and releases w
     registry: 'https://registry.npmjs.org/',
     packageManager: 'npm',
     importerId: '.',
+    mutationTarget: resolvedTarget('/workspace'),
   };
   const coordinator = new UpgradeAssistantCoordinator({
     platform,
@@ -412,6 +419,7 @@ test('Smart Cleanup removal is capability-gated and rechecks host usage evidence
     resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
     packageManager: 'npm',
     importerId: '.',
+    mutationTarget: resolvedTarget('/workspace'),
   };
 
   const makeCoordinator = ({ importerId = '.', evidenceCurrent = () => true } = {}) => {
@@ -505,6 +513,7 @@ test('bulk removal preflight blocks a required peer unless its direct owner is i
     registry: 'https://registry.npmjs.org/',
     packageManager: 'npm',
     importerId: '.',
+    mutationTarget: resolvedTarget('/workspace'),
   };
 
   async function run(changes) {

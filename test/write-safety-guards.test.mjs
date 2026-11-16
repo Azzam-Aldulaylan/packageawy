@@ -19,6 +19,7 @@ const { validateUpgradeRequest, validateBulkUpgradeRequest } = await import('../
 const { buildStagedManifest, StagedManifestError } = await import('../out/core/upgrade/stagedManifest.js');
 const { resolveActionState } = await import('../out/host/upgradeAction.js');
 const { smartCleanupProjectCapability } = await import('../out/host/smartCleanupProjectCapability.js');
+const { resolvedTarget } = await import('./helpers/mutation-target.mjs');
 
 const YARN_MESSAGE =
   'This project uses Yarn. Packageawy shows its dependencies, and changes are available for npm and pnpm projects.';
@@ -238,12 +239,14 @@ function heldCoordinator(root, lifecycle = []) {
     etagStore: {},
     ensureController: async () => ({
       lastResultRows: () => [],
+      upgradeSource: { mutationTarget: resolvedTarget(root) },
       validateBulkUpgradeRequest: () => ({
         ok: true,
         upgrades: [{ packageName: 'dep', currentVersion: '1.0.0', target: '2.0.0', classification: 'prod' }],
       }),
     }),
     getSelectedProject: () => ({ id: 'project', dir: '', folder: { id: 'folder', name: 'fixture', path: root } }),
+    mutationRoot: () => root,
     isDisposed: () => false,
     reloadFinalState: async () => {},
     flushDeferredChanges: async () => lifecycle.push('flush'),

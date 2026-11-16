@@ -1,3 +1,4 @@
+import { isExpectedFsError, isFsError } from './expectedFsError.js';
 /**
  * The dashboard session behind the webview: lifecycle, the message boundary,
  * and watcher/reload wiring.
@@ -45,6 +46,7 @@ import { OPEN_MANIFEST_BUSY_MESSAGE, OPEN_MANIFEST_UNAVAILABLE_MESSAGE, findProj
 import { pickProject } from './projectPicker.js';
 import type { DiscoveredProject, ResolvedProject } from './projectResolution.js';
 import { discoverProjects, loadProject } from './projectResolution.js';
+import { targetFingerprintField } from './mutationTarget.js';
 import { CancellationTokenSource } from './platform/cancellation.js';
 import type { Disposable, HostPlatform, WebviewChannel } from './platform/hostPlatform.js';
 import { reconcileProjectCandidates } from './projectReconciliation.js';
@@ -56,32 +58,52 @@ import type { SmartCleanupFinalRefreshEvidence } from './smartCleanupCompletionR
 import { USAGE_FILE_WATCH_GLOB } from './usage/workspaceFiles.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
 import type { WebviewToHostMessage } from './webviewProtocol.js';
-import { isWebviewToHostMessage } from './webviewProtocol.js';
+import { isChangeStartingMessage, isWebviewToHostMessage } from './webviewProtocol.js';
+import { INTERNAL_REQUEST_FAILURE_TEXT, RUNTIME_ERROR_CODE, RUNTIME_ERROR_TEXT, runtimeFailureLine } from '../core/diagnostics.js';
+import type { RuntimeFailureContext } from '../core/diagnostics.js';
+import { fireAndForget } from '../core/fireAndForget.js';
+import { failedRequestSettlement } from './failedRequestSettlement.js';
 
 /** Spec's fixed background-refresh cadence: independent of the configurable `cacheTtlMinutes`, which only decides whether a given tick actually needs to do anything (see DashboardController.needsBackgroundRefresh). */
 const BACKGROUND_REFRESH_INTERVAL_MS = 30 * 60_000;
 /** Coalesces a burst of filesystem events (e.g. an editor's atomic save, which can fire delete+create in quick succession) into a single invalidation + rescan. */
 const FILE_EVENT_DEBOUNCE_MS = 300;
+/** Give the first snapshot time to paint, but do not depend on a responsive webview. */
+const RECOVERY_PAINT_WAIT_MS = 2_000;
+const RECOVERY_INSPECTION_MAX_ATTEMPTS = 3;
+const RECOVERY_INSPECTION_RETRY_MS = 250;
 const MAX_INTEGRATION_TEST_MESSAGES = 160;
 
-export interface DashboardPanelIntegrationTestEvent {
+type DashboardViewStatus = 'loading' | 'empty' | 'ready' | 'stale' | 'partial-error' | 'fatal-error';
+const DASHBOARD_VIEW_STATUSES: ReadonlySet<string> = new Set<DashboardViewStatus>([
+  'loading', 'empty', 'ready', 'stale', 'partial-error', 'fatal-error',
+]);
+
+export type DashboardPanelIntegrationTestEvent = {
   sequence: number;
   at: number;
-  message: HostToWebviewMessage;
-}
+} & (
+  | { direction: 'outbound'; message: HostToWebviewMessage }
+  | { direction: 'inbound'; message: Extract<WebviewToHostMessage, { type: 'rendered' }> }
+);
 
 export interface DashboardPanelOptions {
   extensionVersion: string;
   /** Enables the integration test seam below. Never true for a normal session. */
   integrationTestMode: boolean;
+  /** Timestamp captured when the platform creates the panel. */
+  createdAt?: number;
   /** Absolute path of a package.json to select on first load instead of asking. */
   initialManifestPath?: string;
+  /** Opted into only by the VS Code host. The sidecar waits for ready. */
+  speculativeStartup?: boolean;
 }
 
 export interface DashboardPanelIntegrationTestSnapshot {
   open: boolean;
   disposed: boolean;
   panelId: string | null;
+  panelCreatedAt: number | null;
   selectedManifestPath: string | null;
   packageManager: 'npm' | 'pnpm' | null;
   messages: readonly DashboardPanelIntegrationTestEvent[];
@@ -105,6 +127,7 @@ export class DashboardPanel {
   private readonly channel: WebviewChannel;
   private readonly sink: MessageSink;
   private readonly integrationTestMode: boolean;
+  private readonly createdAt: number;
   private readonly integrationTestPanelId = randomBytes(8).toString('hex');
   private readonly integrationTestMessages: DashboardPanelIntegrationTestEvent[] = [];
   private integrationTestMessageSequence = 0;
@@ -138,7 +161,18 @@ export class DashboardPanel {
   private readonly buildInfo: BuildInfo;
   /** Set once onDidDispose fires, so an async continuation mid-flight can bail before posting into a gone webview. */
   private disposed = false;
+  /**
+   * Set by the first internal error caught at an entry point. From then on
+   * the host refuses new changes, read-only messages keep working, and the
+   * banner stays until the panel closes. A new panel starts without it.
+   */
+  private runtimeFailed = false;
+  private protocolMismatch = false;
+  /** Set once with runtimeFailed. Watchers, timers and scheduled scans stay off for this panel's life. */
+  private backgroundStopped = false;
   private advisorySettingRefreshPending = false;
+  /** What the webview's main view last received, so a failed load or refresh can be ended without dropping rows. */
+  private shownDashboardStatus: DashboardViewStatus | undefined;
   /** The candidate a plain refresh (or a post-upgrade reload) re-reads: set on selection, untouched by refresh itself. */
   private selectedProject: DiscoveredProject | undefined;
   /**
@@ -151,8 +185,29 @@ export class DashboardPanel {
   private candidateCount = 0;
   /** A package.json the user asked to open ("Open in Packageawy") that the next initial selection uses. */
   private requestedManifestPath: string | undefined;
-  /** Set by the first `ready`: before that, a requested project waits for the webview's own load. */
+  /** Set by the first `ready`: requests before it supersede speculative startup. */
   private webviewReady = false;
+  /** Opens after startup preparation so its first live message is the ready-time replay. */
+  private deliveryReady = false;
+  private recoverySnapshotDelivered = false;
+  private recoveryInspectionPending = false;
+  private recoveryInspectionScheduled = false;
+  private recoveryInspectionAttempts = 0;
+  private recoveryInspectionImmediate: NodeJS.Immediate | undefined;
+  private recoveryInspectionTimer: NodeJS.Timeout | undefined;
+  private readonly speculativeStartup: boolean;
+  private startupGeneration = 0;
+  private startup: {
+    generation: number;
+    preparation: Promise<void>;
+    candidate?: DiscoveredProject;
+    controller?: DashboardController;
+    error?: ProtocolError;
+  } | undefined;
+  /** Automatic usage analysis waits until the first ready, including its scan, has settled. */
+  private automaticUsageReleased = false;
+  private automaticUsagePending = false;
+  private automaticUsageForce = false;
   /** Incremented at the start of every `reloadAndScan` call. See that method's doc comment for the race it closes. */
   private reloadGeneration = 0;
 
@@ -187,6 +242,7 @@ export class DashboardPanel {
     {
       isMutationBusy: () => this.upgradeCoordinator.isMutationBusy(),
       reconcile: (generation) => this.reconcileAfterGitHeadChange(generation),
+      onError: (error) => this.reportRuntimeFailure('branch-reconcile', error),
     },
     FILE_EVENT_DEBOUNCE_MS
   );
@@ -201,23 +257,23 @@ export class DashboardPanel {
     this.platform = platform;
     this.channel = channel;
     this.integrationTestMode = options.integrationTestMode;
+    this.createdAt = options.createdAt ?? Date.now();
     this.requestedManifestPath = options.initialManifestPath;
+    this.speculativeStartup = options.speculativeStartup === true;
     this.buildInfo = {
       extensionVersion: options.extensionVersion,
       builtAt: __BUILD_TIME__,
     };
     this.sink = {
       postMessage: (message) => {
-        if (this.integrationTestMode) {
-          this.integrationTestMessageSequence += 1;
-          this.integrationTestMessages.push({ sequence: this.integrationTestMessageSequence, at: Date.now(), message });
-          if (this.integrationTestMessages.length > MAX_INTEGRATION_TEST_MESSAGES) {
-            this.integrationTestMessages.splice(
-              0,
-              this.integrationTestMessages.length - MAX_INTEGRATION_TEST_MESSAGES
-            );
-          }
+        if (this.disposed || !this.deliveryReady) return;
+        const cancelsRecoveryPaint = this.recoverySnapshotDelivered &&
+          DASHBOARD_VIEW_STATUSES.has(message.status) && !('data' in message);
+        if (DASHBOARD_VIEW_STATUSES.has(message.status)) {
+          this.shownDashboardStatus = message.status as DashboardViewStatus;
+          this.recoverySnapshotDelivered = 'data' in message;
         }
+        this.recordIntegrationTestMessage({ direction: 'outbound', message });
         if (this.performanceEnabled()) {
           const performance = createPerformanceSession('Packageawy webview message', true);
           const endSerialization = performance.start('webview message serialization');
@@ -226,27 +282,39 @@ export class DashboardPanel {
           performance.finish({ status: message.status });
         }
         this.channel.postMessage(message);
+        if (cancelsRecoveryPaint) this.scheduleRecoveryInspection();
+        else if ('data' in message) {
+          if (this.recoveryInspectionAttempts > 0) this.scheduleRecoveryInspection();
+          else this.waitForRecoveryPaint();
+        }
       },
     };
     this.etagStore = new PersistentEtagStore(platform.cacheStore ?? platform.globalState);
     this.projectCacheStore = new PersistentProjectCacheStore(platform.workspaceState);
     this.upgradeCoordinator = new UpgradeAssistantCoordinator({
+      recoverySource: () => this.controller?.upgradeSource,
       platform,
       sink: this.sink,
       httpClient: this.httpClient,
       etagStore: this.etagStore,
-      ensureController: () => this.ensureController(),
+      ensureController: (strict) => this.ensureController(strict),
       getSelectedProject: () => this.selectedProject,
       mutationRoot: () => {
         const controller = this.controller;
         if (controller === undefined) return undefined;
-        const lockfilePath = controller.upgradeSource.lockfilePath;
-        return lockfilePath === null ? controller.root : path.dirname(lockfilePath);
+        // The resolved target's root, so sibling members of one workspace
+        // share one lock. A refused project cannot start a change.
+        const resolution = controller.upgradeSource.mutationTarget;
+        return resolution?.ok === true ? resolution.target.root : undefined;
       },
       getSmartCleanupDeprecationEvidence: () => this.smartCleanupMetadataCoordinator.currentDeprecationEvidence(),
       isDisposed: () => this.disposed,
-      reloadFinalState: async () => {
-        await this.reloadAndScan(undefined, { forceUsageRecheck: true });
+      reloadFinalState: () => this.reloadAndScan(undefined, { forceUsageRecheck: true, strict: true }),
+      invalidateSnapshot: () => {
+        this.clearCurrentProject();
+        this.sink.postMessage({ status: 'fatal-error', error: {
+          code: 'ProjectRefreshError', message: 'Could not reload project data. Try again.',
+        } });
       },
       reloadSmartCleanupFinalState: () => this.reloadAndCaptureFinalState(),
       readAndApplyMutationLocalState: () => this.readAndApplyMutationLocalState(),
@@ -258,13 +326,17 @@ export class DashboardPanel {
       onMutationLockReleased: () => {
         // A setting change queued while this or another panel's change held
         // the project lock runs now that the lock is free.
-        void this.flushAdvisorySettingRefresh();
+        fireAndForget(this.flushAdvisorySettingRefresh(), this.onBackgroundError('advisory-setting-refresh'));
         if (this.branchChangeCoordinator.hasPending) {
           this.branchChangeCoordinator.mutationReleased();
           return;
         }
-        void this.usageCoordinator.runPendingBackgroundRefresh();
+        if (this.automaticUsageReleased && !this.backgroundStopped) {
+          fireAndForget(this.usageCoordinator.runPendingBackgroundRefresh(), this.onBackgroundError('usage-refresh', false));
+        }
       },
+      changesPaused: () => this.runtimeFailed || this.protocolMismatch,
+      reportBackgroundFailure: (context, error, fence) => this.reportRuntimeFailure(context, error, fence),
       performanceEnabled: this.performanceEnabled,
       storeProjectCompatibilityReferences: (packageName, references, folder) =>
         this.usageCoordinator.storeProjectCompatibilityReferences(packageName, references, folder),
@@ -299,18 +371,27 @@ export class DashboardPanel {
       this.upgradeCoordinator.handleAdvisorySettingChanged();
       this.controller?.handleAdvisorySettingChanged(this.sink);
       this.advisorySettingRefreshPending = true;
-      void this.flushAdvisorySettingRefresh();
+      fireAndForget(this.flushAdvisorySettingRefresh(), this.onBackgroundError('advisory-setting-refresh'));
     });
 
     this.channel.onDidReceiveMessage((raw: unknown) => {
       if (!isWebviewToHostMessage(raw)) return;
-      void this.handle(raw);
+      // handle() catches and reports its own failures. This only sees what escapes that.
+      fireAndForget(this.handle(raw), (error) => {
+        if (isChangeStartingMessage(raw)) {
+          fireAndForget(this.upgradeCoordinator.settleChangeFailure(), this.onBackgroundError('reservation-release', false));
+        }
+        this.reportRuntimeFailure('webview-message', error);
+      });
     });
 
     this.channel.onDidDispose(() => {
       // An in-flight pipeline run must not outlive the panel, nor try to
       // post into a webview that no longer exists.
       this.disposed = true;
+      this.clearRecoveryInspectionTimer();
+      if (this.recoveryInspectionImmediate !== undefined) clearImmediate(this.recoveryInspectionImmediate);
+      this.recoveryInspectionImmediate = undefined;
       this.controller?.dispose();
       this.controller = undefined;
       this.pending = undefined;
@@ -349,7 +430,9 @@ export class DashboardPanel {
   }
 
   static create(platform: HostPlatform, channel: WebviewChannel, options: DashboardPanelOptions): void {
-    DashboardPanel.current = new DashboardPanel(platform, channel, options);
+    const panel = new DashboardPanel(platform, channel, options);
+    DashboardPanel.current = panel;
+    if (panel.speculativeStartup) panel.startStartup();
   }
 
   /**
@@ -360,7 +443,19 @@ export class DashboardPanel {
     const existing = DashboardPanel.current;
     if (existing === undefined) return false;
     existing.channel.reveal();
-    void existing.openManifest(manifestPath);
+    fireAndForget(existing.openManifest(manifestPath), existing.onBackgroundError('open-manifest'));
+    return true;
+  }
+
+  /**
+   * The sidecar's last resort for a rejection nothing handled. Pauses changes
+   * in the open panel, stops its background work and shows the banner.
+   * False when no panel is open.
+   */
+  static reportRuntimeFailure(context: RuntimeFailureContext, error: unknown): boolean {
+    const current = DashboardPanel.current;
+    if (current === undefined) return false;
+    current.reportRuntimeFailure(context, error);
     return true;
   }
 
@@ -381,6 +476,7 @@ export class DashboardPanel {
         open: false,
         disposed: true,
         panelId: null,
+        panelCreatedAt: null,
         selectedManifestPath: null,
         packageManager: null,
         messages: [],
@@ -393,6 +489,7 @@ export class DashboardPanel {
       open: true,
       disposed: current.disposed,
       panelId: current.integrationTestPanelId,
+      panelCreatedAt: current.createdAt,
       selectedManifestPath: current.selectedProject?.manifestPath ?? null,
       packageManager: current.selectedPackageManager,
       messages: current.integrationTestMessages.map((event) => ({ ...event })),
@@ -412,33 +509,328 @@ export class DashboardPanel {
   }
 
   private async flushAdvisorySettingRefresh(): Promise<void> {
-    if (!this.advisorySettingRefreshPending || this.disposed ||
+    if (!this.advisorySettingRefreshPending || this.disposed || this.backgroundStopped ||
         this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
     this.advisorySettingRefreshPending = false;
     await this.handle({ type: 'refresh' });
   }
 
+  /**
+   * The one entry point for webview messages. It never rejects: a failure in
+   * the message or in the refresh after it is logged and pauses changes.
+   * The two are caught separately so both are logged when both fail.
+   */
   private async handle(message: WebviewToHostMessage): Promise<void> {
+    if (message.type === 'rendered') {
+      this.recordIntegrationTestMessage({ direction: 'inbound', message });
+      this.scheduleRecoveryInspection();
+      return;
+    }
+    if (this.protocolMismatch && message.type === 'apply-recovery') return;
+    if (message.type === 'refresh' && this.webviewReady) this.scheduleRecoveryInspection();
+    if ((this.runtimeFailed || this.protocolMismatch || this.upgradeCoordinator.restartRequired) && isChangeStartingMessage(message)) {
+      this.upgradeCoordinator.refuseChangeAfterFailure(message);
+      return;
+    }
+    // Read before the handler runs: confirming or retrying consumes the review it names.
+    const changeTarget = this.requestTarget(message);
     try {
       await this.handleMessage(message);
-    } finally {
+    } catch (error) {
+      const unknown = isChangeStartingMessage(message) && await this.upgradeCoordinator.settleChangeFailure();
+      this.reportRuntimeFailure('webview-message', error);
+      if (!unknown) this.settleFailedRequest(message, changeTarget);
+    }
+    try {
       // Setting changes retain one refresh until the active operation settles.
       await this.flushAdvisorySettingRefresh();
+    } catch (error) {
+      this.reportRuntimeFailure('refresh-after-message', error);
+    }
+  }
+
+  /**
+   * Logs an unexpected failure. With `fence`, it also pauses changes, stops
+   * background work and shows the banner, once. A transaction that already
+   * started is left to finish and release normally.
+   */
+  private reportRuntimeFailure(context: RuntimeFailureContext, error: unknown, fence = true): void {
+    try {
+      this.platform.log?.(runtimeFailureLine(context, error));
+    } catch {
+      // The log itself failed. The banner below is all that is left.
+    }
+    if (!fence || this.disposed || this.runtimeFailed) return;
+    this.runtimeFailed = true;
+    try {
+      this.stopBackgroundWork();
+    } catch (stopError) {
+      try {
+        this.platform.log?.(runtimeFailureLine('background-refresh', stopError));
+      } catch {
+        // As above.
+      }
+    }
+    this.postRuntimeError();
+  }
+
+  /** The package a message about stored state is about, for answering it if its handler fails. */
+  private requestTarget(message: WebviewToHostMessage): string | undefined {
+    if (isChangeStartingMessage(message) || message.type === 'retry-remediation') {
+      return this.upgradeCoordinator.requestTarget(message);
+    }
+    if (message.type === 'retry-upgrade-enrichment') {
+      return this.mutationEnrichment?.refreshId === message.refreshId ? this.mutationEnrichment.packageName : undefined;
+    }
+    return undefined;
+  }
+
+  /** Ends the webview's loading or busy state for the request that failed. */
+  private settleFailedRequest(message: WebviewToHostMessage, changeTarget: string | undefined): void {
+    if (message.type === 'ready' || message.type === 'refresh') {
+      this.settleFailedLoad(message.type);
+      return;
+    }
+    // A retry that failed to start can be retried again.
+    if (message.type === 'retry-upgrade-enrichment' && this.mutationEnrichment?.refreshId === message.refreshId) {
+      this.mutationEnrichment = { ...this.mutationEnrichment, state: 'failed' };
+    }
+    const answer = failedRequestSettlement(message, changeTarget);
+    if (answer === undefined) return;
+    try {
+      this.sink.postMessage(answer);
+    } catch (error) {
+      try {
+        this.platform.log?.(runtimeFailureLine('webview-delivery', error));
+      } catch {
+        // As above.
+      }
+    }
+  }
+
+  /**
+   * Ends a load or refresh whose handler failed. With nothing to show (first
+   * load, or `loading` replaced the view) it sends the existing fatal error
+   * with Retry. Rows on screen, including `stale` ones, get nothing more
+   * than the banner: replaying an old snapshot would pass it off as a
+   * finished scan. The webview ends its own refreshing indicator when the
+   * banner arrives and keeps the rows marked stale.
+   */
+  private settleFailedLoad(type: 'ready' | 'refresh'): void {
+    // A failed ready must still open delivery, or nothing below arrives.
+    if (type === 'ready') {
+      this.deliveryReady = true;
+      if (this.runtimeFailed) this.postRuntimeError();
+    }
+    const shown = this.shownDashboardStatus;
+    try {
+      if (shown === 'stale') {
+        // Every failure, not only the first: a retry announces stale again.
+        this.sink.postMessage({ status: 'refresh-failed' });
+        return;
+      }
+      if (shown !== undefined && shown !== 'loading' && shown !== 'fatal-error') return;
+      this.sink.postMessage({ status: 'fatal-error', error: { code: RUNTIME_ERROR_CODE, message: INTERNAL_REQUEST_FAILURE_TEXT } });
+    } catch (error) {
+      try {
+        this.platform.log?.(runtimeFailureLine('webview-delivery', error));
+      } catch {
+        // As above.
+      }
+    }
+  }
+
+  private onBackgroundError(context: RuntimeFailureContext, fence = true): (error: unknown) => undefined {
+    return (error) => {
+      this.reportRuntimeFailure(context, error, fence);
+    };
+  }
+
+  private postRuntimeError(): void {
+    try {
+      this.sink.postMessage({ status: 'runtime-error', code: RUNTIME_ERROR_CODE, message: RUNTIME_ERROR_TEXT });
+    } catch (error) {
+      try {
+        this.platform.log?.(runtimeFailureLine('webview-delivery', error));
+      } catch {
+        // As above.
+      }
+    }
+  }
+
+  /**
+   * Called once on failure. Turns off everything that would start work on
+   * its own: watchers, the refresh timer, the Git HEAD watcher (including a
+   * setup still pending), the setting subscription, branch reconciliation
+   * and queued file reloads. The controller, caches and a running
+   * transaction stay: only closing the panel disposes those.
+   */
+  private stopBackgroundWork(): void {
+    if (this.backgroundStopped) return;
+    this.backgroundStopped = true;
+    this.disposeWatchers();
+    this.gitWatcherSetupGeneration += 1;
+    this.gitHeadWatcher?.dispose();
+    this.gitHeadWatcher = undefined;
+    this.gitWatchedProjectPath = undefined;
+    this.backgroundTimer.dispose();
+    this.advisorySettingSubscription.dispose();
+    this.advisorySettingRefreshPending = false;
+    this.branchChangeCoordinator.dispose();
+    this.fileChangeCoordinator.stop();
+    this.usageCoordinator.stopBackground();
+    this.automaticUsagePending = false;
+    this.automaticUsageForce = false;
+  }
+
+  private recordIntegrationTestMessage(event:
+    | { direction: 'outbound'; message: HostToWebviewMessage }
+    | { direction: 'inbound'; message: Extract<WebviewToHostMessage, { type: 'rendered' }> }
+  ): void {
+    if (!this.integrationTestMode) return;
+    this.integrationTestMessageSequence += 1;
+    this.integrationTestMessages.push({ ...event, sequence: this.integrationTestMessageSequence, at: Date.now() });
+    if (this.integrationTestMessages.length > MAX_INTEGRATION_TEST_MESSAGES) {
+      this.integrationTestMessages.splice(0, this.integrationTestMessages.length - MAX_INTEGRATION_TEST_MESSAGES);
     }
   }
 
   private async handleMessage(message: WebviewToHostMessage): Promise<void> {
     if (message.type === 'ready') {
+      this.protocolMismatch = false;
+      const firstReady = !this.webviewReady;
       this.webviewReady = true;
-      await this.upgradeCoordinator.handleWebviewReady();
-      const controller = await this.ensureController();
-      if (controller === undefined) return;
-      await controller.handleReady(this.sink);
-      void this.usageCoordinator.requestBackgroundUsageRefresh();
+      this.clearRecoveryInspectionTimer();
+      this.recoverySnapshotDelivered = false;
+      this.recoveryInspectionPending = true;
+      try {
+        await this.handleReadyMessage(firstReady);
+      } finally {
+        if (firstReady) {
+          // Today's order: usage analysis follows the first scan. A cached
+          // startup replay must not let it run before the revalidation lands.
+          this.automaticUsageReleased = true;
+          if (this.automaticUsagePending) this.requestAutomaticUsageRefresh();
+        }
+        // Discovery walks the workspace. Let the first table paint before it
+        // competes for I/O; empty and failed projects have no render acknowledgment.
+        if (!this.recoverySnapshotDelivered) this.scheduleRecoveryInspection();
+        // A reloaded webview starts without the banner. Put it back.
+        if (this.runtimeFailed) this.postRuntimeError();
+      }
       return;
     }
+    await this.handleOtherMessage(message);
+  }
+
+  private scheduleRecoveryInspection(retry = false): void {
+    if (!this.recoveryInspectionPending || this.recoveryInspectionScheduled || this.disposed) return;
+    this.recoveryInspectionPending = false;
+    this.clearRecoveryInspectionTimer();
+    if (!retry) this.recoveryInspectionAttempts = 0;
+    this.recoveryInspectionScheduled = true;
+    this.recoveryInspectionImmediate = setImmediate(() => {
+      this.recoveryInspectionImmediate = undefined;
+      fireAndForget(this.inspectRecoveryInBackground(), this.onBackgroundError('webview-message', false));
+    });
+  }
+
+  private async inspectRecoveryInBackground(): Promise<void> {
+    try {
+      if (this.disposed) return;
+      this.recoveryInspectionAttempts++;
+      await this.upgradeCoordinator.recovery.inspect();
+      this.recoveryInspectionAttempts = 0;
+    } catch (error) {
+      if (this.disposed) return;
+      this.recoveryInspectionPending = true;
+      if (this.recoveryInspectionAttempts < RECOVERY_INSPECTION_MAX_ATTEMPTS) {
+        this.recoveryInspectionTimer = setTimeout(() => this.scheduleRecoveryInspection(true),
+          RECOVERY_INSPECTION_RETRY_MS * this.recoveryInspectionAttempts);
+        this.recoveryInspectionTimer.unref();
+      } else {
+        this.upgradeCoordinator.recovery.reportDiscoveryFailure();
+      }
+      throw error;
+    } finally {
+      this.recoveryInspectionScheduled = false;
+    }
+    // A new ready received during discovery still needs its own presentation.
+    if (this.recoveryInspectionPending) this.scheduleRecoveryInspection();
+  }
+
+  private waitForRecoveryPaint(): void {
+    if (!this.recoveryInspectionPending || this.recoveryInspectionScheduled || this.recoveryInspectionTimer !== undefined || this.disposed) return;
+    // Start only after results are delivered. Replacing a snapshot must not
+    // extend the deadline if its acknowledgment is repeatedly canceled.
+    this.recoveryInspectionTimer = setTimeout(() => this.scheduleRecoveryInspection(), RECOVERY_PAINT_WAIT_MS);
+    this.recoveryInspectionTimer.unref();
+  }
+
+  private clearRecoveryInspectionTimer(): void {
+    if (this.recoveryInspectionTimer === undefined) return;
+    clearTimeout(this.recoveryInspectionTimer);
+    this.recoveryInspectionTimer = undefined;
+  }
+
+  private async handleReadyMessage(firstReady: boolean): Promise<void> {
+    if (firstReady && this.branchChangeCoordinator.hasPending) this.branchChangeCoordinator.mutationReleased();
+    await this.upgradeCoordinator.handleWebviewReady();
+    if (firstReady && this.startup !== undefined) {
+      const startup = this.startup;
+      await startup.preparation;
+      if (this.disposed) return;
+      this.startup = undefined;
+      const matches = startup.generation === this.startupGeneration &&
+        (this.requestedManifestPath === undefined || (startup.candidate !== undefined &&
+          findProjectForManifest([startup.candidate], this.requestedManifestPath) !== undefined));
+      this.deliveryReady = true;
+      if (matches && startup.error !== undefined) {
+        this.sink.postMessage({ status: 'fatal-error', error: startup.error });
+        return;
+      }
+      if (matches && startup.controller !== undefined && this.controller === startup.controller &&
+          this.selectedProject?.id === startup.candidate?.id) {
+        await startup.controller.handleStartupReady(this.sink);
+        this.requestAutomaticUsageRefresh();
+        return;
+      }
+      startup.controller?.dispose();
+      this.controller?.dispose();
+      this.controller = undefined;
+      this.pending = undefined;
+    }
+    this.deliveryReady = true;
+    await this.presentDashboard();
+  }
+
+  private async presentDashboard(forceUsageRecheck = false): Promise<void> {
+    const cold = this.controller === undefined;
+    const controller = await this.ensureController();
+    if (controller === undefined) return;
+    const outcome = await controller.handleReady(this.sink);
+    if (cold && outcome?.status === 'failed' && this.controller === controller) {
+      this.clearCurrentProject();
+      return;
+    }
+    this.requestAutomaticUsageRefresh({ force: forceUsageRecheck });
+  }
+
+  private async handleOtherMessage(message: Exclude<WebviewToHostMessage, { type: 'ready' }>): Promise<void> {
+    if (message.type === 'inspect-recovery') {
+      if (message.id === undefined && (this.recoveryInspectionPending || this.recoveryInspectionScheduled)) this.scheduleRecoveryInspection();
+      else await this.upgradeCoordinator.recovery.inspect(message.id);
+      return;
+    }
+    if (message.type === 'start-recovery') { await this.upgradeCoordinator.recovery.start(message.stopped, message.claim); return; }
+    if (message.type === 'apply-recovery') { await this.upgradeCoordinator.recovery.apply(message.choices); return; }
+    if (message.type === 'dismiss-recovery') { await this.upgradeCoordinator.recovery.dismiss(message.stopped, message.discardIncomplete); return; }
     if (message.type === 'load-upgrade-targets') {
       await this.upgradeCoordinator.handleLoadUpgradeTargets(message);
+      return;
+    }
+    if (message.type === 'cancel-upgrade-targets') {
+      this.upgradeCoordinator.handleCancelUpgradeTargets(message);
       return;
     }
     if (message.type === 'upgrade') {
@@ -462,7 +854,7 @@ export class DashboardPanel {
       return;
     }
     if (message.type === 'cancel-upgrade') {
-      this.upgradeCoordinator.handleCancelUpgrade(message);
+      await this.upgradeCoordinator.handleCancelUpgrade(message);
       return;
     }
     if (message.type === 'bulk-remove') {
@@ -478,11 +870,23 @@ export class DashboardPanel {
       return;
     }
     if (message.type === 'cancel-remove') {
-      this.upgradeCoordinator.handleCancelRemove(message);
+      await this.upgradeCoordinator.handleCancelRemove(message);
       return;
     }
     if (message.type === 'restore-smart-cleanup') {
       await this.upgradeCoordinator.handleRestoreSmartCleanup(message);
+      return;
+    }
+    if (message.type === 'unhandled-host-message') {
+      if (!this.protocolMismatch) {
+        this.protocolMismatch = true;
+        // Never log fields from an unrecognized message, even its status.
+        this.platform.log?.('Packageawy: unhandled host message. Dependency changes paused until reload.');
+      }
+      return;
+    }
+    if (message.type === 'show-log') {
+      this.platform.showLog?.();
       return;
     }
     if (message.type === 'configure-verification') {
@@ -506,17 +910,6 @@ export class DashboardPanel {
         return;
       }
       await this.upgradeCoordinator.handleAnalyzeRemediation(message);
-      return;
-    }
-    if (message.type === 'analyze-remediations') {
-      if (this.upgradeCoordinator.isMutationBusy()) {
-        this.sink.postMessage({
-          status: 'remediation-batch-error',
-          error: { code: 'UPGRADE_IN_PROGRESS', message: 'A dependency change is currently being applied to this project.' },
-        });
-        return;
-      }
-      await this.upgradeCoordinator.handleAnalyzeRemediations(message);
       return;
     }
     if (message.type === 'cancel-remediation-analysis') {
@@ -569,7 +962,6 @@ export class DashboardPanel {
         });
         return;
       }
-      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.usageCoordinator.handleAnalyzeCleanup();
       return;
     }
@@ -582,7 +974,6 @@ export class DashboardPanel {
         });
         return;
       }
-      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.smartCleanupMetadataCoordinator.analyze(message.requestId);
       return;
     }
@@ -625,11 +1016,17 @@ export class DashboardPanel {
       // a scan (and a controller replacement) against a package.json/
       // lockfile an upgrade task is still writing to.
       if (this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
-      this.upgradeCoordinator.discardSmartCleanupRestorePoint();
       await this.changeProject();
       return;
     }
     if (message.type === 'refresh') {
+      // A Refresh before the first ready waits for startup's own disk read,
+      // so it rereads after that read instead of being overwritten by it.
+      // The Refresh then owns the result: ready presents the refreshed
+      // controller through the ordinary path, never startup's old outcome.
+      await this.settleStartupPreparation();
+      if (this.disposed) return;
+      this.startup = undefined;
       // Ignored, not queued, while an upgrade holds the panel's lock: this
       // covers both the webview's Refresh button (also disabled client-
       // side while an upgrade is active, see App.tsx) and the Command
@@ -647,10 +1044,7 @@ export class DashboardPanel {
       // UsageAnalysisCoordinator.requestBackgroundUsageRefresh's doc for
       // why forcing is safe here.
       if (this.selectedProject === undefined) {
-        const controller = await this.ensureController();
-        if (controller === undefined) return;
-        await controller.handleReady(this.sink);
-        void this.usageCoordinator.requestBackgroundUsageRefresh({ force: true });
+        await this.presentDashboard(true);
         return;
       }
       await this.reloadAndScan(this.selectedProject, { forceUsageRecheck: true });
@@ -663,7 +1057,7 @@ export class DashboardPanel {
     const controller = await this.ensureController();
     if (controller === undefined) return; // ensureController already posted the failure.
     await controller.handleReady(this.sink);
-    void this.usageCoordinator.requestBackgroundUsageRefresh();
+    this.requestAutomaticUsageRefresh();
   }
 
   /**
@@ -678,6 +1072,11 @@ export class DashboardPanel {
     const url = this.upgradeCoordinator.resolveReviewAdvisoryUrl(message) ?? this.controller?.resolveAdvisoryUrl(message);
     if (url === null || url === undefined) return;
     this.platform.openExternal(url);
+  }
+
+  private reconcileControllerRoots(candidates: readonly DiscoveredProject[]): void {
+    this.controller?.reconcileProjectRoots(new Set(candidates.map(candidate =>
+      path.join(candidate.folder.path, candidate.dir))));
   }
 
   /**
@@ -702,6 +1101,8 @@ export class DashboardPanel {
     performance.finish({ candidates: candidates.length });
     if (this.disposed) return;
     this.candidateCount = candidates.length;
+
+    this.reconcileControllerRoots(candidates);
 
     if (candidates.length === 0) {
       // Extremely unlikely (a project is already selected), but handled the
@@ -748,10 +1149,12 @@ export class DashboardPanel {
   private async openManifest(manifestPath: string): Promise<void> {
     if (!this.webviewReady) {
       this.requestedManifestPath = manifestPath;
+      if (this.speculativeStartup) this.startStartup();
       return;
     }
     // The first load (and its picker, when there are several projects) is
     // still running: let it settle, then switch.
+    if (this.controller === undefined && this.startup !== undefined) await this.startup.preparation;
     if (this.controller === undefined && this.pending !== undefined) await this.pending;
     if (this.disposed) return;
     if (this.controller === undefined) {
@@ -776,6 +1179,7 @@ export class DashboardPanel {
     }
     performance.finish({ candidates: candidates.length });
     if (this.disposed) return;
+    this.reconcileControllerRoots(candidates);
     const target = findProjectForManifest(candidates, manifestPath);
     if (target === undefined) {
       this.platform.showInformationMessage(OPEN_MANIFEST_UNAVAILABLE_MESSAGE);
@@ -784,7 +1188,6 @@ export class DashboardPanel {
     this.candidateCount = candidates.length;
     if (target.id === this.selectedProject?.id) return;
     if (this.upgradeCoordinator.isBusy() || this.upgradeCoordinator.isRemediationBusy()) return;
-    this.upgradeCoordinator.discardSmartCleanupRestorePoint();
     await this.reloadAndScan(target);
   }
 
@@ -848,9 +1251,9 @@ export class DashboardPanel {
    */
   private async reloadAndScan(
     candidate: DiscoveredProject | undefined = this.selectedProject,
-    options: { forceUsageRecheck?: boolean; clearOnLoadFailure?: boolean } = {}
-  ): Promise<BackgroundRefreshOutcome | undefined> {
-    if (candidate === undefined) return undefined; // nothing selected yet. Only reachable before init ever completes
+    options: { forceUsageRecheck?: boolean; clearOnLoadFailure?: boolean; strict?: boolean } = {}
+  ): Promise<BackgroundRefreshOutcome> {
+    if (candidate === undefined) return { status: 'superseded' }; // nothing selected yet
 
     const previousProjectId = this.selectedProject?.id;
     const sameProjectReload = isSameProjectReload(previousProjectId, candidate.id);
@@ -879,7 +1282,10 @@ export class DashboardPanel {
     const revalidation =
       controllerBeforeReload === undefined
         ? undefined
-        : { controller: controllerBeforeReload, generationAtReadStart: controllerBeforeReload.beginRevalidation() };
+        : {
+            controller: controllerBeforeReload,
+            generationAtReadStart: controllerBeforeReload.beginRevalidation(path.join(candidate.folder.path, candidate.dir)),
+          };
     revalidation?.controller.announceRevalidating(this.sink);
 
     this.reloadGeneration += 1;
@@ -893,51 +1299,56 @@ export class DashboardPanel {
     this.fileChangeCoordinator.discardPending();
 
     let project: ResolvedProject;
-    try {
-      project = await this.loadProjectMeasured(candidate, 'Packageawy project reload');
-    } catch (cause) {
-      if (this.disposed || generation !== this.reloadGeneration) return;
-      if (options.clearOnLoadFailure === true) {
-        this.clearCurrentProjectForBranch(
-          'The selected package.json disappeared while this branch was loading. Select a project and try again.',
-          'ProjectChangedDuringBranchLoadError'
-        );
-        return;
+    let controller: DashboardController;
+    for (;;) {
+      try {
+        project = await this.loadProjectMeasured(candidate, 'Packageawy project reload', options.strict);
+      } catch (cause) {
+        if (!(cause instanceof SyntaxError) && !(options.strict ? isExpectedFsError(cause, 'read') : isFsError(cause))) throw cause;
+        if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
+        const error = toProtocolError(cause);
+        if (options.clearOnLoadFailure === true) {
+          this.clearCurrentProjectForBranch(
+            'The selected package.json disappeared while this branch was loading. Select a project and try again.',
+            'ProjectChangedDuringBranchLoadError'
+          );
+          return { status: 'failed', error };
+        }
+        this.sink.postMessage({ status: 'fatal-error', error });
+        if (this.controller?.lastResultEvidence() === null) this.clearCurrentProject();
+        return { status: 'failed', error };
       }
-      this.sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
-      return;
+      if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
+      const projectInfo = toProjectInfo(candidate);
+      const canChangeProject = this.candidateCount > 1;
+      const cacheKey = this.cacheKeyFor(candidate, project);
+      if (revalidation === undefined) {
+        controller = this.buildController(project, projectInfo, canChangeProject, cacheKey);
+        this.controller = controller;
+      } else {
+        controller = revalidation.controller;
+        const update = controller.updateProjectSnapshot(
+          { ...project, projectInfo, canChangeProject, cacheKey },
+          revalidation.generationAtReadStart
+        );
+        if (!update.structurallyCurrent) {
+          // Keep the old selection and its watchers until the target's disk
+          // inputs are accepted. A newer read of this root needs a reread,
+          // even when no target watcher exists yet to queue one for us.
+          revalidation.generationAtReadStart = controller.beginRevalidation(project.root);
+          continue;
+        }
+      }
+      break;
     }
-    if (this.disposed || generation !== this.reloadGeneration) return;
     this.selectedProject = candidate;
-
-    const projectInfo = toProjectInfo(candidate);
-    const canChangeProject = this.candidateCount > 1;
-    const cacheKey = this.cacheKeyFor(candidate, project);
     this.setupFileWatchers(candidate, path.join(project.root, 'package.json'));
     this.selectedLockfilePath = project.lockfilePath;
 
     if (!sameProjectReload) {
-      // The watchers installed just above are now live for `candidate`, but
-      // anything pending right now, before any further await, can only be
-      // a leftover from the old (pre-switch) watchers: nothing has had a
-      // chance to fire on the new ones yet. Discard it here, synchronously,
-      // rather than at the end of this method: waiting would let it also
-      // catch a genuine new-project event that the new watchers queue
-      // while the scan below is in flight, discarding a legitimate
-      // reload instead of applying it.
+      // Before the next await, pending events can only belong to the old
+      // watchers. The accepted snapshot now owns the new selection.
       this.fileChangeCoordinator.discardPending();
-    }
-
-    let controller: DashboardController;
-    if (revalidation === undefined) {
-      controller = this.buildController(project, projectInfo, canChangeProject, cacheKey);
-      this.controller = controller;
-    } else {
-      controller = revalidation.controller;
-      controller.updateProjectSnapshot(
-        { ...project, projectInfo, canChangeProject, cacheKey },
-        revalidation.generationAtReadStart
-      );
     }
     // A same-project manual/post-action refresh already has useful rows on
     // screen. Keep them visible (marked stale by the revalidation announcement
@@ -945,8 +1356,8 @@ export class DashboardPanel {
     // clear the old project's rows so they are never presented under the new
     // project identity.
     const scanOutcome = sameProjectReload
-      ? await controller.refreshInBackground(this.sink)
-      : await controller.handleRefresh(this.sink);
+      ? await controller.refreshInBackground(this.sink, 'structural', options.strict)
+      : await controller.handleRefresh(this.sink, options.strict);
 
     // The network scan can take long enough for an
     // entirely separate, newer reloadAndScan call (a faster project switch,
@@ -957,7 +1368,7 @@ export class DashboardPanel {
     // duplicate that newer flush or, worse, act on pending state that
     // belongs to whatever project is now actually selected, not the one this
     // call was for. Bail without flushing anything.
-    if (this.disposed || generation !== this.reloadGeneration) return undefined;
+    if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
 
     // Queued, not awaited: dependency data is already published to the
     // webview above, so usage/cleanup analysis must never block on it: it
@@ -965,7 +1376,7 @@ export class DashboardPanel {
     // usage analysis, or the mutation lock this call may itself still be
     // running under, e.g. an upgrade's `reloadFinalState`) is still busy.
     // See UsageAnalysisCoordinator.requestBackgroundUsageRefresh's doc.
-    void this.usageCoordinator.requestBackgroundUsageRefresh({ force: options.forceUsageRecheck === true });
+    this.requestAutomaticUsageRefresh({ force: options.forceUsageRecheck === true });
 
     // Whatever is pending now is guaranteed to be from the *currently
     // active* watchers: any old-project leftover was already cleared above
@@ -984,7 +1395,7 @@ export class DashboardPanel {
    * rows. Ordinary upgrade/removal callers use the normal reload path.
    */
   private async reloadAndCaptureFinalState(): Promise<SmartCleanupFinalRefreshEvidence | undefined> {
-    const outcome = await this.reloadAndScan(undefined, { forceUsageRecheck: true });
+    const outcome = await this.reloadAndScan(undefined, { forceUsageRecheck: true, strict: true });
     if (outcome?.status !== 'succeeded') return undefined;
     const controller = this.controller;
     const candidate = this.selectedProject;
@@ -992,7 +1403,7 @@ export class DashboardPanel {
     if (controller === undefined || candidate === undefined || evidence === null || this.disposed) return undefined;
 
     const generationAtReadStart = this.smartCleanupSourceGeneration;
-    const confirmed = await this.loadProjectMeasured(candidate, 'Smart Cleanup final evidence reread');
+    const confirmed = await this.loadProjectMeasured(candidate, 'Smart Cleanup final evidence reread', true);
     const generationAfterRead = this.smartCleanupSourceGeneration;
     if (this.disposed || candidate !== this.selectedProject || controller !== this.controller) return undefined;
 
@@ -1002,6 +1413,7 @@ export class DashboardPanel {
       lockfilePath: confirmed.lockfilePath,
       packageManager: confirmed.packageManager,
       importerId: confirmed.importerId,
+      ...targetFingerprintField(confirmed.mutationTarget),
     });
     if (!sourceFingerprintsMatch(evidence.sourceFingerprint, confirmedSourceFingerprint)) return undefined;
 
@@ -1036,7 +1448,7 @@ export class DashboardPanel {
     // read remain queued and are drained after the mutation lock is released.
     this.fileChangeCoordinator.discardPending();
     const generationAtReadStart = controller.beginRevalidation();
-    const project = await this.loadProjectMeasured(candidate, 'Packageawy post-upgrade local refresh');
+    const project = await this.loadProjectMeasured(candidate, 'Packageawy post-upgrade local refresh', true);
     if (
       this.disposed ||
       generation !== this.reloadGeneration ||
@@ -1102,7 +1514,7 @@ export class DashboardPanel {
       });
       return;
     }
-    void controller.refreshInBackground(this.sink, 'local-mutation').then((outcome) => {
+    fireAndForget(controller.refreshInBackground(this.sink, 'local-mutation').then((outcome) => {
       if (this.disposed) return;
       const current = this.mutationEnrichment;
       const terminalOutcome = current === lifecycle ? outcome : { status: 'superseded' as const };
@@ -1117,7 +1529,15 @@ export class DashboardPanel {
         ...(terminalOutcome.status === 'failed' ? { error: terminalOutcome.error } : {}),
       });
       if (terminalOutcome.status !== 'succeeded' || this.controller !== controller) return;
-      void this.usageCoordinator.requestBackgroundUsageRefresh({ force: true });
+      this.requestAutomaticUsageRefresh({ force: true });
+    }), (error) => {
+      // Logged only, but the webview is showing this refresh as running: end it
+      // as failed so Retry comes back.
+      this.reportRuntimeFailure('background-refresh', error, false);
+      if (this.disposed || this.mutationEnrichment !== lifecycle) return;
+      this.mutationEnrichment = { ...lifecycle, state: 'failed' };
+      const answer = failedRequestSettlement({ type: 'retry-upgrade-enrichment', refreshId }, packageName);
+      if (answer !== undefined) this.sink.postMessage(answer);
     });
   }
 
@@ -1128,6 +1548,84 @@ export class DashboardPanel {
     this.refreshMutationEnrichmentInBackground(lifecycle.refreshId, lifecycle.packageName);
   }
 
+  private requestAutomaticUsageRefresh(options: { force?: boolean } = {}): void {
+    if (this.disposed || this.backgroundStopped) return;
+    this.automaticUsagePending = true;
+    this.automaticUsageForce ||= options.force === true;
+    if (!this.automaticUsageReleased) return;
+    const force = this.automaticUsageForce;
+    this.automaticUsagePending = false;
+    this.automaticUsageForce = false;
+    fireAndForget(this.usageCoordinator.requestBackgroundUsageRefresh({ force }), this.onBackgroundError('usage-refresh', false));
+  }
+
+  private async settleStartupPreparation(): Promise<void> {
+    while (this.startup !== undefined && !this.disposed) {
+      const startup = this.startup;
+      await startup.preparation;
+      // A newer pre-ready target replaced it while waiting. Wait for that one.
+      if (this.startup === startup) return;
+    }
+  }
+
+  /** Discovery and disk reads are speculative too. Never select or write from an old request. */
+  private startStartup(): void {
+    this.startupGeneration += 1;
+    this.reloadGeneration += 1;
+    const previousProjectId = this.selectedProject?.id;
+    this.controller?.dispose();
+    this.controller = undefined;
+    this.pending = undefined;
+    // Change selection before discovery so a held watcher read cannot apply
+    // its old project's data, even while the replacement is being discovered.
+    this.selectedProject = undefined;
+    this.selectedPackageManager = null;
+    this.usageCoordinator.invalidateProjectSource(previousProjectId);
+    this.automaticUsagePending = false;
+    this.automaticUsageForce = false;
+    this.fileChangeCoordinator.discardPending();
+    this.disposeWatchers();
+    this.gitWatcherSetupGeneration += 1;
+    this.gitHeadWatcher?.dispose();
+    this.gitHeadWatcher = undefined;
+    this.gitWatchedProjectPath = undefined;
+    const startup: NonNullable<DashboardPanel['startup']> = {
+      generation: this.startupGeneration, preparation: Promise.resolve(),
+    };
+    this.startup = startup;
+    const requested = this.requestedManifestPath;
+    const isCurrent = (): boolean => !this.disposed && startup.generation === this.startupGeneration;
+    startup.preparation = (async () => {
+      const performance = createPerformanceSession('Packageawy project load', this.performanceEnabled());
+      try {
+        // A discovery failure leaves early start. The first ready then runs
+        // today's selection flow, which reports it in the usual way.
+        const candidates = await discoverProjects(this.platform, performance).catch(() => undefined);
+        if (candidates === undefined || !isCurrent()) return;
+        const candidate = requested === undefined
+          ? (candidates.length === 1 ? candidates[0] : undefined)
+          : findProjectForManifest(candidates, requested);
+        if (candidate === undefined) return;
+        startup.candidate = candidate;
+        this.candidateCount = candidates.length;
+        this.selectedProject = candidate;
+        const project = await loadProject(this.platform, candidate, performance);
+        if (!isCurrent()) return;
+        this.setupFileWatchers(candidate, path.join(project.root, 'package.json'));
+        this.selectedLockfilePath = project.lockfilePath;
+        const controller = this.buildController(project, toProjectInfo(candidate), candidates.length > 1,
+          this.cacheKeyFor(candidate, project));
+        this.controller = controller;
+        startup.controller = controller;
+        controller.startStartup(this.sink);
+      } catch (cause) {
+        if (isCurrent()) startup.error = toProtocolError(cause);
+      } finally {
+        performance.finish();
+      }
+    })();
+  }
+
   /**
    * Project resolution is async and can fail (no folder open, no package.json,
    * or the user cancels the initial picker). That is reported as fatal-error
@@ -1135,23 +1633,32 @@ export class DashboardPanel {
    * panel still opens and shows a retryable state: clicking Retry re-sends
    * `ready`, which runs this whole selection flow again from scratch.
    */
-  private async ensureController(): Promise<DashboardController | undefined> {
+  private async ensureController(strict = false): Promise<DashboardController | undefined> {
+    if (this.controller === undefined && this.startup !== undefined) await this.startup.preparation;
+    if (this.disposed) return undefined;
     if (this.controller !== undefined) return this.controller;
-    this.pending ??= this.createController();
-    const controller = await this.pending;
+    if (this.pending === undefined) {
+      if (this.shownDashboardStatus !== undefined) this.sink.postMessage({ status: 'loading' });
+      this.pending = this.createController(strict);
+    }
+    const pending = this.pending;
+    const controller = await pending;
+    if (this.pending !== pending || this.disposed) return undefined;
     if (controller === undefined) this.pending = undefined;
     return controller;
   }
 
-  private async createController(): Promise<DashboardController | undefined> {
+  private async createController(strict = false): Promise<DashboardController | undefined> {
     const performance = createPerformanceSession('Packageawy project load', this.performanceEnabled());
+    const generation = this.reloadGeneration;
+    const isCurrent = (): boolean => !this.disposed && generation === this.reloadGeneration;
     try {
-      const candidate = await this.selectInitialProject(performance);
-      if (this.disposed || candidate === undefined) return undefined; // already posted (or torn down)
+      const candidate = await this.selectInitialProject(performance, isCurrent);
+      if (!isCurrent() || candidate === undefined) return undefined;
 
+      const project = await loadProject(this.platform, candidate, performance, undefined, strict);
+      if (!isCurrent()) return undefined;
       this.selectedProject = candidate;
-      const project = await loadProject(this.platform, candidate, performance);
-      if (this.disposed) return undefined;
 
       this.setupFileWatchers(candidate, path.join(project.root, 'package.json'));
       this.selectedLockfilePath = project.lockfilePath;
@@ -1163,7 +1670,7 @@ export class DashboardPanel {
       );
       return this.controller;
     } catch (cause) {
-      if (this.disposed) return undefined;
+      if (!isCurrent()) return undefined;
       this.sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
       return undefined;
     } finally {
@@ -1178,9 +1685,9 @@ export class DashboardPanel {
    * candidates, distinguished only by the message, since there is no
    * "currently selected project" yet to fall back to on a first-ever open.
    */
-  private async selectInitialProject(performance: PerformanceRecorder): Promise<DiscoveredProject | undefined> {
+  private async selectInitialProject(performance: PerformanceRecorder, isCurrent: () => boolean): Promise<DiscoveredProject | undefined> {
     const candidates = await discoverProjects(this.platform, performance);
-    if (this.disposed) return undefined;
+    if (!isCurrent()) return undefined;
     this.candidateCount = candidates.length;
 
     const requested = this.requestedManifestPath;
@@ -1201,7 +1708,7 @@ export class DashboardPanel {
     if (candidates.length === 1) return candidates[0];
 
     const picked = await pickProject(this.platform, candidates);
-    if (this.disposed) return undefined;
+    if (!isCurrent()) return undefined;
     if (picked === undefined) {
       this.sink.postMessage({
         status: 'fatal-error',
@@ -1228,6 +1735,7 @@ export class DashboardPanel {
       importerId: project.importerId,
       lockfileName: project.lockfileName,
       otherPackageManager: project.otherPackageManager ?? null,
+      mutationTarget: project.mutationTarget,
       registry: project.registry,
       resolvedRegistry: project.resolvedRegistry,
       peerPolicy: project.peerPolicy,
@@ -1242,7 +1750,9 @@ export class DashboardPanel {
       ttlMinutesProvider: this.ttlMinutesProvider,
       performanceEnabled: this.performanceEnabled,
       progressEnabled: true,
+      scanGeneration: () => this.reloadGeneration,
       publicAdvisoryCheckEnabled: this.publicAdvisoryCheckEnabled,
+      log: (line) => this.platform.log?.(line),
     });
   }
 
@@ -1252,10 +1762,10 @@ export class DashboardPanel {
   private readonly performanceEnabled = (): boolean =>
     this.platform.getSetting<boolean>('debug.performance', false);
 
-  private async loadProjectMeasured(candidate: DiscoveredProject, operation: string): Promise<ResolvedProject> {
+  private async loadProjectMeasured(candidate: DiscoveredProject, operation: string, strict = false): Promise<ResolvedProject> {
     const performance = createPerformanceSession(operation, this.performanceEnabled());
     try {
-      return await loadProject(this.platform, candidate, performance);
+      return await loadProject(this.platform, candidate, performance, undefined, strict);
     } finally {
       performance.finish();
     }
@@ -1272,13 +1782,18 @@ export class DashboardPanel {
   };
 
   private onBackgroundTick(): void {
-    if (this.disposed || this.controller === undefined || this.upgradeCoordinator.isBusy()) return;
+    if (this.disposed || this.backgroundStopped || !this.webviewReady || this.upgradeCoordinator.isBusy()) return;
+    if (this.controller === undefined) {
+      fireAndForget(this.presentDashboard(), this.onBackgroundError('background-refresh', false));
+      return;
+    }
     if (!this.controller.needsBackgroundRefresh()) return;
     const controller = this.controller;
-    void controller.refreshInBackground(this.sink, 'time').then((outcome) => {
+    // A failed timed refresh keeps the last table. It is logged, and the next tick tries again.
+    fireAndForget(controller.refreshInBackground(this.sink, 'time').then((outcome) => {
       if (outcome.status !== 'succeeded' || this.disposed || this.controller !== controller) return;
-      void this.usageCoordinator.requestBackgroundUsageRefresh();
-    });
+      this.requestAutomaticUsageRefresh();
+    }), this.onBackgroundError('background-refresh', false));
   }
 
   private disposeWatchers(): void {
@@ -1301,24 +1816,26 @@ export class DashboardPanel {
   }
 
   private setupGitHeadWatcher(manifestPath: string): void {
+    if (this.backgroundStopped) return;
     if (this.gitWatchedProjectPath === manifestPath && this.gitHeadWatcher !== undefined) return;
     this.gitHeadWatcher?.dispose();
     this.gitHeadWatcher = undefined;
     this.gitWatchedProjectPath = manifestPath;
     this.gitWatcherSetupGeneration += 1;
     const setupGeneration = this.gitWatcherSetupGeneration;
-    void this.platform.watchGitHead(manifestPath, () => this.onGitHeadChanged()).then((watcher) => {
-      if (this.disposed || setupGeneration !== this.gitWatcherSetupGeneration) {
+    // Branch changes then go unnoticed until the panel reopens. Logged only.
+    fireAndForget(this.platform.watchGitHead(manifestPath, () => this.onGitHeadChanged()).then((watcher) => {
+      if (this.disposed || this.backgroundStopped || setupGeneration !== this.gitWatcherSetupGeneration) {
         watcher?.dispose();
         return;
       }
       this.gitHeadWatcher = watcher;
       if (watcher === undefined) this.gitWatchedProjectPath = undefined;
-    });
+    }), this.onBackgroundError('git-watcher', false));
   }
 
   private onGitHeadChanged(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.backgroundStopped) return;
     this.branchProjectPickerCancellation?.cancel();
     // Supersede an in-flight reload immediately. The debounced reconciliation
     // below owns the first snapshot that may become authoritative on this HEAD.
@@ -1341,16 +1858,33 @@ export class DashboardPanel {
     this.branchChangeCoordinator.notify();
   }
 
-  private clearCurrentProjectForBranch(message: string, code: string): void {
+  /** Supersede all work and return to the ordinary full discovery/load path. */
+  private clearCurrentProject(): void {
     this.reloadGeneration += 1;
+    this.startupGeneration += 1;
+    this.startup = undefined;
+    this.branchProjectPickerCancellation?.cancel();
+    this.usageCoordinator.invalidateProjectSource(this.selectedProject?.id);
+    this.automaticUsagePending = false;
+    this.automaticUsageForce = false;
     this.fileChangeCoordinator.discardPending();
     this.controller?.dispose();
+    this.controller?.invalidateCache();
     this.controller = undefined;
     this.pending = undefined;
     this.selectedProject = undefined;
     this.selectedPackageManager = null;
     this.selectedLockfilePath = null;
+    this.candidateCount = 0;
     this.disposeWatchers();
+    this.gitWatcherSetupGeneration += 1;
+    this.gitHeadWatcher?.dispose();
+    this.gitHeadWatcher = undefined;
+    this.gitWatchedProjectPath = undefined;
+  }
+
+  private clearCurrentProjectForBranch(message: string, code: string): void {
+    this.clearCurrentProject();
     this.sink.postMessage({ status: 'fatal-error', error: { code, message } });
   }
 
@@ -1370,7 +1904,9 @@ export class DashboardPanel {
   }
 
   private async reconcileAfterGitHeadChange(headGeneration: number): Promise<void> {
-    if (this.disposed || !this.branchChangeCoordinator.hasPending) return;
+    // Startup installs HEAD watchers too. Reconciliation may need a picker,
+    // so keep its pending event until the first ready can present that UI.
+    if (this.disposed || !this.webviewReady || !this.branchChangeCoordinator.hasPending) return;
     if (this.upgradeCoordinator.isMutationBusy()) return;
     const previous = this.selectedProject;
     const performance = createPerformanceSession('Packageawy branch reconciliation', this.performanceEnabled());
@@ -1391,6 +1927,7 @@ export class DashboardPanel {
     // Claim this exact HEAD before any panel mutation or QuickPick. A newer
     // HEAD makes the claim fail and leaves all current state untouched.
     if (!this.branchChangeCoordinator.claim(headGeneration)) return;
+    this.reconcileControllerRoots(candidates);
     this.candidateCount = candidates.length;
 
     if (decision.kind === 'none') {
@@ -1421,7 +1958,7 @@ export class DashboardPanel {
     // HEAD events cancel the ordinary file debounce. Revalidate retained
     // upgrade evidence against the reconciled project as well, even when only
     // source/config contents (not dependency versions) changed on this branch.
-    void this.upgradeCoordinator.checkOpenAnalysisFreshness();
+    fireAndForget(this.upgradeCoordinator.checkOpenAnalysisFreshness(), this.onBackgroundError('freshness-check', false));
   }
 
   /**
@@ -1442,6 +1979,8 @@ export class DashboardPanel {
    * codebase controls, ever appear in the glob pattern itself.
    */
   private setupFileWatchers(candidate: DiscoveredProject, manifestPath: string): void {
+    // After a failure, a read-only refresh must not bring the watchers back.
+    if (this.backgroundStopped) return;
     this.disposeWatchers();
     this.projectCompatibilitySourceGeneration += 1;
     this.setupGitHeadWatcher(manifestPath);
@@ -1468,9 +2007,9 @@ export class DashboardPanel {
       }
       this.projectCompatibilityInvalidationTimer = setTimeout(() => {
         this.projectCompatibilityInvalidationTimer = undefined;
-        void this.upgradeCoordinator.checkOpenAnalysisFreshness();
+        fireAndForget(this.upgradeCoordinator.checkOpenAnalysisFreshness(), this.onBackgroundError('freshness-check', false));
         if (!this.branchChangeCoordinator.hasPending) {
-          void this.usageCoordinator.requestBackgroundUsageRefresh();
+          this.requestAutomaticUsageRefresh();
         }
       }, FILE_EVENT_DEBOUNCE_MS);
     };
@@ -1491,8 +2030,16 @@ export class DashboardPanel {
       this.lockfileWatchers.push(
         this.platform.watchFiles(dirPath, '{package-lock.json,npm-shrinkwrap.json,pnpm-lock.yaml}', onLockfileEvent)
       );
+      // Everything the mutation target is resolved from, at every level
+      // inside the folder: an ancestor package.json can start or stop
+      // claiming this project as a workspace member, and settings or a
+      // pnpmfile can move the lockfile. The project's own package.json and
+      // .npmrc already have watchers above.
+      const targetInputs = dir === candidate.dir
+        ? '{pnpm-workspace.yaml,pnpm-workspace.yml,.pnpmfile.cjs,.pnpmfile.mjs}'
+        : '{package.json,.npmrc,pnpm-workspace.yaml,pnpm-workspace.yml,.pnpmfile.cjs,.pnpmfile.mjs}';
       this.configurationWatchers.push(
-        this.platform.watchFiles(dirPath, 'pnpm-workspace.yaml', onConfigurationEvent)
+        this.platform.watchFiles(dirPath, targetInputs, onConfigurationEvent)
       );
     }
   }
@@ -1511,7 +2058,7 @@ export class DashboardPanel {
    * though the host has already revoked eligibility for it.
    */
   private onWatchedFileEvent(kind: FileChangeKind): void {
-    if (this.disposed) return;
+    if (this.disposed || this.backgroundStopped) return;
     this.controller?.beginRevalidation();
     this.controller?.announceRevalidating(this.sink);
     this.smartCleanupSourceGeneration += 1;
@@ -1522,11 +2069,11 @@ export class DashboardPanel {
     if (this.invalidationTimer !== undefined) clearTimeout(this.invalidationTimer);
     this.invalidationTimer = setTimeout(() => {
       this.invalidationTimer = undefined;
-      void this.fileChangeCoordinator.flush();
+      fireAndForget(this.fileChangeCoordinator.flush(), this.onBackgroundError('file-reload'));
       // A watcher event only requests revalidation. Compare the retained
       // review's exact dependency and consumed source evidence before showing
       // a stale warning. No-op saves must not revoke completed results.
-      void this.upgradeCoordinator.checkOpenAnalysisFreshness();
+      fireAndForget(this.upgradeCoordinator.checkOpenAnalysisFreshness(), this.onBackgroundError('freshness-check', false));
     }, FILE_EVENT_DEBOUNCE_MS);
   }
 
@@ -1592,7 +2139,9 @@ export class DashboardPanel {
         sink: this.sink,
         source: this.reloadSource,
         generationAtReadStart,
-        isStillCurrent: () => !this.disposed && generation === this.reloadGeneration && candidate === this.selectedProject,
+        // A failure that lands while the disk read is in flight must not start a scan.
+        isStillCurrent: () => !this.disposed && !this.backgroundStopped &&
+          generation === this.reloadGeneration && candidate === this.selectedProject,
       });
     } catch {
       // Can't re-read the project right now (e.g. its manifest was deleted
@@ -1617,6 +2166,6 @@ export class DashboardPanel {
     // The watcher event cleared the likely-unused findings. Bring them back
     // for the new source. Some editors report a change only after the
     // change's own refresh has already run.
-    void this.usageCoordinator.requestBackgroundUsageRefresh();
+    this.requestAutomaticUsageRefresh();
   }
 }

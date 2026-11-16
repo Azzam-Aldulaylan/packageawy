@@ -41,7 +41,7 @@ test('Smart Cleanup requires a correlated host preflight and explicit confirmati
   assert.match(app, /const confirmSmartCleanup/);
   assert.match(app, /type: 'confirm-remove',\s+analysisId/);
   assert.match(app, /removeOrigin !== 'smart-cleanup'/);
-  assert.match(app, /incoming\.status === 'remove-result'/);
+  assert.match(app, /case 'remove-result':/);
 });
 
 test('revising a checked cleanup cancels its old host reservation before another final check', () => {

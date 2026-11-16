@@ -122,9 +122,9 @@ test('review controls and their evidence disclosure keep a readable vertical rhy
   assert.match(styles, /\.smart-cleanup-evidence li \+ li\s*\{[\s\S]*?margin-top:\s*0\.25rem;/);
 });
 
-test('execution cancellation is shown only when the host supplies a safe cancellation handler', () => {
-  assert.match(workspace, /onCancelExecution\?: \(\) => void/);
-  assert.match(workspace, /state\.phase === 'executing' && onCancelExecution !== undefined/);
+test('Smart Cleanup has no execution cancellation handler or progress bar styles', () => {
+  assert.doesNotMatch(workspace, /onCancelExecution|Cancel and restore|<progress|role="progressbar"/);
+  assert.doesNotMatch(styles, /\.smart-cleanup-execution progress|smart-cleanup-execution__progress/);
 });
 
 test('returning from package review keeps the plan visible while removal evidence refreshes', () => {
@@ -181,7 +181,7 @@ test('security and completion copy make no result claim before post-cleanup veri
   assert.match(workspace, /Selected direct/);
   assert.match(workspace, /Also introduced through/);
   assert.match(workspace, /The refreshed dashboard confirms the result after cleanup/);
-  assert.match(workspace, /Dependency removals run inside one restore boundary/);
+  assert.match(workspace, /Packageawy restores your dependency files and stops if it sees they changed/);
   assert.match(workspace, /<SeverityBadge severity=\{finding\.severity\}/);
   assert.match(adapter, /directRootActionIds/);
   assert.match(adapter, /directRoots: \[\.\.\.directRoots\]\.sort/);
@@ -199,7 +199,7 @@ test('security and completion copy make no result claim before post-cleanup veri
   assert.match(workspace, /Removed dependencies/);
   assert.match(styles, /\.smart-cleanup-metric__bars/);
   assert.match(workspace, /Dependency files restored/);
-  assert.match(workspace, /node_modules and script side effects were not restored/);
+  assert.match(workspace, /Script side effects were not restored/);
 });
 
 test('cleanup results use one outcome-led report with real changes and security evidence', () => {

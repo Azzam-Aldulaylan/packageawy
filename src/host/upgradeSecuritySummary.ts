@@ -18,7 +18,7 @@ export function summarizeUpgradeSecurity(security: SecurityOutcome): UpgradeSecu
   const confirmedRemainingCount = security.remaining.filter((entry) => entry.status === 'remains').length;
   const unknownCount = security.remaining.filter((entry) => entry.status === 'unknown').length;
   const introducedCount = security.introduced?.length ?? 0;
-  const beforeCount = security.resolvedAdvisories.length + confirmedRemainingCount + unknownCount;
+  const beforeCount = security.beforeCount ?? security.resolvedAdvisories.length + confirmedRemainingCount + unknownCount;
 
   let afterLabel: string;
   if (unknownCount > 0) {
@@ -32,6 +32,13 @@ export function summarizeUpgradeSecurity(security: SecurityOutcome): UpgradeSecu
   if (security.checkState === 'off') afterLabel = 'Off';
   else if (security.checkState === 'unavailable') afterLabel = 'Security check unavailable';
   return { beforeCount, introducedCount, confirmedRemainingCount, unknownCount, afterLabel };
+}
+
+/** One neutral line for project vulnerabilities this upgrade does not touch. They are never counted as remaining. */
+export function unaffectedElsewhereText(security: SecurityOutcome | null | undefined): string | null {
+  const count = security?.checkState === 'complete' ? security.unaffectedElsewhereCount ?? 0 : 0;
+  if (count <= 0) return null;
+  return `${count} known vulnerabilit${count === 1 ? 'y' : 'ies'} elsewhere in the project ${count === 1 ? 'is' : 'are'} not affected by this upgrade.`;
 }
 
 export function requiresSecurityAcknowledgement(security: SecurityOutcome | null | undefined): boolean {

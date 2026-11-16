@@ -1,13 +1,9 @@
 name: JetBrains plugin
 
+# Runs only when ci.yml calls it, after lint. A manual run goes through
+# ci.yml's workflow_dispatch. The caller's concurrency group applies.
 on:
-  push:
-    branches: [main]
-  pull_request:
-
-concurrency:
-  group: jetbrains-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 jobs:
   plugin:

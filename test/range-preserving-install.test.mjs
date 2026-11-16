@@ -58,7 +58,7 @@ test('a package.json edit during pass one is kept as a rollback conflict, not ov
   assert.equal(result.install.status, 'failed');
   assert.equal(result.install.code, 'STALE_SOURCE');
   assert.equal(text(await files.read('/p/package.json')), userEdit);
-  assert.equal(text(await files.read('/p/package-lock.json')), 'old-lock');
+  assert.equal(text(await files.read('/p/package-lock.json')), 'new-lock', 'a pre-check conflict stops every rollback swap');
   const manifestRollback = result.rollback.files.find((file) => file.path === '/p/package.json');
   assert.equal(manifestRollback.status, 'conflict');
   assert.notEqual(result.completion, 'rolled-back');
@@ -129,7 +129,7 @@ async function assertEditKept({ files, result }) {
   assert.equal(text(await files.read('/p/package.json')), userEdit, 'the user edit survives rollback');
   assert.equal(outcome.rollback.files.find((file) => file.path === '/p/package.json').status, 'conflict');
   assert.equal(outcome.completion, 'incomplete');
-  assert.equal(text(await files.read('/p/package-lock.json')), 'old-lock');
+  assert.equal(text(await files.read('/p/package-lock.json')), 'new-lock', 'a pre-check conflict stops every rollback swap');
 }
 
 const lockWrite = (files) => files.states.set('/p/package-lock.json', Buffer.from('new-lock'));
@@ -148,11 +148,15 @@ test('(b) an edit made while pass two fails is kept', async () => {
   }));
 });
 
-test('(c) an edit made before pass one throws is kept', async () => {
-  await assertEditKept(runWithEdit({
+test('(c) an exception after dispatch is unknown and never restores either file', async () => {
+  const { result, files } = runWithEdit({
     resolve: async (files, edit) => { lockWrite(files); edit(); throw new Error('spawn failed'); },
     restyle: async () => ({ ok: true }),
-  }));
+  });
+  const outcome = await result;
+  assert.equal(outcome.completion, 'unknown');
+  assert.equal(outcome.rollback.status, 'not-needed');
+  assert.equal(text(await files.read('/p/package-lock.json')), 'new-lock');
 });
 
 test('(d) an edit made during successful passes is kept when verification then rolls back', async () => {

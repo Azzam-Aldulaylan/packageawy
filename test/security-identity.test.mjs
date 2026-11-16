@@ -128,7 +128,7 @@ for (const packageManager of ['npm', 'pnpm']) {
       assert.equal(display.reason, 'Install dependencies to check this package');
     }
     const html = tableHtml(result.rows);
-    assert.doesNotMatch(html, />Safe</);
+    assert.doesNotMatch(html, />No known vulnerabilities</);
     assert.equal((html.match(/>Not checked</g) ?? []).length, result.rows.length);
     assert.match(html, /title="Install dependencies to check this package"/);
     const message = toHostToWebviewMessage(result, { isEmpty: false, isStale: false }, { id: 'id:app', label: 'app', manifestPath: '/app/package.json' }, false, { extensionVersion: 'test', builtAt: 'test' });
@@ -147,7 +147,7 @@ test('an unknown transitive version makes its root partial while checked finding
   const html = tableHtml(result.rows);
   assert.match(html, />High</);
   assert.match(html, />Not checked</);
-  assert.doesNotMatch(html, />Safe</);
+  assert.doesNotMatch(html, />No known vulnerabilities</);
 });
 
 test('npm v1 alias specs supply the real registry name and exact resolved version', async () => {
@@ -185,7 +185,7 @@ test('a missing direct version stays Not checked alongside a checked clean packa
   assert.equal(result.rows.find((row) => row.name === 'clean').advisoryCoverage, 'complete');
   assert.equal(result.rows.find((row) => row.name === 'missing').advisoryCoverage, 'partial');
   const html = tableHtml(result.rows);
-  assert.equal((html.match(/>Safe</g) ?? []).length, 1);
+  assert.equal((html.match(/>No known vulnerabilities</g) ?? []).length, 1);
   assert.equal((html.match(/>Not checked</g) ?? []).length, 1);
 });
 

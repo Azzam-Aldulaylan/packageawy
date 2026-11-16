@@ -1,3 +1,4 @@
+import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { memo, useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
 
@@ -295,6 +296,7 @@ export function UpgradeAnalysisModal({
         </header>
 
         <div className="modal__body">
+          <DependencyChangeStatus />
           {analysis !== null && (freshness !== 'fresh' || hardStale) ? (
             <p className={`stale-status${hardStale || expired ? ' stale-status--hard' : ''}`}>
               <IconRefresh className="stale-status__icon stale-status__icon--static" />

@@ -63,7 +63,8 @@ export function isUsableAuditOutput(stdout: string): boolean {
   try {
     parseNpmAuditOutput(stdout);
     return true;
-  } catch {
+  } catch (cause) {
+    if (!(cause instanceof AuditUnavailableError)) throw cause;
     return false;
   }
 }
@@ -78,7 +79,7 @@ export class ResolvedNpmAuditRunner implements AuditRunner {
     if (signal?.aborted) throw abortError();
     const runner = await this.runnerFor(cwd, signal);
     if (runner === null) {
-      throw new AuditUnavailableError('npm could not be located for npm audit.');
+      throw new AuditUnavailableError('npm could not be located for npm audit.', 'npm-not-found');
     }
     let result: AuditResult;
     try {

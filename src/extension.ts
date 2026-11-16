@@ -7,12 +7,15 @@
 
 import * as vscode from 'vscode';
 
+import { runtimeFailureLine } from './core/diagnostics.js';
+import { fireAndForget } from './core/fireAndForget.js';
 import { createPerformanceSession } from './core/performance/measurement.js';
 import { DashboardPanel } from './host/dashboardPanel.js';
 import type { DashboardPanelIntegrationTestSnapshot } from './host/dashboardPanel.js';
 import { OPEN_MANIFEST_UNAVAILABLE_MESSAGE } from './host/openManifestTarget.js';
 import { openManifestInDashboard, showDashboard } from './host/platform/vscode/dashboardWebview.js';
 import { registerSidebar } from './host/platform/vscode/sidebar.js';
+import type { ProcessRequest, RunningProcess } from './host/platform/hostPlatform.js';
 import { VsCodePlatform } from './host/platform/vscode/vsCodePlatform.js';
 
 export interface PackageawyIntegrationTestApi {
@@ -20,6 +23,8 @@ export interface PackageawyIntegrationTestApi {
     snapshot(): DashboardPanelIntegrationTestSnapshot;
     dispatch(message: unknown): Promise<void>;
   };
+  /** Runs a task through the real VS Code adapter, to check how its exit is reported. */
+  runProcessForTest(request: ProcessRequest): Promise<RunningProcess>;
 }
 
 export function activate(context: vscode.ExtensionContext): void | PackageawyIntegrationTestApi {
@@ -39,6 +44,12 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
   }
 
   const platform = new VsCodePlatform(context);
+  context.subscriptions.push(platform);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('packageawy.showLog', () => {
+      platform.showLog();
+    })
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand('packageawy.open', () => {
       showDashboard(context, platform);
@@ -53,17 +64,22 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
         platform.showInformationMessage(OPEN_MANIFEST_UNAVAILABLE_MESSAGE);
         return;
       }
-      void openManifestInDashboard(context, platform, target.fsPath);
+      fireAndForget(openManifestInDashboard(context, platform, target.fsPath), (error) => {
+        platform.log(runtimeFailureLine('open-manifest', error));
+      });
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('packageawy.refresh', () => {
-      void DashboardPanel.refresh();
+      // The panel reports its own failures. This only catches what escapes it.
+      fireAndForget(DashboardPanel.refresh(), (error) => {
+        platform.log(runtimeFailureLine('refresh-command', error));
+      });
     })
   );
 
-  context.subscriptions.push(registerSidebar(() => showDashboard(context, platform)));
+  context.subscriptions.push(registerSidebar(() => showDashboard(context, platform), (line) => platform.log(line)));
   endActivation({ trusted: true });
   performance.finish({ trusted: true });
 
@@ -76,6 +92,7 @@ export function activate(context: vscode.ExtensionContext): void | PackageawyInt
         snapshot: () => DashboardPanel.integrationTestSnapshot(),
         dispatch: (message) => DashboardPanel.dispatchIntegrationTestMessage(message),
       },
+      runProcessForTest: (request) => platform.runProcess(request),
     };
   }
 }

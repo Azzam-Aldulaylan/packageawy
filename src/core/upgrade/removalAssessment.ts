@@ -15,6 +15,7 @@
 import type { DependencyReference } from '../usage/types.js';
 import type { RemovalAssessment, RemovalEvidence } from '../types.js';
 import type { PeerRequirementEvidence } from './peerRequirement.js';
+import { coverageExplanation } from '../usage/sourceCoverage.js';
 
 export interface RemovalAssessmentInputs {
   /**
@@ -25,6 +26,7 @@ export interface RemovalAssessmentInputs {
   usage: {
     references: readonly DependencyReference[];
     truncated: boolean;
+    coverageReasons?: readonly string[];
     /** Static scanning cannot rule out convention-based runtime loading for this package. */
     conventionUncertainty?: boolean;
   } | null;
@@ -108,10 +110,12 @@ export function assessRemoval(inputs: RemovalAssessmentInputs): RemovalAssessmen
   // No source/script/config/optional-peer evidence found. A truncated scan
   // (file cap reached, or cancelled) cannot prove "no known references",
   // that conclusion is only trustworthy from a complete scan.
-  if (inputs.usage.truncated) {
+  if (inputs.usage.truncated || (inputs.usage.coverageReasons?.length ?? 0) > 0) {
     return {
       status: 'unknown',
-      evidence: [{ kind: 'source-reference', summary: 'The workspace scan did not cover every file, so results may be incomplete.' }],
+      evidence: [{ kind: 'source-reference', summary: inputs.usage.coverageReasons?.length
+        ? coverageExplanation(inputs.usage.coverageReasons)
+        : 'The workspace scan did not cover every file, so results may be incomplete.' }],
     };
   }
 

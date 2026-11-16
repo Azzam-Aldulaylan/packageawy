@@ -70,8 +70,6 @@ export interface SmartCleanupPlan {
 }
 
 export interface SmartCleanupExecutionProgress {
-  completed: number;
-  total: number;
   currentLabel: string;
 }
 
@@ -122,6 +120,7 @@ export type SmartCleanupPhase =
   | 'complete'
   | 'cancelled-rolled-back'
   | 'incomplete'
+  | 'unknown'
   | 'failed';
 
 /** Restore point the host kept for a finished cleanup. The host stays the authority for whether it still applies. */
@@ -191,11 +190,12 @@ export type SmartCleanupAction =
   | { type: 'show-confirmation' }
   | { type: 'keep-dependency'; actionId: string }
   | { type: 'back-to-review' }
-  | { type: 'execution-started'; total: number; currentLabel: string }
-  | { type: 'execution-progress'; completed: number; total: number; currentLabel: string }
+  | { type: 'execution-started'; currentLabel: string }
+  | { type: 'execution-progress'; currentLabel: string }
   | { type: 'rollback-started'; message: string }
   | { type: 'execution-complete'; result: SmartCleanupResult }
   | { type: 'execution-incomplete'; result: SmartCleanupResult; message: string }
+  | { type: 'execution-unknown' }
   | { type: 'execution-cancelled-and-restored'; result: SmartCleanupResult }
   | { type: 'restore-available'; analysisId: string }
   | { type: 'restore-started'; analysisId: string }
@@ -366,15 +366,13 @@ export function smartCleanupReducer(state: SmartCleanupState, action: SmartClean
       return state.phase === 'confirming' ? { ...state, phase: state.returnPhase } : state;
     case 'execution-started':
       return state.phase === 'confirming'
-        ? { ...state, phase: 'executing', execution: { completed: 0, total: action.total, currentLabel: action.currentLabel } }
+        ? { ...state, phase: 'executing', execution: { currentLabel: action.currentLabel } }
         : state;
     case 'execution-progress':
       return state.phase === 'executing'
         ? {
             ...state,
             execution: {
-              completed: Math.min(action.completed, action.total),
-              total: action.total,
               currentLabel: action.currentLabel,
             },
           }
@@ -405,6 +403,9 @@ export function smartCleanupReducer(state: SmartCleanupState, action: SmartClean
         : state;
     case 'reset':
       return createSmartCleanupState(state.projectName);
+    case 'execution-unknown':
+      // Unknown work has no result or restore point until recovery resolves it.
+      return { ...state, phase: 'unknown', execution: null, result: null, restore: null, message: null };
   }
 }
 

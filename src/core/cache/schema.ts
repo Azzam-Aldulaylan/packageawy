@@ -16,7 +16,9 @@
 
 import type { CachedResponse } from '../registry/versions.js';
 import type { DependencyFinding } from '../hygiene/types.js';
-import type { PackageRow, ScanDataAvailability } from '../types.js';
+import type { PackageManagerKind, PackageRow, ScanDataAvailability } from '../types.js';
+import type { AuditUnavailableReason } from '../diagnostics.js';
+import { isAuditUnavailableReason } from '../diagnostics.js';
 import type { ProtocolError } from '../validation.js';
 import { isAbsentOr, isDependencyFinding, isPackageRow, isProtocolError, isRecord, isScanDataAvailability, isStringOrNull } from '../validation.js';
 import type { ProjectSourceFingerprint } from './sourceFingerprint.js';
@@ -94,6 +96,15 @@ export interface ScanSnapshot {
   availability: ScanDataAvailability;
   advisoriesError?: ProtocolError;
   auditUnavailable?: boolean;
+  /**
+   * Why audit was unavailable. Optional so snapshots written before it existed
+   * still replay; a missing reason reads as a generic failure.
+   */
+  auditUnavailableReason?: AuditUnavailableReason;
+  /** The project's package manager when scanned, for banner wording. */
+  packageManager?: PackageManagerKind;
+  /** True when the scanned project had no lockfile for its package manager. */
+  lockfileMissing?: boolean;
   /** Deprecated findings. See src/core/hygiene/index.ts. Optional so a pre-existing persisted entry (written before this field existed) still passes validation as "no findings computed yet" rather than being rejected outright. */
   hygieneFindings?: DependencyFinding[];
 }
@@ -127,6 +138,9 @@ export function isPersistedProjectCache(value: unknown): value is PersistedProje
     isScanDataAvailability(value['availability']) &&
     isAbsentOr(value['advisoriesError'], isProtocolError) &&
     isAbsentOr(value['auditUnavailable'], (v) => typeof v === 'boolean') &&
+    isAbsentOr(value['auditUnavailableReason'], isAuditUnavailableReason) &&
+    isAbsentOr(value['packageManager'], (v) => v === 'npm' || v === 'pnpm') &&
+    isAbsentOr(value['lockfileMissing'], (v) => typeof v === 'boolean') &&
     isAbsentOr(value['hygieneFindings'], (v) => Array.isArray(v) && v.every(isDependencyFinding)) &&
     ((value['availability'] as ScanDataAvailability).advisories === 'unavailable') ===
       (value['advisoriesError'] !== undefined)

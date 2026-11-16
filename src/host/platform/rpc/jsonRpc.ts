@@ -5,6 +5,8 @@
 
 import type { Readable, Writable } from 'node:stream';
 
+import { runtimeFailureLine } from '../../../core/diagnostics.js';
+import { fireAndForget } from '../../../core/fireAndForget.js';
 import { CancellationTokenSource } from '../cancellation.js';
 import type { CancellationToken, Disposable } from '../hostPlatform.js';
 
@@ -268,7 +270,9 @@ export class JsonRpcConnection {
     }
     const source = new CancellationTokenSource();
     this.incoming.set(id, source);
-    void (async () => {
+    // The handler's own failure becomes an error response. Writing that
+    // response or the cleanup after it can still throw, and is logged.
+    fireAndForget((async () => {
       try {
         const result = await handler(params, source.token);
         if (source.token.isCancellationRequested) {
@@ -282,7 +286,9 @@ export class JsonRpcConnection {
         this.incoming.delete(id);
         source.dispose();
       }
-    })();
+    })(), (error) => {
+      this.log(runtimeFailureLine('rpc-request', error));
+    });
   }
 
   private writeError(id: RequestId, error: unknown): void {

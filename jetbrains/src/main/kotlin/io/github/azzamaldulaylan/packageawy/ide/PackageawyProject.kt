@@ -34,6 +34,8 @@ import io.github.azzamaldulaylan.packageawy.settings.SettingsListener
 import io.github.azzamaldulaylan.packageawy.settings.SettingsState
 import io.github.azzamaldulaylan.packageawy.sidecar.Initialize
 import io.github.azzamaldulaylan.packageawy.sidecar.NodeLocator
+import io.github.azzamaldulaylan.packageawy.sidecar.NodeVersion
+import io.github.azzamaldulaylan.packageawy.rpc.RestartHandshake
 import io.github.azzamaldulaylan.packageawy.sidecar.SidecarProcess
 import io.github.azzamaldulaylan.packageawy.sidecar.WorkspaceFolder
 import io.github.azzamaldulaylan.packageawy.webview.IdeTheme
@@ -58,6 +60,7 @@ class PackageawyProject(private val project: Project) : Disposable {
     private var panel: WebviewPanel? = null
     private var session: Session? = null
     private var starting = false
+    private var restartPending = false
     private val earlyMessages = ArrayList<JsonElement>()
     private var folders: List<WorkspaceFolder> = emptyList()
     /** A package.json to open once the sidecar is ready. */
@@ -80,10 +83,30 @@ class PackageawyProject(private val project: Project) : Disposable {
         return webview.component
     }
 
-    /** Stops the sidecar and reloads the page, which starts a fresh sidecar. */
+    /** Restart only after the engine has closed admission and acknowledged commit. */
     fun restart() {
-        stopSidecar()
-        panel?.let(::loadPage)
+        val current = synchronized(lock) {
+            if (restartPending) return
+            if (starting) { notifyFailure(RestartHandshake.REFUSAL); return }
+            val active = session
+            if (active == null) { panel?.let(::loadPage); return }
+            if (!active.ready) { notifyFailure(RestartHandshake.REFUSAL); return }
+            restartPending = true
+            active
+        }
+        RestartHandshake(current.sidecar.connection).prepareAndCommit().thenAccept { accepted ->
+            ApplicationManager.getApplication().invokeLater {
+                synchronized(lock) {
+                    restartPending = false
+                    if (!accepted || session !== current || current.sidecar.connection.isClosed) {
+                        if (!project.isDisposed) notifyFailure(RestartHandshake.REFUSAL)
+                    } else {
+                        stopSidecar()
+                        panel?.let(::loadPage)
+                    }
+                }
+            }
+        }
     }
 
     /** The same as the dashboard's own refresh button. */
@@ -159,6 +182,7 @@ class PackageawyProject(private val project: Project) : Disposable {
         val script = bundledSidecar() ?: throw IllegalStateException("The bundled Packageawy engine is missing.")
         val node = NodeLocator.find(project)
             ?: throw IllegalStateException("Node.js was not found. Configure a Node.js interpreter or add node to PATH.")
+        NodeVersion.probe(node)?.let { version -> NodeVersion.unsupportedMessage(version)?.let { throw IllegalStateException(it) } }
         val sidecar = SidecarProcess.start(node, script.toFile(), EnvironmentUtil.getEnvironmentMap(), LOG::warn) {
             LOG.info("sidecar: $it")
         }

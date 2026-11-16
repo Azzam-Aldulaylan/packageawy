@@ -14,8 +14,11 @@
  * npmResolver.ts for why.
  */
 
-import { existsSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import * as path from 'node:path';
+import { isExpectedFsError } from './expectedFsError.js';
+
+import semver from 'semver';
 
 import type { DependencyClassification } from '../core/upgrade/plan.js';
 import {
@@ -24,16 +27,19 @@ import {
   buildLockfileReconciliationArgs,
   buildManifestReconciliationArgs,
 } from '../core/upgrade/plan.js';
-import { createNodeNpmResolverDeps, resolveNpmInvocation } from './npmResolver.js';
+import { ToolchainOperation } from './toolchainOperation.js';
 import type { Disposable, HostPlatform } from './platform/hostPlatform.js';
-import { PNPM_NOT_FOUND_MESSAGE, resolveInstalledPnpmInvocation } from './pnpmResolver.js';
+import { PNPM_NOT_FOUND_MESSAGE } from './pnpmResolver.js';
 import type { PackageManagerInvocation } from './resolverVerifier.js';
 import { PendingUpgradeRuns, UpgradeLock, isSuccessfulExitCode } from './upgradeTracker.js';
+import type { DependencyTaskState } from './webviewProtocol.js';
 import type { VerificationExecutionResult } from './upgradeTransaction.js';
 import { buildVerificationScriptArgs } from './verificationPolicy.js';
 import type { VerificationScript } from './verificationPolicy.js';
 
 export interface UpgradeRunParams {
+  signal?: AbortSignal;
+  toolchain?: ToolchainOperation;
   importerId?: string;
   packageName: string;
   currentVersion: string;
@@ -49,7 +55,7 @@ export interface UpgradeRunParams {
   }[];
 }
 
-export type UpgradeRunOutcome = { ok: true } | { ok: false; code: string; message: string };
+export type UpgradeRunOutcome = { ok: true } | { ok: false; status?: 'unknown'; code: string; message: string };
 
 /**
  * Host-owned inputs for reconciling an already-staged package.json. No
@@ -57,12 +63,16 @@ export type UpgradeRunOutcome = { ok: true } | { ok: false; code: string; messag
  * be validated and written by the host before the returned execution runs.
  */
 export interface UpgradeManifestReconciliationParams {
+  signal?: AbortSignal;
+  toolchain?: ToolchainOperation;
   importerId?: string;
   cwd: string;
   ignoreScripts: boolean;
   packageManager: 'npm' | 'pnpm';
   /** Reconcile only the lockfile. See buildManifestReconciliationArgs. */
   lockfileOnly?: boolean;
+  /** The project is a workspace member whose lockfile is at the workspace root. */
+  workspaceMember?: boolean;
   /** Task title and scope shown to the user. Default to the cleanup wording. */
   taskTitle?: string;
   taskScope?: string;
@@ -79,11 +89,17 @@ export type PreparedManifestReconciliation =
  * represented solely by the staged lockfile bytes.
  */
 export interface UpgradeLockfileReconciliationParams {
+  signal?: AbortSignal;
+  toolchain?: ToolchainOperation;
   cwd: string;
   ignoreScripts: boolean;
   packageManager: 'npm' | 'pnpm';
+  /** The project is a workspace member whose lockfile is at the workspace root. */
+  workspaceMember?: boolean;
   /** Task title shown to the user. Defaults to the transitive-fix title. */
   taskTitle?: string;
+  /** Recovery cannot treat an unexpected resolver exception as a known task refusal. */
+  throwOnUnexpectedError?: boolean;
 }
 
 export type PreparedLockfileReconciliation =
@@ -91,6 +107,7 @@ export type PreparedLockfileReconciliation =
   | { ok: true; execute(): Promise<UpgradeRunOutcome> };
 
 export interface UpgradeVerificationParams {
+  toolchain?: ToolchainOperation;
   packageName: string;
   cwd: string;
   packageManager: 'npm' | 'pnpm';
@@ -99,11 +116,32 @@ export interface UpgradeVerificationParams {
   signal?: AbortSignal;
 }
 
+/**
+ * The first npm that finds the workspace root when run from a member's own
+ * folder: npm 8.5.0 shipped @npmcli/config 3.0.0 with that lookup
+ * (https://docs.npmjs.com/cli/v8/using-npm/changelog/#v850-2022-02-10).
+ * An older npm treats the member as its own project and writes a lockfile
+ * beside its package.json, not the one the transaction captured.
+ */
+export const NPM_WORKSPACE_MEMBER_MIN_VERSION = '8.5.0';
+export const NPM_TOO_OLD_FOR_MEMBER_CODE = 'NPM_TOO_OLD_FOR_WORKSPACE';
+export const NPM_TOO_OLD_FOR_MEMBER_MESSAGE =
+  'This npm version does not find the workspace root from a package folder, so it would write a different lockfile. Update npm to enable changes.';
+
+/** Whether this npm writes the workspace root's lockfile from a member folder. An unreadable version is treated as too old. */
+export function npmFindsWorkspaceRoot(version: string | undefined): boolean {
+  const parsed = version === undefined ? null : semver.coerce(version);
+  return parsed !== null && semver.gte(parsed, NPM_WORKSPACE_MEMBER_MIN_VERSION);
+}
+
 const DISPOSED_OUTCOME: UpgradeRunOutcome = {
   ok: false,
-  code: 'DISPOSED',
-  message: 'The dashboard panel was closed.',
+  status: 'unknown',
+  code: 'OUTCOME_UNKNOWN',
+  message: 'The task result was not observed.',
 };
+
+export const STILL_RUNNING_THRESHOLD_MS = 10_000;
 
 /**
  * Tracks the panel-wide upgrade lock and in-flight task-completion listeners
@@ -115,8 +153,27 @@ export class UpgradeExecutionSession {
   private readonly lock = new UpgradeLock();
   private readonly listeners = new Set<Disposable>();
   private readonly pendingRuns = new PendingUpgradeRuns();
+  private readonly discoveryAbort = new AbortController();
+  journal: { record(step: string, phase: 'intent' | 'finished'): Promise<void>; assertWritable?(): void } | undefined;
 
-  constructor(private readonly platform: HostPlatform) {}
+  constructor(
+    private readonly platform: HostPlatform,
+    /** Test seam. Production resolves the real npm or pnpm for `cwd`. */
+    private readonly invocationResolver?: (cwd: string, packageManager: 'npm' | 'pnpm') => PackageManagerInvocation | null | Promise<PackageManagerInvocation | null>,
+    private onTaskState?: (state: DependencyTaskState) => void
+  ) {}
+
+  createToolchainOperation(cwd: string, signal?: AbortSignal): ToolchainOperation {
+    return new ToolchainOperation(cwd, true,
+      signal === undefined ? this.discoveryAbort.signal : AbortSignal.any([this.discoveryAbort.signal, signal]),
+      this.invocationResolver);
+  }
+
+  /** The coordinator installs this only when a user requests a change. */
+  observeTaskState(listener: (state: DependencyTaskState) => void): void {
+    this.onTaskState = listener;
+  }
+
 
   /**
    * Reserves the panel's single upgrade slot for `packageName` for the whole
@@ -165,7 +222,7 @@ export class UpgradeExecutionSession {
     // the identical, single-read value, so a Volta pin (which depends on the
     // working directory) resolves the same way during this validation as it
     // will during the actual visible task.
-    const invocation = this.resolveInvocation(params.cwd, params.packageManager);
+    const invocation = await this.resolveInvocation(params.cwd, params.packageManager, params.toolchain ?? this.createToolchainOperation(params.cwd, params.signal));
     if (invocation === null) {
       this.platform.showErrorMessage(
         params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${params.packageManager} installation.`
@@ -179,7 +236,7 @@ export class UpgradeExecutionSession {
 
     const workspace = {
       importerId: params.importerId ?? '.',
-      hasWorkspaceManifest: existsSync(path.join(params.cwd, 'pnpm-workspace.yaml')),
+      hasWorkspaceManifest: await workspaceManifestExists(params.cwd),
     };
     const args =
       params.coordinatedChanges !== undefined && params.coordinatedChanges.length > 1
@@ -212,9 +269,9 @@ export class UpgradeExecutionSession {
    * prevents an untrusted workspace or missing package manager from causing
    * even a transient manifest mutation.
    */
-  prepareManifestReconciliation(
+  async prepareManifestReconciliation(
     params: UpgradeManifestReconciliationParams
-  ): PreparedManifestReconciliation {
+  ): Promise<PreparedManifestReconciliation> {
     if (!this.platform.isWorkspaceTrusted()) {
       return {
         ok: false,
@@ -224,24 +281,17 @@ export class UpgradeExecutionSession {
     }
 
     const { cwd, packageManager, ignoreScripts } = params;
-    const invocation = this.resolveInvocation(cwd, packageManager);
-    if (invocation === null) {
-      this.platform.showErrorMessage(
-        packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`
-      );
-      return {
-        ok: false,
-        code: 'PACKAGE_MANAGER_NOT_FOUND',
-        message: packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${packageManager} installation could not be located.`,
-      };
-    }
+    const toolchain = params.toolchain ?? this.createToolchainOperation(cwd, params.signal);
+    const resolved = await this.resolveInvocationFor(cwd, packageManager, params.workspaceMember === true, toolchain);
+    if (!resolved.ok) return resolved;
+    const invocation = resolved.invocation;
 
     const reconcileArgs = buildManifestReconciliationArgs(packageManager, {
       ignoreScripts,
       ...(params.lockfileOnly === true ? { lockfileOnly: true } : {}),
       workspace: {
         importerId: params.importerId ?? '.',
-        hasWorkspaceManifest: existsSync(path.join(cwd, 'pnpm-workspace.yaml')),
+        hasWorkspaceManifest: await workspaceManifestExists(cwd),
       },
     });
     let executed = false;
@@ -281,9 +331,9 @@ export class UpgradeExecutionSession {
    * The prepared execution is one-shot and re-checks Workspace Trust at the
    * last possible moment, matching manifest reconciliation's safety model.
    */
-  prepareLockfileReconciliation(
+  async prepareLockfileReconciliation(
     params: UpgradeLockfileReconciliationParams
-  ): PreparedLockfileReconciliation {
+  ): Promise<PreparedLockfileReconciliation> {
     if (!this.platform.isWorkspaceTrusted()) {
       return {
         ok: false,
@@ -293,17 +343,10 @@ export class UpgradeExecutionSession {
     }
 
     const { cwd, packageManager, ignoreScripts, taskTitle } = params;
-    const invocation = this.resolveInvocation(cwd, packageManager);
-    if (invocation === null) {
-      this.platform.showErrorMessage(
-        packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`
-      );
-      return {
-        ok: false,
-        code: 'PACKAGE_MANAGER_NOT_FOUND',
-        message: packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${packageManager} installation could not be located.`,
-      };
-    }
+    const toolchain = params.toolchain ?? this.createToolchainOperation(cwd, params.signal);
+    const resolved = await this.resolveInvocationFor(cwd, packageManager, params.workspaceMember === true, toolchain);
+    if (!resolved.ok) return resolved;
+    const invocation = resolved.invocation;
 
     const args = buildLockfileReconciliationArgs(packageManager, { ignoreScripts });
     let executed = false;
@@ -342,7 +385,7 @@ export class UpgradeExecutionSession {
     if (!this.platform.isWorkspaceTrusted()) {
       return { status: 'failed', checks: [], message: 'Verification is disabled in untrusted workspaces.' };
     }
-    const invocation = this.resolveInvocation(params.cwd, params.packageManager);
+    const invocation = await this.resolveInvocation(params.cwd, params.packageManager, params.toolchain ?? this.createToolchainOperation(params.cwd, params.signal));
     if (invocation === null) {
       return { status: 'failed', checks: [], message: params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${params.packageManager} installation could not be located.` };
     }
@@ -359,6 +402,7 @@ export class UpgradeExecutionSession {
         `Packageawy: Verify ${script.scriptName}`,
         `${params.packageManager} run ${script.scriptName}`
       );
+      if (!outcome.ok && outcome.status === 'unknown') return { status: 'unknown', checks, message: outcome.message };
       if (cancelled()) return { status: 'cancelled', checks };
       if (!outcome.ok) {
         checks.push({ id: script.id, status: 'failed', message: outcome.message });
@@ -369,13 +413,36 @@ export class UpgradeExecutionSession {
     return { status: 'passed', checks };
   }
 
-  private resolveInvocation(cwd: string, packageManager: 'npm' | 'pnpm'): PackageManagerInvocation | null {
-    const npm = resolveNpmInvocation(createNodeNpmResolverDeps(cwd));
-    if (packageManager === 'npm') {
-      if (!npm.ok) return null;
-      return { executable: npm.invocation.node, prefixArgs: [npm.invocation.npmCliJs] };
+  private async resolveInvocation(cwd: string, packageManager: 'npm' | 'pnpm', toolchain: ToolchainOperation): Promise<PackageManagerInvocation | null> {
+    if (toolchain.cwd !== cwd || !toolchain.strict) throw new TypeError('Mutation requires a strict toolchain for its working directory.');
+    return toolchain.resolve(packageManager);
+  }
+
+  /**
+   * The invocation a reconciliation will run, or the refusal to report.
+   * Checked before anything is staged, so a refusal writes nothing.
+   */
+  private async resolveInvocationFor(
+    cwd: string,
+    packageManager: 'npm' | 'pnpm',
+    workspaceMember: boolean,
+    toolchain: ToolchainOperation
+  ): Promise<{ ok: true; invocation: PackageManagerInvocation } | { ok: false; code: string; message: string }> {
+    const invocation = await this.resolveInvocation(cwd, packageManager, toolchain);
+    if (invocation === null) {
+      this.platform.showErrorMessage(
+        packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `Packageawy could not locate a working ${packageManager} installation.`
+      );
+      return {
+        ok: false,
+        code: 'PACKAGE_MANAGER_NOT_FOUND',
+        message: packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${packageManager} installation could not be located.`,
+      };
     }
-    return resolveInstalledPnpmInvocation(npm.ok ? npm.invocation : null, cwd);
+    if (packageManager === 'npm' && workspaceMember && !npmFindsWorkspaceRoot(invocation.version)) {
+      return { ok: false, code: NPM_TOO_OLD_FOR_MEMBER_CODE, message: NPM_TOO_OLD_FOR_MEMBER_MESSAGE };
+    }
+    return { ok: true, invocation };
   }
 
   private async executeTask(
@@ -391,7 +458,7 @@ export class UpgradeExecutionSession {
     // literal argv entries, with no shell parsing step in between for a
     // hostile character to exploit, and no npm/npm.cmd shim layer either.
     // `params.cwd` here is the same single-read value passed to
-    // `createNodeNpmResolverDeps` in `run` above: resolution and execution
+    // `createToolchainOperation` in `run` above: resolution and execution
     // never see different working directories.
     const request = {
       executable: invocation.executable,
@@ -401,7 +468,11 @@ export class UpgradeExecutionSession {
       scope: packageName,
     };
 
-    return await new Promise<UpgradeRunOutcome>((resolve) => {
+    await this.journal?.record(taskName, 'intent');
+    this.onTaskState?.('running');
+    // This timer only explains the wait. Visible writers have no deadline.
+    const stillRunning = setTimeout(() => this.onTaskState?.('still-running'), STILL_RUNNING_THRESHOLD_MS);
+    const outcome = await new Promise<UpgradeRunOutcome>((resolve) => {
       let settled = false;
       // A Disposable only stops future events: disposing the
       // onDidExit listener below does not, by itself, resolve this
@@ -421,18 +492,22 @@ export class UpgradeExecutionSession {
         resolve(outcome);
       };
 
-      this.platform.runProcess(request).then(
+      Promise.resolve().then(() => {
+        this.journal?.assertWritable?.();
+        return this.platform.runProcess(request);
+      }).then(
         (started) => {
           // dispose() already settled this run (DISPOSED) while runProcess
           // was still pending: don't register a listener for a session that
           // is already torn down. The process itself keeps running regardless,
           // we simply stop caring about its outcome from here.
           if (settled) return;
-          const disposable = started.onDidExit((exitCode) => {
-            disposable.dispose();
-            this.listeners.delete(disposable);
+          let disposable: Disposable | undefined;
+          disposable = started.onDidExit((exitCode) => {
+            disposable?.dispose();
+            if (disposable !== undefined) this.listeners.delete(disposable);
             finish(
-              isSuccessfulExitCode(exitCode)
+              exitCode === undefined ? { ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: 'The task result was not observed.' } : isSuccessfulExitCode(exitCode)
                 ? { ok: true }
                 : {
                     ok: false,
@@ -441,20 +516,30 @@ export class UpgradeExecutionSession {
                   }
             );
           });
-          this.listeners.add(disposable);
+          if (settled) disposable.dispose();
+          else this.listeners.add(disposable);
         },
         (error: unknown) => {
           finish({
             ok: false,
-            code: 'TASK_START_FAILED',
+            status: 'unknown',
+            code: 'OUTCOME_UNKNOWN',
             message: error instanceof Error ? error.message : String(error),
           });
         }
-      );
+      ).catch((error: unknown) => finish({ ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: error instanceof Error ? error.message : String(error) }));
     });
+    clearTimeout(stillRunning);
+    this.onTaskState?.('idle');
+    if (outcome.ok || outcome.status !== 'unknown') {
+      try { await this.journal?.record(taskName, 'finished'); }
+      catch { return { ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: 'The task result could not be recorded.' }; }
+    }
+    return outcome;
   }
 
   dispose(): void {
+    this.discoveryAbort.abort();
     for (const disposable of this.listeners) disposable.dispose();
     this.listeners.clear();
     // Settle every still-pending run (DISPOSED) so nothing awaits forever,
@@ -463,6 +548,14 @@ export class UpgradeExecutionSession {
     // package.json/lockfile write mid-flight would be worse than letting it
     // complete after the dashboard closed.
     this.pendingRuns.settleAll();
-    this.lock.clear();
+    // The owner handle settles after observing disposal as unknown.
+  }
+}
+
+async function workspaceManifestExists(cwd: string): Promise<boolean> {
+  try { await stat(path.join(cwd, 'pnpm-workspace.yaml')); return true; }
+  catch (cause) {
+    if (isExpectedFsError(cause, 'probe')) return false;
+    throw cause;
   }
 }

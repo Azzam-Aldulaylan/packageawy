@@ -24,6 +24,7 @@ export const BUN_LOCKB = 'bun.lockb';
  */
 export const DEFAULT_EXCLUDED_DIRS: readonly string[] = [
   'node_modules',
+  '.packageawy-recovery',
   '.git',
   'dist',
   'out',
@@ -306,4 +307,9 @@ export function discoverProjectCandidates(
     }
   }
   return out;
+}
+
+/** Recovery is read directly, never as a discovery or invalidation input. */
+export function isRecoveryPath(filePath: string): boolean {
+  return filePath.split(/[\\/]/).includes('.packageawy-recovery');
 }

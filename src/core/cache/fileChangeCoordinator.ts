@@ -171,6 +171,16 @@ export class FileChangeCoordinator {
     }
   }
 
+  /**
+   * Stops for good: drops pending and deferred bursts, and turns every later
+   * `notify`, `flush`, `flushAll` and already queued reload step into a
+   * no-op (each step checks the flag before calling `reload`). Used after an
+   * internal error, when no reload or scan may start on its own any more.
+   */
+  stop(): void {
+    this.dispose();
+  }
+
   dispose(): void {
     this.disposed = true;
     this.pendingKinds = new Set();

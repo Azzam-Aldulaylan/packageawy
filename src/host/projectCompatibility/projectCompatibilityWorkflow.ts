@@ -20,13 +20,23 @@ function throwIfCancelled(signal: AbortSignal): void {
 function waitForWork<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   // Observe even an already rejected promise when cancellation arrived first.
   if (signal.aborted) {
-    void work.catch(() => undefined);
+    work.catch(() => undefined);
     return Promise.reject(new DOMException('Upgrade analysis cancelled.', 'AbortError'));
   }
   return new Promise<T>((resolve, reject) => {
     const abort = (): void => reject(new DOMException('Upgrade analysis cancelled.', 'AbortError'));
     signal.addEventListener('abort', abort, { once: true });
-    void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    // Both handlers only settle and unsubscribe, so this chain cannot reject.
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      }
+    );
   });
 }
 

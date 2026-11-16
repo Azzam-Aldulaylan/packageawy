@@ -4,7 +4,9 @@
 export const METRICS = [
   { key: 'activationMs', label: 'activation' },
   { key: 'launchToActiveMs', label: 'launch to active' },
+  { key: 'openToPanelCreatedMs', label: 'open to panel created' },
   { key: 'openToFirstRowsMs', label: 'open to first rows' },
+  { key: 'openToPaintedRowsMs', label: 'open to painted rows' },
   { key: 'openToScanResultMs', label: 'open to scan result' },
   { key: 'openToCompleteMs', label: 'open to complete' },
 ];

@@ -1,3 +1,7 @@
+import { isExpectedFsError, isFsError } from './expectedFsError.js';
+import { UnsupportedLockfileError } from '../core/lockfile/parse.js';
+import { UnsupportedPnpmLockfileError } from '../core/lockfile/pnpm.js';
+import { YAMLException } from 'js-yaml';
 /**
  * Drives the pipeline for one open panel.
  *
@@ -45,8 +49,12 @@ import type { PackageManagerKind, PackageRow, ResolvedRegistry } from '../core/t
 import { validateBulkRemoveRequest, validateBulkUpgradeRequest, validateUpgradeRequest } from '../core/upgrade/validate.js';
 import type { BuildInfo } from './dashboardData.js';
 import { toHostToWebviewMessage } from './dashboardData.js';
-import { otherPackageManagerMessage } from './packageManagerSupport.js';
+import { readOnlyReasonFor } from './packageManagerSupport.js';
+import { targetFingerprintField } from './mutationTarget.js';
+import type { MutationTargetResolution } from './mutationTarget.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
+import { diagnosticLine, runtimeFailureLine } from '../core/diagnostics.js';
+import { fireAndForget } from '../core/fireAndForget.js';
 import { UpdateAdvisories, offeredVersionPairs } from './updateAdvisories.js';
 import type { UpdateVersionPair } from './updateAdvisories.js';
 import type { UpdateAdvisoryContext } from './webviewProtocol.js';
@@ -70,6 +78,8 @@ export type BackgroundRefreshOutcome =
   | { status: 'superseded' };
 
 export interface DashboardControllerOptions {
+  /** Panel reload generation: a newer disk read supersedes scans before they publish or persist. */
+  scanGeneration?: () => number;
   /** Absolute path to the directory holding package.json. */
   root: string;
   manifestText: string;
@@ -81,6 +91,8 @@ export interface DashboardControllerOptions {
   lockfileName?: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
   /** Yarn, Bun, or an unrecognized package manager owns this project: every dependency change is refused. */
   otherPackageManager?: OtherPackageManager | null;
+  /** Where a dependency change writes, or why changes are refused. Null or absent refuses every change. */
+  mutationTarget?: MutationTargetResolution | null;
   /** Already resolved by the caller via resolveRegistry. */
   registry: string;
   /** Full registry routing, including scoped overrides, for on-demand package metadata. */
@@ -115,6 +127,8 @@ export interface DashboardControllerOptions {
    * on the next one. Omitted means on.
    */
   publicAdvisoryCheckEnabled?: (root: string) => boolean;
+  /** Troubleshooting log (HostPlatform.log). Receives formatted, safe lines only. */
+  log?: (line: string) => void;
 }
 
 /** Settings key, relative to the `packageawy` section. Resource scoped, so it can differ per workspace folder. */
@@ -141,13 +155,21 @@ function toScanSnapshot(result: {
   availability: ScanSnapshot['availability'];
   advisoriesError?: ProtocolError;
   auditUnavailable?: boolean;
+  auditUnavailableReason?: ScanSnapshot['auditUnavailableReason'];
+  packageManager?: ScanSnapshot['packageManager'];
+  lockfileMissing?: boolean;
   hygieneFindings?: ScanSnapshot['hygieneFindings'];
 }): ScanSnapshot {
   const snapshot: ScanSnapshot = { rows: result.rows, availability: result.availability };
   if (result.advisoriesError !== undefined) {
     snapshot.advisoriesError = { code: result.advisoriesError.code, message: result.advisoriesError.message };
   }
-  if (result.auditUnavailable === true) snapshot.auditUnavailable = true;
+  if (result.auditUnavailable === true) {
+    snapshot.auditUnavailable = true;
+    if (result.auditUnavailableReason !== undefined) snapshot.auditUnavailableReason = result.auditUnavailableReason;
+  }
+  if (result.packageManager !== undefined) snapshot.packageManager = result.packageManager;
+  if (result.lockfileMissing === true) snapshot.lockfileMissing = true;
   if (result.hygieneFindings !== undefined) snapshot.hygieneFindings = result.hygieneFindings;
   return snapshot;
 }
@@ -169,6 +191,7 @@ export type ProjectSnapshot = Pick<
   | 'importerId'
   | 'lockfileName'
   | 'otherPackageManager'
+  | 'mutationTarget'
   | 'registry'
   | 'resolvedRegistry'
   | 'peerPolicy'
@@ -177,13 +200,30 @@ export type ProjectSnapshot = Pick<
   | 'cacheKey'
 >;
 
+/** Only the speculative first ready may join this task. Other runs still restart. */
+interface StartupTask {
+  promise: Promise<BackgroundRefreshOutcome | undefined>;
+  running: boolean;
+  scanId: number;
+  outcome?: BackgroundRefreshOutcome | undefined;
+}
+
+interface ScanSource {
+  cacheKey: string;
+  sourceFingerprint: ProjectSourceFingerprint;
+  projectFacts: Pick<ScanSnapshot, 'packageManager' | 'lockfileMissing'>;
+}
+
 export class DashboardController {
   private options: DashboardControllerOptions;
   private lastResult: ScanSnapshot | undefined;
   /** Fingerprint captured from the exact controller inputs that produced `lastResult`. */
   private lastResultSourceFingerprint: ProjectSourceFingerprint | undefined;
+  /** Disk inputs that produced the retained rows, including in-memory ready replays. */
+  private lastResultDiskReadGeneration: number | undefined;
   private lastGeneratedAt: string | undefined;
   private inFlight: AbortController | undefined;
+  private startupTask: StartupTask | undefined;
   private disposed = false;
   private readonly updateAdvisories: UpdateAdvisories;
   private updateContext: UpdateAdvisoryContext | undefined;
@@ -205,9 +245,8 @@ export class DashboardController {
   private declaredDependencies: DeclaredDependency[];
   /**
    * Monotonically increasing: the revalidation generation. Bumped by
-   * `beginRevalidation()`, the single explicit entry point for "eligibility
-   * must not be trusted from this point forward until a matching
-   * revalidation proves otherwise": a watcher event (called by the panel
+   * `invalidateScan()` whenever derived authority must be revoked:
+   * a watcher event (called by the panel
    * before its debounce, not after), a manual or structural reload, and a
    * project snapshot replacement. Timer/cache-age refreshes deliberately do
    * not advance this generation because age is not evidence of source
@@ -215,44 +254,39 @@ export class DashboardController {
    * half. See `isEligible`.
    */
   private revalidationGeneration = 0;
-  /**
-   * The `revalidationGeneration` value as of the last time `this.options`
-   * were confirmed to accurately describe reality: set at construction, by
-   * `updateProjectSnapshot` (an actual fresh disk read), and re-confirmed
-   * forward by a structurally-invalidating `run()` every time it grants
-   * eligibility (a granted scan proves `this.options` were still accurate
-   * as of that generation). `handleReady`'s fingerprint-matching hydration
-   * branch grants eligibility too, but never needs to touch this field
-   * itself: its precondition (`optionsGeneration ===
-   * revalidationGeneration`) is already required to hold before it grants
-   * anything, so there is nothing left to advance.
-   *
-   * `beginRevalidation()` alone does not touch `this.options` or this field:
-   * it fires the instant a watcher event arrives (or a reload attempt
-   * begins), before any disk read has happened, so right after it,
-   * `optionsGeneration < revalidationGeneration` precisely captures "we know
-   * the source may have changed, but `this.options` still holds the
-   * pre-change content." Eligibility must never be granted while that gap
-   * exists: a cold hydration (or a background-timer-triggered `run()` that
-   * races an already-pending, not-yet-applied file-change reload) would
-   * otherwise validate stale in-memory options against a
-   * `revalidationGeneration` that only coincidentally matches. See
-   * `isEligible`/`handleReady`/`run`.
-   */
+  /** Only a new disk read or file invalidation for the same root supersedes a disk read. */
+  private readonly diskReadGenerations = new Map<string, number>();
+  /** Never reuse a token after a disappeared root is rediscovered. */
+  private nextDiskReadGeneration = 0;
+
+  private get diskReadGeneration(): number {
+    return this.diskReadGenerations.get(this.options.root) ?? 0;
+  }
+  /** Generation at the last disk confirmation or completed eligible scan. */
   private optionsGeneration = 0;
+  /**
+   * Disk-read token supplying the options. Scans do not advance it, so a
+   * scan can revoke derived authority without invalidating confirmed inputs.
+   */
+  private scanInputsGeneration = 0;
+  /** Panel generation of the disk read supplying the current options. */
+  private optionsDiskGeneration: number | undefined;
   /** The `revalidationGeneration` `lastResult` was last validated against, or `undefined` if it never was: `undefined` is the explicit "revalidation in progress / not yet validated" state `validateUpgradeRequest` checks. */
   private eligibleGeneration: number | undefined;
 
   constructor(options: DashboardControllerOptions) {
     this.options = options;
-    this.updateAdvisories = new UpdateAdvisories(options.httpClient, () => this.publicAdvisoryCheckEnabled());
+    this.optionsDiskGeneration = options.scanGeneration?.();
+    this.updateAdvisories = new UpdateAdvisories(options.httpClient, () => this.publicAdvisoryCheckEnabled(),
+      () => this.options.log?.(diagnosticLine({ area: 'version-advisories', code: 'UNKNOWN' })));
     this.declaredDependencies = DashboardController.parseDeclaredDependencies(options.manifestText);
   }
 
   private static parseDeclaredDependencies(manifestText: string): DeclaredDependency[] {
     try {
       return parseManifest(manifestText).dependencies;
-    } catch {
+    } catch (cause) {
+      if (!(cause instanceof SyntaxError)) throw cause;
       return [];
     }
   }
@@ -272,8 +306,7 @@ export class DashboardController {
 
   /** Why dependency changes are off for this project, or undefined when npm or pnpm owns it. */
   private readOnlyReason(): string | undefined {
-    const kind = this.options.otherPackageManager ?? null;
-    return kind === null ? undefined : otherPackageManagerMessage(kind);
+    return readOnlyReasonFor(this.options);
   }
 
   /** Host-only source state used to build preflight and transaction inputs. */
@@ -288,6 +321,7 @@ export class DashboardController {
     importerId: string;
     lockfileName: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
     otherPackageManager: OtherPackageManager | null;
+    mutationTarget: MutationTargetResolution | null;
   } {
     return {
       manifestText: this.options.manifestText,
@@ -308,6 +342,7 @@ export class DashboardController {
       importerId: this.options.importerId ?? '.',
       lockfileName: this.options.lockfileName ?? null,
       otherPackageManager: this.options.otherPackageManager ?? null,
+      mutationTarget: this.options.mutationTarget ?? null,
     };
   }
 
@@ -323,47 +358,20 @@ export class DashboardController {
    * untouched, so ETag caching and persisted cache lookups keep working across
    * reloads.
    *
-   * @param generationAtReadStart: the caller's `beginRevalidation()`
-   *   return value, captured before the disk read that produced `snapshot`
-   *   started (not right before calling this method: before the `await`).
-   *   Required so this method can tell whether anything ELSE called
-   *   `beginRevalidation()` (a watcher event, an independent reload attempt)
-   *   while that read was in flight. If something did, `snapshot` may
-   *   already be stale relative to it: the caller's disk read could have
-   *   started before, and captured content from before, whatever change
-   *   that other call was reacting to. `snapshot` is still applied either
-   *   way (still worth showing: newer than what it replaces), but
-   *   `optionsGeneration` is only advanced (marking `this.options` as
-   *   confirmed current) when `generationAtReadStart` still matches
-   *   `revalidationGeneration` right now: proving nothing else landed in
-   *   between. Getting this wrong is exactly how a stale reload can go on
-   *   to grant Upgrade eligibility for content that predates a
-   *   since-known file change: `run()`'s grant check trusts
-   *   `optionsGeneration` completely, so if this method advanced it
-   *   unconditionally (to "whatever `revalidationGeneration` happens to be
-   *   right now"), a scan of `snapshot`'s stale content could still pass
-   *   that check purely because a later watcher event's bump got
-   *   attributed to this update instead of the change it actually
-   *   described.
+   * @param generationAtReadStart: the caller's `beginRevalidation(snapshot.root)` token,
+   * captured before reading disk. Scans only invalidate derived rows, so they
+   * cannot supersede this read. A newer read or watcher event can supersede it,
+   * in which case it must not replace newer inputs or restore their authority.
    */
   updateProjectSnapshot(snapshot: ProjectSnapshot, generationAtReadStart: number): ProjectSnapshotUpdateResult {
-    const optionsAreStillConfirmedCurrent = generationAtReadStart === this.revalidationGeneration;
+    if (generationAtReadStart !== this.diskReadGenerations.get(snapshot.root)) return { structurallyCurrent: false };
     this.options = { ...this.options, ...snapshot };
     this.declaredDependencies = DashboardController.parseDeclaredDependencies(snapshot.manifestText);
-    this.beginRevalidation();
-    if (optionsAreStillConfirmedCurrent) {
-      // Nothing called beginRevalidation() between when the disk read that
-      // produced `snapshot` started and right now: `this.options` really
-      // do reflect the freshest known state, so it's safe to mark them
-      // confirmed current as of this update's generation.
-      this.optionsGeneration = this.revalidationGeneration;
-    }
-    // else: something else landed while the read was in flight (its own
-    // beginRevalidation() call already left revalidationGeneration ahead of
-    // optionsGeneration): `snapshot` is applied for display, but
-    // optionsGeneration is deliberately left where it was, so a subsequent
-    // run() cannot mistake this update for "fully confirmed current."
-    return { structurallyCurrent: optionsAreStillConfirmedCurrent };
+    this.invalidateScan();
+    this.optionsGeneration = this.revalidationGeneration;
+    this.scanInputsGeneration = this.diskReadGeneration;
+    this.optionsDiskGeneration = this.options.scanGeneration?.();
+    return { structurallyCurrent: true };
   }
 
   /**
@@ -377,20 +385,40 @@ export class DashboardController {
    * reload it schedules both call this for what is conceptually the same
    * change.
    *
-   * Called from three kinds of places: the panel's raw watcher-event hook
-   * (before its debounce even runs: the debounce window is exactly the
-   * gap where the file has already changed on disk but `lastResult` still
-   * reflects the old content), the start of every reload attempt
-   * (`reloadAndScan`, each drained `reloadAfterFileChange` iteration, and a
-   * structural `run()`), and `updateProjectSnapshot` (a project reload must
-   * never grant eligibility: routing it through here guarantees that by
-   * construction, since this method only ever revokes).
+   * Called by the panel before raw watcher debounce and before every disk
+   * read, including drained watcher reloads and post-mutation reads. Scans
+   * and snapshot application use `invalidateScan` instead, because neither
+   * is evidence of a newer disk read or changed project files.
    *
-   * Returns the new generation for callers that need to correlate their own
-   * specific revalidation attempt against a later one superseding it
-   * (see `run()`). External callers (the panel) are free to ignore it.
+   * Returns the disk-read token. Only a newer read or project-file
+   * invalidation for the same root advances it. Pass the target root when
+   * switching projects. Watchers default to the currently selected root.
+   * Starting a scan never invalidates a disk read.
    */
-  beginRevalidation(): number {
+  beginRevalidation(root = this.options.root): number {
+    // Old watchers still belong to the selected root while a switch reads
+    // another project. They must not supersede that other project's read.
+    const generation = ++this.nextDiskReadGeneration;
+    this.diskReadGenerations.set(root, generation);
+    this.invalidateScan();
+    return generation;
+  }
+
+  /** Discovery bounds retained roots and revokes reads of disappeared projects. */
+  reconcileProjectRoots(roots: ReadonlySet<string>): void {
+    for (const root of this.diskReadGenerations.keys()) {
+      if (!roots.has(root)) this.diskReadGenerations.delete(root);
+    }
+    // Even an initial snapshot with token zero must stay revoked after removal.
+    // The absent map entry also reads as zero, so invalidate its inputs explicitly.
+    if (!roots.has(this.options.root)) {
+      this.scanInputsGeneration = -1;
+      this.invalidateScan();
+    }
+  }
+
+  /** Revoke derived authority without superseding an in-flight disk read. */
+  private invalidateScan(): number {
     this.updateAdvisories.clear();
     this.updateContext = undefined;
     this.revalidationGeneration += 1;
@@ -482,6 +510,21 @@ export class DashboardController {
    * `isEligible()` alone can't tell those two apart, since a cold
    * controller's `eligibleGeneration` is `undefined` in both cases.
    */
+  /** True while a scan is running. Its completion posts a new snapshot. */
+  scanRunning(): boolean {
+    return this.inFlight !== undefined && !this.inFlight.signal.aborted;
+  }
+
+  /**
+   * True when upgrades are blocked and the last finished scan could not check
+   * every package (for example registry timeouts). Only a complete scan grants
+   * eligibility. Callers check scanRunning() first: a newer scan may be on its
+   * way, and a file change since then can also be pending.
+   */
+  lastScanIncomplete(): boolean {
+    return this.lastResult !== undefined && !this.isEligible() && !hasCompleteCoreData(this.lastResult);
+  }
+
   validateUpgradeRequest(request: UpgradeRequestInput): UpgradeEligibility {
     if (this.lastResult === undefined) return { ok: false, reason: 'no-scan-result' };
     if (!this.isEligible()) return { ok: false, reason: 'revalidating' };
@@ -580,6 +623,27 @@ export class DashboardController {
     this.options.projectCacheStore.delete(this.options.cacheKey);
   }
 
+  /**
+   * Lockfile evidence from project resolution, never from npm's output. A
+   * resolved mutation target answers from whether the lockfile it names
+   * exists. Otherwise a caller that gives no lockfileName falls back to
+   * whether lockfile text was read.
+   */
+  private lockfileMissing(): boolean {
+    const target = this.options.mutationTarget;
+    if (target?.ok === true) return !target.target.lockfileExists;
+    const name = this.options.lockfileName;
+    return name === null || (name === undefined && this.options.lockfileText === null);
+  }
+
+  /** The project facts the partial results banner words itself from. */
+  private projectFacts(): Pick<ScanSnapshot, 'packageManager' | 'lockfileMissing'> {
+    return {
+      packageManager: this.options.packageManager ?? 'npm',
+      ...(this.lockfileMissing() ? { lockfileMissing: true } : {}),
+    };
+  }
+
   private currentSourceFingerprint(): ProjectSourceFingerprint {
     return computeSourceFingerprint({
       manifestText: this.options.manifestText,
@@ -587,6 +651,7 @@ export class DashboardController {
       packageManager: this.options.packageManager ?? 'npm',
       importerId: this.options.importerId ?? '.',
       lockfilePath: this.options.lockfilePath,
+      ...targetFingerprintField(this.options.mutationTarget),
     });
   }
 
@@ -634,20 +699,63 @@ export class DashboardController {
     // `lastResult` as a ScanSnapshot ever looks at them.
     // Row identities belong to the scanned lockfile, whose alias targets can
     // differ from the manifest. Preserve them exactly on replay.
-    this.lastResult = cached;
+    // The fingerprint matched, so the project facts are the same ones the
+    // snapshot was scanned with. Filling them from the current options lets an
+    // entry written before they were persisted replay the same banner.
+    this.lastResult = { ...cached, ...this.projectFacts() };
     this.lastResultSourceFingerprint = cached.sourceFingerprint;
+    this.lastResultDiskReadGeneration = this.scanInputsGeneration;
     this.lastGeneratedAt = cached.generatedAt;
   }
 
-  private persistSnapshot(snapshot: ScanSnapshot, generatedAt: string, performance: PerformanceRecorder): void {
+  private persistSnapshot(snapshot: ScanSnapshot, generatedAt: string, source: ScanSource, performance: PerformanceRecorder): void {
+    const currentFacts = this.projectFacts();
+    // Skip changed sources so an older scan cannot replace a valid cache entry
+    // or make its rows authoritative for files it never scanned.
+    if (
+      source.cacheKey !== this.options.cacheKey ||
+      !sourceFingerprintsMatch(source.sourceFingerprint, this.currentSourceFingerprint()) ||
+      source.projectFacts.packageManager !== currentFacts.packageManager ||
+      source.projectFacts.lockfileMissing !== currentFacts.lockfileMissing
+    ) return;
+
     const endWrite = performance.start('cache write');
-    this.options.projectCacheStore.set(this.options.cacheKey, {
+    this.options.projectCacheStore.set(source.cacheKey, {
       ...snapshot,
       generatedAt,
-      lockfilePath: this.options.lockfilePath,
-      sourceFingerprint: this.currentSourceFingerprint(),
+      lockfilePath: source.sourceFingerprint.lockfilePath,
+      sourceFingerprint: source.sourceFingerprint,
     });
     endWrite({ rows: snapshot.rows.length });
+  }
+
+  startStartup(sink: MessageSink): void {
+    const task: StartupTask = { promise: Promise.resolve(undefined), running: true, scanId: this.scanId };
+    this.startupTask = task;
+    const startupSink: MessageSink = {
+      postMessage: message => {
+        if (this.disposed) return;
+        // Record fatal state at the point it is produced. Ready can arrive
+        // before the task promise's completion continuation has run.
+        if (message.status === 'fatal-error') task.outcome = { status: 'failed', error: message.error };
+        sink.postMessage(message);
+      },
+    };
+    task.promise = this.presentReady(startupSink).then(outcome => {
+      task.outcome = outcome;
+      task.running = false;
+      return outcome;
+    });
+    // presentReady starts its run synchronously, before the first await.
+    task.scanId = this.scanId;
+  }
+
+  async handleStartupReady(sink: MessageSink): Promise<void> {
+    const task = this.startupTask;
+    this.startupTask = undefined;
+    // A watcher or another refresh may have replaced startup's run. Only
+    // the specifically identified startup task gets the join exception.
+    await this.presentReady(sink, task?.scanId === this.scanId ? task : undefined);
   }
 
   /**
@@ -661,7 +769,12 @@ export class DashboardController {
    * ready/eligible while a time-only revalidation runs. Incomplete core data
    * remains structurally gated until a complete run succeeds.
    */
-  async handleReady(sink: MessageSink): Promise<void> {
+  async handleReady(sink: MessageSink): Promise<BackgroundRefreshOutcome | undefined> {
+    return this.presentReady(sink);
+  }
+
+  private async presentReady(sink: MessageSink, startup?: StartupTask): Promise<BackgroundRefreshOutcome | undefined> {
+    if (this.disposed) return { status: 'cancelled' };
     const cachePerformance = createPerformanceSession('Packageawy cache', this.performanceEnabled());
     if (this.lastResult === undefined) {
       this.hydrateFromPersistedCache(cachePerformance);
@@ -669,15 +782,19 @@ export class DashboardController {
     const cached = this.lastResult;
     if (cached === undefined) {
       cachePerformance.finish({ hit: false });
+      if (startup?.outcome?.status === 'failed') {
+        sink.postMessage({ status: 'fatal-error', error: startup.outcome.error });
+        return startup.outcome;
+      }
       sink.postMessage({ status: 'loading' });
-      await this.run(sink);
-      return;
+      return startup?.running ? startup.promise : this.run(sink);
     }
 
     const endFreshness = cachePerformance.start('cache freshness');
     const freshness = classifyFreshness(this.lastGeneratedAt, this.options.ttlMinutesProvider(), this.now());
     endFreshness({ freshness });
     cachePerformance.finish({ hit: true, freshness });
+    const rowsMatchDiskRead = this.lastResultDiskReadGeneration === this.diskReadGeneration;
     if (hasCompleteCoreData(cached)) {
       // Complete, fingerprint-matching data (hydrateFromPersistedCache already
       // deleted and refused to hydrate anything that didn't match) may
@@ -692,16 +809,17 @@ export class DashboardController {
       // first `ready` arrived: all before the debounced reload ran), that
       // match is against content already known to be stale, and must not
       // grant eligibility.
-      if (this.optionsGeneration === this.revalidationGeneration) {
+      if (rowsMatchDiskRead && this.optionsGeneration === this.revalidationGeneration) {
         this.eligibleGeneration = this.revalidationGeneration;
       }
-      if (this.updateContext === undefined && this.optionsGeneration === this.revalidationGeneration) {
+      if (rowsMatchDiskRead && this.updateContext === undefined && this.optionsGeneration === this.revalidationGeneration) {
         this.updateContext = this.makeUpdateContext();
       }
       this.postSnapshot(sink,
         toHostToWebviewMessage(
           cached,
-          { isEmpty: cached.rows.length === 0, isStale: false },
+          { isEmpty: cached.rows.length === 0, isStale: !rowsMatchDiskRead || this.optionsGeneration !== this.revalidationGeneration ||
+            this.optionsDiskGeneration !== this.options.scanGeneration?.() },
           this.options.projectInfo,
           this.options.canChangeProject,
           this.options.buildInfo,
@@ -710,11 +828,11 @@ export class DashboardController {
         )
       );
       this.enrichOfferedVersions(sink);
-      if (freshness !== 'fresh') {
-        // Age only affects network/cache freshness. The source fingerprint
-        // already matched locally-authoritative input, so keep the snapshot
-        // usable while its derived data is refreshed in the background.
-        await this.run(sink, 'time');
+      if (startup?.running) return startup.promise;
+      if ((!rowsMatchDiskRead && this.scanInputsGeneration === this.diskReadGeneration) || freshness !== 'fresh') {
+        // A confirmed newer read needs new rows even if the retained rows are
+        // young. Otherwise only age schedules this background enrichment.
+        return this.run(sink, 'time');
       }
       return;
     }
@@ -723,7 +841,11 @@ export class DashboardController {
     // announces the stale replay (carrying `cached`) as its first
     // action via `beginRevalidation`'s call site there, then continues with
     // a real scan. Posting it again here would just be a redundant duplicate.
-    await this.run(sink);
+    if (startup?.running) {
+      this.announceRevalidating(sink);
+      return startup.promise;
+    }
+    return this.run(sink);
   }
 
   /**
@@ -733,12 +855,13 @@ export class DashboardController {
    * left as-is until `run()` either replaces it with the new result or
    * decides (via its aborted/failure checks) not to.
    */
-  async handleRefresh(sink: MessageSink): Promise<BackgroundRefreshOutcome> {
+  async handleRefresh(sink: MessageSink, strict = false): Promise<BackgroundRefreshOutcome> {
+    if (this.disposed) return { status: 'cancelled' };
     this.lastResult = undefined;
     this.lastResultSourceFingerprint = undefined;
     this.lastGeneratedAt = undefined;
     sink.postMessage({ status: 'loading' });
-    return this.run(sink);
+    return this.run(sink, 'structural', strict);
   }
 
   /**
@@ -754,9 +877,10 @@ export class DashboardController {
    */
   async refreshInBackground(
     sink: MessageSink,
-    reason: BackgroundRefreshReason = 'structural'
+    reason: BackgroundRefreshReason = 'structural',
+    strict = false
   ): Promise<BackgroundRefreshOutcome> {
-    return this.run(sink, reason);
+    return this.run(sink, reason, strict);
   }
 
   /**
@@ -808,22 +932,29 @@ export class DashboardController {
   }
 
   private enrichOfferedVersions(sink: MessageSink): void {
-    void this.enrichUpdateVersions(offeredVersionPairs(this.lastResult?.rows ?? []), sink);
+    // Badges arrive after the table. A failure keeps the table as it is and is logged.
+    fireAndForget(this.enrichUpdateVersions(offeredVersionPairs(this.lastResult?.rows ?? []), sink), (error) => {
+      this.options.log?.(runtimeFailureLine('update-advisories', error));
+    });
   }
 
   /** Host-derived picker options share exact-version memory and the bounded request queue. */
-  enrichUpdateVersions(pairs: readonly UpdateVersionPair[], sink: MessageSink): Promise<void> {
+  enrichUpdateVersions(pairs: readonly UpdateVersionPair[], sink: MessageSink, wanted?: () => boolean): Promise<void> {
     const context = this.updateContext;
     if (context === undefined || this.disposed) return Promise.resolve();
     return this.updateAdvisories.enrich(pairs,
       () => !this.disposed && this.updateContext === context,
-      results => sink.postMessage({ status: 'update-advisories', context, results }));
+      results => sink.postMessage({ status: 'update-advisories', context, results }),
+      wanted);
   }
 
   private async run(
     sink: MessageSink,
-    reason: BackgroundRefreshReason = 'structural'
+    reason: BackgroundRefreshReason = 'structural',
+    strict = false
   ): Promise<BackgroundRefreshOutcome> {
+    if (this.disposed) return { status: 'cancelled' };
+    const scanGeneration = this.optionsDiskGeneration;
     this.scanId += 1;
     this.updateContext = undefined;
     this.updateAdvisories.clear(true);
@@ -839,40 +970,25 @@ export class DashboardController {
         : reason === 'local-mutation' && this.optionsGeneration !== this.revalidationGeneration
           ? 'structural'
           : reason;
-    // Structural runs revoke authority. Time-only runs preserve existing
-    // authority, while local-mutation waits to grant it on success.
-    // `generationBeforeThisRun` is captured
-    // before a structural run's `beginRevalidation()` call: it lets
-    // completion tell apart "nothing else was pending when I started, my own bump is the
-    // only thing that happened" from "something else had already called
-    // beginRevalidation() and `this.options` never caught up to it before I
-    // started scanning against them" (see the `optionsGeneration` check
-    // below): a plain equality check against `beginRevalidation()`'s own
-    // return value can't make that distinction, since this run's call
-    // unconditionally advances past whatever `optionsGeneration` says,
-    // every single time, even for the very first scan a fresh controller
-    // ever runs.
-    //
-    // `generationAtStart` is the post-bump structural generation, or the
-    // unchanged generation for a time-only run. Completion compares it with
-    // `this.revalidationGeneration`, so it can tell whether the
-    // source changed again (a watcher event, a project reload, another
-    // call to this same method) while this scan was still running. Not the
-    // same thing `controller.signal.aborted` guards below: that only catches
-    // an explicit newer `run()` call superseding this one. A bare
-    // `beginRevalidation()` call (e.g. from a watcher event) does not itself
-    // start a new run, and this scan's rows can still finish and be worth
-    // showing in a structural run. A time-only result is discarded when
-    // the generation moves so it cannot overwrite a hard-stale signal.
-    const generationBeforeThisRun = this.revalidationGeneration;
+    // Structural scans revoke derived authority. Disk inputs stay confirmed
+    // only if no reload or watcher invalidated them before this scan began.
+    const diskReadGeneration = this.scanInputsGeneration;
+    const sourceWasCurrent = diskReadGeneration === this.diskReadGeneration;
     const generationAtStart =
-      effectiveReason === 'structural' ? this.beginRevalidation() : this.revalidationGeneration;
+      effectiveReason === 'structural' ? this.invalidateScan() : this.revalidationGeneration;
 
     // A newer run supersedes an older one outright. Without this, two runs race
     // to post and the slower (older) one can land last and win.
     this.inFlight?.abort();
     const controller = new AbortController();
     this.inFlight = controller;
+    // Scanning cannot make older disk inputs current. This covers every run,
+    // including a structural scan started while a newer disk read is pending.
+    const superseded = (): boolean => controller.signal.aborted || this.disposed ||
+      !sourceWasCurrent || generationAtStart !== this.revalidationGeneration ||
+      scanGeneration !== this.options.scanGeneration?.();
+    const destination = sink;
+    sink = { postMessage: message => { if (!superseded()) destination.postMessage(message); } };
 
     // Announce that a revalidation is now actively running: a no-op if
     // there's nothing to carry (a cold start already posted its own
@@ -881,9 +997,13 @@ export class DashboardController {
     // duplicate if an earlier call site (a watcher event, reloadAndScan's own
     // start) already announced this same revalidation. See
     // `announceRevalidating`'s doc.
-    if (effectiveReason === 'structural') this.announceRevalidating(sink);
+    if (effectiveReason === 'structural') this.announceRevalidating(destination);
 
-    const scanSourceFingerprint = this.currentSourceFingerprint();
+    const scanSource: ScanSource = {
+      cacheKey: this.options.cacheKey,
+      sourceFingerprint: this.currentSourceFingerprint(),
+      projectFacts: this.projectFacts(),
+    };
     const buildOptions: BuildPackageRowsOptions = {
       root: this.options.root,
       manifestText: this.options.manifestText,
@@ -900,8 +1020,12 @@ export class DashboardController {
         ? {}
         : { auditRunner: this.options.auditRunner }),
       ...(this.options.packageManager === 'pnpm' ? { auditUnavailableWhenOmitted: false } : {}),
+      ...(this.lockfileMissing() ? { lockfileMissing: true } : {}),
       ...(this.publicAdvisoryCheckEnabled() ? {} : { publicAdvisoryCheck: false }),
       publicAdvisoryCheckEnabled: () => this.publicAdvisoryCheckEnabled(),
+      ...(this.options.log === undefined
+        ? {}
+        : { onDiagnostic: (entry) => this.options.log?.(diagnosticLine(entry)) }),
       ...(this.options.progressEnabled === true
         ? {
             onProgress: (progress) => {
@@ -917,45 +1041,22 @@ export class DashboardController {
       // was already past the last boundary when the abort fired still resolves
       // normally. Superseded or disposed, its result, and any cache write,
       // is not wanted either way.
-      if (controller.signal.aborted) {
+      if (superseded()) {
         return { status: this.disposed ? 'cancelled' : 'superseded' };
       }
-      // A watcher/project mutation that lands during an age-only refresh
-      // supersedes it. Do not let its pre-mutation result overwrite the
-      // structural stale signal or the authoritative reload that follows.
-      if (effectiveReason !== 'structural' && generationAtStart !== this.revalidationGeneration) {
-        return { status: 'superseded' };
-      }
-
       const generatedAt = new Date().toISOString();
-      const snapshot = toScanSnapshot(result);
+      const snapshot = toScanSnapshot({ ...result, ...scanSource.projectFacts });
       this.lastResult = snapshot;
-      this.lastResultSourceFingerprint = scanSourceFingerprint;
+      this.lastResultSourceFingerprint = scanSource.sourceFingerprint;
+      this.lastResultDiskReadGeneration = diskReadGeneration;
       this.lastGeneratedAt = generatedAt;
-      this.persistSnapshot(snapshot, generatedAt, performance);
-      // Only a scan whose source didn't change out from under it restores
-      // Upgrade eligibility: if `beginRevalidation()` was called again
-      // (`revalidationGeneration` has moved) since this run started, the
-      // rows above are still worth showing (newer than what was there
-      // before), but a fresh reload for the even newer state is already on
-      // its way (a watcher event that arrived mid-scan, or an independent
-      // reload attempt) and must be the one to grant eligibility, not this
-      // now-superseded scan. The `optionsGeneration` check catches the same
-      // hazard one step earlier: this scan's `buildOptions` were captured
-      // from `this.options` above, so if a bump had already landed before
-      // this run even started (checked against `generationBeforeThisRun`,
-      // not `generationAtStart`: this run's own `beginRevalidation()` call
-      // always advances past whatever `optionsGeneration` says, even for a
-      // perfectly ordinary first scan, so comparing against the post-bump
-      // value would reject every run unconditionally) without `this.options`
-      // catching up to it yet (a scan racing an already-pending,
-      // not-yet-applied file-change reload), `this.options`, and
-      // therefore this whole scan: was stale from the moment it began,
-      // regardless of what happened afterward.
+      if (superseded()) return { status: 'superseded' };
+      this.persistSnapshot(snapshot, generatedAt, scanSource, performance);
+      // Only rows from the latest confirmed disk read can grant authority.
       if (
         hasCompleteCoreData(snapshot) &&
         generationAtStart === this.revalidationGeneration &&
-        this.optionsGeneration === generationBeforeThisRun
+        sourceWasCurrent
       ) {
         this.eligibleGeneration = generationAtStart;
         // A granted structural scan is itself a re-confirmation that
@@ -964,9 +1065,10 @@ export class DashboardController {
         this.optionsGeneration = generationAtStart;
       }
       if (generationAtStart === this.revalidationGeneration &&
-          (this.optionsGeneration === generationBeforeThisRun || this.optionsGeneration === generationAtStart)) {
+          this.scanInputsGeneration === this.diskReadGeneration) {
         this.updateContext = this.makeUpdateContext();
       }
+      if (superseded()) return { status: 'superseded' };
       this.postSnapshot(sink,
         toHostToWebviewMessage(
           snapshot,
@@ -981,7 +1083,10 @@ export class DashboardController {
       this.enrichOfferedVersions(sink);
       return { status: 'succeeded' };
     } catch (cause) {
-      if (controller.signal.aborted) {
+      if (!(cause instanceof FetchError) && !(cause instanceof SyntaxError) && !(cause instanceof YAMLException) &&
+          !(cause instanceof UnsupportedLockfileError) && !(cause instanceof UnsupportedPnpmLockfileError) &&
+          !isCancellation(cause) && !(strict ? isExpectedFsError(cause, 'read') : isFsError(cause))) throw cause;
+      if (superseded()) {
         return { status: this.disposed ? 'cancelled' : 'superseded' };
       }
       if (isCancellation(cause)) return { status: 'cancelled' };
@@ -995,6 +1100,7 @@ export class DashboardController {
       }
       return { status: 'failed', error: toProtocolError(cause) };
     } finally {
+      if (this.inFlight === controller) this.inFlight = undefined;
       performance.finish({ cancelled: controller.signal.aborted });
     }
   }

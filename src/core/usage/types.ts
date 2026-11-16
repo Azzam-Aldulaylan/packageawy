@@ -24,8 +24,10 @@ export interface DependencyReference {
 export interface DependencyUsageResult {
   packageName: string;
   references: DependencyReference[];
-  /** True when the scan did not cover every eligible file (a workspace size cap, cancellation, unreadable/missing file, or oversized file): `references` may be incomplete. */
+  /** True when project coverage is incomplete, including unread content, file caps, cancellation, or failed reads. */
   truncated: boolean;
+  /** Unread project content that prevents automatic removal recommendations. */
+  coverageReasons?: string[];
   scannedFileCount: number;
   scannedAt: string;
 }

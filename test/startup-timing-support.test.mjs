@@ -128,13 +128,120 @@ test('withRetries starts no further attempt once stopping is requested', async (
 });
 
 const OPENED = 1000;
-const rows = (count) => ({ rows: Array.from({ length: count }, (_, index) => ({ name: `pkg-${index}` })) });
-const message = (at, status, data) => ({ at, message: data === undefined ? { status } : { status, data } });
+const rows = (count) => ({ generatedAt: `snapshot-${count}`, rows: Array.from({ length: count }, (_, index) => ({ name: `pkg-${index}` })) });
+const message = (at, status, data) => ({ at, direction: 'outbound', message: data === undefined ? { status } : { status, data } });
 const cacheReport = (at, metadata) => ({ at, text: `Packageawy cache\ncache read      0.1 ms\n------\nTotal      0.2 ms\n${metadata}` });
 const scanReport = (at) => ({ at, text: 'Packageawy scan\nnpm audit     900.0 ms\n------\nTotal    1200.0 ms\ncancelled=false' });
 const usageReport = (at) => ({
   at,
   text: 'Packageawy cleanup usage analysis\nusage workspace scan   80.0 ms\n------\nTotal   90.0 ms\ndirect dependencies=6  background=true',
+});
+
+const rendered = (at, generatedAt) => ({ at, direction: 'inbound', message: { type: 'rendered', generatedAt } });
+
+test('completion waits for fresh paint after cached rows have already painted', () => {
+  const cachedPaint = rendered(1200, 'cached');
+  const messages = [
+    message(1100, 'ready', { ...rows(6), generatedAt: 'cached' }),
+    cachedPaint,
+    message(1400, 'ready', { ...rows(6), generatedAt: 'fresh' }),
+    message(1500, 'cleanup-result'),
+  ];
+  const input = { messages, reports: [cacheReport(1050, 'hit=true  freshness=stale'), scanReport(1450)], openedAt: OPENED };
+  const waiting = completionState(input);
+  assert.equal(waiting.scanDone, true);
+  assert.equal(waiting.usageDone, true);
+  assert.equal(waiting.firstPaintedRows, cachedPaint);
+  assert.equal(waiting.complete, false);
+  assert.equal(waiting.waitingFor, 'painted rows acknowledgement');
+  messages.push(rendered(1600, 'cached'));
+  assert.equal(completionState(input).complete, false, 'another cached acknowledgement cannot acknowledge fresh data');
+  messages.push(rendered(1700, 'fresh'), rendered(1800, 'fresh'));
+  const finished = completionState(input);
+  assert.equal(finished.complete, true);
+  assert.equal(finished.firstPaintedRows, cachedPaint, 'the open-to-painted-rows metric keeps the first paint');
+  assert.equal(finished.completeAt, 1700);
+});
+
+test('completion accepts an earlier paint when a failed scan keeps the replayed cached rows', () => {
+  const cached = { ...rows(6), generatedAt: 'cached' };
+  const paint = rendered(1200, cached.generatedAt);
+  const replay = message(1400, 'stale', cached);
+  const input = {
+    messages: [message(1100, 'ready', cached), paint, replay],
+    reports: [cacheReport(1050, 'hit=true  freshness=expired')],
+    openedAt: OPENED,
+  };
+  assert.equal(completionState(input).complete, false);
+  // A failed background scan retains the cached snapshot and prints its report.
+  input.reports.push(scanReport(1500));
+  const scanned = completionState(input);
+  assert.equal(scanned.scanDone, true);
+  assert.equal(scanned.complete, false);
+  assert.equal(scanned.waitingFor, 'likely-unused analysis');
+  input.reports.push(usageReport(1600));
+  const finished = completionState(input);
+  assert.equal(finished.scanDone, true);
+  assert.equal(finished.usageDone, true);
+  assert.equal(finished.lastData, replay);
+  assert.equal(finished.firstPaintedRows, paint);
+  assert.equal(finished.complete, true);
+  assert.equal(finished.completeAt, 1600);
+});
+
+test('completion waits for a matching painted acknowledgement, including an older warm timestamp', () => {
+  const generatedAt = '2020-01-01T00:00:00.000Z';
+  const snapshot = { ...message(1100, 'ready', { ...rows(6), generatedAt }), direction: 'outbound' };
+  const base = {
+    messages: [snapshot, message(1200, 'cleanup-result')],
+    reports: [cacheReport(1099, 'hit=true  freshness=fresh')],
+    openedAt: OPENED,
+  };
+  for (const ack of [undefined, rendered(900, generatedAt), rendered(1050, generatedAt), rendered(1300, 'other'),
+    { ...rendered(1300, generatedAt), direction: 'outbound' }]) {
+    const waiting = completionState({ ...base, messages: ack ? [...base.messages, ack] : base.messages });
+    assert.equal(waiting.complete, false);
+    assert.equal(waiting.waitingFor, 'painted rows acknowledgement');
+  }
+  const ack = rendered(1350, generatedAt);
+  const finished = completionState({ ...base, messages: [...base.messages, ack, rendered(1400, generatedAt)] });
+  assert.equal(finished.complete, true);
+  assert.equal(finished.firstPaintedRows, ack);
+  assert.equal(finished.completeAt, 1350);
+});
+
+test('an acknowledgement before a snapshot in the same millisecond does not match it', () => {
+  const messages = [
+    rendered(1100, 'snapshot-6'), message(1100, 'ready', rows(6)), message(1200, 'cleanup-result'),
+  ];
+  const reports = [cacheReport(1099, 'hit=true  freshness=fresh')];
+  assert.equal(completionState({ messages, reports, openedAt: OPENED }).complete, false);
+  assert.equal(completionState({ messages: [...messages, rendered(1200, 'snapshot-6')], reports, openedAt: OPENED }).complete, true);
+});
+
+test('paint matching ignores pre-command snapshots and uses the first matching acknowledgement', () => {
+  const stale = message(900, 'ready', { ...rows(6), generatedAt: 'old' });
+  const first = message(1100, 'stale', { ...rows(6), generatedAt: 'cached' });
+  const replacement = message(1300, 'ready', { ...rows(7), generatedAt: 'fresh' });
+  const ack = rendered(1400, 'fresh');
+  const state = completionState({
+    messages: [stale, rendered(1050, 'old'), first, replacement, ack, rendered(1500, 'cached')],
+    reports: [], openedAt: OPENED,
+  });
+  assert.equal(state.firstRows, first);
+  assert.equal(state.firstPaintedRows, ack);
+});
+
+test('empty results also wait for their matching paint acknowledgement', () => {
+  const base = {
+    messages: [message(1100, 'empty', { ...rows(0), generatedAt: 'empty' }), message(1200, 'cleanup-result')],
+    reports: [cacheReport(1099, 'hit=true  freshness=fresh')], openedAt: OPENED,
+  };
+  assert.equal(completionState(base).complete, false);
+  const state = completionState({ ...base, messages: [...base.messages, rendered(1300, 'empty')] });
+  assert.equal(state.complete, true);
+  assert.equal(state.firstPaintedRows, undefined);
+  assert.equal(state.completeAt, 1300);
 });
 
 test('reportMetadata reads the name=value line of a performance report', () => {
@@ -154,7 +261,7 @@ test('a cold open is not complete until the delayed likely-unused analysis has f
   assert.equal(scanned.firstRows.at, 2500);
 
   const finished = completionState({
-    messages: [...messages, message(9500, 'cleanup-result')],
+    messages: [...messages, rendered(2502, 'snapshot-6'), message(9500, 'cleanup-result')],
     reports: [...reports, usageReport(9501)],
     openedAt: OPENED,
   });
@@ -174,7 +281,7 @@ test('the scan is not done before its report, even when a result message has arr
 
 test('a fresh cache hit needs no scan, and the usage report alone also ends the analysis', () => {
   const state = completionState({
-    messages: [message(1100, 'ready', rows(6))],
+    messages: [message(1100, 'ready', rows(6)), rendered(1101, 'snapshot-6')],
     reports: [cacheReport(1099, 'hit=true  freshness=fresh'), usageReport(1400)],
     openedAt: OPENED,
   });
@@ -183,7 +290,7 @@ test('a fresh cache hit needs no scan, and the usage report alone also ends the 
 });
 
 test('an expired cache shows cached rows first, then waits for the revalidating scan', () => {
-  const cached = [message(1100, 'ready', rows(6)), message(1150, 'cleanup-result')];
+  const cached = [message(1100, 'ready', rows(6)), rendered(1101, 'snapshot-6'), message(1150, 'cleanup-result')];
   const reports = [cacheReport(1099, 'hit=true  freshness=expired')];
   const waiting = completionState({ messages: cached, reports, openedAt: OPENED });
   assert.equal(waiting.complete, false);
@@ -191,18 +298,18 @@ test('an expired cache shows cached rows first, then waits for the revalidating 
   assert.equal(waiting.waitingFor, 'scan report');
 
   const revalidated = completionState({
-    messages: [...cached, message(3000, 'ready', rows(7))],
+    messages: [...cached, message(3000, 'ready', rows(7)), rendered(3002, 'snapshot-7')],
     reports: [...reports, scanReport(3001)],
     openedAt: OPENED,
   });
   assert.equal(revalidated.complete, true);
   assert.equal(revalidated.lastData.at, 3000);
-  assert.equal(revalidated.completeAt, 3000);
+  assert.equal(revalidated.completeAt, 3002);
 });
 
 test('a later scan or usage analysis that starts again keeps the dashboard incomplete', () => {
   const base = {
-    messages: [message(1010, 'loading'), message(2500, 'ready', rows(6)), message(3000, 'cleanup-result')],
+    messages: [message(1010, 'loading'), message(2500, 'ready', rows(6)), rendered(2502, 'snapshot-6'), message(3000, 'cleanup-result')],
     reports: [cacheReport(1005, 'hit=false'), scanReport(2501), usageReport(3001)],
     openedAt: OPENED,
   };
@@ -218,6 +325,7 @@ test('a restarted likely-unused analysis completes at the end of its latest cycl
     messages: [
       message(1010, 'loading'),
       message(2500, 'ready', rows(6)),
+      rendered(2502, 'snapshot-6'),
       message(3000, 'cleanup-result'),
       message(4000, 'cleanup-analyzing'),
       message(6000, 'cleanup-result'),
@@ -229,7 +337,7 @@ test('a restarted likely-unused analysis completes at the end of its latest cycl
   assert.equal(state.completeAt, 6000);
 
   const twoBackgroundCycles = completionState({
-    messages: [message(1100, 'ready', rows(6)), message(1500, 'cleanup-result'), message(2500, 'cleanup-result')],
+    messages: [message(1100, 'ready', rows(6)), rendered(1101, 'snapshot-6'), message(1500, 'cleanup-result'), message(2500, 'cleanup-result')],
     reports: [cacheReport(1099, 'hit=true  freshness=fresh'), usageReport(1501), usageReport(2501)],
     openedAt: OPENED,
   });

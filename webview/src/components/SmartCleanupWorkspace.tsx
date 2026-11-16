@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef } from 'react';
+import { useContext, useEffect, useId, useRef } from 'react';
+import { DependencyChangeContext, DependencyChangeStatus } from './DependencyChangeStatus.js';
 import type { Dispatch, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
 
 import type { RemoveAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
@@ -61,6 +62,7 @@ const PHASE_TITLE: Record<SmartCleanupState['phase'], string> = {
   complete: 'Cleanup complete',
   'cancelled-rolled-back': 'Cleanup cancelled and restored',
   incomplete: 'Cleanup needs attention',
+  unknown: 'Smart Cleanup',
   failed: 'Cleanup analysis could not finish',
 };
 
@@ -78,7 +80,6 @@ export interface SmartCleanupWorkspaceProps {
   onBackToReview: () => void;
   onOpenDependencyReview: (packageName: string, tab: ManageTabId) => void;
   reviewEvidenceRefreshing?: boolean;
-  onCancelExecution?: () => void;
   onRestoreFiles?: (analysisId: string) => void;
 }
 
@@ -680,7 +681,7 @@ function ConfirmationView({
         <p>
           {checkedPreflight?.files.rollbackAvailable === false
             ? 'No automatic restore point is available. Review source control before continuing.'
-            : 'Dependency removals run inside one restore boundary. If cleanup fails, restoration of the project manifest and active lockfile is attempted automatically.'}
+            : 'If cleanup fails, Packageawy restores your dependency files and stops if it sees they changed.'}
         </p>
       </div>
     </div>
@@ -688,14 +689,13 @@ function ConfirmationView({
 }
 
 function ExecutionView({ state }: { state: SmartCleanupState }): ReactElement {
+  const change = useContext(DependencyChangeContext);
   const progress = state.execution;
-  const value = progress === null || progress.total === 0 ? 0 : Math.round((progress.completed / progress.total) * 100);
   return (
     <div className="smart-cleanup-execution" aria-busy="true">
       <div className="smart-cleanup-execution__mark"><IconBroom /></div>
-      <p>{state.phase === 'rolling-back' ? state.message : progress?.currentLabel ?? 'Preparing cleanup…'}</p>
-      <progress max={100} value={value} aria-label="Cleanup progress">{value}%</progress>
-      <span>{state.phase === 'rolling-back' ? 'Keep this workspace open while files are restored.' : `${progress?.completed ?? 0} of ${progress?.total ?? 0} actions completed`}</span>
+      {change.task !== 'still-running' && !change.blocked ? <p>{state.phase === 'rolling-back' ? state.message : progress?.currentLabel ?? 'Preparing cleanup…'}</p> : null}
+      {state.phase === 'rolling-back' ? <span>Keep this workspace open while files are restored.</span> : null}
       <p className="smart-cleanup-mutation-lock-note">Close is unavailable while project files are changing. It becomes available when cleanup or restoration finishes.</p>
     </div>
   );
@@ -795,8 +795,7 @@ function RestoreNote({
   return (
     <>
       <p>
-        The cleanup changes were kept. Restore dependency files puts package.json and the lockfile back as they were
-        before the cleanup and reinstalls dependencies. It is refused if either file changed after the cleanup.
+        The cleanup changes were kept. Open recovery to review the saved dependency files and choose Restore backup or Keep current for each file.
       </p>
       {onRestoreFiles === undefined ? null : (
         <button
@@ -806,7 +805,7 @@ function RestoreNote({
           aria-busy={restoring ? 'true' : undefined}
           onClick={() => onRestoreFiles(restore.analysisId)}
         >
-          {restoring ? 'Restoring dependency files…' : 'Restore dependency files'}
+          {restoring ? 'Restoring dependency files…' : 'Review recovery files'}
         </button>
       )}
     </>
@@ -869,7 +868,7 @@ function ResultView({
       <IconHistory />
       {restore !== null ? <RestoreNote restore={restore} onRestoreFiles={onRestoreFiles} /> : <p>
         {result.rollback === 'restored'
-          ? "The saved package.json and active lockfile were restored. node_modules and script side effects were not restored. Run your package manager's install command before trying another cleanup."
+          ? "The saved package.json and active lockfile were restored. Script side effects were not restored."
           : result.rollback === 'incomplete'
             ? 'Automatic restoration could not be fully verified. Review package.json and the active lockfile before continuing.'
             : 'The cleanup changes were kept. Use source control if you need to reverse them later.'}
@@ -1010,7 +1009,6 @@ export function SmartCleanupWorkspace({
   onBackToReview,
   onOpenDependencyReview,
   reviewEvidenceRefreshing = false,
-  onCancelExecution,
   onRestoreFiles,
 }: SmartCleanupWorkspaceProps): ReactElement {
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -1094,6 +1092,7 @@ export function SmartCleanupWorkspace({
         {!canClose ? <p className="sr-only" id="smart-cleanup-close-reason">Wait for cleanup or restoration to finish before closing.</p> : null}
 
         <div className="smart-cleanup-body">
+          <DependencyChangeStatus />
           {state.phase === 'analyzing' ? <AnalysisView state={state} /> : null}
           {showReview ? (
             <>
@@ -1125,6 +1124,9 @@ export function SmartCleanupWorkspace({
         </div>
 
         <footer className="smart-cleanup-footer">
+          {state.phase === 'unknown' ? (
+            <button type="button" className="button button--secondary" onClick={onClose}>Close</button>
+          ) : null}
           {state.phase === 'analyzing' ? (
             <button type="button" className="button button--secondary" onClick={onCancelAnalysis}>Cancel analysis</button>
           ) : null}
@@ -1167,9 +1169,6 @@ export function SmartCleanupWorkspace({
                 </button>
               )}
             </>
-          ) : null}
-          {state.phase === 'executing' && onCancelExecution !== undefined ? (
-            <button type="button" className="button button--secondary" onClick={onCancelExecution}>Cancel and restore</button>
           ) : null}
           {state.phase === 'rolling-back' ? <span className="smart-cleanup-footer__status">Restoration in progress…</span> : null}
           {showTerminal ? (

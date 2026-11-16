@@ -40,6 +40,7 @@ import { buildDependencyGraph } from '../../core/lockfile/build.js';
 import { parseManifest } from '../../core/manifest/parse.js';
 import type { Manifest } from '../../core/manifest/parse.js';
 import { computeSourceFingerprint } from '../../core/cache/sourceFingerprint.js';
+import { targetFingerprintField } from '../mutationTarget.js';
 import type { ProjectSourceFingerprint } from '../../core/cache/sourceFingerprint.js';
 import { buildUnusedFinding } from '../../core/usage/unused.js';
 import type { DependencyReference, DependencyUsageResult } from '../../core/usage/types.js';
@@ -204,6 +205,8 @@ export class UsageAnalysisCoordinator {
   private readonly foregroundOperations = new ForegroundUsageOperationRegistry<ForegroundUsageConsumerValue>();
   /** At most one slot: multiple requests before it can run collapse into it: force always wins. See requestBackgroundUsageRefresh. */
   private pendingBackgroundRequest: { force: boolean } | undefined;
+  /** Set by stopBackground after an internal error. Foreground analyses keep working. */
+  private backgroundStopped = false;
   /** Guards the async gap before handleAnalyzeCleanup claims `activeScan`, so racing callers cannot both start a scan. */
   private schedulingBackgroundRefresh = false;
 
@@ -307,6 +310,17 @@ export class UsageAnalysisCoordinator {
     }, folder);
   }
 
+  /**
+   * After an internal error no usage scan may start on its own: drops the
+   * pending background request and refuses later ones, including one a
+   * scheduler already awaiting the controller would otherwise start.
+   * Foreground requests (Where used, Analyze cleanup) are unaffected.
+   */
+  stopBackground(): void {
+    this.backgroundStopped = true;
+    this.pendingBackgroundRequest = undefined;
+  }
+
   dispose(): void {
     if (this.activeRemovalImpactRequest !== undefined) this.activeRemovalImpactRequest.cancelled = true;
     this.activeScan?.cts.cancel();
@@ -325,6 +339,7 @@ export class UsageAnalysisCoordinator {
       packageManager: source.packageManager,
       importerId: source.importerId,
       lockfilePath: source.lockfilePath,
+      ...targetFingerprintField(source.mutationTarget),
     });
   }
 
@@ -614,8 +629,12 @@ export class UsageAnalysisCoordinator {
       return false;
     }
 
+    if (background && this.backgroundStopped) return false;
     const controller = await this.options.ensureController();
     if (controller === undefined) return false;
+    // Stopped while the controller was being looked up: a background pass
+    // must not start discovery. A foreground request still runs.
+    if (background && this.backgroundStopped) return false;
     // `ensureController` may yield while another request starts a scan. Do
     // not overwrite that scan's ownership after the initial fast-path check.
     if (this.isBusy()) {
@@ -770,6 +789,7 @@ export class UsageAnalysisCoordinator {
    * can never be dropped just because a plain one already claimed the slot.
    */
   async requestBackgroundUsageRefresh(options: { force?: boolean } = {}): Promise<void> {
+    if (this.backgroundStopped) return;
     const force = options.force === true;
     this.pendingBackgroundRequest = { force: force || (this.pendingBackgroundRequest?.force ?? false) };
     await this.runPendingBackgroundRefresh();
@@ -782,7 +802,7 @@ export class UsageAnalysisCoordinator {
    * pending slot).
    */
   async runPendingBackgroundRefresh(): Promise<void> {
-    if (this.schedulingBackgroundRefresh) return;
+    if (this.schedulingBackgroundRefresh || this.backgroundStopped) return;
     if (this.pendingBackgroundRequest === undefined) return;
     if (this.isBusy() || (this.options.isUpgradeBusy?.() ?? false)) return;
 
@@ -794,6 +814,8 @@ export class UsageAnalysisCoordinator {
       this.pendingBackgroundRequest = undefined;
 
       const controller = await this.options.ensureController();
+      // Stopped while waiting for the controller: the claimed request is dropped.
+      if (this.backgroundStopped) return;
       if (
         controller === undefined ||
         this.options.isDisposed() ||
@@ -825,7 +847,7 @@ export class UsageAnalysisCoordinator {
     // This path has no foreground caller to receive a rejection. Background
     // refresh errors are intentionally quiet, but must never become an
     // unhandled promise rejection in the extension host.
-    void this.runPendingBackgroundRefresh().catch(() => undefined);
+    this.runPendingBackgroundRefresh().catch(() => undefined);
   }
 
   /**
@@ -1047,6 +1069,7 @@ export class UsageAnalysisCoordinator {
           usage: {
             references: usageResult.references,
             truncated: usageResult.truncated,
+            ...(usageResult.coverageReasons === undefined ? {} : { coverageReasons: usageResult.coverageReasons }),
             conventionUncertainty: isFrameworkConventionPackage(name),
           },
           peerRequirements: peerRequirementsFor(graph, name, removing, peerRequirementIndex),

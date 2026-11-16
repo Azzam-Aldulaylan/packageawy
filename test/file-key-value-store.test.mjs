@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,7 +74,12 @@ test('the registry cache persists into the file store with the same bounds', asy
   const files = new FileKeyValueStore(dir);
   const store = new PersistentEtagStore(files, undefined, { trailingDelayMs: 0, maxDelayMs: 0 });
   store.set('https://registry.npmjs.org/left-pad', { etag: 'W/"2"', body: '{"name":"left-pad"}' });
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  const file = join(dir, `${encodeURIComponent(REGISTRY_CACHE_STORAGE_KEY)}.json`);
+  const deadline = Date.now() + 3000;
+  while (!existsSync(file)) {
+    assert.ok(Date.now() < deadline, 'registry cache file was not written');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   store.dispose();
   const written = JSON.parse(readFileSync(join(dir, `${encodeURIComponent(REGISTRY_CACHE_STORAGE_KEY)}.json`), 'utf8'));
   assert.equal(written.schemaVersion, 2);

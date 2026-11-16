@@ -637,7 +637,7 @@ export function RemovalReviewPanel({
             <span>
               A restore point will be created before removing.
               <br />
-              You can rollback if something goes wrong.
+              Packageawy restores your dependency files and stops if it sees they changed.
             </span>
           </p>
         ) : null}

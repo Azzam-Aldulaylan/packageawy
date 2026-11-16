@@ -18,7 +18,7 @@ const licenseText = (pkg) => readFileSync(join(root, 'node_modules', pkg, 'LICEN
 
 test('the generated notices name every bundled runtime package with its full license text', () => {
   const notices = readFileSync(join(root, 'dist', NOTICES_FILENAME), 'utf8');
-  for (const pkg of ['semver', 'js-yaml', 'react', 'react-dom']) {
+  for (const pkg of ['semver', 'js-yaml', 'ini', 'react', 'react-dom']) {
     const { version, license } = JSON.parse(readFileSync(join(root, 'node_modules', pkg, 'package.json'), 'utf8'));
     assert.ok(notices.includes(`\n${pkg} ${version} (${license})\n`), `${pkg} has a heading`);
     assert.ok(notices.includes(licenseText(pkg)), `${pkg} license text is included`);

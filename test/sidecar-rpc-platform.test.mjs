@@ -3,12 +3,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
+import { makeProject, makeCoordinator, review } from './helpers/removal-project.mjs';
+import { ProjectMutationLocks, canonicalProjectRoot } from '../out/host/projectMutationLock.js';
 
 import { CancellationTokenSource } from '../out/host/platform/cancellation.js';
 import { ErrorCodes, ResponseError } from '../out/host/platform/rpc/jsonRpc.js';
 import { RpcPlatform } from '../out/host/platform/rpc/rpcPlatform.js';
 import { RpcWebviewChannel } from '../out/host/platform/rpc/rpcWebviewChannel.js';
-import { parseInitialize } from '../out/host/platform/rpc/validation.js';
+import { parseInitialize, parseIdParam, parseProcessDidExit, validateProcessId } from '../out/host/platform/rpc/validation.js';
 
 const FOLDER = { id: 'file:///work/app', name: 'app', path: '/work/app' };
 
@@ -363,6 +366,51 @@ test('runProcess rejects when the client cannot start the process', async () => 
   await assert.rejects(platform.runProcess({ executable: 'npm', args: [], cwd: '/w', title: 't', scope: 's' }), /npm not found/);
 });
 
+for (const lateReply of ['resolve', 'reject']) test(`pending RPC startup disposal settles the owner before a late ${lateReply}`, async t => {
+  const project = await makeProject(t);
+  let reached, resolveLaunch, rejectLaunch;
+  const launching = new Promise(resolve => { reached = resolve; });
+  const client = fakeClient({ 'process/start': () => {
+    const pending = new Promise((resolve, reject) => { resolveLaunch = resolve; rejectLaunch = reject; });
+    reached();
+    return pending;
+  } });
+  const platform = new RpcPlatform(client, init());
+  t.after(() => platform.dispose());
+  const locks = new ProjectMutationLocks();
+  const f = makeCoordinator(project, { mutationLocks: locks, mutationRoot: () => project.root,
+    platform: { getSetting: (_key, fallback) => fallback, isWorkspaceTrusted: () => true, showWarningMessage() {},
+      runProcess: request => platform.runProcess(request) },
+  });
+  f.coordinator.session.invocationResolver = () => ({ executable: 'node', prefixArgs: ['npm.js'], version: '10.0.0' });
+  const analysisId = await review(f);
+  const confirming = f.coordinator.handleConfirmRemove({ analysisId }).then(() => 'settled');
+  await launching;
+  const owner = locks.holderOf(canonicalProjectRoot(project.root));
+  assert.equal(owner.state, 'mutating');
+  platform.dispose();
+  let timeout;
+  try {
+    assert.equal(await Promise.race([confirming,
+      new Promise(resolve => { timeout = setTimeout(() => resolve('pending'), 2000); })]), 'settled');
+  } finally { clearTimeout(timeout); }
+  assert.equal(owner.state, 'unknown');
+  assert.equal(owner.journal.data.outcome, 'unknown');
+  const before = await readFile(project.manifestPath);
+  const sequence = owner.journal.data.sequence;
+  const { processId } = client.requests.find(request => request.method === 'process/start').params;
+  if (lateReply === 'resolve') resolveLaunch(null);
+  else rejectLaunch(new Error('late launch failure'));
+  await tick();
+  client.emit('process/didExit', { processId, exitCode: 0 });
+  await tick();
+  assert.deepEqual(client.notifications.filter(note => note.method === 'process/terminate'),
+    lateReply === 'resolve' ? [{ method: 'process/terminate', params: { processId } }] : []);
+  assert.equal(owner.state, 'unknown');
+  assert.equal(owner.journal.data.sequence, sequence);
+  assert.deepEqual(await readFile(project.manifestPath), before);
+});
+
 test('openFile, openExternal and openSettings are notifications', () => {
   const client = fakeClient();
   const platform = new RpcPlatform(client, init());
@@ -427,4 +475,18 @@ test('RpcWebviewChannel posts, reveals, delivers messages and disposes once', as
     { method: 'webview/postMessage', params: { message: { status: 'loading' } } },
     { method: 'webview/reveal', params: {} },
   ]);
+});
+
+
+test('process IDs use safe positive integers at the protocol boundaries', () => {
+  for (const id of [1.9, '2', 0, -1, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN, true, null]) {
+    for (const parse of [validateProcessId, id => parseIdParam({ processId: id }, 'processId'),
+      id => parseProcessDidExit({ processId: id, exitCode: 0 })]) {
+      assert.throws(() => parse(id), error => error.code === ErrorCodes.InvalidParams);
+    }
+  }
+  for (const processId of [1, 2, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(validateProcessId(processId), processId);
+    assert.deepEqual(parseProcessDidExit({ processId, exitCode: 0 }), { processId, exitCode: 0 });
+  }
 });

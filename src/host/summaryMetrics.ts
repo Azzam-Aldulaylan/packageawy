@@ -38,6 +38,13 @@ export interface SummaryMetrics {
   infoVulnerabilities: number;
   needsAttention: number;
   deprecatedCount: number;
+  /**
+   * Registry dependencies with no installed version (missing from the
+   * lockfile, or no lockfile at all), so their updates were never checked.
+   * Workspace, file, git and tarball dependencies are not counted: they have
+   * no registry versions to check.
+   */
+  notChecked: number;
 }
 
 export interface SummaryCardValue {
@@ -163,6 +170,7 @@ export function summaryMetrics(rows: readonly PackageRow[]): SummaryMetrics {
     infoVulnerabilities: countSeverity(rows, 'info'),
     needsAttention,
     deprecatedCount,
+    notChecked: rows.filter(isUncheckedRegistryRow).length,
   };
 }
 
@@ -190,7 +198,19 @@ function incompleteCount(known: number): string {
   return known === 0 ? '—' : `≥${known}`;
 }
 
+function isUncheckedRegistryRow(row: PackageRow): boolean {
+  return row.current === null && (row.unresolvable === undefined || row.unresolvable === 'no-lockfile');
+}
+
 export function updatesCardValue(metrics: SummaryMetrics, availability: ScanDataAvailability): SummaryCardValue {
+  // "Up to date" would be a claim about packages whose versions were never
+  // compared, so unchecked packages make the count a lower bound instead.
+  if (availability.updates === 'complete' && metrics.notChecked > 0) {
+    return {
+      count: incompleteCount(metrics.updatesAvailable),
+      subtitle: `${metrics.notChecked} package${metrics.notChecked === 1 ? '' : 's'} not checked`,
+    };
+  }
   if (availability.updates === 'complete') {
     return { count: metrics.updatesAvailable, subtitle: updatesCardSubtitle(metrics) };
   }

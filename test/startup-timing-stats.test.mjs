@@ -89,3 +89,16 @@ test('parsePerformanceReport reads the PerformanceSession text format', () => {
     totalMs: 1247.1,
   });
 });
+
+test('painted rows and panel creation appear in aggregated JSON and the summary table', () => {
+  const summary = aggregate([
+    { project: 'small', mode: 'warm', ok: true, openToPanelCreatedMs: 50, openToPaintedRowsMs: 350 },
+    { project: 'small', mode: 'warm', ok: true, openToPanelCreatedMs: 70, openToPaintedRowsMs: 450 },
+  ]);
+  const json = JSON.parse(JSON.stringify(summary));
+  assert.equal(json[0].metrics.openToPanelCreatedMs.median, 60);
+  assert.equal(json[0].metrics.openToPaintedRowsMs.median, 400);
+  const table = formatTable(summary);
+  assert.match(table, /open to panel created\s+60\s+70/);
+  assert.match(table, /open to painted rows\s+400\s+450/);
+});

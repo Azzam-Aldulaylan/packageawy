@@ -1,3 +1,4 @@
+import { isExpectedFsError } from './expectedFsError.js';
 /**
  * Real Node filesystem adapter for upgrade transactions.
  *
@@ -7,16 +8,11 @@
  * never accepts a path merely because it happens to be under the workspace;
  * it must exactly match an entry supplied to the factory.
  *
- * Node does not expose a general filesystem compare-and-swap primitive for an
- * existing pathname. We therefore use the strongest practical construction:
- * read/compare, prepare exact replacement bytes in the same directory,
- * read/compare again immediately before an atomic rename. The transaction
- * relies on that compare-and-swap contract for host-generated manifest staging
- * as well as rollback. Restoring a file
- * that is expected to be absent uses `link`, which is atomically no-clobber;
- * deleting a transaction-created file similarly performs a second comparison
- * immediately before unlink. Callers must still serialize dashboard-owned
- * operations around a transaction.
+ * Node does not expose a conditional filesystem rename for an existing
+ * pathname. Staging compares bytes before preparing and installing a
+ * replacement. Rollback uses the recovery journal to retain the displaced
+ * inode and checks again before each move. These checks detect observed
+ * conflicts, but cannot exclude a writer racing the final rename.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -25,13 +21,13 @@ import {
   lstat,
   link,
   open,
-  realpath,
   rename,
   rm,
   unlink,
 } from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { canonicalPath, nativeRealpath, relatePaths, rootAndSegments } from './pathIdentity.js';
 import type {
   CompareAndSwapResult,
   FileState,
@@ -61,11 +57,6 @@ export interface NodeUpgradeTransactionFileAdapterOptions {
   allowlistedPaths: readonly string[];
 }
 
-function isWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
-}
-
 function stateEquals(left: FileState, right: FileState): boolean {
   if (left.exists !== right.exists) return false;
   if (!left.exists || !right.exists) return true;
@@ -78,103 +69,109 @@ function cloneState(state: FileState): FileState {
 }
 
 function isMissing(cause: unknown): boolean {
-  return (
-    typeof cause === 'object' &&
-    cause !== null &&
-    'code' in cause &&
-    (cause as { code?: unknown }).code === 'ENOENT'
-  );
+  return isExpectedFsError(cause, 'missingFile');
 }
 
-async function nearestExistingPath(candidate: string): Promise<string> {
-  let current = candidate;
-  for (;;) {
+/** The filesystem calls the path checks make. Node's, or Windows rules and fakes in a test. */
+export interface TransactionPathChecks {
+  path: path.PlatformPath;
+  lstat(candidate: string): Promise<{ isSymbolicLink(): boolean }>;
+  realpath(candidate: string): Promise<string>;
+}
+
+const NODE_CHECKS: TransactionPathChecks = {
+  path,
+  lstat: (candidate) => lstat(candidate),
+  realpath: (candidate) => nativeRealpath(candidate),
+};
+
+/**
+ * A path is accepted whatever valid spelling it uses (a Windows short name
+ * such as RUNNER~1, another drive-letter case, a link above the folder),
+ * as long as no part of it below the opened folder is a symbolic link and
+ * its native realpath is inside the folder's.
+ *
+ * The link check walks every part of the path as written, from the
+ * filesystem root, so a differently spelled prefix (C:\WORKSPACE for
+ * C:\workspace) cannot skip it. Whether a part is below the folder is
+ * decided by the realpath of its parent, not by how it is spelled. Links
+ * above the folder are allowed (/tmp on macOS, a home directory alias), so
+ * only a link whose parent resolves to the folder or below it is refused.
+ */
+export async function assertSafeCanonicalPath(
+  checks: TransactionPathChecks,
+  canonicalRoot: string,
+  candidate: string
+): Promise<void> {
+  const { root, segments } = rootAndSegments(candidate, checks.path);
+  let parent = root;
+  for (const segment of segments) {
+    const current = checks.path.join(parent, segment);
+    let isLink: boolean;
     try {
-      await lstat(current);
-      return current;
+      isLink = (await checks.lstat(current)).isSymbolicLink();
     } catch (cause) {
-      if (!isMissing(cause)) throw cause;
-      const parent = path.dirname(current);
-      if (parent === current) throw cause;
-      current = parent;
+      // Nothing below a missing part exists, so nothing below it is a link.
+      if (isMissing(cause)) break;
+      throw cause;
     }
-  }
-}
-
-async function assertNoSymlinkComponents(base: string, candidate: string): Promise<void> {
-  const relative = path.relative(base, candidate);
-  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    return;
-  }
-
-  let current = base;
-  for (const segment of relative.split(path.sep)) {
-    current = path.join(current, segment);
-    try {
-      const stat = await lstat(current);
-      if (stat.isSymbolicLink()) {
+    if (isLink) {
+      const parentCanonical = await canonicalPath(parent, checks).catch((cause: unknown) => {
+        if (!isExpectedFsError(cause, 'canonicalize')) throw cause;
+        return undefined;
+      });
+      const relation = parentCanonical === undefined ? undefined : relatePaths(canonicalRoot, parentCanonical, checks.path);
+      if (relation === undefined || relation === 'same' || relation === 'inside') {
         throw new UpgradeTransactionPathError(
           'SYMLINK_NOT_ALLOWED',
           `Upgrade transaction path uses a symbolic link: ${current}`
         );
       }
-    } catch (cause) {
-      if (isMissing(cause)) return;
-      throw cause;
     }
-  }
-}
-
-async function assertSafeCanonicalPath(
-  lexicalRoot: string,
-  canonicalRoot: string,
-  candidate: string
-): Promise<void> {
-  const componentBase = isWithin(lexicalRoot, candidate) ? lexicalRoot : canonicalRoot;
-  await assertNoSymlinkComponents(componentBase, candidate);
-  const existing = await nearestExistingPath(candidate);
-  const stat = await lstat(existing);
-  if (stat.isSymbolicLink()) {
-    throw new UpgradeTransactionPathError(
-      'SYMLINK_NOT_ALLOWED',
-      `Upgrade transaction path uses a symbolic link: ${existing}`
-    );
+    parent = current;
   }
 
-  const canonicalExisting = await realpath(existing);
-  if (canonicalExisting !== canonicalRoot && !isWithin(canonicalRoot, canonicalExisting)) {
+  // The same comparison the mutation target resolver used to accept this
+  // path: native realpath, then exact segments.
+  const canonical = await canonicalPath(candidate, checks).catch((cause: unknown) => {
+        if (!isExpectedFsError(cause, 'canonicalize')) throw cause;
+        return undefined;
+      });
+  if (canonical === undefined || relatePaths(canonicalRoot, canonical, checks.path) !== 'inside') {
     throw new UpgradeTransactionPathError(
       'PATH_OUTSIDE_WORKSPACE',
       `Upgrade transaction path is outside the workspace: ${candidate}`
-    );
-  }
-
-  // If the file itself exists, nearestExistingPath returned it. Refuse a
-  // canonical result outside the root even when the lexical path looked safe.
-  if (existing === candidate && !isWithin(canonicalRoot, canonicalExisting)) {
-    throw new UpgradeTransactionPathError(
-      'PATH_OUTSIDE_WORKSPACE',
-      `Upgrade transaction file is outside the workspace: ${candidate}`
     );
   }
 }
 
 class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter {
   constructor(
-    private readonly lexicalRoot: string,
+    private readonly checks: TransactionPathChecks,
     private readonly canonicalRoot: string,
-    private readonly allowed: ReadonlySet<string>
+    /** Canonical path to the allowlisted spelling that gets read and written. */
+    private readonly allowed: ReadonlyMap<string, string>
   ) {}
 
+  /**
+   * Membership is decided by the shared path identity: the native realpath
+   * of the request (through its nearest existing parent) must equal one of
+   * the allowlisted files' exactly. A request that cannot be canonicalized
+   * is refused.
+   */
   private async resolveAllowed(candidate: string): Promise<string> {
-    const resolved = path.resolve(candidate);
-    if (!this.allowed.has(resolved)) {
+    const canonical = await canonicalPath(path.resolve(candidate), this.checks).catch((cause: unknown) => {
+        if (!isExpectedFsError(cause, 'canonicalize')) throw cause;
+        return undefined;
+      });
+    const resolved = canonical === undefined ? undefined : this.allowed.get(canonical);
+    if (resolved === undefined) {
       throw new UpgradeTransactionPathError(
         'PATH_NOT_ALLOWLISTED',
         `Path is not owned by this upgrade transaction: ${candidate}`
       );
     }
-    await assertSafeCanonicalPath(this.lexicalRoot, this.canonicalRoot, resolved);
+    await assertSafeCanonicalPath(this.checks, this.canonicalRoot, resolved);
     return resolved;
   }
 
@@ -209,7 +206,8 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
   async compareAndSwap(
     candidate: string,
     expected: FileState,
-    replacement: FileState
+    replacement: FileState,
+    beforeMutation?: () => void
   ): Promise<CompareAndSwapResult> {
     const resolved = await this.resolveAllowed(candidate);
     const current = await this.read(resolved);
@@ -220,6 +218,7 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
       const justBeforeDelete = await this.read(resolved);
       if (!stateEquals(justBeforeDelete, expected)) return 'conflict';
       try {
+        beforeMutation?.();
         await unlink(resolved);
         return 'restored';
       } catch (cause) {
@@ -237,12 +236,14 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
     let temporaryCreated = false;
     let temporaryHandle;
     try {
+      beforeMutation?.();
       temporaryHandle = await open(
         temporary,
         fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
         0o600
       );
       temporaryCreated = true;
+      beforeMutation?.();
       await temporaryHandle.writeFile(replacement.contents);
 
       const justBeforeReplace = await this.readWithMode(resolved);
@@ -254,6 +255,7 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
         // existing target's safely-opened permission bits to that inode before
         // it becomes visible. chmod on the open handle avoids following a
         // workspace-controlled pathname.
+        beforeMutation?.();
         await temporaryHandle.chmod(justBeforeReplace.mode ?? 0o600);
       }
       await temporaryHandle.sync();
@@ -264,13 +266,10 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
         // Unlike rename, link never overwrites a file that appeared after the
         // comparison. Both paths are in one directory/filesystem.
         try {
+          beforeMutation?.();
           await link(temporary, resolved);
         } catch (cause) {
-          const code =
-            typeof cause === 'object' && cause !== null && 'code' in cause
-              ? (cause as { code?: unknown }).code
-              : undefined;
-          if (code === 'EEXIST') return 'conflict';
+          if (isExpectedFsError(cause, 'exclusiveCreate')) return 'conflict';
           throw cause;
         }
         return 'restored';
@@ -278,46 +277,51 @@ class NodeUpgradeTransactionFileAdapter implements UpgradeTransactionFileAdapter
 
       // Same-directory rename is atomic for readers. Node/filesystems do not
       // offer a conditional rename, hence the second exact-byte check above.
+      beforeMutation?.();
       await rename(temporary, resolved);
       temporaryCreated = false;
       return 'restored';
     } finally {
-      await temporaryHandle?.close().catch(() => {});
-      if (temporaryCreated) await rm(temporary, { force: true }).catch(() => {});
+      await temporaryHandle?.close();
+      if (temporaryCreated) {
+        try {
+          beforeMutation?.();
+          await rm(temporary, { force: true });
+        } catch (cause) {
+          // A fence refusal retains the temporary file. Other failures propagate.
+          if (!isExpectedFsError(cause, 'cleanup')) throw cause;
+        }
+      }
     }
   }
 }
 
 export async function createNodeUpgradeTransactionFileAdapter(
-  options: NodeUpgradeTransactionFileAdapterOptions
+  options: NodeUpgradeTransactionFileAdapterOptions,
+  /** Test seam. Production uses Node's lstat and native realpath. */
+  checks: TransactionPathChecks = NODE_CHECKS
 ): Promise<UpgradeTransactionFileAdapter> {
-  const root = path.resolve(options.workspaceRoot);
-  const rootStat = await lstat(root);
+  const root = checks.path.resolve(options.workspaceRoot);
+  const rootStat = await checks.lstat(root);
   if (rootStat.isSymbolicLink()) {
     throw new UpgradeTransactionPathError(
       'SYMLINK_NOT_ALLOWED',
       `Workspace root must not be a symbolic link: ${root}`
     );
   }
-  const canonicalRoot = await realpath(root);
+  const canonicalRoot = await canonicalPath(root, checks);
 
-  const allowed = new Set<string>();
+  const allowed = new Map<string, string>();
   for (const raw of options.allowlistedPaths) {
-    if (raw.length === 0 || !path.isAbsolute(raw)) {
+    if (raw.length === 0 || !checks.path.isAbsolute(raw)) {
       throw new UpgradeTransactionPathError(
         'INVALID_ALLOWLIST',
         'Upgrade transaction allowlist entries must be non-empty absolute paths.'
       );
     }
-    const resolved = path.resolve(raw);
-    if (!isWithin(root, resolved) && !isWithin(canonicalRoot, resolved)) {
-      throw new UpgradeTransactionPathError(
-        'PATH_OUTSIDE_WORKSPACE',
-        `Upgrade transaction path is outside the workspace: ${raw}`
-      );
-    }
-    await assertSafeCanonicalPath(root, canonicalRoot, resolved);
-    allowed.add(resolved);
+    const resolved = checks.path.resolve(raw);
+    await assertSafeCanonicalPath(checks, canonicalRoot, resolved);
+    allowed.set(await canonicalPath(resolved, checks), resolved);
   }
 
   if (allowed.size === 0) {
@@ -327,7 +331,7 @@ export async function createNodeUpgradeTransactionFileAdapter(
     );
   }
 
-  return new NodeUpgradeTransactionFileAdapter(root, canonicalRoot, allowed);
+  return new NodeUpgradeTransactionFileAdapter(checks, canonicalRoot, allowed);
 }
 
 /** Exposed for adapters/tests that need exact FileState comparison semantics. */

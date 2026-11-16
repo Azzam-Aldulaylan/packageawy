@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import io from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
@@ -31,6 +33,45 @@ async function outsideDir(t) {
 const read = (root, extra = {}) => readPnpmWorkspaceLayout({ lockfileRoot: root, importerId: 'apps/web', ...extra });
 const paths = (layout) => layout.files.map((file) => file.path).sort();
 const fileText = (layout, name) => layout.files.find((file) => file.path === name)?.text;
+
+for (const operation of ['realpath', 'readdir', 'readFile', 'stat']) {
+  test(`workspace ${operation} preserves graceful and strict filesystem error modes`, async t => {
+    const root = await workspace(t);
+    const realRoot = await io.realpath(root);
+    if (operation === 'stat') await symlink(path.join(root, 'packages/shared'), path.join(root, 'linked'), 'dir');
+    const original = io[operation];
+    let error = Object.assign(new Error('unavailable'), { code: 'EMFILE' });
+    // Fail within discovery too, so its outer cancellation catch cannot hide strict errors.
+    const target = operation === 'realpath' ? path.join(realRoot, 'packages') : operation === 'readFile'
+      ? path.join(realRoot, 'package.json') : operation === 'stat' ? path.join(realRoot, 'linked') : realRoot;
+    io[operation] = async (file, ...args) => {
+      if (file === target) throw error;
+      return original(file, ...args);
+    };
+    syncBuiltinESMExports();
+    t.after(() => { io[operation] = original; syncBuiltinESMExports(); });
+    const graceful = await read(root);
+    if (operation !== 'stat') assert.match(graceful.unavailableReason, /could not be read/);
+    await assert.rejects(read(root, { strict: true }), cause => cause === error);
+    error = new TypeError('programming failure');
+    for (const strict of [false, true]) await assert.rejects(read(root, { strict }), cause => cause === error);
+  });
+}
+
+test('cancellation during the last workspace manifest read discards the layout', async t => {
+  const root = await workspace(t, { dirs: ['apps/web'] });
+  const realRoot = await io.realpath(root);
+  const abort = new AbortController();
+  const original = io.readFile;
+  io.readFile = async (file, ...args) => {
+    const text = await original(file, ...args);
+    if (file === path.join(realRoot, 'package.json')) abort.abort();
+    return text;
+  };
+  syncBuiltinESMExports();
+  t.after(() => { io.readFile = original; syncBuiltinESMExports(); });
+  assert.equal(await read(root, { signal: abort.signal }), undefined);
+});
 
 test('every manifest under the lock root is staged, hidden directories included', async (t) => {
   const root = await workspace(t, { dirs: ['apps/api', 'apps/web', 'packages/shared/.internal', 'packages/shared/node_modules/x', '.git/x'] });

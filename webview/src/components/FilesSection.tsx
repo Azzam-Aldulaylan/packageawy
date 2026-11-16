@@ -29,10 +29,10 @@ export function FilesSection({ files }: { files: UpgradeAnalysisFiles }): ReactE
       {files.rollbackAvailable ? (
         <p className="analysis-card__hint analysis-card__hint--rollback">
           <IconHistory className="analysis-card__hint-icon" />
-          Rollback available if verification fails
+          Restore point saved before changes
           <InfoTooltip
             label="How rollback works"
-            content={<p>Rollback restores package.json and the active lockfile. Installed modules may still need reinstalling.</p>}
+            content={<p>Packageawy restores your dependency files and stops if it sees they changed. You can then choose a frozen reinstall of node_modules.</p>}
           />
         </p>
       ) : null}

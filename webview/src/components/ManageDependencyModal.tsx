@@ -1,3 +1,4 @@
+import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { useEffect, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
 
@@ -47,7 +48,6 @@ interface UpgradeReviewState {
   targetState: UpgradeTargetLoadState;
   /** True exactly when this row's upgrade is the one App.tsx currently has loaded. */
   active: boolean;
-  analyzingPhase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
   analysis: UpgradeAnalysisPresentation | null;
   /** Per-section progressive state, rendered while `analysis` is still null. See src/host/upgradeAnalysisSections.ts. */
   sections: UpgradeAnalysisSections;
@@ -63,6 +63,12 @@ interface UpgradeReviewState {
   onConfigureVerification: () => void;
   /** Re-runs analysis for the same row/target: Cancel followed immediately by a fresh Analyze, not a new mechanism. */
   onRefresh: () => void;
+  /** Loads the version list again with a new request after it failed. */
+  onRetryTargets?: () => void;
+  /** Refreshes the whole dashboard (not this analysis) when the version list needs revalidated data. */
+  onRefreshDashboard?: () => void;
+  /** Whether a dashboard refresh is allowed right now (the dashboard's own Refresh rule). */
+  refreshDisabled?: boolean;
 }
 
 interface RemovalReviewState {
@@ -138,7 +144,7 @@ function UpgradeResultPanel({
         <h3 className="analysis-card__title" id="upgrade-result-heading">{title}</h3>
         {result.changes.map((change) => (
           <p key={change.packageName} className="analysis-card__hint">
-            <code>{change.packageName}</code>: <code>{change.previousVersion}</code> <span aria-hidden="true">→</span>{' '}
+            <code>{change.packageName}</code>: <code>{change.previousVersion}</code> <span>to</span>{' '}
             <code>{change.currentVersion ?? 'not resolved'}</code>
           </p>
         ))}
@@ -147,6 +153,9 @@ function UpgradeResultPanel({
           <div className="manage-glance__row"><dt>Applied state</dt><dd>{applicationLabel}</dd></div>
           <div className="manage-glance__row"><dt>Verification</dt><dd>{verificationLabel}</dd></div>
         </dl>
+        {result.application === 'rolled-back' && result.rollbackMessage ? (
+          <p className="analysis-card__hint">{result.rollbackMessage}</p>
+        ) : null}
         {enrichment?.phase === 'refreshing' ? (
           <p className="analysis-card__pending-label">
             <IconRefresh className="banner__icon--spin" aria-hidden="true" /> Refreshing dependency security and update data…
@@ -540,7 +549,6 @@ export function ManageDependencyModal({
         active={upgrade.active}
         targetVersion={upgrade.targetVersion}
         targetState={upgrade.targetState}
-        analyzingPhase={upgrade.analyzingPhase}
         analysis={upgrade.analysis}
         sections={upgrade.sections}
         hardStale={upgrade.hardStale}
@@ -558,6 +566,10 @@ export function ManageDependencyModal({
         onCancel={cancelUpgradeReview}
         onConfigureVerification={upgrade.onConfigureVerification}
         onRefresh={upgrade.onRefresh}
+        onRetryTargets={upgrade.onRetryTargets}
+        onRefreshDashboard={upgrade.onRefreshDashboard}
+        refreshDisabled={upgrade.refreshDisabled ?? upgradeDisabled}
+        updateResolutionAvailable={quarantineDerivedData ? false : updateResolutionAvailable}
         onChangeTab={onChangeTab}
         onOpenAdvisory={onOpenAdvisory}
         onOpenUsageReference={onOpenUsageReference}
@@ -684,6 +696,7 @@ export function ManageDependencyModal({
           role="tabpanel"
           aria-labelledby={`manage-tab-${activeTab}`}
         >
+          <DependencyChangeStatus />
           {content}
         </div>
 

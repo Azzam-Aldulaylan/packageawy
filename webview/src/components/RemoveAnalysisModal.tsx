@@ -1,3 +1,4 @@
+import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
 
@@ -199,6 +200,7 @@ export function RemoveAnalysisModal({
         </header>
 
         <div className="modal__body">
+          <DependencyChangeStatus />
           <RemoveAnalysisBody
             packages={packages}
             analysis={analysis}

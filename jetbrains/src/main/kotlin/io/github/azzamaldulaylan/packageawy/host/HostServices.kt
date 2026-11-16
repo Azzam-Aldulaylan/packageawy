@@ -33,8 +33,8 @@ interface HostServices {
     /** Completes with the chosen index, or null when dismissed or cancelled. */
     fun showQuickPick(items: List<QuickPickEntry>, settings: QuickPickSettings, cancel: CancelSignal): CompletableFuture<Int?>
 
-    /** Starts the process in a console the user can see. Throws when it cannot start. */
-    fun startProcess(request: ProcessStart, onExit: (exitCode: Int?) -> Unit)
+    /** Returns a stop handle so a late launch can be terminated after sidecar teardown. */
+    fun startProcess(request: ProcessStart, onExit: (exitCode: Int?) -> Unit): AutoCloseable
 
     /** One-based line and column. */
     fun openFile(path: String, line: Int?, column: Int?)

@@ -11,8 +11,11 @@
  * Nothing here may import 'vscode'. See types.ts.
  */
 
+import semver from 'semver';
+
 import type { AuditRunner } from './audit/npmAudit.js';
-import { runNpmAudit, mapFixAvailableToDirectDependencies } from './audit/npmAudit.js';
+import { runNpmAudit, mapFixAvailableToDirectDependencies, auditUnavailableReasonFor } from './audit/npmAudit.js';
+import type { AuditUnavailableReason, DiagnosticArea } from './diagnostics.js';
 import { worstSeverity, resolveUpgradeTarget } from './advisories/aggregate.js';
 import { advisoryCoverageByRoot, attributeAdvisories } from './advisories/attribution.js';
 import { attachPatchedVersions, distinctFlaggedPackages } from './advisories/remediation.js';
@@ -29,9 +32,10 @@ import { NOOP_PERFORMANCE_RECORDER } from './performance/measurement.js';
 import type { HttpClient } from './registry/http.js';
 import { FetchError } from './registry/http.js';
 import type { EtagStore, VersionRequest } from './registry/versions.js';
-import { fetchAllVersions, fetchPackument } from './registry/versions.js';
+import { ABBREVIATED_ACCEPT, fetchAllVersions, fetchPackument } from './registry/versions.js';
 import type { PackumentDoc } from './registry/versions.js';
 import { DEFAULT_CONCURRENCY, runPool } from './registry/pool.js';
+import { limitMetadataRequests } from './registry/requestLimiter.js';
 import { registryForPackage } from './registry/npmrc.js';
 import { resolveUpgradeCandidate } from './upgrade/candidate.js';
 import type { Advisory, AttributedAdvisory, FixAvailable, PackageRow, ScanDataAvailability, VersionInfo } from './types.js';
@@ -53,6 +57,12 @@ export interface BuildPackageRowsOptions {
    * registry, so scoped names never reach the default registry.
    */
   resolvedRegistry?: ResolvedRegistry;
+  /**
+   * Called once per failed registry lookup or npm audit run, with allowlisted
+   * codes only, so the host can write a troubleshooting line through
+   * src/core/diagnostics.ts. Never receives raw error messages.
+   */
+  onDiagnostic?: (entry: { area: DiagnosticArea; code: string; packageName?: string; registryUrl?: string }) => void;
   httpClient: HttpClient;
   etagStore: EtagStore;
   /** Omit entirely to skip the optional `npm audit` enrichment. */
@@ -63,6 +73,13 @@ export interface BuildPackageRowsOptions {
    * applicable, currently the pnpm host path.
    */
   auditUnavailableWhenOmitted?: boolean;
+  /**
+   * True when the project has no lockfile its package manager would read
+   * (package-lock.json or npm-shrinkwrap.json for npm, pnpm-lock.yaml for
+   * pnpm). Audit runs with --package-lock-only, so a failure then is reported
+   * as 'no-lockfile' from this evidence rather than guessed from npm's output.
+   */
+  lockfileMissing?: boolean;
   /**
    * Defaults to true. False means the project turned the public advisory
    * check off: no package names go to the bulk advisory endpoint or GitHub,
@@ -102,6 +119,8 @@ export interface BuildPackageRowsResult {
   advisoriesError?: FetchError;
   /** True when no runner was given, or audit failed / returned unparseable output. */
   auditUnavailable?: boolean;
+  /** Why audit was unavailable. Set only alongside `auditUnavailable`. */
+  auditUnavailableReason?: AuditUnavailableReason;
   /**
    * Deprecated findings: deterministic, and
    * therefore cheap enough to compute on every scan (see
@@ -136,6 +155,9 @@ function instrumentEtagStore(store: EtagStore, recorder: PerformanceRecorder): E
     set(key, value) {
       store.set(key, value);
     },
+    delete(key) {
+      store.delete(key);
+    },
   };
 }
 
@@ -146,7 +168,12 @@ function instrumentHttpClient(client: HttpClient, recorder: PerformanceRecorder)
       const isGitHubAdvisory =
         url.startsWith(`${GITHUB_ADVISORIES_API}/`) || url.startsWith(`${GITHUB_ADVISORIES_API}?`);
       recorder.increment(isGitHubAdvisory ? 'GitHub advisory requests' : 'registry requests');
-      if (!isGitHubAdvisory) recorder.increment(url.endsWith('/latest') ? '/latest requests' : 'packument requests');
+      if (!isGitHubAdvisory) {
+        const kind = url.endsWith('/latest') ? '/latest'
+          : options?.headers?.accept === ABBREVIATED_ACCEPT ? 'packument'
+          : url.endsWith('/dist-tags') ? 'dist-tags' : 'exact-version';
+        recorder.increment(`${kind} requests`);
+      }
       const response = await client.get(url, options);
       recorder.increment(isGitHubAdvisory ? 'GitHub advisory response wire bytes' : 'registry response wire bytes', response.wireBytes);
       if (response.status === 304) recorder.increment('304 responses');
@@ -170,6 +197,7 @@ export async function buildPackageRows(
   const { root, manifestText, lockfileText, registry, signal } = options;
   const recorder = options.performance ?? NOOP_PERFORMANCE_RECORDER;
   const httpClient = instrumentHttpClient(options.httpClient, recorder);
+  const metadataClient = limitMetadataRequests(httpClient, options.concurrency);
   const etagStore = instrumentEtagStore(options.etagStore, recorder);
   const resolvedRegistry = options.resolvedRegistry;
   const registryFor = (name: string): string =>
@@ -207,7 +235,7 @@ export async function buildPackageRows(
       return cached;
     }
     recorder.increment(`packument requests for ${reason}`);
-    const pending = fetchPackument(httpClient, etagStore, registryFor(name), name, requestSignal);
+    const pending = fetchPackument(metadataClient, etagStore, registryFor(name), name, requestSignal);
     packumentPromises.set(name, pending);
     return pending;
   };
@@ -217,14 +245,22 @@ export async function buildPackageRows(
   // then consume its optional fixAvailable enrichment at the original stage.
   const advisoryEnabled = (): boolean => options.publicAdvisoryCheck !== false && (options.publicAdvisoryCheckEnabled?.() ?? true);
   const advisoryCheckOff = !advisoryEnabled();
-  const auditPromise: Promise<{ fixes: Map<string, FixAvailable>; unavailable: boolean }> = (() => {
+  type AuditOutcome = { fixes: Map<string, FixAvailable>; unavailable: boolean; reason?: AuditUnavailableReason };
+  const unavailableAudit = (reason: AuditUnavailableReason): AuditOutcome => ({
+    fixes: new Map<string, FixAvailable>(),
+    unavailable: true,
+    // Without a lockfile, audit cannot run however npm itself failed.
+    reason: options.lockfileMissing === true ? 'no-lockfile' : reason,
+  });
+  const auditPromise: Promise<AuditOutcome> = (() => {
     // npm audit sends the same inventory to the registry, so it follows the advisory setting.
     if (advisoryCheckOff) return Promise.resolve({ fixes: new Map(), unavailable: false });
     if (options.auditRunner === undefined) {
-      return Promise.resolve({
-        fixes: new Map(),
-        unavailable: options.auditUnavailableWhenOmitted ?? true,
-      });
+      return Promise.resolve(
+        options.auditUnavailableWhenOmitted ?? true
+          ? unavailableAudit('failed')
+          : { fixes: new Map(), unavailable: false }
+      );
     }
     options.onProgress?.({ stage: 'npm-audit' });
     const endAudit = recorder.start('npm audit');
@@ -234,7 +270,12 @@ export async function buildPackageRows(
         fixes: mapFixAvailableToDirectDependencies(vulnerabilities, new Set(roots.map((node) => node.name))),
         unavailable: false,
       }))
-      .catch(() => ({ fixes: new Map<string, FixAvailable>(), unavailable: true }))
+      .catch((error: unknown) => {
+        const outcome = unavailableAudit(auditUnavailableReasonFor(error));
+        // A cancelled scan is not a failure worth logging.
+        if (signal?.aborted !== true) options.onDiagnostic?.({ area: 'npm-audit', code: outcome.reason ?? 'failed' });
+        return outcome;
+      })
       .finally(() => {
         endAudit();
       });
@@ -243,8 +284,8 @@ export async function buildPackageRows(
   // The bulk advisory request depends only on the normalized graph. Start it
   // alongside version metadata instead of placing its network latency behind
   // every /latest request. This adds one bounded request (to npm's advisory
-  // endpoint) while the registry pool is active. Patched-version work still
-  // waits for attribution and therefore cannot amplify that overlap.
+  // endpoint) while metadata GETs share their own request budget.
+  let knownFlaggedPackages = new Set<string>();
   let advisoryRequestSettled = advisoryCheckOff;
   if (!advisoryCheckOff) options.onProgress?.({ stage: 'advisories' });
   const advisoryPromise: Promise<{ advisoriesByName: Map<string, Advisory[]>; advisoriesError?: FetchError }> = (async () => {
@@ -255,6 +296,12 @@ export async function buildPackageRows(
     let advisoriesError: FetchError | undefined;
     try {
       const npmAdvisories = await fetchBulkAdvisories(httpClient, bulkRequestBody, signal, advisoryEnabled);
+      knownFlaggedPackages = distinctFlaggedPackages(attributeAdvisories(graph, npmAdvisories));
+      for (const name of knownFlaggedPackages) {
+        // Keep the original promise in the map, including failures. Only the
+        // patched-version stage consumes its result and reports progress.
+        loadPackument(name, 'patched version', signal).catch(() => {});
+      }
       advisoriesByName = await enrichAdvisoriesWithGitHubIdentifiers(httpClient, etagStore, npmAdvisories, signal);
     } catch (cause) {
       advisoriesError =
@@ -279,14 +326,19 @@ export async function buildPackageRows(
     name: node.registryName ?? node.name,
     range: npmAlias(node.range)?.range ?? node.range,
     installed: node.version,
+    exactPinEligible: registryFor(node.registryName ?? node.name).replace(/\/+$/, '') === 'https://registry.npmjs.org' &&
+      node.unresolvable === undefined && node.registryName === undefined &&
+      npmAlias(node.range) === null && semver.valid(node.range) === node.range &&
+      node.version === node.range && semver.prerelease(node.range) === null,
   }));
 
   const fetchOptions: Parameters<typeof fetchAllVersions>[0] = {
-    client: httpClient,
+    client: metadataClient,
     store: etagStore,
     registry,
     registryFor,
     packumentLoader: (name, requestSignal) => loadPackument(name, 'version resolution', requestSignal),
+    isFlagged: (name) => knownFlaggedPackages.has(name),
   };
   if (options.concurrency !== undefined) fetchOptions.limit = options.concurrency;
   if (signal !== undefined) fetchOptions.signal = signal;
@@ -312,6 +364,15 @@ export async function buildPackageRows(
       return;
     }
     unavailableUpdatePackages.push(node.name);
+    if (result?.error.code !== 'CANCELLED' && signal?.aborted !== true) {
+      options.onDiagnostic?.({
+        area: 'update-check',
+        code: result?.error.code ?? 'UNKNOWN',
+        packageName: node.name,
+        // Aliases are fetched under their registry name, so name that registry.
+        registryUrl: registryFor(node.registryName ?? node.name),
+      });
+    }
     const host = result?.error.code === 'REGISTRY_AUTH_REQUIRED' ? result.error.registryHost : undefined;
     if (host !== undefined) {
       const packages = signInPackagesByHost.get(host) ?? [];
@@ -469,6 +530,9 @@ export async function buildPackageRows(
   }
   const result: BuildPackageRowsResult = { rows, availability, hygieneFindings };
   if (advisoriesError !== undefined) result.advisoriesError = advisoriesError;
-  if (auditUnavailable) result.auditUnavailable = true;
+  if (auditUnavailable) {
+    result.auditUnavailable = true;
+    result.auditUnavailableReason = audit.reason ?? 'failed';
+  }
   return result;
 }

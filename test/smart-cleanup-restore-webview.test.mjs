@@ -7,8 +7,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { makeCoordinator, makeProject, review } from './helpers/removal-project.mjs';
+import { manualReinstallNote } from '../out/host/manualReinstallCopy.js';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+import { rollbackFixture } from './helpers/optional-reinstall.mjs';
 
 const require = createRequire(import.meta.url);
 const app = await readFile(join(process.cwd(), 'webview/src/App.tsx'), 'utf8');
@@ -16,6 +20,8 @@ const app = await readFile(join(process.cwd(), 'webview/src/App.tsx'), 'utf8');
 const bundle = await build({
   stdin: {
     contents: [
+      'export { TransitiveFixReview } from "./webview/src/components/TransitiveFixReview.tsx";',
+      'export { RemovalResultPanel } from "./webview/src/components/RemovalProgressPanels.tsx";',
       'export { SmartCleanupWorkspace } from "./webview/src/components/SmartCleanupWorkspace.tsx";',
       'export { createSmartCleanupState, smartCleanupReducer, canCloseSmartCleanup } from "./webview/src/smartCleanupState.ts";',
     ].join('\n'),
@@ -37,7 +43,7 @@ const bundle = await build({
     },
   }],
 });
-const { SmartCleanupWorkspace, createSmartCleanupState, smartCleanupReducer, canCloseSmartCleanup } = await import(
+const { TransitiveFixReview, RemovalResultPanel, SmartCleanupWorkspace, createSmartCleanupState, smartCleanupReducer, canCloseSmartCleanup } = await import(
   `data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=smart-cleanup-restore.fixture.js`).toString('base64')}`
 );
 
@@ -84,9 +90,9 @@ test('without a host restore point the results keep the source control guidance'
 test('a kept restore point shows the action and explains what it does', () => {
   const state = smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' });
   const html = render(state);
-  assert.match(html, /<button type="button" class="button button--secondary">Restore dependency files<\/button>/);
-  assert.match(html, /puts package\.json and the lockfile back as they were\s+before the cleanup and reinstalls dependencies/);
-  assert.match(html, /It is refused if either file changed after the cleanup\./);
+  assert.match(html, /<button type="button" class="button button--secondary">Review recovery files<\/button>/);
+  assert.match(html, /Open recovery to review the saved dependency files and choose Restore backup or Keep current for each file/);
+  assert.doesNotMatch(html, /reinstalls dependencies/);
   assert.doesNotMatch(html, /Use source control/);
 });
 
@@ -120,7 +126,7 @@ test('after a restore the results describe the restored dependencies, not the re
 
 test('the restore note sits above the change list so the action is visible without scrolling', () => {
   const html = render(smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' }));
-  assert.ok(html.indexOf('Restore dependency files') < html.indexOf('What changed'));
+  assert.ok(html.indexOf('Review recovery files') < html.indexOf('What changed'));
 });
 
 test('a cleanup with no build or test scripts is not reported as verified', () => {
@@ -153,9 +159,71 @@ test('a new cleanup result clears an old restore point', () => {
   assert.equal(smartCleanupReducer(available, { type: 'execution-complete', result }).restore, null);
 });
 
-test('the app sends only the host analysis id and routes the restore outcome to the results', () => {
+test('the app opens recovery with a host analysis id and never starts the former automatic restore', () => {
   assert.match(app, /incoming\.result\.restoreAvailable === true && kept/);
   assert.match(app, /vscode\.postMessage\(\{ type: 'restore-smart-cleanup', analysisId \}\)/);
-  assert.match(app, /dispatchSmartCleanup\(\{ type: 'restore-refused', message: incoming\.error\.message \}\)/);
-  assert.match(app, /dispatchSmartCleanup\(\{ type: 'restore-finished' \}\)/);
+  assert.doesNotMatch(app, /dispatchSmartCleanup\(\{ type: 'restore-started'/);
+  assert.match(app, /case 'recovery':/);
+});
+
+for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`cleanup rollback guidance matches optional reinstall ${reinstall}`, async t => {
+  const project = await makeProject(t);
+  const f = makeCoordinator(project, { mutationRoot: () => project.root });
+  f.state.installExitCode = 1;
+  f.state.reinstallChoice = reinstall === 'skipped' ? 'Skip' : 'Reinstall';
+  f.state.reinstallExitCode = reinstall === 'failed' ? 1 : 0;
+  await f.coordinator.handleConfirmRemove({ analysisId: await review(f) });
+  const hostResult = f.messages.findLast(message => message.status === 'remove-result')?.result;
+  assert.equal(hostResult?.outcome, 'rolled-back', JSON.stringify(f.messages));
+  assert.deepEqual(f.commands, reinstall === 'skipped' ? ['install'] : ['install', 'ci']);
+  const state = smartCleanupReducer(createSmartCleanupState('fixture'), {
+    type: 'execution-cancelled-and-restored',
+    result: { ...result, rollback: 'restored', detail: hostResult.message },
+  });
+  const html = render(state);
+  if (reinstall === 'succeeded') {
+    assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules and script side effects were not restored/);
+    assert.match(html, /Dependencies were reinstalled using the restored lockfile/);
+  } else {
+    assert.ok(html.includes(manualReinstallNote('npm')), html);
+  }
+});
+
+for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`normal removal panel follows actual reinstall ${reinstall}`, async t => {
+  const project = await makeProject(t);
+  const f = makeCoordinator(project, { mutationRoot: () => project.root });
+  f.state.installExitCode = 1;
+  f.state.reinstallChoice = reinstall === 'skipped' ? 'Skip' : 'Reinstall';
+  f.state.reinstallExitCode = reinstall === 'failed' ? 1 : 0;
+  await f.coordinator.handleAnalyzeBulkRemove({ changes: [{ package: 'react' }] });
+  const analysisId = f.messages.findLast(message => message.status === 'remove-analysis').analysis.analysisId;
+  await f.coordinator.handleConfirmRemove({ analysisId });
+  const hostResult = f.messages.findLast(message => message.status === 'remove-result')?.result;
+  assert.equal(hostResult?.outcome, 'rolled-back', JSON.stringify(f.messages));
+  const html = renderToStaticMarkup(createElement(RemovalResultPanel, {
+    row: { name: 'react', current: '18.2.0', range: '^18.0.0' }, result: hostResult,
+  }));
+  assert.ok(html.includes(hostResult.message), html);
+  if (reinstall === 'succeeded') {
+    assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules were not restored/);
+    assert.match(html, /Dependencies were reinstalled using the restored lockfile/);
+  } else assert.ok(html.includes(manualReinstallNote('npm')), html);
+});
+
+for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`transitive result panel follows actual optional reinstall ${reinstall}`, async t => {
+  const f = await rollbackFixture(t, 'transitive');
+  f.state.reinstallChoice = reinstall === 'skipped' ? 'Skip' : 'Reinstall';
+  f.state.reinstallExitCode = reinstall === 'failed' ? 1 : 0;
+  await f.confirm();
+  const hostResult = f.messages.findLast(message => message.status === 'remediation-apply-result')?.result;
+  assert.equal(hostResult?.outcome, 'rolled-back', JSON.stringify(f.messages));
+  const noop = () => {};
+  const html = renderToStaticMarkup(createElement(TransitiveFixReview, {
+    rootPackage: 'react', subject: 'react', dependencyPath: ['react'], disabled: false,
+    state: { phase: 'result', plan: { rootPackage: 'react' }, result: hostResult },
+    onAnalyze: noop, onReview: noop, onApply: noop, onCancel: noop, onRetry: noop, onOpenAdvisory: noop,
+  }));
+  const note = reinstall === 'succeeded' ? 'Dependencies were reinstalled using the restored lockfile.' : manualReinstallNote('npm');
+  assert.ok(html.includes(note), html);
+  if (reinstall === 'succeeded') assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules were not restored/);
 });

@@ -137,6 +137,7 @@ test('an empty row set is all zeros', () => {
     infoVulnerabilities: 0,
     needsAttention: 0,
     deprecatedCount: 0,
+    notChecked: 0,
   });
 });
 
@@ -175,6 +176,7 @@ test('counts are tallied across a mixed row set', () => {
     infoVulnerabilities: 0,
     needsAttention: 3, // critical, high, deprecated
     deprecatedCount: 1,
+    notChecked: 0,
   });
 });
 
@@ -353,4 +355,18 @@ test('unavailable advisories never present zero vulnerabilities or a complete at
     count: '—',
     subtitle: 'Advisory data unavailable',
   });
+});
+
+test('unchecked registry packages make the Updates card a lower bound, never "Up to date"', () => {
+  const metrics = summaryMetrics([
+    row({ name: 'a', current: null, wanted: null, latest: null, unresolvable: 'no-lockfile' }),
+    row({ name: 'b', current: null, wanted: null, latest: null }),
+    row({ name: 'link', current: null, wanted: null, latest: null, unresolvable: 'workspace-link' }),
+  ]);
+  assert.equal(metrics.notChecked, 2, 'workspace links have no registry versions to check');
+  assert.deepEqual(updatesCardValue(metrics, COMPLETE_AVAILABILITY), { count: '—', subtitle: '2 packages not checked' });
+  const one = summaryMetrics([row({ name: 'a', current: null, wanted: null, latest: null }), row({ wanted: '1.1.0', latest: '1.1.0' })]);
+  assert.deepEqual(updatesCardValue(one, COMPLETE_AVAILABILITY), { count: '≥1', subtitle: '1 package not checked' });
+  const linksOnly = summaryMetrics([row({ name: 'link', current: null, wanted: null, latest: null, unresolvable: 'workspace-link' })]);
+  assert.deepEqual(updatesCardValue(linksOnly, COMPLETE_AVAILABILITY), { count: 0, subtitle: 'Up to date' });
 });

@@ -77,6 +77,8 @@ PACKAGEAWY_HOST_SOAK_MS=600000 npm run test:extension-host
 
 The soak setting keeps the dashboard open longer to catch results disappearing over time. Set `PACKAGEAWY_KEEP_FIXTURES=1` to keep the generated projects for inspection.
 
+The Extension Host suite also waits for the webview's inbound `rendered` acknowledgement of the ready snapshot on first open and cached reopen. It matches `generatedAt` against the outbound snapshot so host-side rows alone cannot pass the rendering check.
+
 ## Debugging
 
 - Extension logs and errors show up in the **Debug Console** of the window you launched from.

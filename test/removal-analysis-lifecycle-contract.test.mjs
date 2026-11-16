@@ -34,5 +34,5 @@ test('completed embedded reviews coexist without cancelling either cached result
   assert.doesNotMatch(upgradeStart, /requestCancelRemove\(\)/);
   assert.doesNotMatch(removalStart, /requestCancelUpgrade\(\)/);
   assert.match(app, /setConfirmBusy\(false\);[\s\S]*?if \(upgradeErrorClearsActiveState/);
-  assert.match(app, /if \(incoming\.status === 'remove-error'\) \{\s*setRemoveBusy\(false\)/);
+  assert.match(app, /case 'remove-error': \{[\s\S]*?setRemoveBusy\(false\)/);
 });

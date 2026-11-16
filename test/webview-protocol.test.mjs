@@ -207,6 +207,9 @@ test('upgrade target option requests require a package and correlation id', () =
     isWebviewToHostMessage({ type: 'load-upgrade-targets', package: 'react', requestId: '', target: '19.0.0' }),
     false
   );
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-upgrade-targets', requestId: 'targets-1' }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-upgrade-targets', requestId: '' }), false);
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-upgrade-targets', requestId: 'targets-1', package: 'react' }), false);
 });
 
 // ------------------------------------------------- upgrade requests
@@ -596,6 +599,14 @@ test('upgrade target option messages validate channels, labels, and recommendati
       error: { code: 'NETWORK', message: 'offline' },
     }),
     true
+  );
+  assert.equal(
+    isHostToWebviewMessage({ status: 'upgrade-targets', package: 'react', requestId: 'targets-1', targets: { ...targets, tagsOnly: true } }),
+    true
+  );
+  assert.equal(
+    isHostToWebviewMessage({ status: 'upgrade-targets', package: 'react', requestId: 'targets-1', targets: { ...targets, tagsOnly: false } }),
+    false
   );
 });
 
@@ -1079,6 +1090,16 @@ test('a malformed upgrade-error message is rejected', () => {
   }
 });
 
+test('upgrade errors accept request and analysis correlation but reject malformed ids', () => {
+  const error = { status: 'upgrade-error', package: 'react', error: { code: 'UNKNOWN', message: 'Upgrade failed.' } };
+  for (const key of ['requestId', 'analysisId']) {
+    assert.equal(isHostToWebviewMessage({ ...error, [key]: 'upgrade-1' }), true);
+    for (const value of ['', null, 1, {}]) {
+      assert.equal(isHostToWebviewMessage({ ...error, [key]: value }), false);
+    }
+  }
+});
+
 test('the optional data fields are accepted when present and correct', () => {
   assert.equal(
     isHostToWebviewMessage({
@@ -1088,6 +1109,9 @@ test('the optional data fields are accepted when present and correct', () => {
         availability: { updates: 'complete', advisories: 'unavailable', unavailableUpdatePackages: [] },
         advisoriesError: { code: 'REGISTRY_5XX', message: 'server error 503' },
         auditUnavailable: true,
+        auditUnavailableReason: 'no-lockfile',
+        packageManager: 'pnpm',
+        lockfileMissing: true,
       },
     }),
     true
@@ -1119,6 +1143,10 @@ test('a variant carrying the wrong payload is rejected', () => {
   assert.equal(isHostToWebviewMessage({ status: 'ready' }), false);
   assert.equal(isHostToWebviewMessage({ status: 'ready', error: { code: 'x', message: 'y' } }), false);
   assert.equal(isHostToWebviewMessage({ status: 'fatal-error' }), false);
+  // refresh-failed carries nothing: it only ends a stale view's refreshing indicator.
+  assert.equal(isHostToWebviewMessage({ status: 'refresh-failed' }), true);
+  assert.equal(isHostToWebviewMessage({ status: 'refresh-failed', data: DATA }), false);
+  assert.equal(isHostToWebviewMessage({ status: 'refresh-failed', error: { code: 'X', message: 'y' } }), false);
   assert.equal(isHostToWebviewMessage({ status: 'fatal-error', data: DATA }), false);
   assert.equal(isHostToWebviewMessage({ status: 'ready', data: DATA, extra: 1 }), false);
 });
@@ -1145,6 +1173,9 @@ test('a malformed DashboardData shell is rejected', () => {
     { ...DATA, advisoriesError: null },
     { ...DATA, advisoriesError: { code: 'X' } },
     { ...DATA, auditUnavailable: 'yes' },
+    { ...DATA, auditUnavailable: true, auditUnavailableReason: 'disk-full' },
+    { ...DATA, packageManager: 'yarn' },
+    { ...DATA, lockfileMissing: 'yes' },
     { ...DATA, availability: undefined },
     { ...DATA, availability: { updates: 'partial', advisories: 'complete', unavailableUpdatePackages: [] } },
     { ...DATA, availability: { updates: 'complete', advisories: 'complete', unavailableUpdatePackages: ['clean-pkg'] } },
@@ -1283,8 +1314,8 @@ test('analyze-remediation never carries anything beyond a package name, no path,
   );
 });
 
-test('batch remediation accepts a bounded unique package list and a payload-free cancel', () => {
-  assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: ['alpha', 'beta'] }), true);
+test('retired batch remediation is rejected and single analysis cancel stays payload-free', () => {
+  assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: ['alpha', 'beta'] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: [] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: ['alpha', 'alpha'] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-remediations', packages: ['alpha'], target: '2.0.0' }), false);
@@ -1333,25 +1364,6 @@ test('remediation-error mirrors upgrade-error\'s shape', () => {
       error: { code: 'STALE_SOURCE' }, // missing message
     }),
     false
-  );
-});
-
-test('batch remediation progress and completion require consistent real counts', () => {
-  assert.equal(
-    isHostToWebviewMessage({ status: 'remediation-batch-progress', completed: 1, total: 3, current: 'beta' }),
-    true
-  );
-  assert.equal(
-    isHostToWebviewMessage({ status: 'remediation-batch-complete', completed: 2, total: 3, cancelled: true }),
-    true
-  );
-  assert.equal(
-    isHostToWebviewMessage({ status: 'remediation-batch-progress', completed: 4, total: 3, current: null }),
-    false
-  );
-  assert.equal(
-    isHostToWebviewMessage({ status: 'remediation-batch-error', error: { code: 'X', message: 'Y' } }),
-    true
   );
 });
 
@@ -1592,6 +1604,9 @@ test('analyze-cleanup and cancel-usage-analysis carry no payload', () => {
 });
 
 test('Smart Cleanup metadata requests require a correlation id and no forged payload', () => {
+  // Execution cancellation is not supported. Read-only analysis cancellation remains valid.
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-smart-cleanup' }), false);
+  assert.equal(isWebviewToHostMessage({ type: 'cancel-smart-cleanup', analysisId: 'cleanup-1' }), false);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-smart-cleanup-metadata', requestId: 'cleanup-1' }), true);
   assert.equal(isWebviewToHostMessage({ type: 'cancel-smart-cleanup-metadata', requestId: 'cleanup-1' }), true);
   assert.equal(isWebviewToHostMessage({ type: 'analyze-smart-cleanup-metadata' }), false);
@@ -2126,4 +2141,93 @@ test('every removal-impact response requires one exact correlated package set', 
 test('the removed Smart Cleanup duplicate-check messages are rejected', () => {
   assert.equal(isHostToWebviewMessage({ status: 'smart-cleanup-duplicates-result', requestId: 'cleanup-1', assessments: [] }), false);
   assert.equal(isWebviewToHostMessage({ type: 'smart-cleanup-duplicates', requestId: 'cleanup-1' }), false);
+});
+test('rendered accepts exactly a type and a non-empty generatedAt string', () => {
+  assert.equal(isWebviewToHostMessage({ type: 'rendered', generatedAt: '2026-01-01T00:00:00.000Z' }), true);
+  for (const value of [
+    { type: 'rendered' },
+    { type: 'rendered', generatedAt: '' },
+    { type: 'rendered', generatedAt: 123 },
+    { type: 'rendered', generatedAt: null },
+    { type: 'rendered', generatedAt: 'snapshot', extra: true },
+  ]) assert.equal(isWebviewToHostMessage(value), false, JSON.stringify(value));
+});
+
+test('usage coverage reasons accept only an optional array of strings', () => {
+  const message = {
+    status: 'usage-result', package: 'foo', analysis: {
+      usageId: 'coverage', fromCache: false, cacheExpiresAt: '2026-08-01T00:10:00.000Z',
+      result: { packageName: 'foo', references: [], truncated: true, scannedFileCount: 1, scannedAt: '2026-08-01T00:00:00.000Z' },
+    },
+  };
+  assert.equal(isHostToWebviewMessage(message), true);
+  for (const coverageReasons of [[], ['.mdx files'], ['stylesheets with @import, @use or @plugin']]) {
+    assert.equal(isHostToWebviewMessage({ ...message, analysis: { ...message.analysis, result: { ...message.analysis.result, coverageReasons } } }), true);
+  }
+  for (const coverageReasons of [null, '.mdx files', [1], [{}], ['.mdx files', false]]) {
+    assert.equal(isHostToWebviewMessage({ ...message, analysis: { ...message.analysis, result: { ...message.analysis.result, coverageReasons } } }), false);
+  }
+});
+
+test('recovery messages carry choices and confirmation, never filesystem authority', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const digest = 'a'.repeat(64);
+  const choice = { id, current: digest, action: 'keep', approveDeletion: false };
+  const view = { state: 'blocked', message: 'An earlier change may still be running. Dependency changes are blocked.', claim: null, canDismiss: false, canApply: false,
+    files: [{ id, path: 'package.json', existed: true, backup: digest, current: digest, backupPreview: '{}', currentPreview: '{}', progress: 'pending' }] };
+  assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: view }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'inspect-recovery' }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'start-recovery', stopped: true, claim: digest }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'dismiss-recovery', stopped: true, discardIncomplete: true }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'apply-recovery', choices: [choice] }), true);
+  for (const message of [
+    { type: 'start-recovery', stopped: false, claim: null },
+    { type: 'start-recovery', stopped: true },
+    { type: 'start-recovery', stopped: true, claim: '../claim' },
+    { type: 'dismiss-recovery', stopped: false, discardIncomplete: true },
+    { type: 'dismiss-recovery', stopped: true, discardIncomplete: 'yes' },
+    { type: 'apply-recovery', choices: [{ ...choice, path: '/etc/passwd' }] },
+    { type: 'apply-recovery', choices: [{ ...choice, id: '../manifest' }] },
+    { type: 'apply-recovery', choices: [{ ...choice, action: 'delete' }] },
+    { type: 'apply-recovery', choices: [{ ...choice, current: 'unknown' }] },
+    { type: 'apply-recovery', choices: [{ ...choice, approveDeletion: 'true' }] },
+    { type: 'inspect-recovery', root: '/tmp' },
+  ]) assert.equal(isWebviewToHostMessage(message), false, JSON.stringify(message));
+  for (const changed of [{ state: 'surprise' }, { claim: 'token' }, { canDismiss: 'yes' }, { canApply: 'yes' }, { files: [{ id: '../id' }] }]) {
+    assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: { ...view, ...changed } }), false);
+  }
+});
+
+
+test('recovery entries and selection use validated opaque IDs', () => {
+  const id = 'a'.repeat(64);
+  assert.equal(isHostToWebviewMessage({ status: 'recovery-entries', entries: [{ id, label: 'nested/project' }] }), true);
+  assert.equal(isWebviewToHostMessage({ type: 'inspect-recovery', id }), true);
+  for (const bad of ['../outside', '', 42]) {
+    assert.equal(isWebviewToHostMessage({ type: 'inspect-recovery', id: bad }), false);
+    assert.equal(isHostToWebviewMessage({ status: 'recovery-entries', entries: [{ id: bad, label: 'project' }] }), false);
+  }
+  assert.equal(isHostToWebviewMessage({ status: 'recovery-entries', entries: [{ id, label: 'project', root: '/tmp' }] }), false);
+});
+
+test('dependency task states are exact and never carry a task deadline', () => {
+  for (const state of ['running', 'still-running', 'idle']) {
+    assert.equal(isHostToWebviewMessage({ status: 'dependency-task', state }), true);
+  }
+  for (const value of [null, 0, {}, 'unknown', 'timeout']) {
+    assert.equal(isHostToWebviewMessage({ status: 'dependency-task', state: value }), false);
+  }
+  assert.equal(isHostToWebviewMessage({ status: 'dependency-task', state: 'still-running', timeoutMs: 10 }), false);
+});
+
+test('unhandled host reports carry no payload and retired batch statuses are rejected', () => {
+  assert.equal(isWebviewToHostMessage({ type: 'unhandled-host-message' }), true);
+  for (const extra of [{ status: 'unknown' }, { token: 'secret' }, { path: '/private/project' }, { contents: 'private' }]) {
+    assert.equal(isWebviewToHostMessage({ type: 'unhandled-host-message', ...extra }), false);
+  }
+  for (const message of [
+    { status: 'remediation-batch-progress', completed: 0, total: 1, current: 'alpha' },
+    { status: 'remediation-batch-complete', completed: 1, total: 1, cancelled: false },
+    { status: 'remediation-batch-error', error: { code: 'UNKNOWN', message: 'failed' } },
+  ]) assert.equal(isHostToWebviewMessage(message), false);
 });
