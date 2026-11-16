@@ -9,7 +9,7 @@ const bundle = await build({
     plugin.onResolve({ filter: /^node:fs\/promises$/ }, args => args.namespace === 'busy-cleanup'
       ? { path: args.path, external: true } : { path: args.path, namespace: 'busy-cleanup' });
     plugin.onLoad({ filter: /.*/, namespace: 'busy-cleanup' }, () => ({ contents: `
-      export { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+      export * from 'node:fs/promises';
       export const rm = async root => {
         globalThis.__resolverCleanupRoots.push(root);
         throw Object.assign(new Error('file is still in use'), { code: 'EBUSY' });

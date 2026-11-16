@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import io from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 
 import {
   buildLockfileMaterializationArgs,
@@ -150,6 +152,53 @@ test('peer resolver failures are conflicts and temporary paths are redacted and 
   assert.equal(result.status, 'conflict');
   assert.match(result.explanation, /<temporary-project>/);
   assert.ok(result.explanation.length <= 540);
+});
+
+test('pnpm diagnostics sanitize controls, credentials and private paths before truncation', async () => {
+  const secrets = ['url-user', 'url-password', 'bearer-secret', 'basic-secret', 'header-secret',
+    'config-secret', 'password-secret', 'env-secret', 'query-secret', `npm_${'n'.repeat(36)}`, `ghp_${'g'.repeat(36)}`];
+  const verifier = workspaceVerifier({}, {
+    runner: { async run(_inv, _args, cwd) {
+      return { exitCode: 1, stdout: `\n${homedir()}/private ${cwd}/package.json`, stderr: [
+        '\x1b[31mERR_PNPM_PEER_DEP_ISSUES\x1b[0m',
+        '\x1b]8;;https://hidden.example\x07visible\x1b]8;;\x1b\\',
+        '\x1bPterminal payload\x1b\\\x9b2K\x00\x08',
+        'https://url-user:url-password@registry.example/a?token=query-secret',
+        'Authorization: Bearer bearer-secret',
+        'Proxy-Authorization: Basic basic-secret',
+        '"authorization": "Custom header-secret",',
+        '//registry.example/:_authToken="config-secret"',
+        '_password=password-secret NODE_AUTH_TOKEN=env-secret',
+        `npm_${'n'.repeat(36)} ghp_${'g'.repeat(36)}`,
+      ].join('\n') };
+    } },
+  });
+  const result = await verifier.verify(workspaceProposal);
+  assert.equal(result.status, 'conflict');
+  for (const secret of secrets) assert.ok(!result.explanation.includes(secret), `leaked ${secret}`);
+  assert.ok(!result.explanation.includes(homedir()));
+  assert.doesNotMatch(result.explanation, /[\x00-\x1f\x7f-\x9f]|terminal payload|hidden\.example/);
+  assert.match(result.explanation, /<home>/);
+  assert.match(result.explanation, /<temporary-project>/);
+  assert.ok(result.explanation.length <= 540);
+
+  const boundary = workspaceVerifier({}, { runner: { async run() {
+    return { exitCode: 1, stdout: '', stderr: `${'x'.repeat(480)} npm_${'s'.repeat(36)} end` };
+  } } });
+  assert.doesNotMatch((await boundary.verify(workspaceProposal)).explanation, /npm_s|s{10}/);
+});
+
+test('pnpm diagnostics redact credential variants and unparseable URL userinfo', async () => {
+  for (const stderr of ['NPM_AUTH_TOKEN=opaqueSecret', 'npmAuthToken: opaqueSecret',
+    'YARN_NPM_AUTH_TOKEN=opaqueSecret', 'npmAuthIdent=opaqueSecret', 'NPM_CONFIG__AUTH=opaqueSecret',
+    '_auth="opaqueSecret"', 'Authorization = "Bearer opaqueSecret"', 'Bearer opaqueSecret',
+    '//url-user:opaqueSecret@registry.example', 'https://url-user:opaqueSecret@[invalid',
+    '\x1b[31m_authToken\x1b[0m=opaqueSecret']) {
+    const verifier = workspaceVerifier({}, { runner: { async run() {
+      return { exitCode: 1, stdout: '', stderr };
+    } } });
+    assert.doesNotMatch((await verifier.verify(workspaceProposal)).explanation, /opaqueSecret|url-user/, stderr);
+  }
 });
 
 test('non-peer process failures remain unknown rather than fabricated conflicts', async () => {
@@ -395,6 +444,43 @@ function workspaceVerifier(observed, options = {}) {
     },
     ...options,
   });
+}
+
+for (const method of ['verify', 'materializeResolvedGraph']) {
+  for (const cancelAt of ['before staging', 'first mkdir', 'first write', 'last write']) {
+    test(`${method} cancellation at ${cancelAt} stops staging and removes the temporary project`, async t => {
+      const abort = new AbortController();
+      const originals = { mkdtemp: io.mkdtemp, mkdir: io.mkdir, writeFile: io.writeFile };
+      let tempRoot;
+      let writes = 0;
+      let directories = 0;
+      let ran = false;
+      const verifier = workspaceVerifier({}, { runner: { async run() {
+        ran = true;
+        return { exitCode: 1, stdout: '', stderr: '' };
+      } } });
+      io.mkdtemp = async (...args) => { tempRoot = await originals.mkdtemp(...args); return tempRoot; };
+      io.mkdir = async (...args) => {
+        directories += 1;
+        await originals.mkdir(...args);
+        if (cancelAt === 'first mkdir') abort.abort();
+      };
+      io.writeFile = async (...args) => {
+        writes += 1;
+        await originals.writeFile(...args);
+        if (cancelAt === 'first write' || (cancelAt === 'last write' && writes === 5)) abort.abort();
+      };
+      syncBuiltinESMExports();
+      t.after(() => { Object.assign(io, originals); syncBuiltinESMExports(); });
+      if (cancelAt === 'before staging') abort.abort();
+      if (method === 'verify') await assert.rejects(verifier[method](workspaceProposal, abort.signal), { name: 'AbortError' });
+      else assert.deepEqual(await verifier[method](workspaceProposal, abort.signal), { ok: false });
+      assert.equal(ran, false, 'the runner was invoked after cancellation');
+      assert.equal(writes, cancelAt === 'last write' ? 5 : cancelAt === 'first write' ? 1 : 0);
+      if (cancelAt === 'before staging' || cancelAt === 'first mkdir') assert.ok(directories <= 1);
+      if (tempRoot !== undefined) await assert.rejects(io.stat(tempRoot), { code: 'ENOENT' });
+    });
+  }
 }
 
 test('a pnpm workspace member resolves inside a rebuilt workspace, so workspace: dependencies are found', async () => {

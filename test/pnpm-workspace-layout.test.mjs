@@ -34,7 +34,7 @@ const read = (root, extra = {}) => readPnpmWorkspaceLayout({ lockfileRoot: root,
 const paths = (layout) => layout.files.map((file) => file.path).sort();
 const fileText = (layout, name) => layout.files.find((file) => file.path === name)?.text;
 
-for (const operation of ['realpath', 'readdir', 'readFile', 'stat']) {
+for (const operation of ['realpath', 'readdir', 'open', 'stat']) {
   test(`workspace ${operation} preserves graceful and strict filesystem error modes`, async t => {
     const root = await workspace(t);
     const realRoot = await io.realpath(root);
@@ -42,7 +42,7 @@ for (const operation of ['realpath', 'readdir', 'readFile', 'stat']) {
     const original = io[operation];
     let error = Object.assign(new Error('unavailable'), { code: 'EMFILE' });
     // Fail within discovery too, so its outer cancellation catch cannot hide strict errors.
-    const target = operation === 'realpath' ? path.join(realRoot, 'packages') : operation === 'readFile'
+    const target = operation === 'realpath' ? path.join(realRoot, 'packages') : operation === 'open'
       ? path.join(realRoot, 'package.json') : operation === 'stat' ? path.join(realRoot, 'linked') : realRoot;
     io[operation] = async (file, ...args) => {
       if (file === target) throw error;
@@ -62,14 +62,21 @@ test('cancellation during the last workspace manifest read discards the layout',
   const root = await workspace(t, { dirs: ['apps/web'] });
   const realRoot = await io.realpath(root);
   const abort = new AbortController();
-  const original = io.readFile;
-  io.readFile = async (file, ...args) => {
-    const text = await original(file, ...args);
-    if (file === path.join(realRoot, 'package.json')) abort.abort();
-    return text;
+  const original = io.open;
+  io.open = async (file, ...args) => {
+    const handle = await original(file, ...args);
+    if (file === path.join(realRoot, 'package.json')) {
+      const read = handle.read.bind(handle);
+      handle.read = async (...args) => {
+        const result = await read(...args);
+        abort.abort();
+        return result;
+      };
+    }
+    return handle;
   };
   syncBuiltinESMExports();
-  t.after(() => { io.readFile = original; syncBuiltinESMExports(); });
+  t.after(() => { io.open = original; syncBuiltinESMExports(); });
   assert.equal(await read(root, { signal: abort.signal }), undefined);
 });
 
@@ -86,9 +93,86 @@ test('every manifest under the lock root is staged, hidden directories included'
   assert.ok(!paths(rootLayout).includes('package.json'));
 });
 
-test('a project without a workspace, or with root settings only, keeps the single-project layout', async (t) => {
+test('a project without a workspace, or with a settings-free workspace, keeps the single-project layout', async (t) => {
   assert.equal(await read(await workspace(t, { yaml: null }), { importerId: '.' }), undefined);
-  assert.equal(await read(await workspace(t, { yaml: 'onlyBuiltDependencies:\n  - esbuild\n' }), { importerId: '.' }), undefined);
+  for (const yaml of ['', '# empty workspace\n', '{}\n', 'packages: []\n', 'packages:\n']) {
+    assert.equal(await read(await workspace(t, { yaml }), { importerId: '.' }), undefined);
+  }
+});
+
+test('root-only workspace resolution settings are explicitly unavailable', async t => {
+  for (const setting of ['catalog:\n  react: 19.0.0', 'catalogs:\n  stable:\n    react: 19.0.0',
+    'overrides:\n  react: 19.0.0', 'patchedDependencies:\n  react@19.0.0: react.patch',
+    'onlyBuiltDependencies:\n  - esbuild', 'autoInstallPeers: false', 'someFutureSetting: true']) {
+    for (const packages of ['', 'packages: []\n']) {
+      const root = await workspace(t, { yaml: `${packages}${setting}\n`, dirs: [] });
+      assert.match((await read(root, { importerId: '.' }))?.unavailableReason ?? '', /workspace.*settings.*review does not stage/i, setting);
+    }
+  }
+});
+
+test('workspace byte budgets reject oversized files before reading their contents', async t => {
+  for (const relative of ['pnpm-workspace.yaml', 'package.json', 'apps/web/package.json', '.npmrc', 'apps/web/.npmrc']) {
+    const root = await workspace(t);
+    // Multi-byte content ensures the budget is in bytes, not JS string length.
+    await writeFile(path.join(root, relative), 'é'.repeat(524289));
+    const target = await io.realpath(path.join(root, relative));
+    const original = io.open;
+    let loaded = false;
+    io.open = async (file, ...args) => {
+      const handle = await original(file, ...args);
+      if (file === target) {
+        const read = handle.read.bind(handle);
+        handle.read = async (...args) => { loaded = true; return read(...args); };
+      }
+      return handle;
+    };
+    syncBuiltinESMExports();
+    let layout;
+    try { layout = await read(root); }
+    finally { io.open = original; syncBuiltinESMExports(); }
+    assert.equal(loaded, false, `${relative} was loaded before enforcing its byte limit`);
+    assert.match(layout.unavailableReason, /1 MiB/);
+    assert.ok(!paths(layout).includes(relative));
+  }
+});
+
+test('workspace aggregate byte budget stops manifest reads and directory discovery', async t => {
+  const dirs = Array.from({ length: 20 }, (_, index) => `unmatched/p${String(index).padStart(2, '0')}`);
+  const root = await workspace(t, { dirs });
+  const text = JSON.stringify({ name: 'large', padding: 'x'.repeat(1024 * 1024 - 100) });
+  for (const dir of dirs) await writeFile(path.join(root, dir, 'package.json'), text);
+  const originalOpen = io.open;
+  const originalReaddir = io.readdir;
+  const visited = [];
+  let bytesRead = 0;
+  io.open = async (...args) => {
+    const handle = await originalOpen(...args);
+    const read = handle.read.bind(handle);
+    handle.read = async (...args) => {
+      const result = await read(...args);
+      bytesRead += result.bytesRead;
+      return result;
+    };
+    return handle;
+  };
+  io.readdir = async (file, ...args) => {
+    visited.push(path.basename(file));
+    return originalReaddir(file, ...args);
+  };
+  syncBuiltinESMExports();
+  let layout;
+  try { layout = await read(root, { importerId: '.' }); }
+  finally { io.open = originalOpen; io.readdir = originalReaddir; syncBuiltinESMExports(); }
+  assert.ok(bytesRead <= 16 * 1024 * 1024, `loaded ${bytesRead} bytes`);
+  assert.match(layout.unavailableReason, /16 MiB/);
+  assert.ok(!visited.includes('p19'), 'discovery continued after the budget was exhausted');
+});
+
+test('the reviewed in-memory manifest also consumes the workspace byte budget', async t => {
+  const root = await workspace(t);
+  const manifestText = JSON.stringify({ padding: 'x'.repeat(1024 * 1024) });
+  assert.match((await read(root, { manifestText })).unavailableReason ?? '', /1 MiB/);
 });
 
 test('supported settings are staged verbatim and fingerprinted, anything else is unknown', async (t) => {
@@ -236,6 +320,26 @@ test('the reviewed member .npmrc is unknown and fingerprinted', async (t) => {
   assert.notEqual((await read(root)).fingerprint, first.fingerprint);
 });
 
+test('member .npmrc credentials never enter the user-facing reasons array', async t => {
+  const root = await workspace(t);
+  const secret = 'npm_memberPrivateToken';
+  await writeFile(path.join(root, 'apps/web/.npmrc'), `//registry.example/:_authToken=${secret}\n`);
+  const original = Array.prototype.push;
+  let queuedSecret = false;
+  Array.prototype.push = function (...values) {
+    if (values.some(value => typeof value === 'string' && value.includes(secret))) queuedSecret = true;
+    return original.apply(this, values);
+  };
+  let first;
+  try { first = await read(root); }
+  finally { Array.prototype.push = original; }
+  assert.equal(queuedSecret, false, 'credential contents were queued as user-facing reasons');
+  assert.equal(first.unavailableReason, 'apps/web/.npmrc sets project settings the review does not stage.');
+  assert.ok(!JSON.stringify(first).includes(secret));
+  await writeFile(path.join(root, 'apps/web/.npmrc'), '//registry.example/:_authToken=npm_changedToken\n');
+  assert.notEqual((await read(root)).fingerprint, first.fingerprint);
+});
+
 test('contained file symlinks, including a linked manifest, keep the layout available', async (t) => {
   const root = await workspace(t, { dirs: ['apps/web', 'shared-src'] });
   await writeFile(path.join(root, 'LICENSE'), 'MIT\n');
@@ -284,3 +388,183 @@ test('root resolutions and overrides that point outside the workspace are unknow
     }
   }
 });
+
+// Race both the legacy path stat and the checked handle stat, so these
+// regressions exercise the same interleaving before and after the fix.
+async function afterFileStat(t, target, change) {
+  const originals = { stat: io.stat, open: io.open };
+  let changed = false;
+  const mutate = async () => {
+    if (!changed) { changed = true; await change(); }
+  };
+  io.stat = async (file, ...args) => {
+    const info = await originals.stat(file, ...args);
+    if (file === target) await mutate();
+    return info;
+  };
+  io.open = async (file, ...args) => {
+    const handle = await originals.open(file, ...args);
+    if (file === target) {
+      const stat = handle.stat.bind(handle);
+      handle.stat = async (...args) => {
+        const info = await stat(...args);
+        await mutate();
+        return info;
+      };
+    }
+    return handle;
+  };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(io, originals); syncBuiltinESMExports(); });
+  return () => changed;
+}
+
+test('a manifest swapped for an outside symlink after its size check is never staged', async t => {
+  const root = await workspace(t);
+  const target = await io.realpath(path.join(root, 'packages/shared/package.json'));
+  const outside = await outsideDir(t);
+  const secret = JSON.stringify({ private: 'outside-secret', padding: 'x'.repeat(8 * 1024 * 1024) });
+  await writeFile(path.join(outside, 'secret.json'), secret);
+  const changed = await afterFileStat(t, target, async () => {
+    await rm(target);
+    await symlink(path.join(outside, 'secret.json'), target);
+  });
+  const layout = await read(root, { strict: true });
+  assert.ok(changed());
+  assert.ok(!JSON.stringify(layout).includes('outside-secret'));
+});
+
+test('a manifest growing after fstat is bounded to one MiB plus a sentinel byte', async t => {
+  const root = await workspace(t);
+  const target = await io.realpath(path.join(root, 'packages/shared/package.json'));
+  const changed = await afterFileStat(t, target, () => writeFile(target,
+    JSON.stringify({ padding: 'x'.repeat(8 * 1024 * 1024) })));
+  // Count both the old whole-file read and the new handle reads.
+  const originals = { readFile: io.readFile, open: io.open };
+  let bytes = 0;
+  let closed = false;
+  io.readFile = async (file, ...args) => {
+    const value = await originals.readFile(file, ...args);
+    if (file === target) bytes += Buffer.byteLength(value);
+    return value;
+  };
+  io.open = async (file, ...args) => {
+    const handle = await originals.open(file, ...args);
+    if (file === target) {
+      const read = handle.read.bind(handle);
+      const close = handle.close.bind(handle);
+      handle.read = async (...args) => {
+        const result = await read(...args);
+        bytes += result.bytesRead;
+        return result;
+      };
+      handle.close = async () => { closed = true; return close(); };
+    }
+    return handle;
+  };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(io, originals); syncBuiltinESMExports(); });
+  const layout = await read(root);
+  assert.ok(changed());
+  assert.ok(bytes <= 1024 * 1024 + 1, `read ${bytes} bytes`);
+  assert.match(layout.unavailableReason ?? '', /1 MiB/);
+  assert.ok(!paths(layout).includes('packages/shared/package.json'));
+  assert.ok(closed, 'the rejected file handle was not closed');
+});
+
+test('missing reviewed manifests are unavailable even with valid supplied text', async t => {
+  for (const [importerId, yaml] of [['.', YAML], ['apps/web', YAML], ['.', 'packages: []\n']]) {
+    const root = await workspace(t, { yaml });
+    await rm(path.join(root, importerId, 'package.json'));
+    const layout = await read(root, { importerId, manifestText: '{"name":"reviewed"}' });
+    assert.match(layout?.unavailableReason ?? '', /reviewed package.json.*(?:missing|could not be read)/i);
+  }
+});
+
+test('supplied reviewed text is size checked even when its disk manifest disappeared', async t => {
+  const root = await workspace(t);
+  await rm(path.join(root, 'apps/web/package.json'));
+  const layout = await read(root, { manifestText: JSON.stringify({ padding: 'é'.repeat(4 * 1024 * 1024) }) });
+  assert.match(layout.unavailableReason ?? '', /1 MiB/);
+});
+
+test('supplied reviewed text is validated even when discovery cannot find the manifest', async t => {
+  for (const manifestText of ['{invalid', '{"pnpm":{"patchedDependencies":{}}}',
+    '{"dependencies":{"x":"file:../../../private"}}']) {
+    const root = await workspace(t);
+    await rm(path.join(root, 'apps/web/package.json'));
+    const layout = await read(root, { manifestText });
+    assert.match(layout.unavailableReason ?? '', /reviewed package.json.*(?:parsed|pnpm|outside)/i);
+  }
+});
+
+test('aggregate accounting charges bytes read after a file shrinks, rather than its stale size', async t => {
+  const dirs = Array.from({ length: 20 }, (_, index) => `packages/p${index}`);
+  const root = await workspace(t, { dirs: ['apps/web', ...dirs] });
+  const originals = { stat: io.stat, open: io.open };
+  // Deterministically shrink each file immediately after its size is sampled.
+  const shrunk = new Set();
+  const shrink = async (file, info) => {
+    if (file.endsWith('/package.json') && !shrunk.has(file)) {
+      shrunk.add(file);
+      info.size = 1024 * 1024;
+      await writeFile(file, '{}');
+    }
+    return info;
+  };
+  io.stat = async (file, ...args) => shrink(file, await originals.stat(file, ...args));
+  io.open = async (file, ...args) => {
+    const handle = await originals.open(file, ...args);
+    const stat = handle.stat.bind(handle);
+    handle.stat = async (...args) => shrink(file, await stat(...args));
+    // Exercise partial reads as well as the final EOF.
+    const read = handle.read.bind(handle);
+    handle.read = (buffer, offset, length, position) => read(buffer, offset, Math.min(length, 3), position);
+    return handle;
+  };
+  syncBuiltinESMExports();
+  t.after(() => { Object.assign(io, originals); syncBuiltinESMExports(); });
+  const layout = await read(root);
+  assert.equal(layout.unavailableReason, undefined);
+  assert.equal(paths(layout).filter(file => file.endsWith('package.json')).length, dirs.length + 1);
+  assert.equal(fileText(layout, `${dirs[19]}/package.json`), '{}');
+});
+
+test('the supplied reviewed snapshot consumes aggregate budget even when discovery skips its directory', async t => {
+  const dirs = Array.from({ length: 16 }, (_, i) => `packages/p${String(i).padStart(2, '0')}`);
+  const root = await workspace(t, { dirs: ['node_modules/reviewed', ...dirs] });
+  const text = JSON.stringify({ padding: 'x'.repeat(1024 * 1024 - 100) });
+  for (const dir of dirs) await writeFile(path.join(root, dir, 'package.json'), text);
+  const layout = await read(root, { importerId: 'node_modules/reviewed', manifestText: text });
+  assert.match(layout.unavailableReason ?? '', /16 MiB/);
+  assert.ok(!paths(layout).includes(`${dirs[15]}/package.json`));
+});
+
+for (const operation of ['stat', 'read']) {
+  test(`workspace handle ${operation} closes on failure and preserves strict error policy`, async t => {
+    const root = await workspace(t);
+    const target = await io.realpath(path.join(root, 'packages/shared/package.json'));
+    const original = io.open;
+    let opened = 0;
+    let closed = 0;
+    let error = Object.assign(new Error('unavailable'), { code: 'EMFILE' });
+    io.open = async (file, ...args) => {
+      const handle = await original(file, ...args);
+      if (file === target) {
+        opened++;
+        handle[operation] = async () => { throw error; };
+        const close = handle.close.bind(handle);
+        handle.close = async () => { closed++; return close(); };
+      }
+      return handle;
+    };
+    syncBuiltinESMExports();
+    t.after(() => { io.open = original; syncBuiltinESMExports(); });
+    assert.match((await read(root)).unavailableReason, /could not be read/);
+    await assert.rejects(read(root, { strict: true }), cause => cause === error);
+    error = new TypeError('programming failure');
+    for (const strict of [false, true]) await assert.rejects(read(root, { strict }), cause => cause === error);
+    assert.equal(opened, 4);
+    assert.equal(closed, opened);
+  });
+}

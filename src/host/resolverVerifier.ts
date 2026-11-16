@@ -30,6 +30,8 @@ import { buildStagedManifest } from '../core/upgrade/stagedManifest.js';
 import type { DependencyGraph, ResolvedRegistry } from '../core/types.js';
 import { stripUrlCredentials } from '../core/cache/keys.js';
 import { NodePackageManagerProcessRunner } from './packageManagerProcessRunner.js';
+import { throwIfAborted } from './npmResolverAsync.js';
+import { sanitizeProcessDiagnostic } from './sanitizeProcessDiagnostic.js';
 
 export interface PackageManagerInvocation {
   executable: string;
@@ -248,8 +250,7 @@ export function buildTransitiveRemediationMaterializationArgs(
 }
 
 function diagnostic(result: ResolverProcessResult, tempRoot: string): string {
-  const combined = `${result.stderr}\n${result.stdout}`
-    .replaceAll(tempRoot, '<temporary-project>')
+  const combined = sanitizeProcessDiagnostic(`${result.stderr}\n${result.stdout}`, tempRoot)
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -318,24 +319,31 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
    * lockfile stays at the temporary root and the manifest goes to its
    * importer path, beside the other workspace manifests.
    */
-  private async stageProject(tempRoot: string, manifestText: string): Promise<string> {
+  private async stageProject(tempRoot: string, manifestText: string, signal?: AbortSignal): Promise<string> {
+    throwIfAborted(signal);
     const workspace = this.options.workspace;
     let projectDir = tempRoot;
     if (workspace !== undefined) {
       for (const file of workspace.files) {
+        throwIfAborted(signal);
         const target = isolatedRelativePath(tempRoot, file.path);
         await mkdir(path.dirname(target), { recursive: true });
+        throwIfAborted(signal);
         await writeFile(target, file.text, 'utf8');
       }
       if (workspace.importerId !== '.') {
+        throwIfAborted(signal);
         projectDir = isolatedRelativePath(tempRoot, workspace.importerId);
         await mkdir(projectDir, { recursive: true });
       }
     }
+    throwIfAborted(signal);
     await writeFile(path.join(projectDir, 'package.json'), manifestText, 'utf8');
     if (this.options.lockfile !== undefined) {
+      throwIfAborted(signal);
       await writeFile(path.join(tempRoot, this.options.lockfile.name), this.options.lockfile.text, 'utf8');
     }
+    throwIfAborted(signal);
     return projectDir;
   }
 
@@ -371,7 +379,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     );
     const tempRoot = await mkdtemp(path.join(tmpdir(), 'packageawy-preflight-'));
     try {
-      const projectDir = await this.stageProject(tempRoot, stagedManifest);
+      const projectDir = await this.stageProject(tempRoot, stagedManifest, signal);
       // A workspace resolves every member, so it keeps the lockfile and skips a full fresh install.
       const writesLockfile = this.options.retainResolvedGraph === true || this.options.workspace !== undefined;
       const result = await this.runner.run(
@@ -468,7 +476,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
       : this.options.lockfile?.name ?? 'package-lock.json';
     const tempRoot = await mkdtemp(path.join(tmpdir(), 'packageawy-security-outcome-'));
     try {
-      const projectDir = await this.stageProject(tempRoot, stagedManifest);
+      const projectDir = await this.stageProject(tempRoot, stagedManifest, signal);
       const result = await this.runner.run(
         this.options.invocation,
         buildLockfileMaterializationArgs(

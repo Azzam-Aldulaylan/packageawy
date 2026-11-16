@@ -12,7 +12,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, readdir, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { load as loadYaml, YAMLException } from 'js-yaml';
@@ -32,6 +33,13 @@ const NPMRC = '.npmrc';
 const MAX_DEPTH = 16;
 const MAX_DIRECTORY_READS = 5000;
 const MAX_MANIFESTS = 1000;
+const MAX_FILE_BYTES = 1024 * 1024;
+const MAX_TOTAL_BYTES = 16 * MAX_FILE_BYTES;
+
+interface ReadBudget {
+  bytes: number;
+  exhausted: boolean;
+}
 
 /** Manifest `pnpm` field keys that name no files. */
 const MANIFEST_SETTINGS = [
@@ -168,21 +176,24 @@ function manifestProblem(text: string, baseDir: string, relative: string): strin
 }
 
 /**
- * Collects lock-root-relative directories that hold a package.json. Hidden
+ * Visits lock-root-relative directories that hold a package.json. Hidden
  * directories are included, node_modules and .git are not. Symlinks are
  * followed only inside the workspace.
  */
-async function collectManifestDirs(
+async function visitManifestDirs(
   realRoot: string,
   reasons: string[],
   strict: boolean,
+  budget: ReadBudget,
+  onManifest: (relative: string) => Promise<void>,
   signal?: AbortSignal
-): Promise<string[]> {
-  const dirs: string[] = [];
+): Promise<void> {
+  let manifests = 0;
   const seen = new Set<string>();
   let reads = 0;
   const visit = async (relative: string, depth: number): Promise<void> => {
     throwIfAborted(signal);
+    if (budget.exhausted) return;
     let real: string;
     let entries;
     try {
@@ -205,11 +216,12 @@ async function collectManifestDirs(
       }
     }
     if (entries.some((entry) => entry.name === 'package.json' && !entry.isDirectory())) {
-      if (dirs.length >= MAX_MANIFESTS) return void reasons.push('The workspace has more packages than the review can stage.');
-      dirs.push(relative === '' ? '.' : relative);
+      if (++manifests > MAX_MANIFESTS) return void reasons.push('The workspace has more packages than the review can stage.');
+      await onManifest(relative === '' ? '.' : relative);
     }
     for (const entry of entries) {
       throwIfAborted(signal);
+      if (budget.exhausted) return;
       if (entry.name === 'node_modules' || entry.name === '.git') continue;
       // A symlink is walked only when it points at a directory. File links do not shape membership.
       const isDirectory = entry.isDirectory() || (entry.isSymbolicLink() &&
@@ -223,7 +235,6 @@ async function collectManifestDirs(
     }
   };
   await visit('', 0);
-  return dirs;
 }
 
 /** Keeps supported settings verbatim. Registry and credential lines are left out, since the host passes registries itself. */
@@ -240,11 +251,44 @@ function stagedNpmrc(text: string, reasons: string[]): string | undefined {
   return kept.length === 0 ? undefined : `${kept.join('\n')}\n`;
 }
 
-async function readContained(realRoot: string, relative: string, reasons: string[], strict: boolean): Promise<string | undefined> {
+async function readContained(
+  realRoot: string,
+  relative: string,
+  reasons: string[],
+  strict: boolean,
+  budget: ReadBudget
+): Promise<string | undefined> {
+  if (budget.exhausted) return undefined;
   try {
     const real = await realpath(path.join(realRoot, ...relative.split('/')));
     if (!isInside(realRoot, real)) return void reasons.push(`${relative} resolves outside the workspace.`);
-    return await readFile(real, 'utf8');
+    // Use the same handle for the size check and every bounded read. Refuse
+    // a final-component link introduced after realpath on supporting platforms;
+    // NONBLOCK lets us reject a substituted FIFO without waiting for a writer.
+    const handle = await open(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+      const info = await handle.stat();
+      const current = await realpath(real);
+      const currentInfo = await stat(current);
+      if (!info.isFile() || !isInside(realRoot, current) || info.dev !== currentInfo.dev || info.ino !== currentInfo.ino) {
+        return void reasons.push(`${relative} is not a regular file inside the workspace.`);
+      }
+      if (!withinBudget(info.size, relative, reasons, budget)) return undefined;
+      // Include one sentinel byte to detect growth after fstat, without ever
+      // loading an unbounded file or exceeding the remaining budget by more than one.
+      const buffer = Buffer.alloc(Math.min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - budget.bytes) + 1);
+      let bytes = 0;
+      while (bytes < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, bytes, buffer.length - bytes, null);
+        budget.bytes += bytesRead;
+        bytes += bytesRead;
+        if (bytesRead === 0) break;
+      }
+      if (!withinBudget(bytes, relative, reasons, budget, true)) return undefined;
+      return buffer.toString('utf8', 0, bytes);
+    } finally {
+      await handle.close();
+    }
   } catch (cause) {
     rethrowWorkspaceError(cause, strict);
     const code = (cause as { code?: unknown } | null)?.code;
@@ -253,9 +297,19 @@ async function readContained(realRoot: string, relative: string, reasons: string
   }
 }
 
+/** Check proposed bytes before reading, or bytes already charged by a bounded read. */
+function withinBudget(size: number, relative: string, reasons: string[], budget: ReadBudget, charged = false): boolean {
+  if (size <= MAX_FILE_BYTES && budget.bytes + (charged ? 0 : size) <= MAX_TOTAL_BYTES) return true;
+  budget.exhausted = true;
+  reasons.push(size > MAX_FILE_BYTES
+    ? `${relative} exceeds the review's 1 MiB file limit.`
+    : 'The workspace exceeds the review\'s 16 MiB total file limit.');
+  return false;
+}
+
 /**
- * Returns undefined when the lock root has no pnpm-workspace.yaml, or only
- * settings for a single project at its root, so the resolver keeps its
+ * Returns undefined when the lock root has no pnpm-workspace.yaml, or a
+ * settings-free workspace file at its root, so the resolver keeps its
  * single-project layout. Also undefined when discovery is cancelled.
  */
 export async function readPnpmWorkspaceLayout(input: {
@@ -277,10 +331,28 @@ export async function readPnpmWorkspaceLayout(input: {
     return undefined;
   }
   const reasons: string[] = [];
-  const workspaceText = await readContained(realRoot, WORKSPACE_MANIFEST, reasons, strict);
+  const budget: ReadBudget = { bytes: 0, exhausted: false };
+  const workspaceText = await readContained(realRoot, WORKSPACE_MANIFEST, reasons, strict, budget);
   if (workspaceText === undefined && reasons.length === 0) return undefined;
   if (input.importerId !== '.' && (input.importerId.includes('\\') || input.importerId.split('/').some(
     (segment) => segment === '' || segment === '.' || segment === '..'))) return undefined;
+  // The supplied snapshot is a separate input: discovery may never find its
+  // on-disk counterpart, and neither validation nor its budget can depend on it.
+  if (input.manifestText !== undefined) {
+    const bytes = Buffer.byteLength(input.manifestText);
+    if (withinBudget(bytes, 'The reviewed package.json', reasons, budget)) {
+      budget.bytes += bytes;
+      const problem = manifestProblem(input.manifestText, input.importerId, 'The reviewed package.json');
+      if (problem !== undefined) reasons.push(problem);
+    }
+  }
+  const reviewedPath = input.importerId === '.' ? 'package.json' : `${input.importerId}/package.json`;
+  const reviewedText = await readContained(realRoot, reviewedPath, reasons, strict, budget);
+  if (reviewedText === undefined) reasons.push('The reviewed package.json is missing or could not be read.');
+  else if (input.manifestText === undefined) {
+    const problem = manifestProblem(reviewedText, input.importerId, 'The reviewed package.json');
+    if (problem !== undefined) reasons.push(problem);
+  }
   let settings: Record<string, unknown> = {};
   try {
     settings = asRecord(loadYaml(workspaceText ?? '')) ?? {};
@@ -288,11 +360,15 @@ export async function readPnpmWorkspaceLayout(input: {
     if (!(cause instanceof YAMLException)) throw cause;
     reasons.push('pnpm-workspace.yaml could not be parsed.');
   }
-  if (!Array.isArray(settings['packages']) && input.importerId === '.' && reasons.length === 0) return undefined;
+  const patterns = Array.isArray(settings['packages']) ? settings['packages'] : [];
+  if (patterns.length === 0 && input.importerId === '.' && reasons.length === 0) {
+    if (Object.keys(settings).every(key => key === 'packages') &&
+        (settings['packages'] == null || Array.isArray(settings['packages']))) return undefined;
+    reasons.push('The root-only workspace has settings the review does not stage.');
+  }
   for (const key of Object.keys(settings)) {
     if (!WORKSPACE_SETTINGS.has(key)) reasons.push(`pnpm-workspace.yaml sets ${key}, which the review does not stage.`);
   }
-  const patterns = Array.isArray(settings['packages']) ? settings['packages'] : [];
   if (patterns.some((pattern) => typeof pattern !== 'string' || !isContainedPattern(pattern.replace(/^!/, '')))) {
     reasons.push('A workspace package pattern points outside the workspace or uses syntax the review does not interpret.');
   }
@@ -306,42 +382,35 @@ export async function readPnpmWorkspaceLayout(input: {
   const files: { path: string; text: string }[] = [];
   if (workspaceText !== undefined) files.push({ path: WORKSPACE_MANIFEST, text: workspaceText });
   for (const pnpmfile of ['.pnpmfile.cjs', '.pnpmfile.mjs']) {
-    if (await readContained(realRoot, pnpmfile, reasons, strict) !== undefined) {
+    if (await readContained(realRoot, pnpmfile, reasons, strict, budget) !== undefined) {
       reasons.push(`The workspace has ${pnpmfile}, whose hooks only a real install runs.`);
     }
   }
   // pnpm also reads the .npmrc of the project it runs in, which the staged copy runs from the root instead.
-  const memberNpmrc = input.importerId === '.' ? undefined : await readContained(realRoot, `${input.importerId}/${NPMRC}`, reasons, strict);
-  if (memberNpmrc !== undefined) reasons.push(`${input.importerId}/${NPMRC} sets project settings the review does not stage.`, memberNpmrc);
-  const npmrc = await readContained(realRoot, NPMRC, reasons, strict);
+  const memberNpmrc = input.importerId === '.' ? undefined : await readContained(realRoot, `${input.importerId}/${NPMRC}`, reasons, strict, budget);
+  if (memberNpmrc !== undefined) reasons.push(`${input.importerId}/${NPMRC} sets project settings the review does not stage.`);
+  const npmrc = await readContained(realRoot, NPMRC, reasons, strict, budget);
   const npmrcText = npmrc === undefined ? undefined : stagedNpmrc(npmrc, reasons);
   if (npmrcText !== undefined) files.push({ path: NPMRC, text: npmrcText });
-  if (input.manifestText !== undefined) {
-    const problem = manifestProblem(input.manifestText, input.importerId, 'The reviewed package.json');
-    if (problem !== undefined) reasons.push(problem);
-  }
-  let dirs: string[];
   try {
-    dirs = await collectManifestDirs(realRoot, reasons, strict, input.signal);
+    await visitManifestDirs(realRoot, reasons, strict, budget, async dir => {
+      if (dir === input.importerId) return;
+      const relative = dir === '.' ? 'package.json' : `${dir}/package.json`;
+      const text = await readContained(realRoot, relative, reasons, strict, budget);
+      if (text === undefined) return;
+      const problem = manifestProblem(text, dir, relative);
+      if (problem !== undefined) reasons.push(problem);
+      files.push({ path: relative, text });
+    }, input.signal);
   } catch (cause) {
     if (input.signal?.aborted) return undefined;
     throw cause;
-  }
-  for (const dir of dirs) {
-    if (input.signal?.aborted) return undefined;
-    if (dir === input.importerId) continue;
-    const relative = dir === '.' ? 'package.json' : `${dir}/package.json`;
-    const text = await readContained(realRoot, relative, reasons, strict);
-    if (text === undefined) continue;
-    const problem = manifestProblem(text, dir, relative);
-    if (problem !== undefined) reasons.push(problem);
-    files.push({ path: relative, text });
   }
   if (input.signal?.aborted) return undefined;
 
   const hash = createHash('sha256');
   // Availability and the whole .npmrc count too, so any change there stales a review.
-  for (const part of [...reasons, npmrc ?? '']) hash.update(part).update('\u0000');
+  for (const part of [...reasons, npmrc ?? '', memberNpmrc ?? '']) hash.update(part).update('\u0000');
   for (const file of [...files].sort((left, right) => left.path.localeCompare(right.path))) {
     hash.update(file.path).update('\u0000').update(file.text).update('\u0000');
   }
