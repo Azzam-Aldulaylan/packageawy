@@ -505,7 +505,7 @@ test('aggregate accounting charges bytes read after a file shrinks, rather than 
   // Deterministically shrink each file immediately after its size is sampled.
   const shrunk = new Set();
   const shrink = async (file, info) => {
-    if (file.endsWith('/package.json') && !shrunk.has(file)) {
+    if (/[\\/]package\.json$/.test(String(file)) && !shrunk.has(file)) {
       shrunk.add(file);
       info.size = 1024 * 1024;
       await writeFile(file, '{}');
