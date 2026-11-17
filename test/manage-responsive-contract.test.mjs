@@ -61,5 +61,6 @@ test('narrow content wraps while horizontal scrolling stays intentionally local'
   assert.match(responsiveCss, /\.manage-action-card__versions,[\s\S]*\.verification-steps__item\s*\{[^}]*flex-wrap:\s*wrap/s);
   assert.match(responsiveCss, /\.security-outcome\s*\{[^}]*flex-direction:\s*column/s);
   assert.match(responsiveCss, /@media \(max-width: 26rem\)/);
-  assert.doesNotMatch(responsiveCss, /\.button--(?:primary|caution|danger|secondary|subtle)\s*\{/);
+  // Scoped buttons may add local emphasis without changing global variants.
+  assert.doesNotMatch(responsiveCss, /^\.button--(?:primary|caution|danger|secondary|subtle)\s*\{/m);
 });

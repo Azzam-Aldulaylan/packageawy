@@ -13,7 +13,7 @@ for (const fault of ['EIO', 'TypeError']) test(`recovery final reinstall journal
   const project = await makeProject(t);
   const f = makeCoordinator(project, { mutationRoot: () => project.root });
   await f.coordinator.handleConfirmRemove({ analysisId: await review(f) });
-  await f.coordinator.recovery.inspect();
+  await f.coordinator.handleRestoreSmartCleanup({ analysisId: f.coordinator.cleanupBackups.keys().next().value });
   await f.coordinator.recovery.start(true, f.messages.at(-1).recovery.claim);
   const session = f.coordinator.recovery.session;
   const journal = session.inspection.journal;

@@ -49,8 +49,9 @@ export function failedRequestSettlement(
     case 'smart-cleanup-remove':
       return { status: 'remove-error', package: message.packages[0] ?? 'Smart Cleanup', error: failed };
     case 'confirm-remove':
-    case 'restore-smart-cleanup':
       return { status: 'remove-error', package: changeTarget ?? 'unknown', error: changeFailed };
+    case 'restore-smart-cleanup':
+      return { status: 'remove-error', package: changeTarget ?? 'unknown', undoId: message.analysisId, error: changeFailed };
     case 'analyze-remediation':
       return { status: 'remediation-error', package: message.package, error: failed };
     case 'confirm-remediation':

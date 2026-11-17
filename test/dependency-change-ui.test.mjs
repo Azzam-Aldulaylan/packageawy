@@ -99,7 +99,7 @@ for (const mode of ['missing-result', 'launch-rejection', 'platform-disposal', '
   app.receive({ status: 'dependency-task', state: 'still-running' });
   app.receive(error);
   let html = app.html();
-  assert.match(html, /An earlier change may still be running. Dependency changes are blocked/);
+  assert.match(html, /An earlier change may still be running. Dependency changes are paused until it is resolved/);
   assert.equal((html.match(/Start recovery/g) ?? []).length, 1);
   assert.doesNotMatch(html, /Couldn't remove|Still running\./);
   // Arrival of the detailed journal keeps the choice on screen.
@@ -135,7 +135,7 @@ const props = { row: { name: 'react', current: '18.2.0', range: '^18', dev: fals
 test('Upgrade screen renders the shared blocked recovery action and long-running explanation', () => {
   for (const blocked of [false, true]) {
     const html = renderToStaticMarkup(createElement(DependencyChangeContext.Provider, { value: { task: 'still-running', blocked, openRecovery: noop } }, createElement(ManageDependencyModal, props)));
-    assert.equal((html.match(blocked ? /Dependency changes are blocked/g : /Still running\./g) ?? []).length, 1);
+    assert.equal((html.match(blocked ? /Dependency changes are paused until it is resolved/g : /Still running\./g) ?? []).length, 1);
     assert.equal(html.includes('Start recovery'), blocked);
   }
   assert.equal(renderToStaticMarkup(createElement(DependencyChangeContext.Provider, { value: { task: 'idle', blocked: false, openRecovery: noop } }, createElement(DependencyChangeStatus))), '');
@@ -145,17 +145,17 @@ for (const status of ['upgrade-error', 'remove-error', 'remediation-error']) tes
   const app = appFixture();
   app.receive({ status, package: 'react', error: { code: 'OUTCOME_UNKNOWN', message: RECOVERY_MESSAGES.blocked } });
   const html = app.html();
-  assert.equal((html.match(/Dependency changes are blocked/g) ?? []).length, 1);
+  assert.equal((html.match(/Dependency changes are paused until it is resolved/g) ?? []).length, 1);
   assert.doesNotMatch(html, /Couldn't upgrade|Couldn't remove|Couldn't check/);
 });
 
 test('saved completed recovery and discovery failures retain their specific explanation', () => {
   const app = appFixture();
   app.receive({ ...emptyRecovery('completed'), recovery: { ...emptyRecovery('completed').recovery, message: RECOVERY_MESSAGES.completed } });
-  assert.match(app.html(), /Recovery completed. Review the result before removing saved files/);
+  assert.match(app.html(), /File choices are complete. Review the result before deleting the backup/);
   app.receive({ ...emptyRecovery('discovery-error'), recovery: { ...emptyRecovery('discovery-error').recovery, message: RECOVERY_MESSAGES.discoveryFailed } });
   const html = app.html();
-  assert.match(html, /Could not check for saved recovery files/);
+  assert.match(html, /Could not check for backups/);
   assert.equal((html.match(/>Retry discovery</g) ?? []).length, 1);
   assert.doesNotMatch(html, /Start recovery/);
 });
@@ -314,7 +314,7 @@ for (const correlation of ['requestId', 'analysisId']) for (const lifecycle of [
   assert.equal(tree.props.value.blocked, true);
   assert.equal(tree.props.value.task, 'idle');
   const html = app.html();
-  assert.equal((html.match(/Dependency changes are blocked/g) ?? []).length, 1);
+  assert.equal((html.match(/Dependency changes are paused until it is resolved/g) ?? []).length, 1);
   assert.equal((html.match(/Start recovery/g) ?? []).length, 1);
   assert.doesNotMatch(html, /Still running\.|Old failure|Couldn(?:'|&#x27;)t upgrade/);
   if (newerUpgrade !== undefined) {
@@ -398,7 +398,7 @@ test('Smart Cleanup open with an unknown outcome shows only the shared blocked p
   assert.equal(workspace.props.state.restore, null);
   assert.equal(workspace.props.state.execution, null);
   const html = app.html();
-  assert.equal((html.match(/Dependency changes are blocked/g) ?? []).length, 1);
+  assert.equal((html.match(/Dependency changes are paused until it is resolved/g) ?? []).length, 1);
   assert.equal((html.match(/Start recovery/g) ?? []).length, 1);
   assert.doesNotMatch(html, /rollback|restor|\d+ (?:cleanup )?actions?|What changed|Failed actions|Removed dependencies/i);
   app.tree().props.value.openRecovery();
@@ -450,4 +450,14 @@ test('Smart Cleanup execution has no progress bar, frozen count or Cancel and re
   assert.doesNotMatch(html, /<progress|role="progressbar"|smart-cleanup-execution__progress|actions completed|Cancel and restore/);
   assert.match(html, /Applying cleanup/);
   assert.match(html, /Close is unavailable while project files are changing/);
+});
+
+test('a successful undo backup neither blocks the dashboard nor opens recovery automatically', () => {
+  const app = appFixture();
+  app.receive(emptyRecovery('undo-available'));
+  assert.equal(app.tree().props.value.blocked, false);
+  assert.doesNotMatch(app.html(), /Start recovery|Dependency recovery/);
+  app.receive({ ...emptyRecovery('undo-available'), recovery: { ...emptyRecovery('undo-available').recovery, undoReview: true } });
+  assert.match(app.html(), /Undo cleanup/);
+  assert.match(app.html(), /Restoring puts package.json and the lockfile back. It does not undo script side effects/);
 });

@@ -193,8 +193,8 @@ test('security and completion copy make no result claim before post-cleanup veri
   assert.match(adapter, /relatedUpgrades/);
   assert.match(adapter, /directRoots/);
   assert.doesNotMatch(workspace, /expectedResolved/);
-  assert.match(workspace, /const verified = phase === 'complete' && result\.verification === 'passed'/);
-  assert.match(workspace, /Cleanup applied without verified checks/);
+  assert.match(workspace, /const verified = !blocked && !resolved && phase === 'complete' && result\.verification === 'passed'/);
+  assert.match(workspace, /Cleanup done/);
   assert.match(styles, /\.smart-cleanup-results__headline\[data-tone='verified'\]/);
   assert.match(workspace, /Removed dependencies/);
   assert.match(styles, /\.smart-cleanup-metric__bars/);
@@ -216,7 +216,7 @@ test('cleanup results use one outcome-led report with real changes and security 
 test('unchanged result metrics show one neutral current value and one neutral bar', () => {
   assert.match(workspace, /const changed = change !== 0/);
   assert.match(workspace, /\{changed \? <span>\{metric\.before\}<\/span> : null\}/);
-  assert.match(workspace, /\{changed \? <span aria-hidden="true">→<\/span> : null\}/);
+  assert.match(workspace, /\{changed \? <span>to<\/span> : null\}/);
   assert.match(workspace, /\{changed \? <span style=\{\{ width:/);
   assert.match(styles, /\.smart-cleanup-metric\[data-change='unchanged'\] dt,[\s\S]*?color:\s*var\(--smart-cleanup-muted\)/);
   assert.match(styles, /\.smart-cleanup-metric\[data-change='unchanged'\] \.smart-cleanup-metric__bars strong[\s\S]*?var\(--vscode-descriptionForeground\)/);
@@ -253,4 +253,9 @@ test('the dashboard never shows a likely-unused count before the usage scan has 
   assert.match(filter, /'Likely unused \(checking…\)'/);
   assert.match(app, /likelyUnusedCount=\{cleanupAnalyzed\s+\? findingCounts\['likely-unused'\]\s+: cleanupChecking \? 'checking' : null\}/);
   assert.match(app, /cleanupChecking=\{cleanupState\.phase === 'analyzing'\}/);
+});
+
+test('the selected cleanup description sits under its heading', () => {
+  assert.match(workspace, /<h3 id="smart-cleanup-selection-title">Selected cleanup<\/h3>\s*<p>These packages will be removed\.<\/p>/);
+  assert.equal((workspace.match(/These packages will be removed\./g) ?? []).length, 1);
 });

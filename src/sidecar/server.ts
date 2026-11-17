@@ -71,7 +71,15 @@ export function startSidecar(options: SidecarOptions): JsonRpcConnection {
         if (platform === undefined) state = 'unknown';
         else {
           const { findRecoveryTargets } = await import('../host/recovery/targetDiscovery.js');
-          if ((await findRecoveryTargets(platform)).length > 0) state = 'unknown';
+          const { inspectRecovery } = await import('../host/recovery/inspection.js');
+          for (const target of await findRecoveryTargets(platform)) {
+            // Only a fully validated, unclaimed success can survive restart
+            // without blocking. Interrupted or claimed backups stay protected.
+            if ((await inspectRecovery(target)).view.state !== 'undo-available') {
+              state = 'unknown';
+              break;
+            }
+          }
         }
       } catch { state = 'unknown'; }
     }

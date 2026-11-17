@@ -52,6 +52,7 @@ import type {
   SmartCleanupExecutionCapability,
   UpgradeAnalysisPresentation,
   UpgradeResultPresentation,
+  UndoBackupEntry,
 } from '../../src/host/webviewProtocol.js';
 import { readHostMessage, unhandledHostMessage, UNHANDLED_HOST_MESSAGE_TEXT } from './hostMessage.js';
 import { sameUpdateAdvisoryContext } from '../../src/host/updateAdvisoryState.js';
@@ -60,7 +61,8 @@ import type { UpgradeAnalysisSections } from '../../src/host/upgradeAnalysisSect
 import { applyPartialSection, markPhaseLoading, WAITING_UPGRADE_ANALYSIS_SECTIONS } from '../../src/host/upgradeAnalysisSections.js';
 import { DependencyChangeContext, DependencyChangeStatus } from './components/DependencyChangeStatus.js';
 import { dependencyChangesBlocked, isUnknownChangeMessage } from '../../src/host/dependencyChangePresentation.js';
-import { RECOVERY_MESSAGES } from '../../src/host/recoveryCopy.js';
+import { keptChangeLabel, undoLabel, RECOVERY_MESSAGES } from '../../src/host/recoveryCopy.js';
+import { UndoBackupContext, UndoChangeFeedback } from './components/UndoChangeButton.js';
 import { RecoveryScreen } from './components/RecoveryScreen.js';
 import { DashboardToolbar } from './components/DashboardToolbar.js';
 import { DependencyEmptyState } from './components/DependencyEmptyState.js';
@@ -88,7 +90,7 @@ import {
 import type { VerificationOptInSelection, VerificationOptInStore } from './components/VerificationSuggestions.js';
 import type { UpgradeTargetLoadState } from './components/UpgradeTargetSelector.js';
 import type { UsageRequestState } from './components/UsageReferencesPanel.js';
-import { IconBrand, IconBroom, IconListChecks, IconRefresh, IconSliders } from './icons.js';
+import { IconBrand, IconBroom, IconHistory, IconListChecks, IconRefresh, IconSliders } from './icons.js';
 import type { RemovalImpactState } from './removalImpactState.js';
 import { remediationPlanFromState } from './transitiveRemediationState.js';
 import type { TransitiveFixUiState } from './transitiveRemediationState.js';
@@ -172,7 +174,34 @@ export function App(): ReactElement {
   const [message, setMessage] = useState<HostToWebviewMessage | undefined>(undefined);
   const [recovery, setRecovery] = useState<RecoveryPresentation | null>(null);
   const [recoveryEntries, setRecoveryEntries] = useState<Array<{ id: string; label: string }>>([]);
+  const [cleanupBackups, setCleanupBackups] = useState<UndoBackupEntry[]>([]);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryNotice, setRecoveryNotice] = useState('');
+  const recoveryVisible = recoveryOpen && recovery !== null && recovery.state !== 'none';
+  const wasRecoveryVisible = useRef(false);
+  const undoFocus = useRef<{ id: string; location: string } | null>(null);
+  const [openingUndo, setOpeningUndo] = useState<string | null>(null);
+  const [undoError, setUndoError] = useState<{ id: string; message: string } | null>(null);
+  const openingUndoRef = useRef<string | null>(null);
+  const dashboardHeading = useRef<HTMLHeadingElement | null>(null);
+  useEffect(() => {
+    const returning = wasRecoveryVisible.current && !recoveryVisible;
+    wasRecoveryVisible.current = recoveryVisible;
+    if (!returning || undoFocus.current === null) return;
+    // Recovery replaces the whole dashboard. Wait for its controls and any
+    // result dialog to remount before restoring focus to the current node.
+    const focus = undoFocus.current;
+    undoFocus.current = null;
+    const frame = requestAnimationFrame(() => {
+      const buttons = [...(document.querySelectorAll?.<HTMLButtonElement>('[data-undo-id]') ?? [])];
+      const matching = buttons.filter(button => button.dataset.undoId === focus.id && !button.disabled);
+      const opener = matching.find(button => button.dataset.undoLocation === focus.location) ?? matching[0];
+      const heading = document.querySelector?.<HTMLElement>('[role="dialog"] h1, [role="dialog"] h2, [role="dialog"] h3') ?? dashboardHeading.current;
+      if (opener !== undefined) opener.focus();
+      else if (heading !== null) { heading.tabIndex = -1; heading.focus(); }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [recoveryVisible]);
   const [dependencyTask, setDependencyTask] = useState<DependencyTaskState>('idle');
   const [protocolMismatch, setProtocolMismatch] = useState(false);
   const protocolMismatchRef = useRef(false);
@@ -498,15 +527,48 @@ export function App(): ReactElement {
       switch (incoming.status) {
         case 'dependency-task': { setDependencyTask(incoming.state); return; }
         case 'recovery-entries': { setRecoveryEntries(incoming.entries); return; }
+        case 'smart-cleanup-backups': { setCleanupBackups(incoming.entries); return; }
+        case 'smart-cleanup-backup': {
+          if (incoming.analysisId === openingUndoRef.current && incoming.outcome === 'unavailable') {
+            openingUndoRef.current = null;
+            setOpeningUndo(null);
+          }
+          if (incoming.outcome === 'changed') {
+            // A restore can partially write before it stops. Drop the original
+            // result immediately rather than presenting its old success again.
+            if (upgradeResultRef.current?.undoId === incoming.analysisId) {
+              upgradeResultRef.current = null;
+              setUpgradeResult(null);
+              upgradeEnrichmentRef.current = null;
+              setUpgradeEnrichment(null);
+            }
+            const removal = manageRemovalRef.current;
+            if (removal?.phase === 'result' && removal.result?.undoId === incoming.analysisId) setManageRemoval(null);
+            setRemediationByPackage(previous => new Map([...previous].filter(([, state]) =>
+              state.phase !== 'result' || state.result.undoId !== incoming.analysisId)));
+          }
+          dispatchSmartCleanup({ type: 'backup-updated', analysisId: incoming.analysisId, outcome: incoming.outcome });
+          return;
+        }
         case 'recovery': {
+          if (incoming.recovery.undoReview === true) {
+            openingUndoRef.current = null;
+            setOpeningUndo(null);
+          }
           setRecovery(incoming.recovery);
+          if (incoming.recovery.state === 'none' && incoming.recovery.message) setRecoveryNotice(incoming.recovery.message);
+          else if (incoming.recovery.state !== 'none') setRecoveryNotice('');
           if (incoming.recovery.state === 'none') setRecoveryOpen(false);
+          if (incoming.recovery.undoReview === true) setRecoveryOpen(true);
           if (incoming.recovery.state !== 'running') setDependencyTask('idle');
           return;
         }
 
         // Not a dashboard snapshot: the table and any running change stay as they are.
         case 'runtime-error': {
+          if (openingUndoRef.current !== null) setUndoError({ id: openingUndoRef.current, message: incoming.message });
+          openingUndoRef.current = null;
+          setOpeningUndo(null);
           setRuntimeErrorText(incoming.message);
           setRefreshStopped(true);
           return;
@@ -725,6 +787,14 @@ export function App(): ReactElement {
         }
 
         case 'remove-error': {
+          if (incoming.undoId !== undefined) {
+            if (incoming.undoId === openingUndoRef.current) {
+              setUndoError({ id: incoming.undoId, message: incoming.error.message });
+              openingUndoRef.current = null;
+              setOpeningUndo(null);
+            }
+            return;
+          }
           if (incoming.error.code !== 'OUTCOME_UNKNOWN' && manageRemovalRef.current?.phase === 'running') {
             // Show the failure in the Manage dialog that started the removal,
             // even if a rescan during the run reset the review state or the
@@ -776,6 +846,7 @@ export function App(): ReactElement {
               const snapshot = smartCleanupExecutionRef.current;
               const failedIds = snapshot?.actionIds ?? [];
               const result: SmartCleanupResult = {
+                ...(snapshot?.analysisId ? { analysisId: snapshot.analysisId } : {}),
                 metrics: [],
                 completedActionIds: [],
                 skippedActionIds: [],
@@ -857,6 +928,7 @@ export function App(): ReactElement {
             if (snapshot !== null && hostCompletion !== undefined) {
               const kept = incoming.result.outcome !== 'rolled-back';
               const result: SmartCleanupResult = {
+                analysisId: incoming.result.analysisId,
                 metrics: hostCompletion.metrics,
                 completedActionIds: kept ? hostCompletion.completedActionIds : [],
                 skippedActionIds: kept ? hostCompletion.skippedActionIds : [...snapshot.actionIds],
@@ -864,12 +936,15 @@ export function App(): ReactElement {
                 resolvedAdvisories: hostCompletion.removedAdvisories,
                 introducedAdvisories: hostCompletion.introducedAdvisories,
                 verification: incoming.result.verification,
+                ...(incoming.result.projectScriptsPresent === undefined ? {} : { projectScriptsPresent: incoming.result.projectScriptsPresent }),
                 rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
+                ...(hostCompletion.status === 'verified' || hostCompletion.reason === undefined ? {} : { metricsNote: hostCompletion.reason }),
                 detail: [incoming.result.message, hostCompletion.reason].filter((part) => part !== undefined).join(' '),
               };
               dispatchSmartCleanup(incoming.result.outcome === 'rolled-back'
                 ? { type: 'execution-cancelled-and-restored', result }
-                : incoming.result.outcome === 'verified' && hostCompletion.status === 'verified'
+                : incoming.result.outcome === 'verified' && hostCompletion.failedActionIds.length === 0 &&
+                  snapshot.actionIds.every(actionId => hostCompletion.completedActionIds.includes(actionId))
                   ? { type: 'execution-complete', result }
                   : {
                       type: 'execution-incomplete',
@@ -890,6 +965,7 @@ export function App(): ReactElement {
             ) {
               const kept = incoming.result.outcome !== 'rolled-back';
               const result: SmartCleanupResult = {
+                analysisId: incoming.result.analysisId,
                 metrics: [],
                 completedActionIds: kept ? [...snapshot.actionIds] : [],
                 skippedActionIds: kept ? [] : [...snapshot.actionIds],
@@ -897,6 +973,7 @@ export function App(): ReactElement {
                 resolvedAdvisories: [],
                 introducedAdvisories: [],
                 verification: incoming.result.verification,
+                ...(incoming.result.projectScriptsPresent === undefined ? {} : { projectScriptsPresent: incoming.result.projectScriptsPresent }),
                 rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
                 detail: `${incoming.result.message} Fresh dashboard evidence was unavailable, so before/after metrics could not be verified.`,
               };
@@ -925,22 +1002,23 @@ export function App(): ReactElement {
                   ? [
                       {
                         id: 'vulnerable-dependencies' as const,
-                        label: 'Vulnerable direct dependencies',
+                        label: 'Affected packages',
                         before: summaryMetrics(snapshot.before.rows).vulnerable,
                         after: summaryMetrics(after.rows).vulnerable,
-                        detail: 'Matches the dashboard Vulnerable Dependencies count',
+                        detail: 'Your direct dependencies affected by a known vulnerability, directly or through their own dependencies.',
                       },
                       {
                         id: 'advisory-findings' as const,
-                        label: 'Advisory findings',
+                        label: 'Known vulnerabilities',
                         before: summaryMetrics(snapshot.before.rows).advisoryFindings,
                         after: summaryMetrics(after.rows).advisoryFindings,
-                        detail: 'Distinct advisory records across the installed graph',
+                        detail: 'Separate published security reports that apply, counted once even when several packages reach them.',
                       },
                     ]
                   : []),
               ];
               const result: SmartCleanupResult = {
+                analysisId: incoming.result.analysisId,
                 metrics,
                 completedActionIds: kept ? [...snapshot.actionIds] : [],
                 skippedActionIds: kept ? [] : [...snapshot.actionIds],
@@ -948,6 +1026,7 @@ export function App(): ReactElement {
                 resolvedAdvisories: [],
                 introducedAdvisories: [],
                 verification: incoming.result.verification,
+                ...(incoming.result.projectScriptsPresent === undefined ? {} : { projectScriptsPresent: incoming.result.projectScriptsPresent }),
                 rollback: incoming.result.outcome === 'rolled-back' ? 'restored' : 'not-needed',
                 detail: incoming.result.message,
               };
@@ -2425,7 +2504,12 @@ export function App(): ReactElement {
     });
   }, [removeAnalysis, optInFor]);
 
-  const restoreSmartCleanup = useCallback((analysisId: string) => {
+  const restoreSmartCleanup = useCallback((analysisId: string, location = 'result') => {
+    if (openingUndoRef.current !== null) return;
+    openingUndoRef.current = analysisId;
+    setUndoError(null);
+    setOpeningUndo(analysisId);
+    undoFocus.current = { id: analysisId, location };
     vscode.postMessage({ type: 'restore-smart-cleanup', analysisId });
   }, []);
 
@@ -2472,6 +2556,7 @@ export function App(): ReactElement {
     (state) => state.phase === 'analyzing' || state.phase === 'applying'
   );
   const actionsDisabled =
+    openingUndo !== null ||
     recoveryBlocked ||
     loading ||
     activeUpgrade !== null ||
@@ -2489,12 +2574,13 @@ export function App(): ReactElement {
     </StatusBanner>
   ) : null;
 
-  if (recoveryOpen && recovery !== null && recovery.state !== 'none') {
+  if (recoveryVisible) {
     return <>{protocolBanner}<RecoveryScreen recovery={recovery} changesBlocked={protocolMismatch} send={message => vscode.postMessage(message)} close={() => setRecoveryOpen(false)} /></>;
   }
 
   return (
     <DependencyChangeContext.Provider value={{ task: dependencyTask, blocked: recoveryBlocked, protocolMismatch, message: recovery?.message ?? RECOVERY_MESSAGES.blocked, retryDiscovery: recovery?.state === 'discovery-error', openRecovery: () => { if (recovery?.state !== 'discovery-error') setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
+    <UndoBackupContext.Provider value={{ entries: cleanupBackups, disabled: actionsDisabled, openingId: openingUndo, error: undoError, review: restoreSmartCleanup }}>
     <UpdateAdvisoryContext.Provider value={data?.availability.advisories === 'off' ? [] : data?.updateAdvisories ?? []}>
     <VerificationOptInContext.Provider value={verificationOptInStore}>
     <main className="dashboard">
@@ -2502,7 +2588,7 @@ export function App(): ReactElement {
         <div className="dashboard__identity">
           <span className="dashboard__mark" aria-hidden="true"><IconBrand /></span>
           <div className="dashboard__header-titles">
-            <h1 className="dashboard__title">Packageawy</h1>
+            <h1 className="dashboard__title" ref={dashboardHeading} tabIndex={-1}>Packageawy</h1>
             {data !== undefined ? (
               <p className="dashboard__project">
                 <strong>{data.project.label}</strong>
@@ -2514,6 +2600,8 @@ export function App(): ReactElement {
         {data !== undefined ? <DependencySearch value={search} onChange={handleSearchChange} /> : null}
       </header>
 
+      {recoveryNotice ? <StatusBanner tone="info">{recoveryNotice}</StatusBanner> : null}
+      {openingUndo !== null ? <StatusBanner tone="info" live="polite">Opening the backup...</StatusBanner> : null}
       {manageRow === null && !smartCleanupOpen && activeUpgrade === null && activeRemove === null ? <DependencyChangeStatus /> : null}
       {recovery?.state === 'running' && dependencyTask !== 'still-running' && manageRow === null && !smartCleanupOpen && activeUpgrade === null && activeRemove === null ? (
         <StatusBanner tone="info">{recovery.message}</StatusBanner>
@@ -2522,6 +2610,17 @@ export function App(): ReactElement {
         <StatusBanner key={entry.id} tone="warning" action={{ label: 'Start recovery', onClick: () => { setRecovery(null); setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery', id: entry.id }); } }}>
           Saved recovery files: {entry.label}
         </StatusBanner>
+      )) : null}
+      {!smartCleanupOpen ? cleanupBackups.map(entry => (
+        <section key={entry.analysisId} className="cleanup-undo" aria-label={`${keptChangeLabel(entry.operation)}: ${entry.label}`}>
+          <span aria-hidden="true"><IconHistory /></span>
+          <div><h2>{keptChangeLabel(entry.operation)}</h2><p>{entry.label}</p></div>
+          <button type="button" className="button button--secondary" disabled={actionsDisabled}
+            aria-busy={openingUndo === entry.analysisId}
+            data-undo-id={entry.analysisId} data-undo-location="dashboard"
+            onClick={() => restoreSmartCleanup(entry.analysisId, 'dashboard')}>{undoLabel(entry.operation)}</button>
+          {undoError?.id === entry.analysisId ? <UndoChangeFeedback undoId={entry.analysisId} /> : null}
+        </section>
       )) : null}
       {loading ? (
         <DependencyLoadingState
@@ -2844,6 +2943,7 @@ export function App(): ReactElement {
     </main>
     </VerificationOptInContext.Provider>
     </UpdateAdvisoryContext.Provider>
+    </UndoBackupContext.Provider>
     </DependencyChangeContext.Provider>
   );
 }

@@ -128,18 +128,18 @@ test('every failed refresh over stale rows ends refreshing, not only the first',
   assert.equal(statuses().filter((status) => status === 'runtime-error').length, 1);
 });
 
-test('the webview ends only its refreshing indicator on the banner and keeps the rows stale', async () => {
+test('the webview settles pending Undo and ends refreshing without replacing stale rows', async () => {
   const { readFileSync } = await import('node:fs');
   const app = readFileSync('webview/src/App.tsx', 'utf8');
   // The banner touches no dashboard state: rows, upgrade results and the
   // enrichment quarantine stay exactly as they were.
-  assert.match(app, /case 'runtime-error': \{\s*setRuntimeErrorText\(incoming\.message\);\s*setRefreshStopped\(true\);\s*return;\s*\}/);
+  assert.match(app, /case 'runtime-error': \{\s*if \(openingUndoRef\.current !== null\) setUndoError\(\{ id: openingUndoRef\.current, message: incoming\.message \}\);\s*openingUndoRef\.current = null;\s*setOpeningUndo\(null\);\s*setRuntimeErrorText\(incoming\.message\);\s*setRefreshStopped\(true\);\s*return;\s*\}/);
   assert.match(app, /case 'refresh-failed': \{\s*setRefreshStopped\(true\);\s*return;\s*\}/);
   // Any later snapshot, including a new stale announcement, shows its own state again.
   assert.match(app, /setRefreshStopped\(false\);\s*\/\/ A dashboard snapshot is not necessarily a change/);
   // Still stale: upgrades and other complete-data actions stay disabled.
   assert.match(app, /const upgradesDisabled =\s*status === 'stale' \|\|/);
-  // Only the indicator changes.
+  // The stale-row refreshing indicator stops with the request feedback.
   assert.match(app, /refreshing=\{status === 'stale' && !refreshStopped\}/);
   assert.match(app, /status === 'stale' && refreshStopped \? \([\s\S]*?stale-status__icon--static[\s\S]*?Refresh did not finish/);
 });

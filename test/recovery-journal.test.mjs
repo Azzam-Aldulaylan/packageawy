@@ -4,10 +4,67 @@ import * as fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { recoveryFixture, choices } from './helpers/recovery.mjs';
-import { RECOVERY_MESSAGES } from '../out/host/recovery/model.js';
+import { isJournal, RECOVERY_MESSAGES } from '../out/host/recovery/model.js';
 import { RecoverySession } from '../out/host/recovery/session.js';
+import { prepareJournal } from '../out/host/recovery/journal.js';
+import { inspectRecovery } from '../out/host/recovery/inspection.js';
+import { resolveMutationTarget } from '../out/host/mutationTarget.js';
 
 const failure = code => Object.assign(new Error(code), { code });
+
+test('durable cleanup analysis identities are optional, bounded and restricted to cleanup journals', async t => {
+  const f = await recoveryFixture(t, { operation: 'cleanup' });
+  const journal = await f.prepare();
+  assert.equal(isJournal(journal.data), true, 'older journals remain valid');
+  journal.data.cleanupAnalysisId = 'cleanup-analysis';
+  await journal.save();
+  assert.equal((await f.inspect()).journal.data.cleanupAnalysisId, 'cleanup-analysis');
+  for (const cleanupAnalysisId of ['', 123, 'a'.repeat(257)]) {
+    assert.equal(isJournal({ ...journal.data, cleanupAnalysisId }), false);
+  }
+  for (const operation of ['upgrade', 'removal', 'remediation']) {
+    assert.equal(isJournal({ ...journal.data, operation }), false);
+  }
+});
+
+for (const packageManager of ['npm', 'pnpm']) for (const hostKind of ['vscode', 'jetbrains']) {
+  test(`${hostKind} sequential ${packageManager} workspace members replace only a validated successful backup`, async t => {
+    const f = await recoveryFixture(t);
+    await fs.writeFile(f.manifest, JSON.stringify({ name: 'workspace', private: true, workspaces: ['packages/*'] }));
+    const lock = path.join(f.root, packageManager === 'npm' ? 'package-lock.json' : 'pnpm-lock.yaml');
+    if (packageManager === 'pnpm') {
+      await fs.writeFile(path.join(f.root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+      await fs.writeFile(lock, 'lockfileVersion: 9\n');
+    }
+    const targets = [];
+    for (const name of ['a', 'b']) {
+      const projectDir = path.join(f.root, 'packages', name);
+      await fs.mkdir(projectDir, { recursive: true });
+      const manifest = path.join(projectDir, 'package.json');
+      await fs.writeFile(manifest, JSON.stringify({ name, dependencies: { example: '^1.0.0' } }));
+      const resolved = await resolveMutationTarget({ projectDir, folderPath: f.root, packageManager });
+      assert.equal(resolved.ok, true);
+      assert.equal(resolved.target.root, f.root);
+      targets.push({ ...f.target, hostKind, identity: resolved.identity, allowlistedPaths: [manifest, lock] });
+    }
+    const a = await prepareJournal(targets[0]);
+    await fs.writeFile(targets[0].allowlistedPaths[0], '{"name":"a","dependencies":{}}');
+    await fs.writeFile(lock, 'after member a');
+    await a.finish('kept');
+    const b = await prepareJournal(targets[1]);
+    assert.notEqual(b.owner.transactionId, a.owner.transactionId);
+    assert.equal(b.owner.targetIdentity, targets[1].identity);
+    assert.equal((await b.backupState(b.data.files[1].backup)).contents.toString(), 'after member a');
+    assert.equal(await fs.readFile(targets[0].allowlistedPaths[0], 'utf8'), '{"name":"a","dependencies":{}}');
+    assert.match(await b.filePath(b.data.files[0].backup), /[\\/]packages[\\/]b[\\/]package\.json$/);
+    await b.finish('kept');
+    assert.equal((await inspectRecovery(targets[1])).view.state, 'undo-available');
+    // An interrupted member still owns the shared recovery folder.
+    const interrupted = await prepareJournal(targets[0]);
+    await assert.rejects(prepareJournal(targets[1]), { message: RECOVERY_MESSAGES.blocked });
+    assert.equal((await inspectRecovery(targets[0])).owner.transactionId, interrupted.owner.transactionId);
+  });
+}
 
 test('prepared contains byte-exact backups, modes, absent files, and no project changes', async t => {
   const f = await recoveryFixture(t, { absent: true });
@@ -186,7 +243,8 @@ test('Keep current also requires stopped confirmation and keeps bytes until dism
   assert.equal(await f.read('package-lock.json'), 'changed');
   assert.equal((await f.inspect()).view.message, RECOVERY_MESSAGES.completed);
   await assert.rejects(session.dismiss(false, false), { message: RECOVERY_MESSAGES.stop });
-  await session.dismiss(true, false);
+  await assert.rejects(session.dismiss(true, false), { message: RECOVERY_MESSAGES.confirmDiscard });
+  await session.dismiss(true, true);
   assert.equal((await f.inspect()).view.state, 'none');
 });
 
@@ -212,7 +270,7 @@ test('all choices precheck before any write and each file rechecks immediately b
   const session = await f.open();
   const view = await session.presentation();
   await fs.writeFile(f.lockfile, 'external edit');
-  await assert.rejects(session.apply(choices(view, 'restore', true)), /Recovery is incomplete.*package-lock.json/);
+  await assert.rejects(session.apply(choices(view, 'restore', true)), /Restoring files is not complete.*package-lock.json/);
   assert.equal(await f.read('package.json'), 'changed manifest', 'a later conflict prevents the first replacement');
   assert.equal((await f.inspect()).journal.data.outcome, 'recovery-incomplete');
 });
@@ -443,7 +501,7 @@ for (const outcome of ['kept', 'rolled-back']) test(`clean ${outcome} removes on
   const f = await recoveryFixture(t);
   const journal = await f.prepare();
   assert.equal(await journal.finish(outcome), true);
-  assert.equal((await f.inspect()).view.state, 'none');
+  assert.equal((await f.inspect()).view.state, outcome === 'kept' ? 'undo-available' : 'none');
   const next = await f.prepare();
   await assert.rejects(journal.finish(outcome), { message: RECOVERY_MESSAGES.blocked });
   assert.equal((await f.inspect()).owner.ownerToken, next.owner.ownerToken);
@@ -549,7 +607,7 @@ test('an edit after the all-file precheck is caught immediately before the later
   const session = await f.open({ boundary: async name => {
     if (name === 'replacement:installed' && !edited) { edited = true; await fs.writeFile(f.lockfile, 'edit after precheck'); }
   } });
-  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), /Recovery is incomplete.*package-lock.json/);
+  await assert.rejects(session.apply(choices(await session.presentation(), 'restore', true)), /Restoring files is not complete.*package-lock.json/);
   assert.equal(await f.read('package-lock.json'), 'edit after precheck');
   const inspected = await f.inspect();
   assert.equal(inspected.journal.data.outcome, 'recovery-incomplete');
@@ -678,4 +736,61 @@ test('a real takeover during a pending dismissal publication fences the stale se
   await next.apply(choices(await next.presentation()));
   await next.dismiss(true, false);
   assert.equal((await f.inspect()).view.state, 'none');
+});
+
+for (const hostKind of ['vscode', 'jetbrains']) for (const operation of ['cleanup', 'upgrade', 'removal', 'remediation']) {
+  test(`${hostKind} ${operation} success keeps undo bytes and the next mutation backs up current files`, async t => {
+    const f = await recoveryFixture(t, { operation });
+    f.target.hostKind = hostKind;
+    const original = await f.prepare();
+    await fs.writeFile(f.lockfile, 'successful result');
+    assert.equal(await original.finish('kept'), true);
+    const saved = await f.inspect();
+    assert.equal(saved.journal.data.outcome, 'kept');
+    assert.equal(saved.view.state, 'undo-available');
+    assert.equal((await original.backupState(original.data.files[1].backup)).contents.toString(), 'original lockfile');
+    const next = await f.prepare();
+    assert.notEqual(next.owner.transactionId, original.owner.transactionId);
+    assert.equal((await next.backupState(next.data.files[1].backup)).contents.toString(), 'successful result');
+    assert.equal(await f.read('package-lock.json'), 'successful result');
+    await assert.rejects(original.record('late-success', 'finished'));
+  });
+}
+
+test('retained backup replacement uses Windows-safe paths and directory sync behavior', async t => {
+  const f = await recoveryFixture(t);
+  const hooks = { platform: 'win32', fs: { ...fs, open: async (name, flags, ...args) => {
+    assert.notEqual(flags, 'r', 'Windows must not open directories to sync them');
+    return fs.open(name, flags, ...args);
+  } } };
+  const original = await f.prepare(hooks);
+  await original.finish('kept');
+  const next = await f.prepare(hooks);
+  assert.equal(await next.filePath(next.data.files[1].backup), path.join(f.root, 'package-lock.json'));
+  assert.match(await next.filePath(next.data.files[1].backup), /[\\/]package-lock\.json$/);
+});
+
+test('a claimed undo backup cannot be replaced, and a stale undo cannot claim the next backup', async t => {
+  const f = await recoveryFixture(t);
+  const original = await f.prepare();
+  await original.finish('kept');
+  const next = await f.prepare();
+  await next.finish('kept');
+  const { RecoverySession } = await import('../out/host/recovery/session.js');
+  await assert.rejects(RecoverySession.open(f.target, true, null, {}, original.owner.transactionId), { message: RECOVERY_MESSAGES.undoUnavailable });
+  assert.equal((await f.inspect()).view.state, 'undo-available');
+  const session = await RecoverySession.open(f.target, true, null, {}, next.owner.transactionId);
+  assert.equal((await f.inspect()).view.state, 'blocked');
+  await assert.rejects(f.prepare(), { message: RECOVERY_MESSAGES.blocked });
+  await session.apply(choices(await session.presentation()));
+  await session.dismiss(true, false);
+});
+
+test('a kept marker without a finished completion remains blocking', async t => {
+  const f = await recoveryFixture(t);
+  const journal = await f.prepare();
+  journal.data.outcome = 'kept';
+  await journal.save();
+  assert.equal((await f.inspect()).view.state, 'blocked');
+  await assert.rejects(f.prepare(), { message: RECOVERY_MESSAGES.blocked });
 });

@@ -1395,12 +1395,20 @@ export class DashboardPanel {
    * rows. Ordinary upgrade/removal callers use the normal reload path.
    */
   private async reloadAndCaptureFinalState(): Promise<SmartCleanupFinalRefreshEvidence | undefined> {
-    const outcome = await this.reloadAndScan(undefined, { forceUsageRecheck: true, strict: true });
-    if (outcome?.status !== 'succeeded') return undefined;
     const controller = this.controller;
     const candidate = this.selectedProject;
-    const evidence = controller?.lastResultEvidence() ?? null;
-    if (controller === undefined || candidate === undefined || evidence === null || this.disposed) return undefined;
+    if (controller === undefined || candidate === undefined || this.disposed) return undefined;
+    let outcome = await this.reloadAndScan(candidate, { forceUsageRecheck: true, strict: true });
+    // A late package-manager watcher event can invalidate a successful
+    // mutation's scan. Retry once, without following a switched project or
+    // controller. Persistent supersession leaves metrics unavailable.
+    if (outcome?.status === 'superseded' && !this.disposed && !this.backgroundStopped &&
+      candidate === this.selectedProject && controller === this.controller) {
+      outcome = await this.reloadAndScan(candidate, { forceUsageRecheck: true, strict: true });
+    }
+    if (outcome?.status !== 'succeeded' || this.disposed || candidate !== this.selectedProject || controller !== this.controller) return undefined;
+    const evidence = controller.lastResultEvidence();
+    if (evidence === null) return undefined;
 
     const generationAtReadStart = this.smartCleanupSourceGeneration;
     const confirmed = await this.loadProjectMeasured(candidate, 'Smart Cleanup final evidence reread', true);

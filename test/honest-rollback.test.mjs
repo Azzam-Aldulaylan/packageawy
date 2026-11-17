@@ -115,7 +115,7 @@ test('Smart Cleanup recovery offers frozen reinstall only after a successful res
   const f = makeCoordinator(project, { mutationRoot: () => project.root });
   const analysisId = await review(f);
   await f.coordinator.handleConfirmRemove({ analysisId });
-  await f.coordinator.recovery.inspect();
+  await f.coordinator.handleRestoreSmartCleanup({ analysisId: f.coordinator.cleanupBackups.keys().next().value });
   await f.coordinator.recovery.start(true, f.messages.at(-1).recovery.claim);
   f.state.reinstallChoice = 'Reinstall';
   await f.coordinator.recovery.apply(choices(f.messages.at(-1).recovery, 'restore'));
@@ -129,7 +129,7 @@ test('Smart Cleanup conflict never offers reinstall', async t => {
   const project = await makeProject(t);
   const f = makeCoordinator(project, { mutationRoot: () => project.root });
   await f.coordinator.handleConfirmRemove({ analysisId: await review(f) });
-  await f.coordinator.recovery.inspect();
+  await f.coordinator.handleRestoreSmartCleanup({ analysisId: f.coordinator.cleanupBackups.keys().next().value });
   await f.coordinator.recovery.start(true, f.messages.at(-1).recovery.claim);
   const selected = choices(f.messages.at(-1).recovery, 'restore');
   await fs.writeFile(project.lockfilePath, 'outside edit');
@@ -176,7 +176,7 @@ test('unknown frozen reinstall during recovery keeps the claim and requires fres
   const project = await makeProject(t);
   const f = makeCoordinator(project, { mutationRoot: () => project.root });
   await f.coordinator.handleConfirmRemove({ analysisId: await review(f) });
-  await f.coordinator.recovery.inspect();
+  await f.coordinator.handleRestoreSmartCleanup({ analysisId: f.coordinator.cleanupBackups.keys().next().value });
   await f.coordinator.recovery.start(true, f.messages.at(-1).recovery.claim);
   f.state.reinstallChoice = 'Reinstall'; f.state.reinstallUnknown = true;
   await f.coordinator.recovery.apply(choices(f.messages.at(-1).recovery, 'restore'));
@@ -193,7 +193,7 @@ test('recovery Keep current does not offer a reinstall', async t => {
   const project = await makeProject(t);
   const f = makeCoordinator(project, { mutationRoot: () => project.root });
   await f.coordinator.handleConfirmRemove({ analysisId: await review(f) });
-  await f.coordinator.recovery.inspect();
+  await f.coordinator.handleRestoreSmartCleanup({ analysisId: f.coordinator.cleanupBackups.keys().next().value });
   await f.coordinator.recovery.start(true, f.messages.at(-1).recovery.claim);
   await f.coordinator.recovery.apply(choices(f.messages.at(-1).recovery));
   assert.deepEqual(f.prompts, []);
@@ -225,7 +225,7 @@ test('a recovery frozen reinstall is untimed and shares Still running with a reo
   const project = await makeProject(t);
   const f = makeCoordinator(project, { mutationRoot: () => project.root });
   await f.coordinator.handleConfirmRemove({ analysisId: await review(f) });
-  await f.coordinator.recovery.inspect();
+  await f.coordinator.handleRestoreSmartCleanup({ analysisId: f.coordinator.cleanupBackups.keys().next().value });
   await f.coordinator.recovery.start(true, f.messages.at(-1).recovery.claim);
   const hold = blocker();
   f.state.reinstallChoice = 'Reinstall'; f.state.holdReinstall = hold.wait;

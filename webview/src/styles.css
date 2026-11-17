@@ -181,6 +181,31 @@ button {
 
 /* ------------------------------------------------------------------ notices */
 
+.cleanup-undo {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-block-end: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border));
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+.cleanup-undo > div {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cleanup-undo h2,
+.cleanup-undo p {
+  margin: 0;
+  font-size: 1em;
+}
+
 .notice {
   padding: 1.5rem 0;
   color: var(--vscode-descriptionForeground);
@@ -7990,7 +8015,7 @@ button {
 }
 
 .smart-cleanup-final-check[data-status='ready'] {
-  border-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 60%, var(--smart-cleanup-border));
+  border-color: var(--vscode-contrastBorder, color-mix(in srgb, var(--vscode-charts-green, #89d185) 60%, var(--smart-cleanup-border)));
   background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 7%, var(--smart-cleanup-surface-raised));
 }
 
@@ -8046,6 +8071,11 @@ button {
   margin: 0;
   color: color-mix(in srgb, var(--accent-total) 72%, var(--vscode-foreground));
   font-size: 0.9rem;
+}
+
+.smart-cleanup-confirmation__selection-heading p {
+  margin: 0.3rem 0 0;
+  color: var(--vscode-foreground);
 }
 
 .smart-cleanup-confirmation__selection-heading > span,
@@ -8297,26 +8327,29 @@ button {
   font-size: 0.82em;
 }
 
+.recovery__action .button--primary,
+.smart-cleanup-results__actions .button--primary { font-weight: 700; }
+
 .smart-cleanup-results__headline {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   gap: 0.65rem;
   padding: 0.75rem;
-  border: 1px solid var(--vscode-inputValidation-warningBorder, var(--smart-cleanup-border));
+  border: 1px solid var(--vscode-contrastBorder, var(--vscode-inputValidation-warningBorder, var(--smart-cleanup-border)));
   border-radius: 6px;
   color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
   background: var(--vscode-inputValidation-warningBackground, var(--smart-cleanup-surface-raised));
 }
 
 .smart-cleanup-results__headline[data-tone='verified'] {
-  border-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 60%, var(--smart-cleanup-border));
+  border-color: var(--vscode-contrastBorder, color-mix(in srgb, var(--vscode-charts-green, #89d185) 60%, var(--smart-cleanup-border)));
   color: var(--vscode-charts-green, #89d185);
   background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 7%, var(--smart-cleanup-surface-raised));
 }
 
 .smart-cleanup-results__headline[data-tone='restored'] {
-  border-color: color-mix(in srgb, var(--accent-total) 54%, var(--smart-cleanup-border));
+  border-color: var(--vscode-contrastBorder, color-mix(in srgb, var(--accent-total) 54%, var(--smart-cleanup-border)));
   color: var(--accent-total);
   background: color-mix(in srgb, var(--accent-total) 7%, var(--smart-cleanup-surface-raised));
 }
@@ -8335,7 +8368,7 @@ button {
 .smart-cleanup-results__headline p {
   margin: 0.18rem 0 0;
   max-width: 72ch;
-  color: color-mix(in srgb, currentColor 74%, var(--vscode-foreground));
+  color: var(--vscode-foreground);
   line-height: 1.45;
 }
 
@@ -8891,7 +8924,7 @@ button {
 .recovery__heading h1 { margin: 0; font-size: 1.5rem; }
 .recovery p { line-height: 1.6; }
 .recovery__warning { color: var(--vscode-foreground); }
-.recovery__confirmation, .recovery__choices { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; margin: 24px 0; }
+.recovery__choices { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; margin: 24px 0; }
 .recovery label { display: flex; gap: 8px; align-items: baseline; line-height: 1.5; }
 .recovery input { flex-shrink: 0; accent-color: var(--vscode-focusBorder); }
 .recovery__file { border: 1px solid var(--vscode-panel-border); margin: 24px 0; padding: 16px; min-width: 0; }
@@ -8980,3 +9013,18 @@ body.vscode-high-contrast-light .upgrade-decision {
   grid-column: 1 / -1;
   min-width: 0;
 }
+
+/* Keep recovery decisions in reading and keyboard order at every panel width. */
+.recovery__actions { margin-top: 32px; border-top: 1px solid var(--vscode-panel-border); }
+.recovery__actions h2 { margin: 24px 0 8px; font-size: 1.2rem; }
+.recovery__action { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 20px 0; }
+.recovery__action + .recovery__action { border-top: 1px solid var(--vscode-panel-border); }
+.recovery__action h3, .recovery__action p { margin: 0; }
+.recovery__action h3 { font-size: 1rem; }
+.recovery__action .button { margin-top: 4px; max-width: 100%; white-space: normal; }
+.recovery__contents summary:focus-visible, .recovery h1:focus-visible, .recovery h3:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+.smart-cleanup-results__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.smart-cleanup-results__actions .button { white-space: normal; }
+.smart-cleanup-results__actions .button:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+
+.dashboard__title:focus-visible, [role="dialog"] [tabindex="-1"]:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }

@@ -6,5 +6,5 @@ export function isUnknownChangeMessage(message: HostToWebviewMessage): boolean {
 }
 
 export function dependencyChangesBlocked(recovery: RecoveryPresentation | null): boolean {
-  return recovery !== null && recovery.state !== 'none' && recovery.state !== 'running';
+  return recovery !== null && recovery.state !== 'none' && recovery.state !== 'undo-available' && recovery.state !== 'running';
 }

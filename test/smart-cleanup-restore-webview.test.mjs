@@ -81,17 +81,18 @@ function render(state, onRestoreFiles = () => {}) {
   }));
 }
 
-test('without a host restore point the results keep the source control guidance', () => {
+test('without a host restore point the result does not offer undo', () => {
   const html = render(completed());
-  assert.match(html, /The cleanup changes were kept\. Use source control if you need to reverse them later\./);
+  assert.match(html, /<h3>Cleanup done<\/h3>/);
+  assert.doesNotMatch(html, /Undo cleanup/);
   assert.doesNotMatch(html, /Restore dependency files/);
 });
 
 test('a kept restore point shows the action and explains what it does', () => {
   const state = smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' });
   const html = render(state);
-  assert.match(html, /<button type="button" class="button button--secondary">Review recovery files<\/button>/);
-  assert.match(html, /Open recovery to review the saved dependency files and choose Restore backup or Keep current for each file/);
+  assert.match(html, /<button type="button" class="button button--secondary" data-undo-id="a1" data-undo-location="result" aria-busy="false">Undo cleanup<\/button>/);
+  assert.doesNotMatch(html, /Open recovery|cleanup changes were kept/);
   assert.doesNotMatch(html, /reinstalls dependencies/);
   assert.doesNotMatch(html, /Use source control/);
 });
@@ -108,7 +109,7 @@ test('restoring locks the workspace, then reports restored files and offers re-a
   const html = render(restored);
   assert.match(html, /<h3>Dependency files restored<\/h3>/);
   assert.match(html, /data-tone="restored"/);
-  assert.match(html, /package\.json and the lockfile were put back as they were before the cleanup, and dependencies were reinstalled\./);
+  assert.match(html, /package\.json and the lockfile were put back\. Script side effects were not restored\./);
   assert.match(html, /Analyze current project/);
   assert.doesNotMatch(html, /Restore dependency files<\/button>/);
 });
@@ -126,22 +127,70 @@ test('after a restore the results describe the restored dependencies, not the re
 
 test('the restore note sits above the change list so the action is visible without scrolling', () => {
   const html = render(smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' }));
-  assert.ok(html.indexOf('Review recovery files') < html.indexOf('What changed'));
+  assert.ok(html.indexOf('Undo cleanup') < html.indexOf('What changed'));
 });
 
 test('a cleanup with no build or test scripts is not reported as verified', () => {
   const state = smartCleanupReducer(createSmartCleanupState('fixture'), {
     type: 'execution-complete',
-    result: { ...result, verification: 'not-configured', detail: 'Removed react. Dependency files were checked. No build or test scripts ran.' },
+    result: { ...result, verification: 'not-configured', projectScriptsPresent: false, detail: 'Removed react. Dependency files were checked. No build or test scripts ran.' },
   });
   const html = render(state);
-  assert.match(html, /<h3>Cleanup applied<\/h3>/);
-  assert.match(html, /Dependency files were checked, but no build or test scripts ran/);
-  assert.match(html, /No build or test scripts are configured for verification\./);
+  assert.match(html, /<h3>Cleanup done<\/h3>/);
+  assert.match(html, /1 package removed\./);
+  const outcome = html.match(/<section class="smart-cleanup-results__headline"[^>]*>(.*?)<\/section>/s)?.[1];
+  assert.equal((outcome.match(/No test scripts to run\. Run your build and tests before relying on the result\./g) ?? []).length, 1);
   assert.doesNotMatch(html, /verification passed/);
   assert.doesNotMatch(html, /Verified cleanup results/);
   // The detail line only repeated the headline on a completed run.
   assert.doesNotMatch(html, /smart-cleanup-results__detail/);
+});
+
+for (const projectScriptsPresent of [false, true, undefined]) for (const phase of ['complete', 'incomplete']) {
+  test(`${phase} cleanup labels unselected checks from the ${String(projectScriptsPresent)} script snapshot`, () => {
+    const label = projectScriptsPresent === false ? 'No test scripts to run' : 'No checks selected';
+    const state = smartCleanupReducer(createSmartCleanupState('fixture'), {
+      type: phase === 'complete' ? 'execution-complete' : 'execution-incomplete',
+      message: 'Final counts could not be refreshed.',
+      result: { ...result, verification: 'not-configured', projectScriptsPresent },
+    });
+    const html = render(state);
+    const detail = `${label}. Run your build and tests before relying on the result.`;
+    assert.ok(html.includes(`<p>${detail}</p>`));
+    assert.doesNotMatch(html, projectScriptsPresent === false ? /No checks selected/ : /No test scripts to run/);
+    if (phase === 'incomplete') assert.ok(html.includes(`<span>${label}</span>`));
+    else {
+      const announcement = html.match(/<p class="sr-only" role="status" aria-live="polite" aria-atomic="true">(.*?)<\/p>/s)?.[1];
+      assert.ok(announcement.includes(detail), 'the live announcement matches visible feedback');
+    }
+  });
+}
+
+for (const [verification, detail] of [
+  ['passed', 'Configured project checks passed after cleanup.'],
+  ['failed', 'Configured project checks failed after cleanup.'],
+  ['not-configured', 'No test scripts to run. Run your build and tests before relying on the result.'],
+  ['not-run', 'No post-cleanup project verification was run.'],
+]) for (const count of [0, 1, 2]) test(`completion announces ${count} removed packages and ${verification} verification`, () => {
+  const state = smartCleanupReducer(createSmartCleanupState('fixture'), {
+    type: 'execution-complete',
+    result: { ...result, verification, projectScriptsPresent: false, completedActionIds: [
+      ...Array.from({ length: count }, (_, index) => `remove-direct:package-${index}`),
+      'security-review:remaining',
+    ] },
+  });
+  const html = render(state);
+  const announcement = html.match(/<p class="sr-only" role="status" aria-live="polite" aria-atomic="true">(.*?)<\/p>/s)?.[1];
+  assert.equal(announcement, `Cleanup done. ${count} ${count === 1 ? 'package removed' : 'packages removed'}. ${detail}`);
+  assert.equal((html.match(/<h3>Cleanup done<\/h3>/g) ?? []).length, 1, 'one visible outcome');
+});
+
+test('restored cleanup completion never announces the previous removed-package result', () => {
+  const available = smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' });
+  const restoring = smartCleanupReducer(available, { type: 'restore-started', analysisId: 'a1' });
+  const restored = smartCleanupReducer(restoring, { type: 'restore-finished' });
+  const announcement = render(restored).match(/<p class="sr-only" role="status" aria-live="polite" aria-atomic="true">(.*?)<\/p>/s)?.[1];
+  assert.equal(announcement, 'Dependency files restored. package.json and the lockfile were put back. Script side effects were not restored.');
 });
 
 test('a refused restore shows the host message as a warning', () => {
@@ -149,7 +198,7 @@ test('a refused restore shows the host message as a warning', () => {
   const restoring = smartCleanupReducer(available, { type: 'restore-started', analysisId: 'a1' });
   const message = 'Restore was not started because package.json or the lockfile changed after the cleanup. Newer edits were preserved.';
   const html = render(smartCleanupReducer(restoring, { type: 'restore-refused', message }));
-  assert.match(html, /class="smart-cleanup-results__recovery" data-tone="attention"/);
+  assert.match(html, /role="status"/);
   assert.match(html, /Newer edits were preserved\./);
   assert.doesNotMatch(html, /Restore dependency files<\/button>/);
 });
@@ -226,4 +275,24 @@ for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`transitive res
   const note = reinstall === 'succeeded' ? 'Dependencies were reinstalled using the restored lockfile.' : manualReinstallNote('npm');
   assert.ok(html.includes(note), html);
   if (reinstall === 'succeeded') assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules were not restored/);
+});
+
+test('security result headings name vulnerabilities and metric copy explains the two counts', async () => {
+  const finding = { sourceId: 'npm:1', identifiers: ['CVE-2026-1234'], flaggedPackage: 'affected', title: 'Published report', severity: 'high' };
+  const state = smartCleanupReducer(createSmartCleanupState('fixture'), {
+    type: 'execution-complete', result: { ...result, resolvedAdvisories: [finding], introducedAdvisories: [{ ...finding, sourceId: 'npm:2' }] },
+  });
+  const html = render(state);
+  assert.match(html, /<h4[^>]*>Resolved vulnerabilities<\/h4>/);
+  assert.match(html, /<h4[^>]*>New vulnerabilities to review<\/h4>/);
+  const host = await readFile(join(process.cwd(), 'src/host/upgradeAssistantCoordinator.ts'), 'utf8');
+  for (const source of [app, host]) {
+    for (const copy of [
+      'Affected packages',
+      'Your direct dependencies affected by a known vulnerability, directly or through their own dependencies.',
+      'Known vulnerabilities',
+      'Separate published security reports that apply, counted once even when several packages reach them.',
+    ]) assert.ok(source.includes(copy), copy);
+    assert.doesNotMatch(source, /Vulnerable direct dependencies|Advisory findings/);
+  }
 });

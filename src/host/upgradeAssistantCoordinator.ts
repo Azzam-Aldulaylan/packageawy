@@ -136,7 +136,7 @@ import { OperationReservation, SourceGenerationGuard } from './operationReservat
 import type { OwnerHandle, ReservationRefusal } from './operationReservation.js';
 import { runUpgradeTransaction } from './upgradeTransaction.js';
 import type { TransactionCompletion } from './upgradeTransaction.js';
-import { selectVerificationScripts, suggestVerificationScriptNames } from './verificationPolicy.js';
+import { hasProjectScripts, selectVerificationScripts, suggestVerificationScriptNames } from './verificationPolicy.js';
 import { applyVerificationOptIn } from './verificationOptIn.js';
 import type { VerificationOptInRequest } from './verificationOptIn.js';
 import type { VerificationScript } from './verificationPolicy.js';
@@ -559,6 +559,8 @@ interface StoredRemoval {
   snapshot: ResolvedProject;
   ignoreScripts: boolean;
   verificationScripts: VerificationScript[];
+  /** Presence in the reviewed manifest, independent of configured or suggested checks. */
+  projectScriptsPresent: boolean;
   /** Offered as one-run opt-ins only when `verificationScripts` is empty. */
   suggestedScriptNames: string[];
   /** Present only for Smart Cleanup. Generic removal reviews remain unchanged. */
@@ -646,13 +648,13 @@ function toSmartCleanupCompletionPresentation(
   if (result.security !== null) {
     metrics.push({
       id: 'vulnerable-dependencies',
-      label: 'Vulnerable direct dependencies',
+      label: 'Affected packages',
       before: result.security.before.affectedDirectDependencies,
       after: result.security.after.affectedDirectDependencies,
-      detail: 'Matches the dashboard Vulnerable Dependencies count',
+      detail: 'Your direct dependencies affected by a known vulnerability, directly or through their own dependencies.',
     });
   }
-  addMetric('advisory-findings', 'Advisory findings', result.report.metrics.vulnerabilities, 'Distinct advisory records across the installed graph');
+  addMetric('advisory-findings', 'Known vulnerabilities', result.report.metrics.vulnerabilities, 'Separate published security reports that apply, counted once even when several packages reach them.');
 
   const advisory = (finding: NonNullable<SmartCleanupCompletionReportResult['security']>['removedAdvisories'][number]) => ({
     sourceId: finding.sourceId,
@@ -716,6 +718,9 @@ export class UpgradeAssistantCoordinator {
 
   private readonly mutationLocks: ProjectMutationLocks;
   readonly recovery: RecoveryCoordinator;
+  // Reuse the existing Undo channel for every kept change. Each key stays
+  // bound to a host-owned target and transaction, including after discovery.
+  private readonly cleanupBackups = new Map<string, { target: RecoveryTarget; transactionId: string; available?: boolean; operation?: Operation }>();
   private canonicalRootCache: { root: string; key: string } | undefined;
   private readonly stopListeningForSharedRelease: () => void;
   private stopListeningForTask: (() => void) | undefined;
@@ -730,6 +735,30 @@ export class UpgradeAssistantCoordinator {
         options.sink.postMessage(message);
       },
       removed: async () => { await this.refreshAfterCompletion(() => options.reloadFinalState()); },
+      backupChanged: (target, transactionId, outcome, cleanupAnalysisId) => {
+        let notified = false;
+        for (const [analysisId, backup] of this.cleanupBackups) {
+          if (backup.transactionId !== transactionId || backup.target.identity !== target.identity) continue;
+          options.sink.postMessage({ status: 'smart-cleanup-backup', analysisId, outcome });
+          notified = true;
+          if (outcome === 'unavailable' || outcome === 'resolved') this.cleanupBackups.delete(analysisId);
+          else backup.available = false;
+        }
+        // Failed cleanups can require recovery without offering an undo point.
+        if (!notified && cleanupAnalysisId !== undefined) options.sink.postMessage({ status: 'smart-cleanup-backup', analysisId: cleanupAnalysisId, outcome });
+        this.postCleanupBackups();
+      },
+      backupsDiscovered: backups => {
+        const previous = [...this.cleanupBackups];
+        // Keep bindings for claimed sessions so later restore outcomes still
+        // reach the original result. Only validated, unclaimed backups are offered.
+        for (const [, saved] of previous) saved.available = false;
+        for (const backup of backups) {
+          const analysisId = previous.find(([, saved]) => saved.target.identity === backup.target.identity && saved.transactionId === backup.transactionId)?.[0] ?? backup.analysisId;
+          this.cleanupBackups.set(analysisId, { ...backup, available: true });
+        }
+        this.postCleanupBackups();
+      },
       restored: async journal => {
         this.session.observeTaskState(state => this.recovery.reportTaskState(state));
         try { return await this.offerReinstall(journal); }
@@ -930,7 +959,6 @@ export class UpgradeAssistantCoordinator {
   }
 
   private reserve(packageName: string, strict = false): OwnerHandle | ReservationRefusal {
-    // Any new analysis or dependency change supersedes a kept cleanup's restore point.
     // The shared project lock is taken with the reservation, keyed by the
     // resolved target's lock key, and held by the returned handle until that
     // handle ends it, after install, verification, and rollback.
@@ -951,8 +979,39 @@ export class UpgradeAssistantCoordinator {
     }
   }
 
-  async handleRestoreSmartCleanup(_message: { analysisId: string }): Promise<void> {
-    await this.recovery.inspect();
+  async handleRestoreSmartCleanup(message: { analysisId: string }): Promise<void> {
+    // A restored panel may receive a saved request before ordinary discovery.
+    // Only validated durable metadata can reconstruct its transaction binding.
+    if (!this.cleanupBackups.has(message.analysisId)) await this.recovery.inspect();
+    const backup = this.cleanupBackups.get(message.analysisId);
+    if (backup === undefined) {
+      this.options.platform.showWarningMessage(RECOVERY_MESSAGES.undoUnavailable);
+      this.options.sink.postMessage({ status: 'smart-cleanup-backup', analysisId: message.analysisId, outcome: 'unavailable' });
+      return;
+    }
+    if (!await this.recovery.inspectBackup(backup.target, backup.transactionId)) {
+      this.cleanupBackups.delete(message.analysisId);
+      this.options.sink.postMessage({ status: 'smart-cleanup-backup', analysisId: message.analysisId, outcome: 'unavailable' });
+      this.postCleanupBackups();
+    }
+  }
+
+  /** One retained backup per mutation root, with identity checked again on review and claim. */
+  private rememberUndo(journal: RecoveryJournal, analysisId: string): void {
+    for (const [id, backup] of this.cleanupBackups) {
+      if (backup.target.root !== journal.storage.target.root) continue;
+      this.cleanupBackups.delete(id);
+      this.options.sink.postMessage({ status: 'smart-cleanup-backup', analysisId: id, outcome: 'unavailable' });
+    }
+    this.cleanupBackups.set(analysisId, { target: journal.storage.target, transactionId: journal.owner.transactionId, operation: journal.data.operation });
+    this.postCleanupBackups();
+  }
+
+  private postCleanupBackups(): void {
+    this.options.sink.postMessage({ status: 'smart-cleanup-backups', entries: [...this.cleanupBackups].filter(([, backup]) => backup.available !== false).map(([analysisId, backup]) => ({
+      analysisId, ...(backup.operation === undefined || backup.operation === 'cleanup' ? {} : { operation: backup.operation }),
+      label: path.relative(backup.target.workspaceRoot, path.dirname(backup.target.allowlistedPaths[0]!)) || path.basename(backup.target.root),
+    })) });
   }
 
   /**
@@ -1057,6 +1116,9 @@ export class UpgradeAssistantCoordinator {
     this.session.journal = undefined;
     await handle.complete(completion);
     if (handle.state === 'retained') await this.recovery.inspect();
+    if (handle.state === 'completed' && completion === 'kept' && handle.journal !== undefined && handle.journal.data.operation !== 'cleanup') {
+      this.rememberUndo(handle.journal, handle.journal.owner.transactionId);
+    }
   }
 
   /**
@@ -2400,6 +2462,7 @@ export class UpgradeAssistantCoordinator {
         snapshot: preflightProject,
         ignoreScripts,
         verificationScripts,
+        projectScriptsPresent: hasProjectScripts(source.manifestText),
         suggestedScriptNames,
         ...(smartCleanup?.evidence === undefined ? {} : { smartCleanupEvidence: smartCleanup.evidence }),
         ...(smartCleanup === undefined ? {} : { smartCleanupRequestId: smartCleanup.requestId }),
@@ -3190,6 +3253,7 @@ export class UpgradeAssistantCoordinator {
         ? finalPresentation
         : stored.presentation;
       const result: TransitiveRemediationApplyResult = {
+        ...(transaction.completion === 'kept' && handle.journal !== undefined ? { undoId: handle.journal.owner.transactionId } : {}),
         outcome,
         message:
           outcome === 'verified'
@@ -3586,10 +3650,12 @@ export class UpgradeAssistantCoordinator {
           status: 'upgrade-result',
           result: {
             package: stored.eligibility.packageName,
+            ...(transaction.completion === 'kept' && handle.journal !== undefined ? { undoId: handle.journal.owner.transactionId } : {}),
             refreshId,
             install: transaction.install.status === 'succeeded' ? 'succeeded' : 'failed',
             application,
             verification,
+            projectScriptsPresent: hasProjectScripts(stored.snapshot.manifestText),
             changes: appliedState.changes,
             refreshingDerivedData: usedTargetedRefresh,
             ...(application === 'rolled-back' ? { rollbackMessage: reinstallResultNote(source.packageManager, reconciliation.reinstall) } : {}),
@@ -3855,6 +3921,10 @@ export class UpgradeAssistantCoordinator {
       }
       completion = 'unknown';
       this.session.journal = handle.journal;
+      if (stored.smartCleanupRequestId !== undefined && handle.journal !== undefined) {
+        handle.journal.data.cleanupAnalysisId = stored.id;
+        await handle.journal.save();
+      }
       const transaction = await runUpgradeTransaction({
         ...(handle.journal === undefined ? {} : { journal: handle.journal }),
         allowlistedPaths,
@@ -3976,10 +4046,14 @@ export class UpgradeAssistantCoordinator {
         presentation.message += ` ${reinstallResultNote(source.packageManager, reconciliation.reinstall)}`;
       }
       const removedPackages = stored.eligibilities.map((item) => item.packageName);
-      // With no build or test scripts, only the dependency-file structure
+      // With no selected verification scripts, only the dependency-file structure
       // check ran. That is not project verification, so it is not reported
       // as passed.
       const structureOnly = transaction.verification.status === 'passed' && stored.verificationScripts.length === 0;
+      const removalsConfirmed = transaction.completion === 'kept' &&
+        transaction.verification.status !== 'not-run' &&
+        transaction.verification.checks.some(check => check.id === 'smart-cleanup-structure' && check.status === 'passed');
+      const removalActionIds = removedPackages.map(packageName => `remove-direct:${packageName}`);
       const verification =
         structureOnly
           ? 'not-configured'
@@ -4002,10 +4076,10 @@ export class UpgradeAssistantCoordinator {
                 metrics: [],
                 removedAdvisories: [],
                 introducedAdvisories: [],
-                completedActionIds: [],
-                skippedActionIds: [],
-                failedActionIds: removedPackages.map((packageName) => `remove-direct:${packageName}`),
-                reason: 'Cleanup evidence is unavailable because the final dashboard refresh could not be confirmed.',
+                completedActionIds: removalsConfirmed ? removalActionIds : [],
+                skippedActionIds: transaction.completion === 'rolled-back' || transaction.completion === 'not-started' ? removalActionIds : [],
+                failedActionIds: transaction.completion === 'incomplete' ? removalActionIds : [],
+                reason: 'Final dashboard counts could not be refreshed. Analyze the current project to update them.',
               }
             : (() => {
                 const refreshId = randomBytes(12).toString('hex');
@@ -4049,8 +4123,16 @@ export class UpgradeAssistantCoordinator {
                 });
                 return toSmartCleanupCompletionPresentation(completion);
               })();
-      const keepRestorePoint = (): { restoreAvailable?: true } =>
-        stored.smartCleanupRequestId !== undefined && transaction.completion === 'kept' ? { restoreAvailable: true } : {};
+      if (transaction.completion === 'kept') {
+        await this.endReservation(handle, 'kept');
+        if (handle.state !== 'completed') return;
+      }
+      const keepRestorePoint = (): { restoreAvailable?: true; undoId?: string } => {
+        if (handle.state !== 'completed' || transaction.completion !== 'kept' || handle.journal?.data.outcome !== 'kept') return {};
+        if (stored.smartCleanupRequestId === undefined) return { undoId: handle.journal.owner.transactionId };
+        this.rememberUndo(handle.journal, stored.id);
+        return { restoreAvailable: true };
+      };
       if (presentation.kind === 'verified') {
         const message = structureOnly
           ? `Removed ${describeRemovedPackages(removedPackages)}. Dependency files were checked. No build or test scripts ran.`
@@ -4062,6 +4144,7 @@ export class UpgradeAssistantCoordinator {
             packages: removedPackages,
             outcome: 'verified',
             verification,
+            projectScriptsPresent: stored.projectScriptsPresent,
             rollback: 'not-needed',
             message,
             ...(smartCleanupPresentation === undefined ? {} : { smartCleanup: smartCleanupPresentation }),
@@ -4085,6 +4168,7 @@ export class UpgradeAssistantCoordinator {
               packages: removedPackages,
               outcome: presentation.kind,
               verification,
+              projectScriptsPresent: stored.projectScriptsPresent,
               rollback: presentation.kind === 'rolled-back' ? 'succeeded' : 'not-needed',
               message: presentation.message,
               ...(smartCleanupPresentation === undefined ? {} : { smartCleanup: smartCleanupPresentation }),

@@ -27,6 +27,12 @@ export function suggestVerificationScriptNames(manifestText: string): string[] {
   return scripts === undefined ? [] : suggestVerificationScripts(scripts);
 }
 
+/** Count custom and interactive scripts too, so no suggestions never means no scripts. */
+export function hasProjectScripts(manifestText: string): boolean {
+  const scripts = manifestScripts(manifestText);
+  return scripts !== undefined && Object.values(scripts).some(script => typeof script === 'string' && script.trim() !== '');
+}
+
 export function selectVerificationScripts(
   manifestText: string,
   configured: readonly unknown[]
