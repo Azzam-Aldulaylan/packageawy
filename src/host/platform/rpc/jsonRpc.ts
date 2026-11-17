@@ -40,7 +40,9 @@ export class ResponseError extends Error {
 }
 
 const HEADER_SEPARATOR = Buffer.from('\r\n\r\n', 'ascii');
-/** Large enough for any dashboard payload, small enough to stop a runaway header. */
+/** Bound headers independently of dashboard payloads. */
+const MAX_HEADER_LENGTH = 8 * 1024;
+/** Large enough for any dashboard payload. */
 const MAX_CONTENT_LENGTH = 256 * 1024 * 1024;
 
 /** Encodes one message as a framed buffer. */
@@ -59,7 +61,11 @@ export class MessageDecoder {
     const bodies: string[] = [];
     for (;;) {
       const headerEnd = this.buffer.indexOf(HEADER_SEPARATOR);
-      if (headerEnd === -1) break;
+      if (headerEnd === -1) {
+        if (this.buffer.length > MAX_HEADER_LENGTH) throw new Error('Malformed header line: header too large');
+        break;
+      }
+      if (headerEnd + HEADER_SEPARATOR.length > MAX_HEADER_LENGTH) throw new Error('Malformed header line: header too large');
       const length = parseContentLength(this.buffer.subarray(0, headerEnd).toString('ascii'));
       const bodyStart = headerEnd + HEADER_SEPARATOR.length;
       if (this.buffer.length < bodyStart + length) break;

@@ -36,7 +36,11 @@ async function makeProject(t) {
   return { root, manifestPath, lockfilePath };
 }
 
-function makeCoordinator(project) {
+function makeCoordinator(project, sourcePaths = project) {
+  const sourceSettings = {
+    peerPolicy: { strictPeerDeps: false, legacyPeerDeps: false },
+    resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} },
+  };
   const messages = [];
   const commands = [];
   const information = [];
@@ -45,16 +49,16 @@ function makeCoordinator(project) {
     const manifestText = await readFile(project.manifestPath, 'utf8');
     const lockfileText = await readFile(project.lockfilePath, 'utf8');
     return {
-      root: project.root,
+      root: sourcePaths.root,
       manifestText,
       lockfileText,
-      lockfilePath: project.lockfilePath,
+      lockfilePath: sourcePaths.lockfilePath,
       lockfileName: 'package-lock.json',
       registry: 'https://registry.npmjs.org/',
-      resolvedRegistry: { defaultRegistry: 'https://registry.npmjs.org/', scopes: {} },
+      ...structuredClone(sourceSettings),
       packageManager: 'npm',
       importerId: '.',
-      mutationTarget: resolvedTarget(project.root),
+      mutationTarget: resolvedTarget(sourcePaths.root, { lockfilePath: sourcePaths.lockfilePath }),
     };
   };
   const platform = {
@@ -84,7 +88,7 @@ function makeCoordinator(project) {
     ensureController: async () => {
       source = await read();
       return {
-        root: project.root,
+        root: sourcePaths.root,
         upgradeSource: source,
         validateBulkRemoveRequest: () => ({ ok: true, removals: [{ packageName: 'react', classification: 'prod' }] }),
       };
@@ -92,7 +96,7 @@ function makeCoordinator(project) {
     getSelectedProject: () => ({
       id: 'project',
       dir: '',
-      folder: { id: `file://${project.root}`, name: 'fixture', path: project.root },
+      folder: { id: `file://${sourcePaths.root}`, name: 'fixture', path: sourcePaths.root },
     }),
     isDisposed: () => false,
     reloadFinalState: async () => {},
@@ -100,7 +104,33 @@ function makeCoordinator(project) {
     smartCleanupRemovalEvidence: () => ({ isCurrent: () => true }),
     loadProject: read,
   });
-  return { coordinator, messages, commands, information, warnings };
+  return { coordinator, messages, commands, information, warnings, sourceSettings };
+}
+
+for (const [setting, windows] of [
+  ['peerPolicy', false], ['resolvedRegistry', false],
+  ['peerPolicy', true], ['resolvedRegistry', true],
+]) {
+  test(`removal refuses a review after ${setting} changes with ${windows ? 'Windows' : 'native'} paths`, async (t) => {
+    const project = await makeProject(t);
+    const windowsRoot = path.win32.join('C:\\', 'workspace', 'fixture');
+    const fixture = makeCoordinator(project, windows ? {
+      root: windowsRoot,
+      lockfilePath: path.win32.join(windowsRoot, 'package-lock.json'),
+    } : project);
+    await fixture.coordinator.handleAnalyzeBulkRemove({ changes: [{ package: 'react' }] });
+    const review = fixture.messages.findLast((message) => message.status === 'remove-analysis');
+    assert.ok(review, 'the removal review was posted');
+    if (setting === 'peerPolicy') fixture.sourceSettings.peerPolicy.strictPeerDeps = true;
+    else fixture.sourceSettings.resolvedRegistry.scoped['@company'] = 'https://registry.example.com/';
+
+    await fixture.coordinator.handleConfirmRemove({ analysisId: review.analysis.analysisId });
+
+    assert.equal(fixture.messages.findLast((message) => message.status === 'remove-error')?.error.code, 'STALE_SOURCE');
+    assert.deepEqual(fixture.commands, []);
+    assert.equal(await readFile(project.manifestPath, 'utf8'), MANIFEST);
+    assert.equal(await readFile(project.lockfilePath, 'utf8'), lockfile(true));
+  });
 }
 
 async function removeReact(fixture, confirm) {
