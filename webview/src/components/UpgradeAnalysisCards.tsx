@@ -85,7 +85,8 @@ export function CompatibilityCheckCard({
   projectCompatibility?: ProjectCompatibilityAnalysis | undefined;
   context: { package: string; currentVersion: string };
 }): ReactElement {
-  const summary = overallStatusDetail({ compatibility });
+  // Complete warning counts are already in the disclosure and warning cards.
+  const summary = compatibility.status === 'warning' && compatibility.completeness !== 'partial' ? undefined : overallStatusDetail({ compatibility });
   const summaryTone = compatibilityOutcomeDisplay(compatibility.status).className;
   const peerFindings = compatibility.findings.filter((finding) => PEER_FINDING_KINDS.has(finding.kind));
   const peerProblems = peerFindings.filter((finding) => finding.status !== 'compatible');
@@ -124,7 +125,7 @@ export function CompatibilityCheckCard({
             ? runtimeReason === 'runtime-node-version-unknown' ? 'Declared range checked' : 'Partially checked'
             : 'No conflicts found';
   return (
-    <section className="analysis-card" aria-labelledby="upgrade-compat-heading">
+    <section className="analysis-card upgrade-compatibility" aria-labelledby="upgrade-compat-heading">
       <div className="usage-card__head">
         <h3 className="analysis-card__title" id="upgrade-compat-heading">
           <IconRoute className="analysis-card__title-icon" />
@@ -134,19 +135,19 @@ export function CompatibilityCheckCard({
       <div className="upgrade-compatibility__findings" aria-label="Dependency compatibility findings">
         <h4 className="upgrade-compatibility__findings-heading">Dependency findings</h4>
         <CompatibilityFindings compatibility={compatibility} context={context} />
+        {summary !== undefined ? (
+          <p className={`usage-status upgrade-compatibility__summary${summaryTone === 'compatible' ? ' usage-status--ok' : summaryTone === 'conflict' ? ' usage-status--error' : ''}`}>
+            {summaryTone === 'compatible' ? (
+              <IconCheck className="usage-status__icon" />
+            ) : summaryTone === 'conflict' || summaryTone === 'warning' ? (
+              <IconAlertTriangle className="usage-status__icon" />
+            ) : (
+              <IconHelpCircle className="usage-status__icon" />
+            )}
+            {summary}
+          </p>
+        ) : null}
       </div>
-      {summary !== undefined ? (
-        <p className={`usage-status upgrade-compatibility__summary${summaryTone === 'compatible' ? ' usage-status--ok' : summaryTone === 'conflict' ? ' usage-status--error' : ''}`}>
-          {summaryTone === 'compatible' ? (
-            <IconCheck className="usage-status__icon" />
-          ) : summaryTone === 'conflict' || summaryTone === 'warning' ? (
-            <IconAlertTriangle className="usage-status__icon" />
-          ) : (
-            <IconHelpCircle className="usage-status__icon" />
-          )}
-          {summary}
-        </p>
-      ) : null}
       <div className="hygiene-strip">
         <CompatCheckItem tone={peerTone} label="Peer dependencies" value={peerValue} help={(
           <>

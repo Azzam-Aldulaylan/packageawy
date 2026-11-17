@@ -14,6 +14,7 @@
  * npmResolver.ts for why.
  */
 
+import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { isExpectedFsError } from './expectedFsError.js';
@@ -32,6 +33,8 @@ import type { Disposable, HostPlatform, RunningProcess } from './platform/hostPl
 import { PNPM_NOT_FOUND_MESSAGE } from './pnpmResolver.js';
 import type { PackageManagerInvocation } from './resolverVerifier.js';
 import { PendingUpgradeRuns, UpgradeLock, isSuccessfulExitCode } from './upgradeTracker.js';
+import type { ProjectCheckResult } from './webviewProtocol.js';
+import type { VerificationCheckResult } from './upgradeTransaction.js';
 import type { DependencyTaskState } from './webviewProtocol.js';
 import type { VerificationExecutionResult } from './upgradeTransaction.js';
 import { buildVerificationScriptArgs } from './verificationPolicy.js';
@@ -55,7 +58,7 @@ export interface UpgradeRunParams {
   }[];
 }
 
-export type UpgradeRunOutcome = { ok: true } | { ok: false; status?: 'unknown'; code: string; message: string };
+export type UpgradeRunOutcome = ({ ok: true } | { ok: false; status?: 'unknown'; code: string; message: string }) & { command?: ProjectCheckResult };
 
 /**
  * Host-owned inputs for reconciling an already-staged package.json. No
@@ -151,6 +154,15 @@ export const STILL_RUNNING_THRESHOLD_MS = 10_000;
  */
 export class UpgradeExecutionSession {
   private readonly lock = new UpgradeLock();
+  private readonly failedConsoles = new Map<string, RunningProcess>();
+
+  async revealCheckTerminal(id: string): Promise<boolean> {
+    const run = this.failedConsoles.get(id);
+    try { if (await run?.reveal?.()) return true; } catch { /* A closed console is unavailable. */ }
+    this.failedConsoles.delete(id);
+    try { run?.release?.(); } catch { /* Cosmetic cleanup. */ }
+    return false;
+  }
   private readonly listeners = new Set<Disposable>();
   private readonly pendingRuns = new PendingUpgradeRuns();
   private readonly discoveryAbort = new AbortController();
@@ -385,35 +397,44 @@ export class UpgradeExecutionSession {
 
   /** Runs only host-selected package.json script names, one visible task at a time. */
   async verify(params: UpgradeVerificationParams): Promise<VerificationExecutionResult> {
+    const notStarted = (reason: string): VerificationCheckResult[] => params.scripts.map(script => ({ id: script.id, scriptName: script.scriptName, status: 'not-run', reason }));
     if (!this.platform.isWorkspaceTrusted()) {
-      return { status: 'failed', checks: [], message: 'Verification is disabled in untrusted workspaces.' };
+      return { status: 'failed', checks: notStarted('Verification is disabled in untrusted workspaces.'), message: 'Verification is disabled in untrusted workspaces.' };
     }
+    if (params.signal?.aborted) return { status: 'cancelled', checks: notStarted('Cancelled before this script started.') };
     const invocation = await this.resolveInvocation(params.cwd, params.packageManager, params.toolchain ?? this.createToolchainOperation(params.cwd, params.signal));
     if (invocation === null) {
-      return { status: 'failed', checks: [], message: params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${params.packageManager} installation could not be located.` };
+      return { status: 'failed', checks: notStarted('The package manager could not be located.'), message: params.packageManager === 'pnpm' ? PNPM_NOT_FOUND_MESSAGE : `A working ${params.packageManager} installation could not be located.` };
     }
 
-    const checks: Array<{ id: string; status: 'passed' | 'failed'; message?: string }> = [];
-    const cancelled = (): boolean => params.signal?.aborted === true;
-    for (const script of params.scripts) {
-      if (cancelled()) return { status: 'cancelled', checks };
-      const outcome = await this.executeTask(
-        invocation,
-        params.cwd,
-        params.packageName,
-        buildVerificationScriptArgs(params.packageManager, script.scriptName),
-        `Packageawy: Verify ${script.scriptName}`,
-        `${params.packageManager} run ${script.scriptName}`,
-        params.signal,
-        false
-      );
-      if (!outcome.ok && outcome.status === 'unknown') return { status: 'unknown', checks, message: outcome.message };
-      if (cancelled()) return { status: 'cancelled', checks };
-      if (!outcome.ok) {
-        checks.push({ id: script.id, status: 'failed', message: outcome.message });
-        return { status: 'failed', checks, message: `Verification script ${script.scriptName} failed.` };
+    const checks: VerificationCheckResult[] = [];
+    const remaining = (start: number, reason: string): void => {
+      for (const script of params.scripts.slice(start)) checks.push({ id: script.id, scriptName: script.scriptName, status: 'not-run', reason });
+    };
+    for (const [index, script] of params.scripts.entries()) {
+      if (params.signal?.aborted) {
+        remaining(index, 'Cancelled before this script started.');
+        return { status: 'cancelled', checks };
       }
-      checks.push({ id: script.id, status: 'passed' });
+      const outcome = await this.executeTask(
+        invocation, params.cwd, params.packageName,
+        buildVerificationScriptArgs(params.packageManager, script.scriptName),
+        `Packageawy: Verify ${script.scriptName}`, `${params.packageManager} run ${script.scriptName}`, params.signal,
+        script.scriptName
+      );
+      const command = outcome.command;
+      checks.push({ id: script.id, scriptName: script.scriptName,
+        status: outcome.ok ? 'passed' : outcome.status === 'unknown' ? 'unknown' : 'failed',
+        ...(command === undefined ? {} : { commandId: command.id }),
+        ...(command?.exitCode === undefined ? {} : { exitCode: command.exitCode }),
+        ...(command?.terminalAvailable ? { terminalAvailable: true } : {}),
+        ...(!outcome.ok ? { message: outcome.message } : {}),
+      });
+      if (!outcome.ok || params.signal?.aborted) {
+        remaining(index + 1, params.signal?.aborted ? 'Cancelled before this script started.' : !outcome.ok && outcome.status === 'unknown' ? 'Stopped after command observation was lost.' : 'Stopped after an earlier failure.');
+        return { status: !outcome.ok && outcome.status === 'unknown' ? 'unknown' : params.signal?.aborted ? 'cancelled' : 'failed', checks,
+          message: !outcome.ok ? outcome.message : 'Verification was cancelled.' };
+      }
     }
     return { status: 'passed', checks };
   }
@@ -458,7 +479,7 @@ export class UpgradeExecutionSession {
     taskName: string,
     failureCommand: string,
     signal?: AbortSignal,
-    closeOnSuccess = true
+    scriptName?: string
   ): Promise<UpgradeRunOutcome> {
     // An argument array, never a shell string: `invocation.node` and every
     // element of `[invocation.npmCliJs, ...args]` reach the process as
@@ -475,11 +496,13 @@ export class UpgradeExecutionSession {
       scope: packageName,
     };
 
+    const commandId = randomUUID();
     await this.journal?.record(taskName, 'intent');
     this.onTaskState?.('running');
     // This timer only explains the wait. Visible writers have no deadline.
     const stillRunning = setTimeout(() => this.onTaskState?.('still-running'), STILL_RUNNING_THRESHOLD_MS);
     let successfulRun: RunningProcess | undefined;
+    let observedExitCode: number | undefined;
     const outcome = await new Promise<UpgradeRunOutcome>((resolve) => {
       let settled = false;
       // A Disposable only stops future events: disposing the
@@ -516,6 +539,8 @@ export class UpgradeExecutionSession {
           successfulRun = started;
           let disposable: Disposable | undefined;
           disposable = started.onDidExit((exitCode) => {
+            if (settled) return;
+            observedExitCode = exitCode;
             disposable?.dispose();
             if (disposable !== undefined) this.listeners.delete(disposable);
             finish(
@@ -541,7 +566,14 @@ export class UpgradeExecutionSession {
         }
       ).catch((error: unknown) => finish({ ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: error instanceof Error ? error.message : String(error) }));
     });
+    const command: ProjectCheckResult = {
+      id: commandId, kind: scriptName === undefined ? 'install' : 'script', command: failureCommand,
+      ...(scriptName === undefined ? {} : { scriptName }),
+      status: outcome.ok ? 'passed' : outcome.status === 'unknown' ? 'unknown' : 'failed',
+    };
+    if (observedExitCode !== undefined) command.exitCode = observedExitCode;
     let closeRequested = false;
+    let retained = false;
     try {
       clearTimeout(stillRunning);
       this.onTaskState?.('idle');
@@ -549,7 +581,7 @@ export class UpgradeExecutionSession {
         try { await this.journal?.record(taskName, 'finished'); }
         catch { return { ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: 'The task result could not be recorded.' }; }
       }
-      if (closeOnSuccess && outcome.ok && !signal?.aborted && !this.discoveryAbort.signal.aborted) {
+      if (outcome.ok && !signal?.aborted && !this.discoveryAbort.signal.aborted) {
         // Closing is cosmetic. It must never change settlement or recovery if the host refuses.
         try {
           if (successfulRun?.closeAfterSuccess !== undefined) {
@@ -558,9 +590,20 @@ export class UpgradeExecutionSession {
           }
         } catch { /* Leave the console open. */ }
       }
-      return outcome;
+      if (!outcome.ok && outcome.status !== 'unknown' && successfulRun?.reveal !== undefined) {
+        this.failedConsoles.set(commandId, successfulRun);
+        command.terminalAvailable = true;
+        retained = true;
+        // Retained handles only reveal consoles. They never stop a settled command.
+        if (this.failedConsoles.size > 64) {
+          const oldest = this.failedConsoles.keys().next().value!;
+          try { this.failedConsoles.get(oldest)?.release?.(); } catch { /* Leave open. */ }
+          this.failedConsoles.delete(oldest);
+        }
+      }
+      return { ...outcome, command };
     } finally {
-      if (!closeRequested) {
+      if (!closeRequested && !retained) {
         try { successfulRun?.release?.(); } catch { /* Keep the process and console open. */ }
       }
     }
@@ -568,6 +611,8 @@ export class UpgradeExecutionSession {
 
   dispose(): void {
     this.discoveryAbort.abort();
+    for (const run of this.failedConsoles.values()) { try { run.release?.(); } catch { /* Leave open. */ } }
+    this.failedConsoles.clear();
     for (const disposable of this.listeners) disposable.dispose();
     this.listeners.clear();
     // Settle every still-pending run (DISPOSED) so nothing awaits forever,

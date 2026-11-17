@@ -411,4 +411,25 @@ class ClientHandlersTest {
         sidecar.sendNotification("window/openExternal", mapOf("url" to "https://example.com"))
         assertEquals("openExternal:https://example.com", nextEvent())
     }
+    @Test
+    fun `failed process reveal uses exact id and returns false after disposal or release`() {
+        for (release in listOf(false, true)) {
+            val id = if (release) 901 else 900
+            host.immediateProcessExit = 7
+            call("process/start", mapOf("processId" to id, "executable" to "npm", "args" to listOf("run", "test"),
+                "cwd" to dir.toString(), "title" to "test", "scope" to "p$id"))
+            assertEquals("process:npm:run test:p$id", nextEvent())
+            assertEquals("process/didExit", notifications.poll(5, TimeUnit.SECONDS)?.first)
+            assertTrue(call("process/reveal", mapOf("processId" to id))!!.asBoolean)
+            assertEquals("process-revealed:p$id", nextEvent())
+            if (release) sidecar.sendNotification("process/release", mapOf("processId" to id))
+            else host.consoleDisposals.single().invoke()
+            assertFalse(call("process/reveal", mapOf("processId" to id))!!.asBoolean)
+            assertTrue(host.events.isEmpty())
+            assertEquals(0, handlers.retainedProcessCount)
+        }
+        assertFalse(call("process/reveal", mapOf("processId" to 999))!!.asBoolean)
+        assertThrows<ExecutionException> { call("process/reveal", mapOf("processId" to -1)) }
+    }
+
 }

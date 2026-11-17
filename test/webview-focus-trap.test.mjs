@@ -79,7 +79,7 @@ function fakeDialog(doc = fakeDocument()) {
   const container = new FakeElement(doc, 'dialog', { tabIndex: -1 });
   container.ownerDocument = doc;
   container.contains = (element) => element === container || inner.has(element);
-  container.querySelectorAll = () => [close, hidden, confirm];
+  container.querySelectorAll = selector => selector === 'details:not([open])' ? [] : [close, hidden, confirm];
   const press = (shiftKey) => {
     const event = {
       key: 'Tab',

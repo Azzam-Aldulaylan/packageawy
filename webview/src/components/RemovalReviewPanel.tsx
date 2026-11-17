@@ -1,3 +1,4 @@
+import { AnalysisLoading } from './AnalysisLoading.js';
 import type { ReactElement } from 'react';
 
 import type { PackageRow, RemovalAssessment, RemovalEvidence } from '../../../src/core/types.js';
@@ -585,15 +586,9 @@ export function RemovalReviewPanel({
   if (analysis === null || impactAnalyzing) {
     return (
       <div className="review-panel removal-review">
-        <div className="analysis-loading removal-review__loading" role="status" aria-live="polite">
-          <IconRefresh className="removal-review__loading-icon" aria-hidden="true" />
-          <p className="analysis-loading__title">Analyzing removal impact…</p>
-          <p className="analysis-loading__detail">
-            {impactAnalyzing && removalImpact.total > 0
-              ? `${removalImpact.scanned} of ${removalImpact.total} files checked`
-              : 'Checking dependency relationships and transaction details…'}
-          </p>
-        </div>
+        <AnalysisLoading label="Analyzing removal impact…" detail={impactAnalyzing && removalImpact.total > 0
+          ? `${removalImpact.scanned} of ${removalImpact.total} files checked`
+          : 'Checking dependency relationships and transaction details…'} />
       </div>
     );
   }

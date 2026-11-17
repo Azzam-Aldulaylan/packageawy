@@ -66,8 +66,8 @@ for (const manager of ['npm', 'pnpm']) test(`concurrent ${manager} preparation, 
   const [prepared, styled, verified] = await Promise.all([first, restyle, verification]);
   assert.equal(prepared.ok && styled.ok, true);
   assert.equal(verified.status, 'passed');
-  assert.deepEqual(await prepared.execute(), { ok: true });
-  assert.deepEqual(await styled.execute(), { ok: true });
+  assert.equal((await prepared.execute()).ok, true);
+  assert.equal((await styled.execute()).ok, true);
   assert.equal(lookups, 1);
   assert.equal((await session.prepareLockfileReconciliation({ cwd: '/project', packageManager: manager, ignoreScripts: true })).ok, true);
   assert.equal(lookups, 2, 'a reinstall or subsequent apply resolves fresh');

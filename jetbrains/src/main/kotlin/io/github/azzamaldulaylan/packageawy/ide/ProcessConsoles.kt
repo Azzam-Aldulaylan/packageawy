@@ -17,6 +17,7 @@ import io.github.azzamaldulaylan.packageawy.host.ProcessStart
 import io.github.azzamaldulaylan.packageawy.host.SuccessfulProcess
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -69,6 +70,9 @@ class ProcessConsoles(private val project: Project) {
                 handler.destroyProcess()
             }
 
+            override fun reveal(): CompletableFuture<Boolean> = completion.reveal { descriptor ->
+                RunContentManager.getInstance(project).showRunContent(DefaultRunExecutor.getRunExecutorInstance(), descriptor)
+            }
             override fun closeAfterSuccess() = completion.closeAfterSuccess()
             override fun onConsoleDisposed(listener: () -> Unit) = completion.onDisposed(listener)
         }
@@ -147,6 +151,16 @@ internal class ConsoleCompletion<T : Any>(
     fun shown(value: T) { descriptor = value }
     fun exited(code: Int?) { exitCode = code }
     fun cancel() { cancelled.set(true) }
+
+    fun reveal(show: (T) -> Unit): CompletableFuture<Boolean> {
+        val result = CompletableFuture<Boolean>()
+        schedule {
+            val value = descriptor
+            if (!available() || value == null || tabs[scope] !== value) result.complete(false)
+            else try { show(value); result.complete(true) } catch (_: Exception) { result.complete(false) }
+        }
+        return result
+    }
 
     fun closeAfterSuccess() {
         val value = descriptor ?: return

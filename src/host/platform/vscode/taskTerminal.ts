@@ -54,7 +54,7 @@ export class TaskTerminal {
   finished(exitCode: number | undefined): void {
     this.ended = true;
     this.exitCode = exitCode;
-    if (exitCode !== 0) this.dispose();
+    if (exitCode === undefined) this.dispose();
   }
 
   /** Called only after Packageawy has also settled and recorded a successful run. */
@@ -85,6 +85,16 @@ export class TaskTerminal {
     } finally {
       this.dispose();
     }
+  }
+
+  async reveal(): Promise<boolean> {
+    await this.capture();
+    const terminal = this.terminal;
+    if (this.invalid || terminal === undefined || !vscode.window.terminals.includes(terminal)) return false;
+    const pid = await terminal.processId;
+    if (this.invalid || pid !== this.pid || [...this.pendingStarts].some(other => other !== this.execution)) return false;
+    terminal.show();
+    return true;
   }
 
   dispose(): void {

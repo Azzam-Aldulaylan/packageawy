@@ -1,3 +1,4 @@
+import type { ProjectCheckResult } from './webviewProtocol.js';
 import { isExpectedFsError } from './expectedFsError.js';
 import { precheckRestore } from './restorePrecheck.js';
 
@@ -50,7 +51,7 @@ export interface UpgradeTransactionFileAdapter {
   ): Promise<CompareAndSwapResult>;
 }
 
-export type InstallExecutionResult =
+export type InstallExecutionResult = (
   | { status: 'succeeded'; exitCode?: number }
   | {
       status: 'failed';
@@ -59,7 +60,7 @@ export type InstallExecutionResult =
       exitCode?: number | null;
     }
   | { status: 'cancelled'; message: string; exitCode?: number | null }
-  | { status: 'unknown'; message: string };
+  | { status: 'unknown'; message: string }) & { commands?: readonly ProjectCheckResult[] };
 
 /**
  * Writes an install step makes to a host-staged file go through this, so the
@@ -83,7 +84,12 @@ export interface UpgradeInstallExecutor {
 
 export interface VerificationCheckResult {
   id: string;
-  status: 'passed' | 'failed' | 'cancelled';
+  status: 'passed' | 'failed' | 'cancelled' | 'not-run' | 'unknown';
+  scriptName?: string;
+  commandId?: string;
+  exitCode?: number;
+  reason?: string;
+  terminalAvailable?: boolean;
   message?: string;
 }
 
@@ -152,7 +158,7 @@ export type ExactFileStageResult =
     };
 
 export type InstallResult =
-  | { status: 'not-run' }
+  | { status: 'not-run'; commands?: readonly ProjectCheckResult[] }
   | InstallExecutionResult;
 
 export type VerificationResult =

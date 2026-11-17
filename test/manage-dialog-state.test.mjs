@@ -192,5 +192,5 @@ test('dismissing a removal error closes Manage, and a later restore does not reo
 
 test('the app keeps a removal error in the dialog that started it', () => {
   assert.match(app, /setManageRemoval\(manageRemovalAfterError\(/);
-  assert.match(app, /\{ phase: 'error', error: heldRemoval\.error \}/);
+  assert.match(app, /\{ phase: 'error', error: heldRemoval\.error,.*heldRemoval\.failureDetails/);
 });

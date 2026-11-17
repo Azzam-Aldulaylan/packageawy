@@ -542,3 +542,16 @@ test('process IDs use safe positive integers at the protocol boundaries', () => 
     assert.deepEqual(parseProcessDidExit({ processId, exitCode: 0 }), { processId, exitCode: 0 });
   }
 });
+
+test('failed run reveal uses the process identity and handles a closed JetBrains console', async t => {
+  let open = true;
+  const client = fakeClient({ 'process/reveal': params => { assert.equal(params.processId, 1); return open; } });
+  const platform = new RpcPlatform(client, init()); t.after(() => platform.dispose());
+  const run = await platform.runProcess({ executable: process.execPath, args: ['run', 'test'], cwd: process.cwd(), title: 'Test', scope: 'pkg' });
+  client.emit('process/didExit', { processId: 1, exitCode: 7 });
+  assert.equal(await run.reveal(), true);
+  open = false; assert.equal(await run.reveal(), false);
+  run.release(); assert.equal(await run.reveal(), false);
+  assert.equal(client.requests.filter(request => request.method === 'process/reveal').length, 2);
+  assert.equal(client.notifications.some(message => message.method === 'process/terminate'), false);
+});

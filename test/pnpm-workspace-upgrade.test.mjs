@@ -30,14 +30,14 @@ for (const scenario of ['workspace root', 'workspace member', 'standalone']) {
         { packageName: 'pkg', target: '2.0.0', classification: 'prod' },
         { packageName: 'other', target: '2.0.0', classification: 'prod' },
       ]]) {
-        assert.deepEqual(await session.run({
+        assert.equal((await session.run({
           cwd, importerId, packageManager, packageName: 'pkg', currentVersion: '1.0.0',
           target: '2.0.0', classification: 'prod', ignoreScripts: true, coordinatedChanges,
-        }), { ok: true });
+        })).ok, true);
       }
       const removal = await session.prepareManifestReconciliation({ cwd, importerId, packageManager, ignoreScripts: true });
       assert.equal(removal.ok, true);
-      assert.deepEqual(await removal.execute(), { ok: true });
+      assert.equal((await removal.execute()).ok, true);
       for (const request of requests.splice(0)) {
         assert.equal(request.cwd, cwd);
         assert.equal(request.args.includes('-w'), packageManager === 'pnpm' && scenario === 'workspace root');

@@ -4513,38 +4513,51 @@ button {
   gap: 0.4rem;
 }
 
-.upgrade-tab .upgrade-compatibility__summary {
-  margin-bottom: 0.8rem;
+.upgrade-compatibility {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
-.upgrade-compatibility__findings {
-  margin-top: 0.85rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid color-mix(
-    in srgb,
-    var(--upgrade-disclosure-tone, var(--vscode-charts-purple, #a78bfa)) 28%,
-    var(--vscode-panel-border, rgba(128, 128, 128, 0.2))
-  );
+.upgrade-compatibility__findings,
+.compatibility-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.upgrade-compatibility > .usage-card__head,
+.upgrade-compatibility__findings-heading,
+.upgrade-tab .upgrade-compatibility__summary,
+.compatibility-findings > .analysis-card__hint,
+.compatibility-findings > .analysis-card__more,
+.compatibility-findings > .outcome-status {
+  margin: 0;
 }
 
 .upgrade-compatibility__findings-heading {
-  margin: 0 0 0.55rem;
   color: var(--vscode-foreground);
   font-size: 0.72rem;
   font-weight: 600;
 }
 
-.upgrade-compatibility__findings .finding-list {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0.5rem;
+/* One reading column keeps warnings primary and resolver evidence together. */
+.compatibility-findings > .finding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
   margin: 0;
 }
 
-@media (min-width: 70rem) {
-  .upgrade-compatibility__findings .finding-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.compatibility-findings > .outcome-status {
+  padding: 0.75rem;
+  border: 1px solid transparent;
+}
+
+.compatibility-findings .outcome-status > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .upgrade-tab .hygiene-strip__item {
@@ -5279,10 +5292,6 @@ button {
   .removal-check,
   .removal-impact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .upgrade-tab .hygiene-strip__item--compat:last-child {
-    grid-column: 1 / -1;
   }
 
   .removal-check__item:nth-child(2) {
@@ -6607,8 +6616,15 @@ button {
   text-align: center;
 }
 
+.analysis-loading__icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--vscode-foreground);
+}
+
 .analysis-loading__title {
-  margin: 0.85rem 0 0.2rem;
+  font-size: 1em;
+  margin: 0.75rem 0 0.25rem;
   font-weight: 600;
 }
 
@@ -7114,6 +7130,13 @@ button {
 
 .banner__icon--spin {
   animation: dashboard-refresh-spin 1.2s linear infinite;
+}
+
+/* Must follow the rule above: the earlier reduced-motion block loses to it in the cascade. */
+@media (prefers-reduced-motion: reduce) {
+  .banner__icon--spin {
+    animation: none;
+  }
 }
 
 /* ---------------------------------------------------------- Smart Cleanup */
@@ -9050,7 +9073,7 @@ body.vscode-high-contrast-light .upgrade-decision {
 .recovery__action h3 { font-size: 1rem; }
 .recovery__action .button { margin-top: 4px; max-width: 100%; white-space: normal; }
 .recovery__contents summary:focus-visible, .recovery h1:focus-visible, .recovery h3:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
-.smart-cleanup-results__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.smart-cleanup-results__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .smart-cleanup-results__actions .button { white-space: normal; }
 .smart-cleanup-results__actions .button:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
 
@@ -9111,4 +9134,56 @@ body.vscode-high-contrast-light .upgrade-decision {
 .packages .severity {
   justify-content: flex-start;
   padding-inline: var(--security-badge-inset);
+}
+
+/* Shared dependency change results. Uses the same theme tokens in both editors. */
+.change-result { display: grid; gap: 20px; min-width: 0; }
+.change-result__dismiss { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.change-result__banner { margin: 0; padding: 16px; border-radius: 6px; }
+.change-result__banner .banner__text { display: grid; gap: 5px; }
+.change-result__banner strong { font-size: 1.15em; font-weight: 650; }
+.change-result__section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.change-result__section-title h4 { font-size: 1em; margin: 0; }
+.change-result__section-title > span { color: var(--vscode-descriptionForeground); font-size: .9em; }
+.change-result__rows { border: 1px solid var(--vscode-contrastBorder, var(--dashboard-line)); border-radius: 6px; overflow: hidden; }
+.change-result__package, .change-result__check { display: flex; align-items: center; gap: 12px; padding: 13px 14px; min-width: 0; }
+.change-result__package { flex-wrap: wrap; justify-content: space-between; }
+.change-result__package + .change-result__package, .change-result__check + .change-result__check { border-top: 1px solid var(--vscode-contrastBorder, var(--dashboard-line)); }
+.change-result__package-name, .change-result__versions { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.change-result__package-name svg { color: var(--vscode-descriptionForeground); }
+.change-result__package code, .change-result__facts code { overflow-wrap: anywhere; }
+.change-result__versions { margin-left: auto; flex-wrap: wrap; font-size: .95em; }
+.change-result__versions > code:first-child { color: var(--vscode-descriptionForeground); }
+.change-result svg { flex-shrink: 0; width: 16px; height: 16px; }
+.change-result__package-detail { flex-basis: 100%; padding-left: 26px; color: var(--vscode-descriptionForeground); }
+.change-result__check { align-items: flex-start; flex-wrap: wrap; }
+.change-result__check > svg { margin-top: 2px; color: var(--vscode-descriptionForeground); }
+.change-result__check-label { display: grid; gap: 4px; flex: 1 1 10ch; min-width: 0; }
+.change-result__check-label strong { font-weight: 550; }
+.change-result__check-label code, .change-result__check-label > span { font-size: .9em; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+.change-result__check-status { display: grid; justify-items: end; gap: 6px; margin-left: auto; }
+.change-result__check-status .status-badge { display: inline-flex; gap: 5px; align-items: center; }
+.change-result__check-status > span[role] { font-size: .9em; }
+.change-result__verification, .change-result__notice { display: flex; align-items: flex-start; gap: 8px; color: var(--vscode-descriptionForeground); margin: 10px 0 0; line-height: 1.5; }
+.change-result__notice { margin: 0; }
+.change-result__verification svg, .change-result__notice svg { margin-top: 2px; }
+.change-result__details { border-top: 1px solid var(--vscode-contrastBorder, var(--dashboard-line)); }
+.change-result__details details { border-bottom: 1px solid var(--vscode-contrastBorder, var(--dashboard-line)); padding: 0 0 2px; }
+.change-result__details summary { padding: 13px 0; cursor: pointer; }
+.change-result__details summary > span { float: right; color: var(--vscode-descriptionForeground); font-size: .9em; margin-left: 10px; }
+.change-result__details details > p, .change-result__facts { margin: 8px 0 14px; line-height: 1.5; }
+.change-result__facts { display: grid; gap: 8px; }
+.change-result__facts > div { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 2fr); gap: 12px; }
+.change-result__facts dt { color: var(--vscode-descriptionForeground); }
+.change-result__facts dd { margin: 0; overflow-wrap: anywhere; }
+.change-result__backup { padding-top: 2px; }
+.change-result__backup strong { display: flex; align-items: center; gap: 8px; font-weight: 550; }
+.change-result__backup p { color: var(--vscode-descriptionForeground); font-size: .9em; margin: 7px 0 0 24px; line-height: 1.5; }
+.change-result__actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding-top: 16px; border-top: 1px solid var(--vscode-contrastBorder, var(--dashboard-line)); }
+.change-result__actions > [role="status"], .change-result__actions > .banner { order: 1; flex-basis: 100%; margin: 0; }
+.change-result button:focus-visible, .change-result summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+.change-result [tabindex="-1"]:focus { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+@media (max-width: 480px) {
+  .change-result__section-title { flex-wrap: wrap; }
+  .change-result__facts > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
 }

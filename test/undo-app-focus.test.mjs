@@ -147,7 +147,7 @@ for (const operation of ['cleanup', 'removal', 'upgrade', 'remediation']) for (c
 const removalResult = { undoId: id, analysisId: 'removal', packages: ['react'], outcome: 'verified', verification: 'not-configured', rollback: 'not-needed', message: 'Removed.' };
 const upgradeResult = { undoId: id, package: 'react', refreshId: 'refresh', install: 'succeeded', application: 'applied', verification: 'not-configured', refreshingDerivedData: false,
   changes: [{ packageName: 'react', previousVersion: '18.2.0', requestedVersion: '18.3.0', currentVersion: '18.3.0', declaredRange: '^18.0.0', classification: 'prod' }] };
-const plan = { rootPackage: 'react', analysisId: 'fix', files: {}, packageManager: 'npm' };
+const plan = { rootPackage: 'react', analysisId: 'fix', files: {}, changes: [], packageManager: 'npm' };
 const fixResult = { undoId: id, outcome: 'unverified', verification: 'not-configured', rollback: 'not-needed', message: 'Fix applied.', resolvedAdvisories: [], remainingAdvisories: [], introducedAdvisories: [] };
 const panels = {
   removal: h(RemovalResultPanel, { row, result: removalResult }),

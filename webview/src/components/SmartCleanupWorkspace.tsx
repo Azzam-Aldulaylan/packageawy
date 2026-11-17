@@ -807,25 +807,36 @@ function cleanupResultSummary(result: SmartCleanupResult, phase: SmartCleanupSta
   return { completedRemovals, headline, headlineDetail, verificationDetail, verificationLabel };
 }
 
+function ResultActions({ restore, onRestoreFiles, onAnalyze, canClose }: {
+  restore: SmartCleanupRestoreState | null;
+  onRestoreFiles: ((analysisId: string) => void) | undefined;
+  onAnalyze(): void;
+  canClose: boolean;
+}): ReactElement {
+  const change = useContext(DependencyChangeContext);
+  const undo = useContext(UndoBackupContext);
+  const blocked = change.blocked && !change.protocolMismatch;
+  const undoAvailable = restore?.status === 'available';
+  return (
+    <div className="smart-cleanup-results__actions">
+      {blocked ? <button type="button" className="button button--secondary" onClick={change.openRecovery}>{change.retryDiscovery ? 'Retry discovery' : 'Open recovery'}</button> : null}
+      {!blocked && undoAvailable && onRestoreFiles !== undefined ? <button type="button" className="button button--secondary" data-undo-id={restore.analysisId} data-undo-location="result" disabled={undo.openingId != null} aria-busy={undo.openingId === restore.analysisId} onClick={() => onRestoreFiles(restore.analysisId)}>Undo cleanup</button> : null}
+      {restore?.status === 'restoring' ? <button type="button" className="button button--secondary" disabled aria-busy="true">Restoring dependency files…</button> : null}
+      <button type="button" className="button button--primary" disabled={!canClose || change.blocked} onClick={onAnalyze}><IconRefresh />Analyze current project</button>
+    </div>
+  );
+}
+
 function ResultView({
   result,
   phase,
   restore,
-  onRestoreFiles,
-  onAnalyze,
-  onClose,
-  canClose,
 }: {
-  onAnalyze(): void;
-  onClose(): void;
-  canClose: boolean;
   result: SmartCleanupResult;
   phase: SmartCleanupState['phase'];
   restore: SmartCleanupRestoreState | null;
-  onRestoreFiles: ((analysisId: string) => void) | undefined;
 }): ReactElement {
   const change = useContext(DependencyChangeContext);
-  const undo = useContext(UndoBackupContext);
   const blocked = change.blocked && !change.protocolMismatch;
   const resolved = restore?.status === 'resolved';
   const restoredLater = restore?.status === 'restored';
@@ -847,13 +858,6 @@ function ResultView({
           {!blocked && !restoredLater && result.rollback === 'restored' ? <p>The saved package.json and lockfile were restored. Script side effects were not restored.</p> : null}
           {!blocked && phase === 'complete' && !restoredLater && !resolved ? <p>{verificationDetail}</p> : null}
           {!blocked && !restoredLater && !resolved && result.metricsNote !== undefined ? <p><IconHelpCircle /> {result.metricsNote}</p> : null}
-          <div className="smart-cleanup-results__actions">
-            {blocked ? <button type="button" className="button button--primary" onClick={change.openRecovery}>{change.retryDiscovery ? 'Retry discovery' : 'Open recovery'}</button> : null}
-            {!blocked && undoAvailable && onRestoreFiles !== undefined ? <button type="button" className="button button--secondary" data-undo-id={restore.analysisId} data-undo-location="result" disabled={undo.openingId != null} aria-busy={undo.openingId === restore.analysisId} onClick={() => onRestoreFiles(restore.analysisId)}>Undo cleanup</button> : null}
-            {restore?.status === 'restoring' ? <button type="button" className="button button--secondary" disabled aria-busy="true">Restoring dependency files…</button> : null}
-            <button type="button" className={`button button--${blocked ? 'secondary' : 'primary'}`} disabled={!canClose || change.blocked} onClick={onAnalyze}><IconRefresh />Analyze current project</button>
-            <button type="button" className="button button--secondary" disabled={!canClose} onClick={onClose}>Close</button>
-          </div>
           {undoAvailable ? <UndoChangeFeedback undoId={restore.analysisId} /> : null}
           {restore?.status === 'refused' ? <p role="status">{restore.message}</p> : null}
         </div>
@@ -1100,12 +1104,14 @@ export function SmartCleanupWorkspace({
           ) : null}
           {state.phase === 'executing' || state.phase === 'rolling-back' ? <ExecutionView state={state} /> : null}
           {showResult && state.result !== null
-            ? <ResultView result={state.result} phase={state.phase} restore={state.restore} onRestoreFiles={onRestoreFiles} onAnalyze={onAnalyze} onClose={onClose} canClose={canClose} />
+            ? <ResultView result={state.result} phase={state.phase} restore={state.restore} />
             : null}
           {showTerminal && !showResult ? <TerminalView state={state} /> : null}
         </div>
 
-        {showResult ? null : <footer className="smart-cleanup-footer">
+        {showResult ? <footer className="smart-cleanup-footer">
+          <ResultActions restore={state.restore} onRestoreFiles={onRestoreFiles} onAnalyze={onAnalyze} canClose={canClose} />
+        </footer> : <footer className="smart-cleanup-footer">
           {state.phase === 'unknown' ? (
             <button type="button" className="button button--secondary" onClick={onClose}>Close</button>
           ) : null}

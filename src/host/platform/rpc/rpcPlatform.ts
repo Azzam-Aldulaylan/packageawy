@@ -378,6 +378,7 @@ export class RpcPlatform implements HostPlatform {
     }
     let closeRequested = false;
     return {
+      reveal: async () => !this.disposed && !closeRequested && await this.connection.sendRequest(Methods.processReveal, { processId }) === true,
       release: () => {
         if (this.disposed || closeRequested) return;
         closeRequested = true;

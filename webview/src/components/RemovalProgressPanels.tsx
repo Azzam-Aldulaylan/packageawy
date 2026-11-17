@@ -1,11 +1,11 @@
-import { UndoChangeButton } from './UndoChangeButton.js';
+import { ChangeResult } from './ChangeResult.js';
 import { useContext } from 'react';
 import { DependencyChangeContext } from './DependencyChangeStatus.js';
 import type { ReactElement } from 'react';
 
 import type { PackageRow } from '../../../src/core/types.js';
 import type { RemoveProgressPhase, RemoveResultPresentation } from '../../../src/host/webviewProtocol.js';
-import { IconRefresh } from '../icons.js';
+import { AnalysisLoading } from './AnalysisLoading.js';
 
 /**
  * Which removal view the Manage dialog shows. `review` is the normal Removal
@@ -39,8 +39,6 @@ const STEPS: ReadonlyArray<{ phase: RemoveProgressPhase | null; label: string; r
   { phase: 'refreshing', label: 'Refresh dependency data', running: 'Refreshing' },
 ];
 
-const STATUS_LABEL: Record<StepStatus, string> = { complete: 'Done', running: 'In progress', waiting: 'Waiting' };
-
 /**
  * Step states for a running removal. Only phases the host reported are
  * marked done or in progress. `null` means the transaction started but no
@@ -68,32 +66,14 @@ export function RemovalRunningPanel({
   const change = useContext(DependencyChangeContext);
   const steps = removalProgressSteps(progress);
   const current = steps.find((step) => step.status === 'running');
-  return (
-    <div className="upgrade-tab removal-running">
-      <section className="analysis-card analysis-card--full" aria-labelledby="removal-running-heading">
-        <h3 className="analysis-card__title" id="removal-running-heading" tabIndex={-1}>Removing {row.name}</h3>
-        {change.task !== 'still-running' && !change.blocked ? <p className="analysis-card__pending-label" role="status" aria-live="polite">
-          <IconRefresh className="banner__icon--spin" aria-hidden="true" /> {current?.running ?? 'Working'}…
-        </p> : null}
-        <ul className="verification-steps">
-          {steps.map((step) => (
-            <li className="verification-steps__item" key={step.label}>
-              <span>{step.label}</span>
-              <span className="status-badge status-badge--neutral">{STATUS_LABEL[step.status]}</span>
-            </li>
-          ))}
-        </ul>
-        <p className="analysis-card__hint">
-          This dialog stays open until the removal finishes. A restore point protects your dependency files.
-        </p>
-      </section>
-    </div>
-  );
+  return <AnalysisLoading label={`Removing ${row.name}...`} headingId="removal-running-heading"
+    paused={change.task === 'still-running' || change.blocked}
+    announcement={`${current?.running ?? 'Working'}…`} />;
 }
 
 export function removalResultTitle(result: RemoveResultPresentation): string {
   if (result.outcome === 'rolled-back') return 'Removal rolled back';
-  return result.verification === 'passed' ? 'Removal verified' : 'Package removed';
+  return result.verification === 'failed' ? 'Removal done with a warning' : 'Removal done';
 }
 
 export function removalInstallLabel(result: RemoveResultPresentation): string {
@@ -114,45 +94,23 @@ export function RemovalResultPanel({
   row,
   result,
 }: {
-  row: PackageRow;
+  row?: Pick<PackageRow, 'name' | 'current' | 'range'>;
   result: RemoveResultPresentation;
 }): ReactElement {
   const kept = result.outcome !== 'rolled-back';
-  const version = row.current ?? row.range;
-  return (
-    <div className="upgrade-tab" role="status" aria-live="polite">
-      <section className="analysis-card analysis-card--full" aria-labelledby="removal-result-heading">
-        <h3 className="analysis-card__title" id="removal-result-heading" tabIndex={-1}>{removalResultTitle(result)}</h3>
-        {result.packages.map((name) => (
-          <p key={name} className="analysis-card__hint">
-            <code>{name}</code>
-            {name === row.name ? <> <code>{version}</code></> : null}
-            {kept ? ' was removed from package.json and the lockfile.' : ' is still in package.json.'}
-          </p>
-        ))}
-        <dl className="manage-glance">
-          <div className="manage-glance__row"><dt>Install</dt><dd>{removalInstallLabel(result)}</dd></div>
-          <div className="manage-glance__row"><dt>Dependency files</dt><dd>{kept ? 'Updated' : 'Restored'}</dd></div>
-          <div className="manage-glance__row"><dt>Verification</dt><dd>{removalVerificationLabel(result)}</dd></div>
-          <div className="manage-glance__row">
-            <dt>Rollback</dt>
-            <dd>{result.rollback === 'succeeded' ? 'Restore point applied' : 'Not needed'}</dd>
-          </div>
-        </dl>
-        <UndoChangeButton undoId={result.undoId} />
-        {kept ? null : (
-          <p className="analysis-card__hint">
-            {result.message}
-          </p>
-        )}
-        {kept && result.verification !== 'passed' ? (
-          <p className="analysis-card__hint">
-            Build and test checks did not confirm this change. Run your project checks before you commit.
-          </p>
-        ) : null}
-      </section>
-    </div>
-  );
+  const version = row?.current ?? row?.range;
+  return <ChangeResult flow="Removal" title={removalResultTitle(result)} headingId="removal-result-heading"
+    summary={`${result.packages.length} direct ${result.packages.length === 1 ? 'package' : 'packages'} ${kept ? 'removed' : 'restored'}. ${result.verification === 'passed' ? 'Selected project checks exited successfully.' : result.verification === 'failed' && kept ? 'A project check failed. Changes were kept.' : 'Project checks did not confirm this change.'}`}
+    warning={result.verification === 'failed'}
+    packages={result.packages.map(name => ({ name, ...(name === row?.name && version !== undefined ? { from: version } : {}), status: kept ? 'Direct entry removed' : 'Restored' }))}
+    {...(result.checks === undefined ? {} : { checks: result.checks })} {...(result.undoId === undefined ? {} : { undoId: result.undoId })}
+    message={result.message}
+    facts={[
+      { label: 'Install', value: removalInstallLabel(result) },
+      { label: 'Dependency files', value: kept ? 'package.json and the lockfile updated' : 'package.json and the lockfile restored' },
+      { label: 'Verification', value: removalVerificationLabel(result) },
+      { label: 'Rollback', value: result.rollback === 'succeeded' ? 'Restore point applied' : 'Not needed' },
+    ]} />;
 }
 
 export function removalRollbackLabel(code: string): string {
@@ -168,23 +126,25 @@ export function removalRollbackLabel(code: string): string {
 export function RemovalErrorPanel({
   row,
   error,
+  details,
 }: {
-  row: PackageRow;
+  row?: Pick<PackageRow, 'name' | 'current' | 'range'>;
+  details?: import('../../../src/host/webviewProtocol.js').RemovalFailureDetails;
   error: { code: string; message: string };
 }): ReactElement {
-  return (
-    <div className="upgrade-tab" role="alert">
-      <section className="analysis-card analysis-card--full" aria-labelledby="removal-error-heading">
-        <h3 className="analysis-card__title" id="removal-error-heading" tabIndex={-1}>Removal did not finish</h3>
-        <p className="analysis-card__hint">{error.message}</p>
-        <dl className="manage-glance">
-          <div className="manage-glance__row"><dt>Package</dt><dd><code>{row.name}</code> <code>{row.current ?? row.range}</code></dd></div>
-          <div className="manage-glance__row"><dt>Rollback</dt><dd>{removalRollbackLabel(error.code)}</dd></div>
-        </dl>
-        <p className="analysis-card__hint">
-          Check package.json and the lockfile before you install again. This package no longer appears in the project.
-        </p>
-      </section>
-    </div>
-  );
+  const notStarted = details?.completion === 'not-started';
+  const restored = details?.completion === 'rolled-back';
+  const recovery = !notStarted && !restored;
+  return <ChangeResult flow="Removal" title={notStarted ? 'Removal did not start' : restored ? 'Removal rolled back' : 'Removal partly failed'} headingId="removal-error-heading" warning error={recovery} blocked={recovery}
+    summary={notStarted ? 'No dependency files were changed by this removal.' : restored ? 'Your dependency files were restored.' : 'The removal did not finish. Current dependency files are not confirmed.'}
+    packages={(details?.packages ?? (row === undefined ? [] : [row.name])).map(name => ({ name, ...(name === row?.name && row !== undefined ? { from: row.current ?? row.range } : {}), status: notStarted ? 'Not removed' : restored ? 'Restored' : 'Not confirmed' }))}
+    {...(details === undefined ? {} : { checks: details.checks })}
+    message={error.message}
+    facts={[
+      { label: 'Error', value: error.code },
+      { label: 'Install', value: details?.install ?? 'Not confirmed' },
+      { label: 'Verification', value: details?.verification ?? 'Not confirmed' },
+      { label: 'Rollback', value: notStarted ? 'Not needed' : restored ? 'Dependency files restored' : removalRollbackLabel(error.code) },
+      { label: 'Dependency files', value: notStarted ? 'No files changed by this removal. Analyze project before trying again.' : restored ? 'package.json and the lockfile restored' : details === undefined ? 'Check package.json and the lockfile before you install again. This package no longer appears in the project.' : 'Check package.json and the lockfile before you install again.' },
+    ]} />;
 }

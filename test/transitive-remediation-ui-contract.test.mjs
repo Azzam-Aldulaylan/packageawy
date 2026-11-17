@@ -56,17 +56,16 @@ test('progress and terminal states keep recovery inside the manage workspace', (
     'Checking that the vulnerabilities are resolved',
     'Running project verification',
     'Restoring the previous dependency state',
-    'Transitive fix applied and verified',
-    'Partial transitive fix applied',
+    'Transitive fix done',
+    'Transitive fix done with a warning',
     'Changes rolled back',
-    'Fix applied but not verified',
     'Recovery required',
   ]) {
     assert.match(component, new RegExp(copy));
   }
   assert.match(app, /phase: 'stale', plan, message: incoming\.message/);
   assert.match(app, /phase: 'result', plan, result: incoming\.result/);
-  assert.match(component, /action: \{ label: 'Check again', onClick: onAnalyze/);
+  assert.match(component, /<ChangeResult flow="Transitive fix"/);
   assert.match(app, /state\.phase === 'applying' \|\| state\.phase === 'result'/);
   assert.match(overview, /hasEligibleTransitiveFix\(row\) \|\| remediation !== undefined/);
 });

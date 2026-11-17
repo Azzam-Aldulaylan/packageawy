@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react';
+import { AnalysisLoading } from './AnalysisLoading.js';
 import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
 import { upgradeReviewHasIncompleteChecks } from '../../../src/host/upgradeReviewUiState.js';
 
@@ -11,8 +12,8 @@ export function UpgradeSummarySkeleton(): ReactElement {
 
 /** Static placeholders respect reduced motion without a separate animation mode. */
 export function UpgradeAnalysisLoading(): ReactElement {
-  return <div className="upgrade-tab" aria-busy="true">
-    <p className="analysis-loading__detail">Checking compatibility, security and project files</p>
+  return <div className="upgrade-tab">
+    <AnalysisLoading label="Analyzing upgrade..." detail="Checking compatibility, security and project files" />
     <div className="upgrade-tab__details" aria-hidden="true">
       {['Dependency compatibility', 'Project compatibility', 'Security impact', 'Planned dependency changes', 'Verification'].map((label) => (
         <div className="upgrade-section-skeleton" key={label}>

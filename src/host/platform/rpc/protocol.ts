@@ -200,6 +200,7 @@ export const Methods = {
   processTerminate: 'process/terminate',
   processSucceeded: 'process/succeeded',
   processRelease: 'process/release',
+  processReveal: 'process/reveal',
   openFile: 'window/openFile',
   openExternal: 'window/openExternal',
   openSettings: 'window/openSettings',

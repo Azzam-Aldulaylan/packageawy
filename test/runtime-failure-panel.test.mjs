@@ -173,7 +173,7 @@ test('every webview message type is classified as change-starting or read-only',
   // an internal error.
   const readOnly = new Set([
     'inspect-recovery', 'start-recovery', 'apply-recovery', 'dismiss-recovery',
-    'ready', 'rendered', 'refresh', 'change-project', 'load-upgrade-targets', 'cancel-upgrade-targets', 'upgrade',
+    'ready', 'rendered', 'refresh', 'reveal-check-terminal', 'change-project', 'load-upgrade-targets', 'cancel-upgrade-targets', 'upgrade',
     'bulk-upgrade', 'bulk-remove', 'smart-cleanup-remove', 'open-advisory', 'cancel-upgrade', 'retry-upgrade-enrichment',
     'cancel-remove', 'configure-verification', 'configure-advisory-check', 'analyze-remediation', 'cancel-remediation',
     'retry-remediation', 'cancel-remediation-analysis', 'where-used', 'reanalyze-usage',

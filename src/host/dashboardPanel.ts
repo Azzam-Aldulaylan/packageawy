@@ -813,6 +813,7 @@ export class DashboardPanel {
   }
 
   private async handleOtherMessage(message: Exclude<WebviewToHostMessage, { type: 'ready' }>): Promise<void> {
+    if (message.type === 'reveal-check-terminal') { await this.upgradeCoordinator.revealCheckTerminal(message.commandId); return; }
     if (message.type === 'inspect-recovery') {
       if (message.id === undefined && (this.recoveryInspectionPending || this.recoveryInspectionScheduled)) this.scheduleRecoveryInspection();
       else await this.upgradeCoordinator.recovery.inspect(message.id);

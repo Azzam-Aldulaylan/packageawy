@@ -29,6 +29,11 @@ import { blocker } from './helpers/removal-project.mjs';
 
 const require = createRequire(import.meta.url);
 const bundle = await build({ stdin: { contents: `
+  export { ManageDependencyModal } from './webview/src/components/ManageDependencyModal.tsx';
+  export { CompatibilityCheckCard } from './webview/src/components/UpgradeAnalysisCards.tsx';
+  export { DependencyChangeContext } from './webview/src/components/DependencyChangeStatus.tsx';
+  export { RemoveAnalysisModal } from './webview/src/components/RemoveAnalysisModal.tsx';
+  export { TransitiveFixReview } from './webview/src/components/TransitiveFixReview.tsx';
   export { UpgradeReviewPanel } from './webview/src/components/UpgradeReviewPanel.tsx';
   export { UpgradeAnalysisModal } from './webview/src/components/UpgradeAnalysisModal.tsx';
   export { UpgradeReviewAnnouncement } from './webview/src/components/UpgradeAnalysisLoading.tsx';
@@ -38,7 +43,7 @@ const bundle = await build({ stdin: { contents: `
   define: { 'process.env.NODE_ENV': '"production"' }, plugins: [{ name: 'shared-react', setup(plugin) {
     plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }] });
-const { UpgradeReviewPanel, UpgradeAnalysisModal, UpgradeReviewAnnouncement, VerificationOptInContext, buildUpgradeReviewSignals } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const { ManageDependencyModal, CompatibilityCheckCard, DependencyChangeContext, RemoveAnalysisModal, TransitiveFixReview, UpgradeReviewPanel, UpgradeAnalysisModal, UpgradeReviewAnnouncement, VerificationOptInContext, buildUpgradeReviewSignals } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 const now = Date.now();
 const noop = () => {};
 const row = { name: 'alpha', current: '6.2.0', range: '^6.2.0', wanted: '6.3.0', latest: '7.1.0', dev: false, optional: false,
@@ -481,9 +486,9 @@ for (const windows of [false, true]) for (const bulk of [false, true]) for (cons
     };
     await renderReview();
     const evidenceSelector = bulk ? '[data-review-area]' : '.upgrade-review-disclosure';
-    const evidence = [...dom.container.querySelectorAll(evidenceSelector)];
+    let evidence = [...dom.container.querySelectorAll(evidenceSelector)];
     assert.equal(evidence.length, bulk ? 4 : 5);
-    const script = dom.container.querySelector('.verification-suggestions input');
+    let script = dom.container.querySelector('.verification-suggestions input');
     await act(() => script.click());
     view.render(); await renderReview();
     assert.equal(script.checked, true);
@@ -510,6 +515,9 @@ for (const windows of [false, true]) for (const bulk of [false, true]) for (cons
     const method = coordinated ? 'handleUseSmartPlan' : 'handleConfirmUpgrade';
     reviewProps(view, bulk)[action](); view.render();
     assert.equal(reviewProps(view, bulk).busy, true);
+    await renderReview();
+    assert.equal(dom.document.activeElement.id, 'change-running-heading');
+    assert.equal(dom.container.querySelector(evidenceSelector), null, 'busy loading replaces the evidence');
     if (!bulk) assert.equal(view.find('ManageDependencyModal').props.blockClose, true);
 
     for (const untracked of [{ analysisId: 'old-analysis' }, { requestId: 'duplicate' }, {}]) {
@@ -533,8 +541,14 @@ for (const windows of [false, true]) for (const bulk of [false, true]) for (cons
       assert.equal(props.analysis.analysisId, value.analysisId, 'the completed review remains available');
       assert.match(props.error, /already in progress/);
       await renderReview();
-      assert.deepEqual([...dom.container.querySelectorAll(evidenceSelector)], evidence, 'every evidence section stays mounted');
-      assert.equal(dom.container.querySelector('.verification-suggestions input'), script, 'the script control stays mounted');
+      assert.equal(dom.container.querySelector('.analysis-loading'), null);
+      const retry = dom.container.querySelector('.upgrade-review__error button');
+      assert.equal(retry.textContent.trim(), 'Retry');
+      assert.equal(retry.disabled, false);
+      assert.ok(dom.document.activeElement === retry, 'rejection moves focus from the removed loader to Retry');
+      evidence = [...dom.container.querySelectorAll(evidenceSelector)];
+      assert.equal(evidence.length, bulk ? 4 : 5, 'every evidence section returns');
+      script = dom.container.querySelector('.verification-suggestions input');
       assert.equal(script.checked, true, 'the selected script survives contention');
       assert.equal(script.closest('fieldset').disabled, true, 'script choices still match the submitted confirmation');
       assert.match(dom.container.querySelector('.upgrade-major-notice').textContent, /Major update: 6 to 7/);
@@ -577,7 +591,12 @@ for (const windows of [false, true]) for (const bulk of [false, true]) for (cons
       assert.equal(local.coordinator.analysis, stored, 'contention does not consume the host review');
       assert.equal(locks.holderOf(key), owner);
       assert.equal(view.sent.some(message => message.type === 'cancel-upgrade'), false);
-      if (attempt === 0) { props[action](); view.render(); assert.equal(reviewProps(view, bulk).busy, true); }
+      if (attempt === 0) {
+        props[action](); view.render();
+        assert.equal(reviewProps(view, bulk).busy, true);
+        await renderReview();
+        assert.equal(dom.document.activeElement.id, 'change-running-heading');
+      }
     }
 
     reviewProps(view, bulk).onRefresh(); view.render();
@@ -771,4 +790,229 @@ test('bulk summary fits the capped dialog at wide and narrow viewport widths', {
       }
     } finally { document.window.close(); }
   }
+});
+
+
+for (const [name, Component, props] of [['single', UpgradeReviewPanel, panelProps], ['bulk', UpgradeAnalysisModal, common]]) {
+  test(`${name} apply replaces the review with simple loading while retaining native operation ownership`, () => {
+    const value = analysis({ manifestPath: win32.join('fixture', 'package.json'), lockfilePath: win32.join('fixture', 'package-lock.json') });
+    const html = render(Component, { ...props, analysis: value, busy: true });
+    const dom = new JSDOM(html);
+    try {
+      const document = dom.window.document;
+      assert.equal(document.querySelector('.analysis-loading__title').textContent, 'Upgrading alpha to 7.1.0...');
+      assert.equal(document.querySelector('.analysis-loading').getAttribute('aria-busy'), 'true');
+      assert.equal(document.querySelector('.upgrade-decision, .verification-steps, .upgrade-tab__details'), null);
+      assert.doesNotMatch(document.body.textContent, /fixture[\\/]/);
+      assert.ok(document.querySelector('.analysis-loading__icon'));
+      assert.equal(document.querySelector('button:not(:disabled)'), null, 'execution cannot be dismissed locally');
+    } finally { dom.window.close(); }
+    for (const status of [{ task: 'still-running', blocked: false }, { task: 'idle', blocked: true }]) {
+      const paused = renderToStaticMarkup(createElement(DependencyChangeContext.Provider, { value: { ...status, openRecovery: noop } },
+        createElement(Component, { ...props, analysis: value, busy: true })));
+      assert.doesNotMatch(paused, /analysis-loading__icon/);
+      assert.match(paused, /aria-busy="false"/);
+    }
+  });
+  test(`${name} coordinated apply labels the complete plan without rendering steps`, () => {
+    const value = analysis({ smartPlan: { changes: [
+      { packageName: 'alpha', currentVersion: '6.2.0', targetVersion: '7.1.0', classification: 'prod' },
+      { packageName: 'peer', currentVersion: '1.0.0', targetVersion: '2.0.0', classification: 'prod' },
+    ], reasonFindingIds: [] } });
+    const html = render(Component, { ...props, analysis: value, busy: true });
+    assert.match(html, /Upgrading 2 dependencies\.\.\./);
+    assert.doesNotMatch(html, /verification-steps|coordinated-plan__reasons/);
+  });
+}
+
+for (const makePath of [join, win32.join]) test(`bulk removal loading hides review facts with ${makePath === join ? 'native' : 'Windows'} paths`, () => {
+  const value = { analysisId: 'remove', changes: [], files: { manifestPath: makePath('fixture', 'package.json'), lockfilePath: makePath('fixture', 'package-lock.json') }, verification: { configured: false } };
+  for (const packages of [['alpha'], ['alpha', 'peer']]) {
+    const html = render(RemoveAnalysisModal, { packages, analysis: value, busy: true, matchTags: new Map(), onConfirm: noop, onCancel: noop, onConfigureVerification: noop });
+    assert.match(html, packages.length === 1 ? /Removing alpha\.\.\./ : /Removing 2 dependencies\.\.\./);
+    assert.doesNotMatch(html, /fixture[\\/]|verification-steps|remove-selected-heading/);
+    assert.match(html, /analysis-loading__icon/);
+  }
+});
+
+test('transitive fix loading keeps safe cancellation and phase announcements without repeating the plan', () => {
+  const plan = { analysisId: 'fix', rootPackage: 'alpha' };
+  const props = { state: { phase: 'applying', plan, progress: 'installing', cancelRequested: false }, onCancel: noop };
+  const html = render(TransitiveFixReview, props);
+  assert.match(html, /Applying dependency fix for alpha\.\.\./);
+  assert.match(html, /class="sr-only"[^>]*role="status"[^>]*>Installing the reviewed dependency tree…/);
+  assert.match(html, />Cancel fix</);
+  assert.doesNotMatch(html, /transitive-review__change|transitive-review__files/);
+  const stopping = render(TransitiveFixReview, { ...props, state: { ...props.state, cancelRequested: true } });
+  assert.match(stopping, /Stopping at a safe point, then restoring if needed…/);
+  assert.match(stopping, /disabled="">Cancelling…/);
+});
+
+test('upgrade review visibly loads before any host progress message and keeps Cancel reachable', async t => {
+  const dom = await reviewDom(t);
+  await dom.render(createElement(UpgradeReviewPanel, { ...panelProps, analysis: null, sections: WAITING_UPGRADE_ANALYSIS_SECTIONS }));
+  assert.equal(dom.container.querySelector('.analysis-loading__title').textContent, 'Analyzing upgrade...');
+  assert.ok(dom.container.querySelector('.analysis-loading__icon'));
+  const cancel = dom.container.querySelector('.review-panel__footer button');
+  cancel.focus();
+  assert.equal(dom.document.activeElement, cancel);
+  await dom.render(createElement(UpgradeReviewPanel, { ...panelProps, analysis: analysis() }));
+  assert.equal(dom.container.querySelector('.analysis-loading'), null);
+  assert.ok(dom.container.querySelector('.upgrade-decision'));
+  assert.equal(dom.document.activeElement, cancel);
+});
+
+test('apply focuses its loading heading when the confirmation control leaves the review', async t => {
+  const dom = await reviewDom(t);
+  await dom.render(createElement(UpgradeReviewPanel, { ...panelProps, analysis: analysis() }));
+  dom.container.querySelector('.review-panel__footer button:last-child').focus();
+  await dom.render(createElement(UpgradeReviewPanel, { ...panelProps, analysis: analysis(), busy: true }));
+  assert.equal(dom.document.activeElement.id, 'change-running-heading');
+});
+
+for (const [name, Component, props] of [['single', UpgradeReviewPanel, panelProps], ['bulk', UpgradeAnalysisModal, common]]) {
+  test(`${name} failed confirmation preserves focus moved outside the loader`, async t => {
+    const dom = await reviewDom(t);
+    const value = analysis();
+    await dom.render(createElement(Component, { ...props, analysis: value }));
+    await dom.render(createElement(Component, { ...props, analysis: value, busy: true }));
+    assert.equal(dom.document.activeElement.id, 'change-running-heading');
+    const elsewhere = dom.document.createElement('button');
+    dom.document.body.append(elsewhere);
+    elsewhere.focus();
+    await dom.render(createElement(Component, { ...props, analysis: value,
+      error: 'Another dependency change is already in progress for this project.' }));
+    assert.ok(dom.container.querySelector('.upgrade-review__error button:not(:disabled)'));
+    assert.equal(dom.document.activeElement, elsewhere, 'rejection must not steal focus');
+    // A later error update must not trigger a delayed focus jump either.
+    await dom.render(createElement(Component, { ...props, analysis: value, error: 'Please retry.' }));
+    assert.equal(dom.document.activeElement, elsewhere);
+  });
+}
+
+test('dependency findings keep reading order, aligned edges and group spacing at 1100px and 400px in both host themes', {
+  skip: !process.env.PACKAGEAWY_CHROMIUM_PATH && 'Set PACKAGEAWY_CHROMIUM_PATH to run rendered compatibility checks',
+}, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'packageawy-compatibility-layout-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const stylesheet = await readFile(join(process.cwd(), 'webview', 'src', 'styles.css'), 'utf8');
+  const value = analysis({ compatibility: { status: 'warning', completeness: 'complete', findings: [major],
+    resolverVerification: { status: 'compatible', packageManager: 'npm', packageManagerVersion: '10', explanation: 'Resolved.' } } });
+  const html = render(CompatibilityCheckCard, { compatibility: value.compatibility, projectCompatibility: value.projectCompatibility, context: { package: row.name, currentVersion: row.current } });
+  const partialHtml = render(CompatibilityCheckCard, { compatibility: { ...value.compatibility, completeness: 'partial' }, context: { package: row.name, currentVersion: row.current } });
+  const fixture = join(directory, 'compatibility.html');
+  await writeFile(fixture, `<!doctype html><html><head><style>
+    :root { --vscode-font-family: sans-serif; --vscode-font-size: 13px; --vscode-foreground: #ccc;
+      --vscode-editor-background: #1e1e1e; --vscode-descriptionForeground: #ccc; --vscode-panel-border: #808080;
+      --vscode-editorWarning-foreground: #cca700; --vscode-inputValidation-warningBorder: #b89500;
+      --vscode-inputValidation-warningBackground: #352a05; --vscode-inputValidation-warningForeground: #fff;
+      --vscode-focusBorder: #007fd4; }
+    body.vscode-light, body.jetbrains-light { --vscode-foreground: #222; --vscode-editor-background: #fff;
+      --vscode-descriptionForeground: #444; --vscode-inputValidation-warningBackground: #fff4ce;
+      --vscode-inputValidation-warningForeground: #222; --vscode-editorWarning-foreground: #795e00; }
+    body.vscode-high-contrast { --vscode-foreground: #fff; --vscode-editor-background: #000;
+      --vscode-descriptionForeground: #fff; --vscode-focusBorder: #f38518; --vscode-contrastBorder: #fff; }
+    body.vscode-high-contrast-light { --vscode-foreground: #000; --vscode-editor-background: #fff;
+      --vscode-descriptionForeground: #000; --vscode-focusBorder: #005fb8; --vscode-contrastBorder: #000;
+      --vscode-inputValidation-warningBackground: #fff; --vscode-inputValidation-warningForeground: #000; }
+    ${stylesheet}
+    main { padding: 16px; }
+    </style></head><body><main class="upgrade-tab" id="fixture"></main><pre id="measurements"></pre><script>
+      const fixture = document.getElementById('fixture');
+      const bounds = node => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, scroll: node.scrollWidth, client: node.clientWidth }; };
+      const results = [];
+      for (const theme of ['vscode-dark', 'vscode-light', 'vscode-high-contrast', 'vscode-high-contrast-light', 'jetbrains-dark', 'jetbrains-light']) {
+        document.body.className = theme;
+        for (const [name, html] of ${JSON.stringify([['complete', html], ['partial', partialHtml]])}) {
+          fixture.innerHTML = html;
+          const warning = fixture.querySelector('.outcome-status--warning');
+          const resolver = fixture.querySelector('.compatibility-findings > .outcome-status');
+          const group = fixture.querySelector('.upgrade-compatibility__findings');
+          const tiles = fixture.querySelector('.hygiene-strip');
+          results.push({ theme, name, viewport: innerWidth, warning: bounds(warning), resolver: bounds(resolver), group: bounds(group), tiles: bounds(tiles),
+            warningIcon: bounds(warning.querySelector('svg')), resolverIcon: bounds(resolver.querySelector('svg')),
+            warningText: bounds(warning.querySelector('.outcome-status__label')), resolverText: bounds(resolver.querySelector('.outcome-status__label')),
+            summary: fixture.querySelector('.upgrade-compatibility__summary')?.textContent.trim() ?? null,
+            items: [...tiles.children].map(bounds), all: [...fixture.querySelectorAll('.compatibility-findings, .outcome-status, .outcome-status > div, .hygiene-strip__item')].map(bounds) });
+        }
+      }
+      fixture.innerHTML = ${JSON.stringify(html)};
+      document.body.className = 'vscode-high-contrast';
+      document.getElementById('measurements').textContent = JSON.stringify(results);
+    </script></body></html>`);
+  for (const width of [1100, 400]) {
+    const { stdout } = await promisify(execFile)(process.env.PACKAGEAWY_CHROMIUM_PATH, [
+      '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run',
+      '--force-prefers-reduced-motion', `--user-data-dir=${join(directory, `profile-${width}`)}`,
+      `--window-size=${width},1100`, `--screenshot=${join(tmpdir(), `packageawy-compatibility-${width}.png`)}`,
+      '--dump-dom', pathToFileURL(fixture).href,
+    ], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+    const dom = new JSDOM(stdout);
+    try {
+      const results = JSON.parse(dom.window.document.getElementById('measurements').textContent);
+      assert.equal(results.length, 12);
+      for (const result of results) {
+        const label = `${result.theme}, ${result.name}, ${width}px`;
+        assert.equal(result.viewport, width, label);
+        assert.ok(result.resolver.top - result.warning.bottom >= 11, `${label}: findings never touch`);
+        assert.ok(result.tiles.top - result.group.bottom >= 23, `${label}: tiles form a separate group`);
+        assert.ok(Math.abs(result.warningIcon.left - result.resolverIcon.left) < 1, `${label}: icon edges align`);
+        assert.ok(Math.abs(result.warningText.left - result.resolverText.left) < 1, `${label}: text edges align`);
+        assert.ok(Math.abs(result.warning.width - result.tiles.width) < 1, `${label}: warning uses full column width`);
+        if (result.name === 'complete') assert.equal(result.summary, null, `${label}: duplicate warning summary removed`);
+        else assert.equal(result.summary, 'Some compatibility checks could not be completed.');
+        for (const part of result.all) assert.ok(part.scroll <= part.client + 1, `${label}: content wraps without clipping`);
+        if (width === 400) assert.ok(result.items[1].top >= result.items[0].bottom, `${label}: tiles stack on narrow screens`);
+        else assert.ok(Math.abs(result.items[0].top - result.items[1].top) < 1, `${label}: tiles share a row`);
+      }
+    } finally { dom.window.close(); }
+  }
+});
+
+
+for (const entry of ['overview action', 'review tab']) test(`Manage ${entry} starts upgrade analysis and visibly waits for its final summary`, async t => {
+  const view = appHarness(t);
+  view.event(snapshot());
+  view.find('Dashboard').props.onOpenManage(row.name); view.render();
+  const dom = await reviewDom(t);
+  let targetPhase = entry === 'review tab' ? 'loading' : 'idle';
+  const draw = async () => {
+    const props = view.find('ManageDependencyModal').props;
+    await dom.render(createElement(ManageDependencyModal, { ...props, upgrade: { ...props.upgrade, targetState: { phase: targetPhase } } }));
+  };
+  await draw();
+  const action = entry === 'overview action'
+    ? [...dom.container.querySelectorAll('button')].find(button => button.textContent.trim() === 'Review upgrade')
+    : dom.document.getElementById('manage-tab-upgrade');
+  assert.ok(action);
+  await act(() => action.click()); view.render();
+  await draw();
+  if (entry === 'review tab') {
+    assert.equal(view.sent.filter(message => message.type === 'upgrade').length, 0, 'wait for target eligibility before analysis');
+    assert.ok(dom.container.querySelector('.analysis-loading__icon'));
+    targetPhase = 'idle';
+    await draw();
+  }
+  view.render(); await draw();
+  const requests = view.sent.filter(message => message.type === 'upgrade');
+  assert.equal(requests.length, 1, 'opening a review requests one analysis');
+  assert.equal(view.find('ManageDependencyModal').props.upgrade.active, true);
+  assert.equal(dom.container.querySelector('.analysis-loading__title').textContent, 'Analyzing upgrade...');
+  assert.ok(dom.container.querySelector('.analysis-loading__icon'));
+  const requestId = requests[0].requestId;
+  const value = analysis();
+  value.projectCompatibility.identity.requestId = requestId;
+  for (const section of partials(value)) {
+    view.event({ status: 'upgrade-analysis-partial', requestId, package: row.name, section }); await draw();
+    assert.ok(dom.container.querySelector('.analysis-loading__icon'));
+    assert.equal(dom.container.querySelector('.upgrade-major-notice'), null);
+  }
+  view.event({ status: 'upgrade-analysis', requestId, analysis: value }); await draw();
+  assert.equal(dom.container.querySelector('.analysis-loading'), null);
+  assert.ok(dom.container.querySelector('.upgrade-major-notice'));
+  assert.equal(view.sent.filter(message => message.type === 'upgrade').length, 1);
+  const props = view.find('ManageDependencyModal').props;
+  props.upgrade.onTargetChange('8.0.0'); view.render(); await draw();
+  assert.equal(view.sent.filter(message => message.type === 'upgrade').length, 1, 'picker changes keep the explicit Analyze step');
+  assert.ok([...dom.container.querySelectorAll('button')].find(button => button.textContent.trim() === 'Analyze upgrade'));
 });

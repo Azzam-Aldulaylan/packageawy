@@ -72,14 +72,15 @@ function assertPlainCopy(html) {
   assert.doesNotMatch(visible, /[–—→;]/, `copy has a dash, arrow or semicolon: ${visible}`);
 }
 
-test('the running state names the phase the host reported', () => {
+test('the running state shows simple loading and announces the phase the host reported', () => {
   const html = renderToStaticMarkup(createElement(RemovalRunningPanel, { row, progress: 'installing' }));
   assert.match(text(html), /Removing left-pad/);
   assert.match(text(html), /Installing…/);
   assert.match(html, /role="status"/);
-  assert.match(text(html), /Update package\.json Done/);
-  assert.match(text(html), /Install dependencies In progress/);
-  assert.match(text(html), /Verify the project Waiting/);
+  assert.match(html, /class="analysis-loading" aria-busy="true"/);
+  assert.match(html, /class="sr-only"[^>]*role="status"[^>]*>Installing…/);
+  assert.doesNotMatch(html, /verification-steps|status-badge|restore point/);
+  assert.match(html, /id="removal-running-heading" tabindex="-1"/);
   assertPlainCopy(html);
 });
 
@@ -91,29 +92,29 @@ test('progress steps only advance with reported phases', () => {
 
 test('the result panel reports what was removed, install, verification and rollback', () => {
   const html = text(renderToStaticMarkup(createElement(RemovalResultPanel, { row, result: result('verified', 'passed') })));
-  assert.match(html, /Removal verified/);
-  assert.match(html, /left-pad 1\.3\.0 was removed from package\.json and the lockfile\./);
+  assert.match(html, /Removal done/);
+  assert.match(html, /left-pad 1\.3\.0 Direct entry removed/);
   assert.match(html, /Install Succeeded/);
-  assert.match(html, /Dependency files Updated/);
+  assert.match(html, /Dependency files package\.json and the lockfile updated/);
   assert.match(html, /Verification Passed/);
   assert.match(html, /Rollback Not needed/);
-  assert.doesNotMatch(html, /host message/);
+  assert.match(html, /host message/);
 });
 
 test('a kept removal without build or test checks says so', () => {
   const html = text(renderToStaticMarkup(createElement(RemovalResultPanel, { row, result: { ...result('verified', 'not-configured'), projectScriptsPresent: false } })));
-  assert.match(html, /Package removed/);
+  assert.match(html, /Removal done/);
   assert.match(html, /Verification No test scripts to run/);
-  assert.match(html, /Run your project checks before you commit\./);
+  assert.match(html, /Run your checks before you commit\./);
 });
 
 test('a rolled back removal reports the restore and does not claim an install', () => {
   const raw = renderToStaticMarkup(createElement(RemovalResultPanel, { row, result: result('rolled-back', 'not-run', 'succeeded') }));
   const html = text(raw);
   assert.match(html, /Removal rolled back/);
-  assert.match(html, /left-pad 1\.3\.0 is still in package\.json\./);
+  assert.match(html, /left-pad 1\.3\.0 Restored/);
   assert.match(html, /Install Did not finish/);
-  assert.match(html, /Dependency files Restored/);
+  assert.match(html, /Dependency files package\.json and the lockfile restored/);
   assert.match(html, /Rollback Restore point applied/);
   assert.match(html, /host message/);
   assertPlainCopy(raw);
@@ -199,8 +200,8 @@ test('Manage shows the running removal instead of Analyze removal and locks Clos
 
 test('Manage keeps the removal result with a footer that says what changed', () => {
   const html = text(renderManage({ removalRun: { phase: 'result', result: result('verified', 'passed') } }));
-  assert.match(html, /Removal verified/);
-  assert.match(html, /Changes were applied to package\.json and the lockfile\./);
+  assert.match(html, /Removal done/);
+  assert.match(html, /package\.json and the lockfile updated/);
   assert.equal(
     manageFooterNote(null, { phase: 'result', result: result('rolled-back', 'not-run', 'succeeded') }),
     'Your dependency files were restored.'
@@ -271,15 +272,15 @@ test('a removal error after the package left shows the failure and rollback outc
   }));
   const html = text(raw);
   assert.match(raw, /role="alert"/);
-  assert.match(raw, /id="removal-error-heading" tabindex="-1"/);
-  assert.match(html, /Removal did not finish/);
+  assert.match(raw, /id="removal-error-heading"[^>]*tabindex="-1"/);
+  assert.match(html, /Removal partly failed/);
   assert.match(html, /Rollback was incomplete because dependency files changed concurrently\./);
   assert.match(html, /Rollback Incomplete, newer edits were kept/);
   assertPlainCopy(raw);
   const manage = text(renderManage({ removalRun: { phase: 'error', error: { code: 'ROLLBACK_FAILED', message: 'Rollback failed.' } } }));
-  assert.match(manage, /Removal did not finish/);
+  assert.match(manage, /Removal partly failed/);
   assert.match(manage, /Rollback Failed/);
-  assert.match(manage, /Close/);
+  assert.doesNotMatch(manage, /\bClose\b/);
 });
 
 test('focus moves to the heading of each new removal view', () => {
@@ -300,7 +301,7 @@ test('focus moves to the heading of each new removal view', () => {
   });
   assert.match(refused, /id="removal-review-error-heading" tabindex="-1"/);
   for (const [view, progress] of [['running', { phase: 'running', progress: null }], ['result', { phase: 'result', result: result('verified', 'passed') }]]) {
-    assert.match(renderManage({ removalRun: progress }), new RegExp(`id="removal-${view}-heading" tabindex="-1"`));
+    assert.match(renderManage({ removalRun: progress }), new RegExp(`id="removal-${view}-heading"[^>]*tabindex="-1"`));
   }
 });
 
@@ -357,6 +358,13 @@ for (const hostKind of ['vscode', 'jetbrains']) for (const operation of ['remova
       if (operation === 'upgrade') assert.equal(hostResult.application, 'applied', JSON.stringify({ hostResult, messages: f.messages }));
       assert.equal(hostResult.verification, 'not-configured');
       assert.equal(hostResult.projectScriptsPresent, present);
+      const scriptChecks = hostResult.checks.filter(check => check.kind === 'script');
+      assert.ok(scriptChecks.length > 0);
+      for (const check of scriptChecks) {
+        const exists = Object.hasOwn(scripts, check.scriptName);
+        assert.equal(check.status, exists ? 'not-run' : 'no-script');
+        assert.equal(check.reason, exists ? 'Not selected.' : `No ${check.scriptName} script in package.json.`);
+      }
       assert.deepEqual(f.commands, operation === 'upgrade' ? ['install', 'install'] : ['install'], 'only dependency installs run, including upgrade range reconciliation');
       // Later edits do not change the reviewed script-presence snapshot.
       await writeFile(f.project.manifestPath, JSON.stringify({ ...manifest, scripts: present ? {} : { test: 'node --test' } }));

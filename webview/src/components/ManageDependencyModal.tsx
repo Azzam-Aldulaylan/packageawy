@@ -1,4 +1,5 @@
-import { UndoChangeButton } from './UndoChangeButton.js';
+import { UpgradeChangeResult } from './ChangeResult.js';
+import { TransitiveFixReview } from './TransitiveFixReview.js';
 import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { useEffect, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
@@ -87,7 +88,7 @@ interface RemovalReviewState {
 export type ManageRemovalRun =
   | { phase: 'running'; progress: RemoveProgressPhase | null }
   | { phase: 'result'; result: RemoveResultPresentation }
-  | { phase: 'error'; error: { code: string; message: string } };
+  | { phase: 'error'; error: { code: string; message: string }; details?: import('../../../src/host/webviewProtocol.js').RemovalFailureDetails };
 
 /**
  * The Manage dialog footer line. The read-only promise holds only until a
@@ -109,74 +110,6 @@ export function manageFooterNote(
   if (result.application === 'applied') return 'Changes were applied to package.json and the lockfile.';
   if (result.application === 'rolled-back') return 'Your dependency files were restored.';
   return null;
-}
-
-function UpgradeResultPanel({
-  result,
-  enrichment,
-  onRetryEnrichment,
-}: {
-  result: UpgradeResultPresentation;
-  enrichment: UpgradeEnrichmentUiState | null;
-  onRetryEnrichment: () => void;
-}): ReactElement {
-  const title =
-    result.application === 'applied'
-      ? result.verification === 'passed' ? 'Upgrade verified' : 'Upgrade applied'
-      : result.application === 'rolled-back' ? 'Upgrade rolled back' : 'Upgrade not confirmed';
-  const applicationLabel =
-    result.application === 'applied'
-      ? 'Requested dependency state confirmed'
-      : result.application === 'rolled-back'
-        ? 'Dependency files restored'
-        : 'Resulting dependency state could not be confirmed';
-  const verificationLabel =
-    result.verification === 'passed'
-      ? 'Passed'
-      : result.verification === 'not-configured'
-        ? result.projectScriptsPresent === false ? 'No test scripts to run' : 'No checks selected'
-        : result.verification === 'failed'
-          ? 'Failed'
-          : 'Not run';
-
-  return (
-    <div className="upgrade-tab" role="status" aria-live="polite">
-      <section className="analysis-card analysis-card--full" aria-labelledby="upgrade-result-heading">
-        <h3 className="analysis-card__title" id="upgrade-result-heading">{title}</h3>
-        {result.changes.map((change) => (
-          <p key={change.packageName} className="analysis-card__hint">
-            <code>{change.packageName}</code>: <code>{change.previousVersion}</code> <span>to</span>{' '}
-            <code>{change.currentVersion ?? 'not resolved'}</code>
-          </p>
-        ))}
-        <dl className="manage-glance">
-          <div className="manage-glance__row"><dt>Install</dt><dd>{result.install === 'succeeded' ? 'Succeeded' : 'Failed'}</dd></div>
-          <div className="manage-glance__row"><dt>Applied state</dt><dd>{applicationLabel}</dd></div>
-          <div className="manage-glance__row"><dt>Verification</dt><dd>{verificationLabel}</dd></div>
-        </dl>
-        {result.application === 'rolled-back' && result.rollbackMessage ? (
-          <p className="analysis-card__hint">{result.rollbackMessage}</p>
-        ) : null}
-        <UndoChangeButton undoId={result.undoId} />
-        {enrichment?.phase === 'refreshing' ? (
-          <p className="analysis-card__pending-label">
-            <IconRefresh className="banner__icon--spin" aria-hidden="true" /> Refreshing dependency security and update data…
-          </p>
-        ) : enrichment !== null ? (
-          <div className="upgrade-enrichment-warning" role="alert">
-            <p>
-              <IconInfo aria-hidden="true" /> {enrichment.message} Confirmed local dependency facts are still shown.
-            </p>
-            {enrichment.phase === 'failed' ? (
-              <button type="button" className="button button--secondary" onClick={onRetryEnrichment}>
-                Retry dependency data refresh
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </section>
-    </div>
-  );
 }
 
 function DerivedDataQuarantinePanel({
@@ -332,6 +265,7 @@ export function ManageDependencyModal({
   removal,
   removalRun = null,
   onAnalyzeRemediation,
+  onDismissRemediation,
   onReviewRemediation,
   onApplyRemediation,
   onCancelRemediation,
@@ -370,6 +304,7 @@ export function ManageDependencyModal({
   /** Set while a removal started here runs and while its result is shown. */
   removalRun?: ManageRemovalRun | null;
   onAnalyzeRemediation: (packageName: string) => void;
+  onDismissRemediation: () => void;
   onReviewRemediation: (packageName: string, analysisId: string) => void;
   onApplyRemediation: (analysisId: string) => void;
   onCancelRemediation: (analysisId: string) => void;
@@ -442,14 +377,42 @@ export function ManageDependencyModal({
     dialogRef.current?.querySelector<HTMLElement>(`#${target}`)?.focus();
   }, [activeTab, removalView]);
 
+  const resultKey = activeTab === 'upgrade' ? upgradeResult?.refreshId : (activeTab === 'vulnerabilities' || activeTab === 'overview') && remediation?.phase === 'result' ? remediation.plan.analysisId : undefined;
+  const previousResultKey = useRef(resultKey);
+  useEffect(() => {
+    if (resultKey !== undefined && resultKey !== previousResultKey.current) {
+      dialogRef.current?.querySelector<HTMLElement>(activeTab === 'upgrade' ? '#upgrade-result-heading' : '#transitive-result-heading')?.focus();
+    } else if (resultKey === undefined && previousResultKey.current !== undefined) {
+      dialogRef.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus();
+    }
+    previousResultKey.current = resultKey;
+  }, [activeTab, resultKey]);
+
   const onOverlayClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
     if (event.target === event.currentTarget && !blockClose) onClose();
   };
 
+  // Entering Upgrade review starts its first analysis. Changing a target
+  // inside that review still requires Analyze, and never applies a change.
+  const autoReviewStarted = useRef(false);
+  const startingUpgradeReview = activeTab === 'upgrade' && !autoReviewStarted.current &&
+    !upgrade.active && upgradeResult === null && upgrade.error === null &&
+    !upgradeDisabled && row.upgradeTo !== null && upgrade.targetVersion !== null;
+  useEffect(() => {
+    if (activeTab !== 'upgrade') {
+      autoReviewStarted.current = false;
+      return;
+    }
+    if (upgrade.active) autoReviewStarted.current = true;
+    if (!startingUpgradeReview || upgrade.targetState.phase === 'loading' || upgrade.targetVersion === null) return;
+    autoReviewStarted.current = true;
+    upgrade.onAnalyze(upgrade.targetVersion);
+  }, [activeTab, startingUpgradeReview, upgrade]);
+
   const startUpgradeReview = (_packageName: string, target: string): void => {
-    // Open on the version the action offers, even after an earlier picker
-    // choice. Analysis remains an explicit step inside Upgrade review.
+    autoReviewStarted.current = true;
     upgrade.onTargetChange(target);
+    if (!upgrade.active || upgrade.targetVersion !== target) upgrade.onAnalyze(target);
     onChangeTab('upgrade');
   };
   const startRemovalReview = (_packageName: string): void => {
@@ -466,13 +429,21 @@ export function ManageDependencyModal({
 
   const quarantineDerivedData = shouldQuarantineUpgradeDerivedData(upgradeEnrichment);
   let content: ReactNode;
-  if (activeTab === 'overview' && upgradeEnrichment !== null) {
+  if ((activeTab === 'overview' || activeTab === 'vulnerabilities') && remediation?.phase === 'result') {
+    content = <>
+      <div className="change-result__dismiss"><button type="button" className="modal__close" aria-label="Dismiss fix result" onClick={onDismissRemediation}><IconX /></button></div>
+      <TransitiveFixReview rootPackage={row.name} subject={row.name} dependencyPath={[row.name]}
+      state={remediation} disabled={upgradeDisabled} onAnalyze={() => onAnalyzeRemediation(row.name)}
+      onReview={analysisId => onReviewRemediation(row.name, analysisId)} onApply={onApplyRemediation}
+      onCancel={onCancelRemediation} onRetry={onRetryRemediation} onOpenAdvisory={onOpenAdvisory} />
+    </>;
+  } else if (activeTab === 'overview' && upgradeEnrichment !== null) {
     content = (
       <DerivedDataQuarantinePanel
         row={row}
         enrichment={upgradeEnrichment}
-        label="Refreshing security and available-version information…"
         onRetryEnrichment={onRetryUpgradeEnrichment}
+        label="Refreshing security and available-version information…"
       />
     );
   } else if (activeTab === 'overview') {
@@ -502,8 +473,8 @@ export function ManageDependencyModal({
     content = (
       <DerivedDataQuarantinePanel
         enrichment={upgradeEnrichment}
-        label="Refreshing vulnerability data…"
         onRetryEnrichment={onRetryUpgradeEnrichment}
+        label="Refreshing vulnerability data…"
       />
     );
   } else if (activeTab === 'vulnerabilities') {
@@ -538,17 +509,16 @@ export function ManageDependencyModal({
     );
   } else if (activeTab === 'upgrade' && upgradeResult !== null) {
     content = (
-      <UpgradeResultPanel
+      <UpgradeChangeResult
         result={upgradeResult}
         enrichment={upgradeEnrichment}
-        onRetryEnrichment={onRetryUpgradeEnrichment}
       />
     );
   } else if (activeTab === 'upgrade') {
     content = (
       <UpgradeReviewPanel
         row={row}
-        active={upgrade.active}
+        active={upgrade.active || startingUpgradeReview}
         targetVersion={upgrade.targetVersion}
         targetState={upgrade.targetState}
         analysis={upgrade.analysis}
@@ -582,7 +552,7 @@ export function ManageDependencyModal({
   } else if (removalRun?.phase === 'result') {
     content = <RemovalResultPanel row={row} result={removalRun.result} />;
   } else if (removalRun?.phase === 'error') {
-    content = <RemovalErrorPanel row={row} error={removalRun.error} />;
+    content = <RemovalErrorPanel row={row} error={removalRun.error} {...(removalRun.details === undefined ? {} : { details: removalRun.details })} />;
   } else {
     content = (
       <RemovalReviewPanel
@@ -702,7 +672,9 @@ export function ManageDependencyModal({
           {content}
         </div>
 
-        {(activeTab === 'upgrade' && upgrade.analysis !== null) ||
+        {(activeTab === 'upgrade' && upgradeResult !== null) || (activeTab === 'removal' && removalRun !== null && removalRun.phase !== 'running') ||
+        ((activeTab === 'vulnerabilities' || activeTab === 'overview') && remediation?.phase === 'result') ||
+        (activeTab === 'upgrade' && upgrade.analysis !== null) ||
         (activeTab === 'removal' && removal.analysis !== null && removalRun === null) ? null : (
           <footer className="modal__footer">
             {footerNote === null ? null : (

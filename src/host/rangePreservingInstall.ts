@@ -7,9 +7,10 @@
  * lockfile-only pass that records the styled specifiers. No `vscode` import.
  */
 
+import type { UpgradeRunOutcome } from './upgradeRunner.js';
 import type { InstallExecutionResult, UpgradeInstallExecutor } from './upgradeTransaction.js';
 
-export type ReconcileOutcome = { ok: true } | { ok: false; status?: 'unknown'; code: string; message: string };
+export type ReconcileOutcome = UpgradeRunOutcome;
 
 export interface RangePreservingInstallOptions {
   manifestPath: string;
@@ -23,7 +24,7 @@ export interface RangePreservingInstallOptions {
 }
 
 function failed(outcome: Extract<ReconcileOutcome, { ok: false }>): InstallExecutionResult {
-  return outcome.status === 'unknown' ? { status: 'unknown', message: outcome.message } : { status: 'failed', code: outcome.code, message: outcome.message };
+  return { ...(outcome.status === 'unknown' ? { status: 'unknown' as const, message: outcome.message } : { status: 'failed' as const, code: outcome.code, message: outcome.message }), ...(outcome.command === undefined ? {} : { commands: [outcome.command], ...(outcome.command.exitCode === undefined ? {} : { exitCode: outcome.command.exitCode }) }) };
 }
 
 export function createRangePreservingInstall(options: RangePreservingInstallOptions): UpgradeInstallExecutor {
@@ -32,7 +33,7 @@ export function createRangePreservingInstall(options: RangePreservingInstallOpti
       const resolved = await options.resolve();
       if (!resolved.ok) return failed(resolved);
       if (options.restyle === null || options.styledManifest === options.stagedManifest) {
-        return { status: 'succeeded' };
+        return { status: 'succeeded', ...(resolved.command === undefined ? {} : { commands: [resolved.command], exitCode: resolved.command.exitCode }) };
       }
       const staged = { exists: true as const, contents: Buffer.from(options.stagedManifest, 'utf8') };
       // Written through the transaction so the styled bytes become the
@@ -46,12 +47,13 @@ export function createRangePreservingInstall(options: RangePreservingInstallOpti
         // against the staged bytes the transaction owns and keeps their file.
         return {
           status: 'failed',
+          ...(resolved.command === undefined ? {} : { commands: [resolved.command] }),
           code: 'STALE_SOURCE',
           message: 'package.json changed while the upgrade was installing. The upgrade was not kept.',
         };
       }
       const restyled = await options.restyle();
-      return restyled.ok ? { status: 'succeeded' } : failed(restyled);
+      return { ...(restyled.ok ? { status: 'succeeded' as const, ...(restyled.command?.exitCode === undefined ? {} : { exitCode: restyled.command.exitCode }) } : failed(restyled)), ...([resolved.command, restyled.command].some(Boolean) ? { commands: [resolved.command, restyled.command].filter((command): command is NonNullable<typeof command> => command !== undefined) } : {}) };
     },
   };
 }

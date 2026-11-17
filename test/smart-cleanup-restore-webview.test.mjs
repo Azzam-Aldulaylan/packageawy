@@ -125,9 +125,11 @@ test('after a restore the results describe the restored dependencies, not the re
   assert.doesNotMatch(html, /smart-cleanup-metrics/);
 });
 
-test('the restore note sits above the change list so the action is visible without scrolling', () => {
+test('result actions follow the change list in the persistent bottom footer', () => {
   const html = render(smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' }));
-  assert.ok(html.indexOf('Undo cleanup') < html.indexOf('What changed'));
+  assert.ok(html.indexOf('Undo cleanup') > html.indexOf('What changed'));
+  assert.match(html, /<footer class="smart-cleanup-footer"><div class="smart-cleanup-results__actions">/);
+  assert.ok(html.indexOf('Undo cleanup') < html.indexOf('Analyze current project'));
 });
 
 test('a cleanup with no build or test scripts is not reported as verified', () => {
@@ -269,7 +271,7 @@ for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`transitive res
   const noop = () => {};
   const html = renderToStaticMarkup(createElement(TransitiveFixReview, {
     rootPackage: 'react', subject: 'react', dependencyPath: ['react'], disabled: false,
-    state: { phase: 'result', plan: { rootPackage: 'react' }, result: hostResult },
+    state: { phase: 'result', plan: { rootPackage: 'react', changes: [], files: {} }, result: hostResult },
     onAnalyze: noop, onReview: noop, onApply: noop, onCancel: noop, onRetry: noop, onOpenAdvisory: noop,
   }));
   const note = reinstall === 'succeeded' ? 'Dependencies were reinstalled using the restored lockfile.' : manualReinstallNote('npm');

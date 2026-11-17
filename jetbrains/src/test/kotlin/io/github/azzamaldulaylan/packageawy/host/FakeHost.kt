@@ -64,6 +64,7 @@ class FakeHost : HostServices {
     }
 
     private fun processHandle(scope: String) = object : SuccessfulProcess {
+        override fun reveal(): CompletableFuture<Boolean> { events.add("process-revealed:$scope"); return CompletableFuture.completedFuture(true) }
         override fun close() { events.add("process-stopped:$scope") }
         override fun closeAfterSuccess() { events.add("process-closed:$scope") }
         override fun onConsoleDisposed(listener: () -> Unit): AutoCloseable {
