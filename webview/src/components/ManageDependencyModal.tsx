@@ -49,7 +49,7 @@ interface UpgradeReviewState {
   /** True exactly when this row's upgrade is the one App.tsx currently has loaded. */
   active: boolean;
   analysis: UpgradeAnalysisPresentation | null;
-  /** Per-section progressive state, rendered while `analysis` is still null. See src/host/upgradeAnalysisSections.ts. */
+  /** Streamed progress. Only the final analysis reveals review results. */
   sections: UpgradeAnalysisSections;
   /** True when the host has flagged `analysis` as structurally stale (manifest/lockfile changed since it ran): a non-authoritative UX hint that blocks Confirm/Use-smart-plan until Refresh. */
   hardStale: boolean;

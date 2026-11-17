@@ -80,27 +80,20 @@ export function completedManageReviewCanCoexist(
 }
 
 /**
- * UPGRADE_IN_PROGRESS means a different request than the one this webview
- * is currently tracking was rejected: a race between a rapid duplicate
- * click and React's re-render (the disabled attribute lands one tick
- * after the click handler that set the active package. See PackageTable.tsx).
- * The active-upgrade state must not be cleared by that rejection, only the
- * actually-tracked request's terminal outcome (any other code, or a
- * fresh dashboard message following a successful upgrade) may clear it.
- * Every other code (including CANCELLED) is a real terminal outcome of the
- * tracked request itself and must clear it, so the disabled buttons release.
+ * A duplicate request's contention must not clear the tracked review.
+ * Contention rejecting the tracked request is terminal: another window or
+ * the previous attempt's cleanup may still own the project lock.
+ * Clearing UI state never releases that host reservation.
  */
-export function upgradeErrorClearsActiveState(code: string): boolean {
-  return code !== 'UPGRADE_IN_PROGRESS';
+export function upgradeErrorClearsActiveState(code: string, activeRequestRejected = false): boolean {
+  return code !== 'UPGRADE_IN_PROGRESS' || activeRequestRejected;
 }
 
 /**
- * Whether an upgrade-error's code should surface a visible banner. Both
- * CANCELLED (the user's choice) and UPGRADE_IN_PROGRESS (an internal
- * race the user didn't consciously trigger, about a request that isn't even
- * the one they're watching) are quiet by design: every other code is a real
- * failure worth surfacing.
+ * Cancellation and duplicate-request contention stay quiet. Rejection of
+ * the tracked request or analysis is visible so the user can retry after the
+ * lock clears. Visibility does not discard the completed review.
  */
-export function upgradeErrorIsUserVisible(code: string): boolean {
-  return code !== 'CANCELLED' && code !== 'UPGRADE_IN_PROGRESS' && code !== 'OUTCOME_UNKNOWN';
+export function upgradeErrorIsUserVisible(code: string, activeAttemptRejected = false): boolean {
+  return code !== 'CANCELLED' && (code !== 'UPGRADE_IN_PROGRESS' || activeAttemptRejected) && code !== 'OUTCOME_UNKNOWN';
 }

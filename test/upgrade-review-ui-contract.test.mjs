@@ -6,6 +6,7 @@ import test from 'node:test';
 const read = (path) => readFileSync(join(process.cwd(), path), 'utf8');
 const cards = read('webview/src/components/UpgradeAnalysisCards.tsx');
 const review = read('webview/src/components/UpgradeReviewPanel.tsx');
+const summary = read('webview/src/components/UpgradeReviewSummary.tsx');
 const progressive = read('webview/src/components/UpgradeAnalysisSections.tsx');
 const manage = read('webview/src/components/ManageDependencyModal.tsx');
 const targetSelector = read('webview/src/components/UpgradeTargetSelector.tsx');
@@ -56,13 +57,13 @@ test('hard analysis expiry is visible and disables the footer action', () => {
 });
 
 test('completed reviews use one decision brief with explicit review counts and four status rows', () => {
-  assert.match(review, /function upgradeReviewSummary/);
-  assert.match(review, /project compatibility \$\{projectSummary\.total === 1 \? 'finding' : 'findings'\}/);
-  assert.match(review, /Some checks could not fully run/);
-  assert.match(review, /vulnerabilities that remain/);
-  assert.match(review, /undetermined security/);
-  assert.match(review, /function UpgradeDecisionBrief/);
-  assert.equal((review.match(/<UpgradeDecisionBrief\b/g) ?? []).length, 1);
+  assert.match(summary, /function upgradeReviewSummary/);
+  assert.match(summary, /project compatibility \$\{projectSummary\.total === 1 \? 'finding' : 'findings'\}/);
+  assert.match(summary, /Some checks could not complete/);
+  assert.match(summary, /vulnerabilities that remain/);
+  assert.match(summary, /undetermined security/);
+  assert.match(summary, /function UpgradeDecisionBrief/);
+  assert.equal((review.match(/<UpgradeDecisionBrief\b/g) ?? []).length, 2);
   for (const label of ['Dependency compatibility', 'Project compatibility', 'Security impact', 'Verification']) {
     assert.match(`${review}\n${progressive}`, new RegExp(label));
   }
@@ -87,12 +88,11 @@ test('important review evidence stays ahead of secondary disclosures', () => {
   assert.doesNotMatch(details, /defaultOpen=|expanded=/);
 });
 
-test('progressive and completed reviews share one disclosure and evidence-card composition', () => {
-  assert.equal((progressive.match(/function UpgradeReviewDisclosure\b/g) ?? []).length, 1);
-  assert.ok((progressive.match(/<UpgradeReviewDisclosure\b/g) ?? []).length >= 5);
-  assert.match(progressive, /<CompatibilityCheckCard[\s\S]*?<ProjectCompatibilitySection[\s\S]*?<SecurityOutcomeCard[\s\S]*?<SimpleUpgradePlanCard[\s\S]*?<VerificationStepsCard/);
+test('waiting reviews use placeholders without rendering streamed evidence', () => {
+  const loading = progressive.slice(progressive.indexOf('export function UpgradeAnalysisSections'));
+  assert.match(loading, /<UpgradeAnalysisLoading/);
+  assert.doesNotMatch(loading, /status === 'complete'|<CompatibilityCheckCard|<ProjectCompatibilitySection|<SecurityOutcomeCard/);
   assert.match(review, /import \{ buildUpgradeReviewSignals, UpgradeAnalysisSections, UpgradeReviewDisclosure \}/);
-  assert.doesNotMatch(review, /function UpgradeReviewDisclosure/);
 });
 
 test('dependency compatibility exposes detailed findings', () => {
@@ -102,7 +102,7 @@ test('dependency compatibility exposes detailed findings', () => {
 });
 
 test('decision status rows open, scroll to, and focus their matching disclosure', () => {
-  assert.match(review, /onClick=\{\(\) => onOpen\(signal\.area\)\}/);
+  assert.match(summary, /onClick=\{\(\) => onOpen\(signal\.area\)\}/);
   assert.match(review, /const openReviewArea = \(area: UpgradeReviewArea\)/);
   assert.match(review, /const section = sectionRefs\[area\]\.current/);
   assert.match(review, /section\.open = true/);
@@ -144,8 +144,8 @@ test('compatibility summary is separated from checks and unsupported checks stay
 });
 
 test('static transaction files and rollback remain compact context in the decision brief', () => {
-  assert.match(review, /Will update <code>\{baseName\(analysis\.files\.manifestPath\)\}<\/code> and <code>\{baseName\(analysis\.files\.lockfilePath\)\}<\/code>/);
-  assert.match(review, /Restore point included/);
+  assert.match(summary, /Will update <code>\{baseName\(analysis\.files\.manifestPath\)\}<\/code> and <code>\{baseName\(analysis\.files\.lockfilePath\)\}<\/code>/);
+  assert.match(summary, /Restore point included/);
   assert.match(styles, /\.upgrade-decision__context/);
   assert.doesNotMatch(review, /UpgradePreviewCard|FilesModifiedCard|Files to be modified/);
   assert.doesNotMatch(progressive, /FilesModifiedCard|Preparing file list/);

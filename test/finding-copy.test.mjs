@@ -41,6 +41,7 @@ test('peer-incompatible names the owner, the required range, and the proposed ve
   assert.ok(texts(copy).some((l) => l.includes('some-library@4.2.0')));
   assert.ok(texts(copy).some((l) => l.includes('react-toastify ^10.0.0')));
   assert.ok(texts(copy).some((l) => l.includes('11.1.0')));
+  assert.ok(texts(copy).includes('Choose versions that meet the required peer range before upgrading.'));
 });
 
 test('peer-missing names the requirement without an observed version', () => {
@@ -50,6 +51,7 @@ test('peer-missing names the requirement without an observed version', () => {
   );
   assert.equal(copy.label, 'Missing peer dependency');
   assert.ok(texts(copy).some((l) => l.includes('react-dom ^18.0.0')));
+  assert.ok(texts(copy).includes('Add a version that meets the required peer range before upgrading.'));
 });
 
 test('optional-peer-missing is distinguished from a required missing peer', () => {
@@ -95,6 +97,7 @@ test('major-version-change shows current -> target when the finding is about the
   );
   assert.equal(copy.label, 'Major update');
   assert.ok(texts(copy).some((l) => l.includes('10.0.6') && l.includes('11.1.0')));
+  assert.ok(texts(copy).includes('Review the release notes and check your imports, Node.js version and tests before upgrading.'));
 });
 
 test('major-version-change about a different package (the coordinated-plan case) omits the unavailable current version', () => {

@@ -1,21 +1,24 @@
 import { DependencyChangeStatus } from './DependencyChangeStatus.js';
-import { memo, useEffect, useRef } from 'react';
+import { memo, useCallback, useContext, useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
 
 import { UpgradeSecurityAcknowledgement, useUpgradeSecurityAcknowledgement } from './UpgradeSecurityAcknowledgement.js';
 import { semanticButtonClassName, upgradeConfirmationAction } from '../../../src/host/actionButtonSemantics.js';
 import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
-import { deriveUpgradeReviewDecision } from '../../../src/host/upgradeReviewDecision.js';
 import { hasPlannerAddedCoordination, upgradeAnalysisFreshness } from '../../../src/host/upgradeReviewUiState.js';
+import { dependencyWarningCount } from '../../../src/host/upgradeReviewDecision.js';
 import { trapFocus } from '../focusTrap.js';
 import { IconRefresh, IconX } from '../icons.js';
 import { CompatibilitySection } from './CompatibilitySection.js';
-import { OutcomeStatus } from './OutcomeStatus.js';
 import { ProjectCompatibilitySection } from './ProjectCompatibilitySection.js';
 import { SecuritySection } from './SecuritySection.js';
 import { SmartPlanSection } from './SmartPlanSection.js';
-import { UpgradeAnalysisLoading } from './UpgradeAnalysisLoading.js';
+import { UpgradeDecisionBrief } from './UpgradeReviewSummary.js';
+import { buildUpgradeReviewSignals } from './UpgradeAnalysisSections.js';
+import type { UpgradeReviewArea } from './UpgradeAnalysisSections.js';
+import { UpgradeReviewAnnouncement, UpgradeAnalysisLoading } from './UpgradeAnalysisLoading.js';
 import { VerificationSection } from './VerificationSection.js';
+import { selectedSuggestions, VerificationOptInContext } from './VerificationSuggestions.js';
 
 /**
  * The one headline the whole modal commits to: everything else (the
@@ -27,74 +30,74 @@ import { VerificationSection } from './VerificationSection.js';
 export function overallStatusDetail(analysis: { compatibility: UpgradeAnalysisPresentation['compatibility'] }): string | undefined {
   const { compatibility } = analysis;
   if (compatibility.completeness === 'partial') return 'Some compatibility checks could not be completed.';
-  const nonCompatible = compatibility.findings.filter((finding) => finding.status !== 'compatible').length;
   if (compatibility.status === 'compatible') return 'No blocking dependency conflicts were detected.';
   if (compatibility.status === 'warning') {
-    return `The dependency tree resolves, but ${nonCompatible} issue${nonCompatible === 1 ? '' : 's'} deserve${nonCompatible === 1 ? 's' : ''} review.`;
+    const count = dependencyWarningCount(compatibility);
+    return count > 0
+      ? `Review ${count} dependency ${count === 1 ? 'warning' : 'warnings'} before upgrading.`
+      : 'Review the dependency warning details before upgrading.';
   }
   if (compatibility.status === 'conflict') return 'Another dependency blocks this upgrade.';
   return undefined;
 }
 
 /**
- * The loading-or-result body content shared by the standalone
- * UpgradeAnalysisModal (bulk upgrades, opened from the "Manage
- * dependencies" bulk flow) and the embedded Upgrade review tab inside
- * ManageDependencyModal (single-package upgrades, reviewed in place,
- * never a second, separate dialog). No modal chrome of its own: the caller
- * owns the dialog/tab wrapper, header, and footer actions.
+ * The bulk modal body shares its summary and loading placeholders with the
+ * single-package review. Only the final host analysis supplies result cards.
  */
 function UpgradeAnalysisBodyContent({
   packageName,
   targetVersion,
-  analyzingPhase,
+  currentVersion,
   analysis,
+  error = null,
+  onRetry,
+  retryDisabled = false,
   onOpenAdvisory,
   onOpenUsageReference,
   onConfigureVerification,
-  pendingChanges,
   publisherLtsByPackage,
   advisoriesOff = false,
+  onOpenArea,
 }: {
   packageName: string;
   targetVersion: string;
-  analyzingPhase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
+  currentVersion: string;
+  error?: string | null;
+  onRetry?: (() => void) | undefined;
+  retryDisabled?: boolean;
   analysis: UpgradeAnalysisPresentation | null;
   advisoriesOff?: boolean;
+  onOpenArea: (area: UpgradeReviewArea) => void;
   onOpenAdvisory: (packageName: string, advisoryId: string | number, path: string[], reference?: string) => void;
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
   onConfigureVerification: () => void;
-  pendingChanges?: readonly { packageName: string; targetVersion: string }[] | undefined;
   publisherLtsByPackage?: ReadonlyMap<string, string> | undefined;
 }): ReactElement {
-  const decision = analysis === null ? null : deriveUpgradeReviewDecision(
-    analysis,
-    analysis.smartPlan !== null && hasPlannerAddedCoordination(analysis.changes, analysis.smartPlan.changes)
-  );
   const securityNeedsAttention = analysis?.security?.status === 'remains';
-  const displayedChanges = analysis?.changes ?? pendingChanges ?? [{ packageName, targetVersion }];
-
-  if (analysis === null) {
-    return (
-      <UpgradeAnalysisLoading
-        packageName={packageName}
-        targetVersion={targetVersion}
-        changeCount={displayedChanges.length}
-        phase={analyzingPhase}
-      />
-    );
-  }
+  const verificationOptIn = useContext(VerificationOptInContext);
+  const summary = <UpgradeDecisionBrief
+    row={{ name: packageName, current: currentVersion, range: currentVersion }}
+    targetVersion={targetVersion}
+    analysis={analysis}
+    advisoriesOff={advisoriesOff}
+    coordinated={analysis?.smartPlan != null && hasPlannerAddedCoordination(analysis.changes, analysis.smartPlan.changes)}
+    signals={analysis === null ? [] : buildUpgradeReviewSignals(
+      analysis, true, advisoriesOff,
+      selectedSuggestions(analysis.verification, verificationOptIn.selectionFor(analysis.analysisId))
+    )}
+    usage={undefined}
+    showUsage={false}
+    error={error}
+    onRetry={onRetry}
+    retryDisabled={retryDisabled}
+    onOpenArea={onOpenArea}
+  />;
+  if (analysis === null) return <>{summary}{error === null ? <UpgradeAnalysisLoading /> : null}</>;
 
   return (
     <>
-      {decision !== null ? (
-        <OutcomeStatus
-          label={decision.headline.label}
-          className={decision.headline.className}
-          detail={decision.recommendation}
-          size="large"
-        />
-      ) : null}
+      {summary}
 
       {analysis.smartPlan !== null && hasPlannerAddedCoordination(analysis.changes, analysis.smartPlan.changes) ? (
         <SmartPlanSection
@@ -122,23 +125,31 @@ function UpgradeAnalysisBodyContent({
       ) : null}
 
       <div className="modal__grid">
-        <CompatibilitySection
-          compatibility={analysis.compatibility}
-          context={{ package: analysis.package, currentVersion: analysis.currentVersion }}
-        />
-        <ProjectCompatibilitySection analysis={analysis.projectCompatibility} onOpenUsageReference={onOpenUsageReference} />
-        <SecuritySection
-          security={analysis.security}
-          rootPackageName={analysis.package}
-          onOpenAdvisory={onOpenAdvisory}
-          emphasize={securityNeedsAttention}
-          advisoriesOff={advisoriesOff}
-        />
-        <VerificationSection
-          analysisId={analysis.analysisId}
-          verification={analysis.verification}
-          onConfigureVerification={onConfigureVerification}
-        />
+        <div className="analysis-review-area" data-review-area="dependency" tabIndex={-1}>
+          <CompatibilitySection
+            compatibility={analysis.compatibility}
+            context={{ package: analysis.package, currentVersion: analysis.currentVersion }}
+          />
+        </div>
+        <div className="analysis-review-area" data-review-area="project" tabIndex={-1}>
+          <ProjectCompatibilitySection analysis={analysis.projectCompatibility} onOpenUsageReference={onOpenUsageReference} />
+        </div>
+        <div className="analysis-review-area" data-review-area="security" tabIndex={-1}>
+          <SecuritySection
+            security={analysis.security}
+            rootPackageName={analysis.package}
+            onOpenAdvisory={onOpenAdvisory}
+            emphasize={securityNeedsAttention}
+            advisoriesOff={advisoriesOff}
+          />
+        </div>
+        <div className="analysis-review-area" data-review-area="verification" tabIndex={-1}>
+          <VerificationSection
+            analysisId={analysis.analysisId}
+            verification={analysis.verification}
+            onConfigureVerification={onConfigureVerification}
+          />
+        </div>
       </div>
     </>
   );
@@ -158,15 +169,14 @@ export const UpgradeAnalysisBody = memo(UpgradeAnalysisBodyContent);
  * never mutates its contents: it only ever echoes `analysis.analysisId`
  * back in confirm/cancel/use-smart-plan (see webviewProtocol.ts on
  * why the webview never constructs execution authority). Used only for the
- * bulk-upgrade flow (opened from the "Manage dependencies" bulk actions
- * modal): a single-package upgrade reviewed from Manage dependency renders
- * this same content inline via UpgradeAnalysisBody instead, see
- * UpgradeReviewPanel.tsx.
+ * bulk-upgrade flow. The embedded single-package review uses the same
+ * summary and final-result reveal in UpgradeReviewPanel.tsx.
  */
 export function UpgradeAnalysisModal({
   packageName,
   targetVersion,
-  analyzingPhase,
+  currentVersion = 'Unknown',
+  error = null,
   analysis,
   busy,
   hardStale,
@@ -184,7 +194,8 @@ export function UpgradeAnalysisModal({
 }: {
   packageName: string;
   targetVersion: string;
-  analyzingPhase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
+  currentVersion?: string;
+  error?: string | null;
   analysis: UpgradeAnalysisPresentation | null;
   advisoriesOff?: boolean;
   busy: boolean;
@@ -204,6 +215,11 @@ export function UpgradeAnalysisModal({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocused = useRef<Element | null>(null);
+  const openReviewArea = useCallback((area: UpgradeReviewArea): void => {
+    const section = dialogRef.current?.querySelector<HTMLElement>(`[data-review-area="${area}"]`);
+    section?.scrollIntoView({ block: 'start' });
+    section?.focus({ preventScroll: true });
+  }, []);
 
   // Focus trap + initial focus + restoration: a hand-rolled dialog pattern
   // rather than a library: this is the one interactive overlay in the whole
@@ -269,7 +285,7 @@ export function UpgradeAnalysisModal({
               {bulk ? `${displayedChanges.length} dependency upgrades` : packageName}
             </h2>
             {!bulk ? <p className="modal__version-line">
-              <span className="modal__version modal__version--from">{analysis?.currentVersion ?? '…'}</span>
+              <span className="modal__version modal__version--from">{analysis?.currentVersion ?? currentVersion}</span>
               <span className="modal__version-arrow" aria-hidden="true">
                 →
               </span>
@@ -296,6 +312,7 @@ export function UpgradeAnalysisModal({
         </header>
 
         <div className="modal__body">
+          <UpgradeReviewAnnouncement analysis={analysis} advisoriesOff={advisoriesOff} />
           <DependencyChangeStatus />
           {analysis !== null && (freshness !== 'fresh' || hardStale) ? (
             <p className={`stale-status${hardStale || expired ? ' stale-status--hard' : ''}`}>
@@ -311,16 +328,19 @@ export function UpgradeAnalysisModal({
             </p>
           ) : null}
           <UpgradeAnalysisBody
+            error={error}
+            onRetry={error === null ? undefined : onRefresh}
+            retryDisabled={busy}
             packageName={packageName}
             targetVersion={targetVersion}
-            analyzingPhase={analyzingPhase}
+            currentVersion={currentVersion}
             analysis={analysis}
             onOpenAdvisory={onOpenAdvisory}
             onOpenUsageReference={onOpenUsageReference}
             onConfigureVerification={onConfigureVerification}
-            pendingChanges={pendingChanges}
             publisherLtsByPackage={publisherLtsByPackage}
             advisoriesOff={advisoriesOff}
+            onOpenArea={openReviewArea}
           />
           <UpgradeSecurityAcknowledgement consent={consent} />
         </div>

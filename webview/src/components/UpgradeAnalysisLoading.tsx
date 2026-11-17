@@ -1,38 +1,37 @@
 import type { ReactElement } from 'react';
+import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
+import { upgradeReviewHasIncompleteChecks } from '../../../src/host/upgradeReviewUiState.js';
 
-import { LoadingRing } from './DependencyLoadingState.js';
+export function UpgradeSummarySkeleton(): ReactElement {
+  return <div className="upgrade-summary-skeleton" aria-hidden="true">
+    <span className="upgrade-skeleton-line" />
+    <span className="upgrade-skeleton-line upgrade-skeleton-line--short" />
+  </div>;
+}
 
-/** Exported for UpgradeAnalysisSections.tsx's per-section loading placeholders, which reuse this exact copy rather than inventing a second phrasing for the same phases. */
-export const PHASE_LABEL: Record<'compatibility' | 'project-compatibility' | 'smart-plan', string> = {
-  compatibility: 'Checking peer compatibility…',
-  'project-compatibility': 'Checking project imports, runtime, configuration, and tooling…',
-  'smart-plan': 'Finding a coordinated upgrade path…',
-};
-
-/**
- * Shown inside the modal shell between the Upgrade click and the analysis
- * arriving. Only ever displays a phase this webview actually received an
- * `upgrade-analyzing` message for, never a fabricated progress sequence
- * (spec: "Do not fake phase progress").
- */
-export function UpgradeAnalysisLoading({
-  packageName,
-  targetVersion,
-  changeCount = 1,
-  phase,
-}: {
-  packageName: string;
-  targetVersion: string;
-  changeCount?: number;
-  phase: 'compatibility' | 'project-compatibility' | 'smart-plan' | null;
-}): ReactElement {
-  return (
-    <div className="analysis-loading" role="status" aria-live="polite">
-      <LoadingRing progress={undefined} />
-      <p className="analysis-loading__title">
-        {changeCount > 1 ? `Analyzing ${changeCount} dependency upgrades` : `Analyzing ${packageName} ${targetVersion}`}
-      </p>
-      <p className="analysis-loading__detail">{phase === null ? 'Checking package metadata…' : PHASE_LABEL[phase]}</p>
+/** Static placeholders respect reduced motion without a separate animation mode. */
+export function UpgradeAnalysisLoading(): ReactElement {
+  return <div className="upgrade-tab" aria-busy="true">
+    <p className="analysis-loading__detail">Checking compatibility, security and project files</p>
+    <div className="upgrade-tab__details" aria-hidden="true">
+      {['Dependency compatibility', 'Project compatibility', 'Security impact', 'Planned dependency changes', 'Verification'].map((label) => (
+        <div className="upgrade-section-skeleton" key={label}>
+          <span>{label}</span>
+          <span className="upgrade-skeleton-line" />
+        </div>
+      ))}
     </div>
-  );
+  </div>;
+}
+
+/** Keep this live region mounted through loading so completion is announced once. */
+export function UpgradeReviewAnnouncement({ analysis, advisoriesOff = false }: {
+  analysis: UpgradeAnalysisPresentation | null;
+  advisoriesOff?: boolean;
+}): ReactElement {
+  return <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+    {analysis == null ? '' : upgradeReviewHasIncompleteChecks(analysis, advisoriesOff)
+      ? 'Upgrade review ready. Some checks could not complete.'
+      : 'Upgrade review ready.'}
+  </p>;
 }

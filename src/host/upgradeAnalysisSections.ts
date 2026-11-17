@@ -1,8 +1,9 @@
 /**
- * Pure, vscode-free client-side state machine for a progressive Upgrade
- * review analysis. Applies one streamed `UpgradeAnalysisPartialSection`
+ * Pure, vscode-free client-side state machine for streamed Upgrade
+ * review progress. Applies one streamed `UpgradeAnalysisPartialSection`
  * (see webviewProtocol.ts) to the running per-section state the Upgrade
- * review panel renders from. Lives under src/host, not webview/src, so it's
+ * review tracks. Section completion never reveals results. Only the final
+ * upgrade-analysis message does. Lives under src/host, not webview/src, so it's
  * importable both by App.tsx and by a plain node:test unit test: the same
  * convention this codebase already uses for other App.tsx-adjacent pure
  * logic (see upgradeUiState.ts).

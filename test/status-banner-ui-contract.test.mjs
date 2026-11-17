@@ -31,5 +31,5 @@ test('recoverable failures expose actions in their local context', () => {
   assert.match(app, /Showing partial results:/);
   assert.match(bulk, /label: 'Try again'/);
   assert.match(bulk, /Couldn't analyze removal impact:/);
-  assert.match(upgrade, /label: 'Refresh data'/);
+  assert.match(upgrade, /label: 'Retry'/);
 });

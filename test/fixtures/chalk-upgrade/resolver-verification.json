@@ -1,0 +1,7 @@
+{
+  "status": "compatible",
+  "packageManager": "npm",
+  "packageManagerVersion": "10.9.8",
+  "code": "RESOLVED",
+  "explanation": "The package manager resolved the proposed dependency set in an isolated temporary project."
+}

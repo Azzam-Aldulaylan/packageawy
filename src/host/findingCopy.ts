@@ -15,6 +15,18 @@
  */
 
 import type { CompatibilityFinding } from './webviewProtocol.js';
+import { parse } from 'semver';
+
+export function majorUpdateSummary(
+  finding: CompatibilityFinding,
+  context: { package: string; currentVersion: string }
+): string {
+  const current = finding.subject.name === context.package ? parse(context.currentVersion)?.major : undefined;
+  const target = parse(finding.subject.version ?? '')?.major;
+  return current !== undefined && target !== undefined
+    ? `Major update: ${current} to ${target}. May include breaking changes.`
+    : 'Major update. May include breaking changes.';
+}
 
 export interface FindingCopyLine {
   text: string;
@@ -70,6 +82,7 @@ export function findingCopy(
           line(`${finding.subject.name}@${versionOf(finding.subject.version)}`),
           codeLine(`Required: ${finding.requirement?.name} ${finding.requirement?.range}`),
           line(`Proposed: ${finding.requirement?.name}@${versionOf(finding.observedVersion)}`),
+          line('Choose versions that meet the required peer range before upgrading.'),
         ],
       };
     case 'peer-missing':
@@ -79,6 +92,7 @@ export function findingCopy(
           line(`${finding.subject.name}@${versionOf(finding.subject.version)}`),
           codeLine(`Required: ${finding.requirement?.name} ${finding.requirement?.range}`),
           line('This peer dependency is not currently resolved'),
+          line('Add a version that meets the required peer range before upgrading.'),
         ],
       };
     case 'optional-peer-missing':
@@ -116,7 +130,8 @@ export function findingCopy(
               ? `${finding.subject.name} ${context.currentVersion} → ${versionOf(finding.subject.version)}`
               : `${finding.subject.name} → ${versionOf(finding.subject.version)}`
           ),
-          line('Major versions may contain breaking API changes'),
+          line(majorUpdateSummary(finding, context)),
+          line('Review the release notes and check your imports, Node.js version and tests before upgrading.'),
         ],
       };
   }

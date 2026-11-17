@@ -220,7 +220,7 @@ test('checks that could not fully run are a coverage note, not a finding to revi
     projectCompatibility: project({ analyzers: [...project().analyzers, { analyzerId: 'tooling-peer-alignment', status: 'partial', findings: [], unavailableReason: 'tooling-metadata-incomplete' }] }),
     security: { status: 'fixed', resolvedAdvisories: [{ advisory: { severity: 'high' } }, { advisory: { severity: 'low' } }], remaining: [] },
   })));
-  assert.equal(partial, 'Fixes 2 known vulnerabilities. Some checks could not fully run, so run your build and tests after upgrading.');
+  assert.equal(partial, 'Fixes 2 known vulnerabilities. Some checks could not complete. Run your build and tests after upgrading.');
 
   const conflict = summary(manageReview(analysis({ compatibility: { status: 'conflict', completeness: 'complete', findings: [] } })));
   assert.match(conflict, /^Choose another target or resolve the dependency conflict first\./);
@@ -243,7 +243,7 @@ test('Manage and standalone review render the same warning; selected target is n
     assert.match(html, /Confirmed project compatibility issues/);
     assert.doesNotMatch(html, /This is a safe update|This is a compatible update/);
   }
-  assert.match(standalone, /required project changes/);
+  assert.match(standalone, /Review 1 project compatibility finding before upgrading/);
   assert.match(manage, /Review 1 project compatibility finding before upgrading/);
   assert.equal((manage.match(/<section class="upgrade-decision\b/g) ?? []).length, 1);
   assert.match(manage, /<div class="upgrade-decision__versions">[\s\S]*?<code>14\.2\.35<\/code>[\s\S]*?<code>15\.5\.24<\/code>/);

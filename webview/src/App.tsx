@@ -232,7 +232,6 @@ export function App(): ReactElement {
   // constructed or edited here, only ever stored as received and echoed
   // back by its `analysisId` on confirm/cancel/use-smart-plan.
   const [analysis, setAnalysis] = useState<UpgradeAnalysisPresentation | null>(null);
-  const [analyzingPhase, setAnalyzingPhase] = useState<'compatibility' | 'project-compatibility' | 'smart-plan' | null>(null);
   // Per-section progressive state for the active analysis attempt. See
   // src/host/upgradeAnalysisSections.ts. Reset to WAITING_UPGRADE_ANALYSIS_SECTIONS
   // every time a fresh `upgrade`/`bulk-upgrade` request is issued. Superseded
@@ -581,7 +580,6 @@ export function App(): ReactElement {
           setActiveTarget(null);
           setActiveUpgradeChanges([]);
           setAnalysis(null);
-          setAnalyzingPhase(null);
           setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
           setHardStaleAnalysisId(null);
           setConfirmBusy(false);
@@ -632,22 +630,35 @@ export function App(): ReactElement {
             ? undefined
             : upgradeRequestOwnersRef.current.get(activeRequestIdRef.current);
           if (upgradeErrorOwner !== undefined && activeOwner !== undefined && upgradeErrorOwner !== activeOwner) return;
+          const activeRequestRejected = incoming.requestId !== undefined && incoming.requestId === activeRequestIdRef.current;
+          const activeAnalysisRejected = incoming.analysisId !== undefined && incoming.analysisId === analysisIdRef.current;
+          const activeAttemptRejected = activeRequestRejected || activeAnalysisRejected;
+          if (incoming.error.code === 'UPGRADE_IN_PROGRESS' && !activeAttemptRejected) return;
           setConfirmBusy(false);
           // Never touches `message`: the rendered table/banners are exactly
           // what they were before this arrived.
-          if (upgradeErrorClearsActiveState(incoming.error.code)) {
+          // Confirmation contention keeps the completed review for retry or
+          // cancellation. Only rejection of its initial request clears it.
+          if (upgradeErrorClearsActiveState(incoming.error.code, activeRequestRejected)) {
+            const keepFailedReview = upgradeErrorOwner !== undefined && upgradeErrorOwner === activeOwner &&
+              activeRequestIdRef.current !== null && analysisIdRef.current === null &&
+              upgradeErrorIsUserVisible(incoming.error.code, activeAttemptRejected);
+            // Retire this attempt before showing Retry. Duplicate errors and
+            // late results must not replace its terminal state or a retry.
+            if (keepFailedReview && upgradeErrorOwner !== undefined) upgradeErrorOwner.dismissed = true;
             activeUpgradeRef.current = null;
             activeRequestIdRef.current = null;
-            setActiveUpgrade(null);
-            setActiveTarget(null);
-            setActiveUpgradeChanges([]);
+            if (!keepFailedReview) {
+              setActiveUpgrade(null);
+              setActiveTarget(null);
+              setActiveUpgradeChanges([]);
+            }
             setAnalysis(null);
-            setAnalyzingPhase(null);
             setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
             setHardStaleAnalysisId(null);
             setConfirmBusy(false);
           }
-          if (upgradeErrorIsUserVisible(incoming.error.code)) {
+          if (upgradeErrorIsUserVisible(incoming.error.code, activeAttemptRejected)) {
             setUpgradeError({
               origin: upgradeErrorOwner?.origin ?? null,
               // An expired host review may report "unknown" while its local owner is still known.
@@ -661,7 +672,6 @@ export function App(): ReactElement {
 
         case 'upgrade-analyzing': {
           if (upgradeAnalysisMessageMatchesRequest(activeRequestIdRef.current, incoming.requestId)) {
-            setAnalyzingPhase(incoming.phase);
             setAnalysisSections((previous) => markPhaseLoading(previous, incoming.phase));
           }
           return;
@@ -689,7 +699,6 @@ export function App(): ReactElement {
             if (owner !== undefined) upgradeAnalysisOwnersRef.current.set(incoming.analysis.analysisId, owner);
             analysisIdRef.current = incoming.analysis.analysisId;
             setAnalysis(incoming.analysis);
-            setAnalyzingPhase(null);
           }
           return;
         }
@@ -1351,7 +1360,6 @@ export function App(): ReactElement {
             setActiveTarget(null);
             setActiveUpgradeChanges([]);
             setAnalysis(null);
-            setAnalyzingPhase(null);
             setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
             setHardStaleAnalysisId(null);
             setConfirmBusy(false);
@@ -1489,6 +1497,7 @@ export function App(): ReactElement {
     const requestId = String(++nextRequestIdRef.current);
     upgradeRequestOwnersRef.current.set(requestId, { origin: 'manage-dependency', packageName, dismissed: false });
     activeUpgradeRef.current = packageName;
+    analysisIdRef.current = null;
     upgradeResultRef.current = null;
     setUpgradeResult(null);
     upgradeEnrichmentRef.current = null;
@@ -1500,7 +1509,6 @@ export function App(): ReactElement {
     setActiveUpgradeChanges([{ packageName, currentVersion: '', targetVersion: target, major: false }]);
     setPublisherLtsByPackage(new Map());
     setAnalysis(null);
-    setAnalyzingPhase(null);
     setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
     setHardStaleAnalysisId(null);
     setConfirmBusy(false);
@@ -1515,6 +1523,7 @@ export function App(): ReactElement {
     const requestId = String(++nextRequestIdRef.current);
     upgradeRequestOwnersRef.current.set(requestId, { origin: 'dashboard', packageName: first.packageName, dismissed: false });
     activeUpgradeRef.current = first.packageName;
+    analysisIdRef.current = null;
     upgradeResultRef.current = null;
     setUpgradeResult(null);
     upgradeEnrichmentRef.current = null;
@@ -1526,11 +1535,11 @@ export function App(): ReactElement {
     setActiveUpgradeChanges(changes);
     setPublisherLtsByPackage(new Map());
     setAnalysis(null);
-    setAnalyzingPhase(null);
     setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
     setHardStaleAnalysisId(null);
     setConfirmBusy(false);
     setUpgradeOrigin('dashboard');
+    setUpgradeError(null);
     vscode.postMessage({
       type: 'bulk-upgrade',
       changes: changes.map((change) => ({ package: change.packageName, target: change.targetVersion })),
@@ -1574,11 +1583,11 @@ export function App(): ReactElement {
     setActiveUpgrade(null);
     activeUpgradeRef.current = null;
     activeRequestIdRef.current = null;
+    analysisIdRef.current = null;
     setActiveTarget(null);
     setActiveUpgradeChanges([]);
     setPublisherLtsByPackage(new Map());
     setAnalysis(null);
-    setAnalyzingPhase(null);
     setAnalysisSections(WAITING_UPGRADE_ANALYSIS_SECTIONS);
     setHardStaleAnalysisId(null);
     setConfirmBusy(false);
@@ -1586,10 +1595,9 @@ export function App(): ReactElement {
   }, [analysis]);
 
   // Structural staleness's Refresh action, not a new mechanism, just
-  // this same Cancel followed immediately by a fresh Analyze. Safe because
-  // `handleCancelUpgrade` is fully synchronous host-side (see
-  // upgradeAssistantCoordinator.ts), so the panel-wide lock is guaranteed
-  // free before the `upgrade` message right behind it is processed.
+  // this same Cancel followed immediately by a fresh Analyze. The host keeps
+  // its reservation until cleanup finishes. A retry rejected during that
+  // cleanup shows a terminal error and can be retried once the lock clears.
   const requestRefreshUpgradeAnalysis = useCallback(
     (packageName: string, target: string) => {
       requestCancelUpgrade();
@@ -2541,7 +2549,7 @@ export function App(): ReactElement {
       ) : null}
 
       {/* Manage owns its upgrade error so the same failure is not shown twice. */}
-      {upgradeError !== null && upgradeError.origin !== 'manage-dependency' ? (
+      {upgradeError !== null && upgradeError.origin !== 'manage-dependency' && activeUpgrade === null ? (
         <StatusBanner
           tone="error"
           action={{ label: 'Refresh', onClick: refresh, disabled: actionsDisabled, icon: <IconRefresh /> }}
@@ -2799,7 +2807,8 @@ export function App(): ReactElement {
         <UpgradeAnalysisModal
           packageName={activeUpgrade}
           targetVersion={activeTarget}
-          analyzingPhase={analyzingPhase}
+          currentVersion={data?.rows.find((row) => row.name === activeUpgrade)?.current ?? activeUpgradeChanges[0]?.currentVersion ?? 'Unknown'}
+          error={upgradeError?.origin !== 'manage-dependency' ? upgradeError?.message ?? null : null}
           analysis={analysis}
           pendingChanges={activeUpgradeChanges}
           publisherLtsByPackage={publisherLtsByPackage}

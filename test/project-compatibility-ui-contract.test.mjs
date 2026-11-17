@@ -24,10 +24,9 @@ test('project compatibility uses the three host-provided confidence classes', ()
   assert.match(styles, /\.project-compat__confidence-rail/);
 });
 
-test('project compatibility streams independently and unavailable checks are never called compatible', () => {
-  assert.match(progressive, /projectCompatibility\.status === 'complete'/);
-  assert.match(progressive, /PHASE_LABEL\['project-compatibility'\]/);
-  assert.match(progressive, /Waiting to check project compatibility/);
+test('project compatibility waits for the final result and unavailable checks stay honest', () => {
+  assert.match(progressive, /return <UpgradeAnalysisLoading/);
+  assert.doesNotMatch(progressive, /PHASE_LABEL|Waiting to check project compatibility/);
   assert.match(section, /Some checks could not be completed/);
   assert.match(section, /could not verify/);
   assert.match(section, /No issues were found by the checks that completed/);
