@@ -1,3 +1,4 @@
+import { dashboardError, isMissingManifest } from './dashboardError.js';
 import { isExpectedFsError, isFsError } from './expectedFsError.js';
 import { UnsupportedLockfileError } from '../core/lockfile/parse.js';
 import { UnsupportedPnpmLockfileError } from '../core/lockfile/pnpm.js';
@@ -138,11 +139,6 @@ function isCancellation(cause: unknown): boolean {
   return cause instanceof FetchError && cause.code === 'CANCELLED';
 }
 
-function toProtocolError(cause: unknown): ProtocolError {
-  if (cause instanceof FetchError) return { code: cause.code, message: cause.message };
-  if (cause instanceof Error) return { code: cause.name, message: cause.message };
-  return { code: 'UNKNOWN', message: String(cause) };
-}
 
 /**
  * Flattens a completed pipeline result down to the plain-object shape that's
@@ -273,6 +269,11 @@ export class DashboardController {
   private optionsDiskGeneration: number | undefined;
   /** The `revalidationGeneration` `lastResult` was last validated against, or `undefined` if it never was: `undefined` is the explicit "revalidation in progress / not yet validated" state `validateUpgradeRequest` checks. */
   private eligibleGeneration: number | undefined;
+  /** Keep the settled banner and mutation rejection until a successful disk read. */
+  private projectLoadFailure: {
+    reason: 'missing-manifest' | 'project-unavailable';
+    error: ProtocolError;
+  } | undefined;
 
   constructor(options: DashboardControllerOptions) {
     this.options = options;
@@ -365,6 +366,7 @@ export class DashboardController {
    */
   updateProjectSnapshot(snapshot: ProjectSnapshot, generationAtReadStart: number): ProjectSnapshotUpdateResult {
     if (generationAtReadStart !== this.diskReadGenerations.get(snapshot.root)) return { structurallyCurrent: false };
+    this.projectLoadFailure = undefined;
     this.options = { ...this.options, ...snapshot };
     this.declaredDependencies = DashboardController.parseDeclaredDependencies(snapshot.manifestText);
     this.invalidateScan();
@@ -402,6 +404,24 @@ export class DashboardController {
     this.diskReadGenerations.set(root, generation);
     this.invalidateScan();
     return generation;
+  }
+
+  /** A failed read ends waiting without granting authority to the retained rows. */
+  settleProjectLoadFailure(cause: unknown, root: string, generationAtReadStart: number): boolean {
+    if (root !== this.options.root || generationAtReadStart !== this.diskReadGenerations.get(root)) return false;
+    this.projectLoadFailure = {
+      reason: isMissingManifest(cause) ? 'missing-manifest' : 'project-unavailable',
+      error: dashboardError(cause),
+    };
+    return true;
+  }
+
+  /** Cached rows and network scans cannot recover a failed disk read. */
+  private replayProjectLoadFailure(sink: MessageSink): Extract<BackgroundRefreshOutcome, { status: 'failed' }> | undefined {
+    if (this.projectLoadFailure === undefined) return;
+    const { error } = this.projectLoadFailure;
+    sink.postMessage({ status: 'fatal-error', error });
+    return { status: 'failed', error };
   }
 
   /** Discovery bounds retained roots and revokes reads of disappeared projects. */
@@ -446,6 +466,7 @@ export class DashboardController {
    * already covers that).
    */
   announceRevalidating(sink: MessageSink): void {
+    if (this.replayProjectLoadFailure(sink) !== undefined) return;
     if (this.lastResult === undefined) return;
     this.postSnapshot(sink,
       toHostToWebviewMessage(
@@ -488,7 +509,7 @@ export class DashboardController {
    * ticking expiry on structurally-valid data.
    */
   private isEligible(): boolean {
-    return this.eligibleGeneration !== undefined && this.eligibleGeneration === this.revalidationGeneration;
+    return this.projectLoadFailure === undefined && this.eligibleGeneration !== undefined && this.eligibleGeneration === this.revalidationGeneration;
   }
 
   /**
@@ -526,6 +547,7 @@ export class DashboardController {
   }
 
   validateUpgradeRequest(request: UpgradeRequestInput): UpgradeEligibility {
+    if (this.projectLoadFailure !== undefined) return { ok: false, reason: this.projectLoadFailure.reason };
     if (this.lastResult === undefined) return { ok: false, reason: 'no-scan-result' };
     if (!this.isEligible()) return { ok: false, reason: 'revalidating' };
     return validateUpgradeRequest(this.lastResult.rows, this.declaredDependencies, request);
@@ -536,6 +558,7 @@ export class DashboardController {
     requests: readonly UpgradeRequestInput[],
     publishedTargetsByPackage: ReadonlyMap<string, ReadonlySet<string>> = new Map()
   ): BulkUpgradeEligibility {
+    if (this.projectLoadFailure !== undefined) return { ok: false, reason: 'change-rejected', changeReason: this.projectLoadFailure.reason };
     if (this.lastResult === undefined) {
       return { ok: false, reason: 'change-rejected', changeReason: 'no-scan-result' };
     }
@@ -552,6 +575,7 @@ export class DashboardController {
 
   /** Same freshness gate as a bulk upgrade, applied atomically to every requested removal. */
   validateBulkRemoveRequest(requests: readonly RemoveRequestInput[]): BulkRemoveEligibility {
+    if (this.projectLoadFailure !== undefined) return { ok: false, reason: 'change-rejected', changeReason: this.projectLoadFailure.reason };
     if (this.lastResult === undefined) {
       return { ok: false, reason: 'change-rejected', changeReason: 'no-scan-result' };
     }
@@ -775,6 +799,8 @@ export class DashboardController {
 
   private async presentReady(sink: MessageSink, startup?: StartupTask): Promise<BackgroundRefreshOutcome | undefined> {
     if (this.disposed) return { status: 'cancelled' };
+    const failure = this.replayProjectLoadFailure(sink);
+    if (failure !== undefined) return failure;
     const cachePerformance = createPerformanceSession('Packageawy cache', this.performanceEnabled());
     if (this.lastResult === undefined) {
       this.hydrateFromPersistedCache(cachePerformance);
@@ -857,6 +883,8 @@ export class DashboardController {
    */
   async handleRefresh(sink: MessageSink, strict = false): Promise<BackgroundRefreshOutcome> {
     if (this.disposed) return { status: 'cancelled' };
+    const failure = this.replayProjectLoadFailure(sink);
+    if (failure !== undefined) return failure;
     this.lastResult = undefined;
     this.lastResultSourceFingerprint = undefined;
     this.lastGeneratedAt = undefined;
@@ -890,6 +918,7 @@ export class DashboardController {
    * trip while the configured TTL still considers the data good.
    */
   needsBackgroundRefresh(): boolean {
+    if (this.projectLoadFailure !== undefined) return false;
     if (this.lastResult === undefined) return false;
     if (!hasCompleteCoreData(this.lastResult)) return true;
     return classifyFreshness(this.lastGeneratedAt, this.options.ttlMinutesProvider(), this.now()) !== 'fresh';
@@ -954,6 +983,8 @@ export class DashboardController {
     strict = false
   ): Promise<BackgroundRefreshOutcome> {
     if (this.disposed) return { status: 'cancelled' };
+    const failure = this.replayProjectLoadFailure(sink);
+    if (failure !== undefined) return failure;
     const scanGeneration = this.optionsDiskGeneration;
     this.scanId += 1;
     this.updateContext = undefined;
@@ -1090,15 +1121,16 @@ export class DashboardController {
         return { status: this.disposed ? 'cancelled' : 'superseded' };
       }
       if (isCancellation(cause)) return { status: 'cancelled' };
+      const error = dashboardError(cause, this.options.log);
       // Nothing renderable at all: an unreadable manifest, an unsupported
       // lockfile version. Degraded-data failures never reach here: the
       // pipeline folds those into advisoriesError/auditUnavailable. If a good
       // snapshot is already on screen (a background revalidation that failed),
       // leave it exactly as it was rather than blowing it away with an error.
       if (this.lastResult === undefined) {
-        sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
+        sink.postMessage({ status: 'fatal-error', error });
       }
-      return { status: 'failed', error: toProtocolError(cause) };
+      return { status: 'failed', error };
     } finally {
       if (this.inFlight === controller) this.inFlight = undefined;
       performance.finish({ cancelled: controller.signal.aborted });

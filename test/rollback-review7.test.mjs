@@ -141,7 +141,7 @@ for (const strict of [false, true]) {
     assert.equal(hits, 1);
     if (strict) {
       assert.equal(controller, undefined, 'confirmation must stop when fallback controller loading fails');
-      assert.deepEqual(s.posted.filter(message => message.error).map(message => message.error), [{ code: 'Error', message: error.message }]);
+      assert.deepEqual(s.posted.filter(message => message.error).map(message => message.error), [{ code: 'PROJECT_LOAD_FAILED', message: 'Project files could not be read. Check the Packageawy log, then choose Refresh.' }]);
     } else {
       assert.ok(controller, 'read-only controller loading keeps its graceful fallback');
       assert.deepEqual(s.posted.filter(message => message.error), []);

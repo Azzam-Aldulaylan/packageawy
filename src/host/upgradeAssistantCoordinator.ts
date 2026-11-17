@@ -1,3 +1,4 @@
+import { describeRejection } from '../core/upgrade/validate.js';
 import { isExpectedFsError } from './expectedFsError.js';
 /**
  * Host-side coordinator for one dependency-upgrade lifecycle.
@@ -383,6 +384,7 @@ function blockedReason(
 }
 
 function versionListEligibilityError(reason: string): ProtocolError {
+  if (reason === 'missing-manifest' || reason === 'project-unavailable') return describeRejection(reason);
   const failure = versionListFailureFromEligibility(reason);
   return { code: failure, message: versionListFailureText(failure) };
 }

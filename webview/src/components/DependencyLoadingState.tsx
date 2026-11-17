@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react';
 import type { ScanProgressStage } from '../../../src/host/webviewProtocol.js';
 
-import { IconPackage } from '../icons.js';
+import { IconBrand } from '../icons.js';
 
 /** Real pipeline progress when a scan stage has a meaningful item count. */
 export interface LoadingProgress {
@@ -23,7 +23,7 @@ const RING_RADIUS = 15.5;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
 /**
- * A ring around the package glyph: spinning indeterminately by default
+ * A ring around the Packageawy logo: spinning indeterminately by default
  * (CSS keyframes, `prefers-reduced-motion` swaps it for a static partial
  * arc in styles.css), or a real determinate arc when `progress` is
  * supplied. SVG/CSS only: no GIF, no animation library.
@@ -51,7 +51,7 @@ export function LoadingRing({ progress }: { progress: LoadingProgress | undefine
           strokeDashoffset={dashoffset}
         />
       </svg>
-      <IconPackage className="loading-ring__icon" />
+      <IconBrand className="loading-ring__icon" />
     </div>
   );
 }

@@ -227,7 +227,7 @@ for (const code of codes) {
     });
     await s.current.handle({ type: 'refresh' });
     assert.equal(s.current.runtimeFailed, false);
-    assert.ok(s.posted.some(message => message.status === 'fatal-error' && message.error.code === 'Error'));
+    assert.ok(s.posted.some(message => message.status === 'fatal-error' && message.error.code === 'PROJECT_LOAD_FAILED'));
     await assert.rejects(s.current.upgradeCoordinator.options.reloadFinalState(), cause => cause === error);
   });
 }

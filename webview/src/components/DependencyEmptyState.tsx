@@ -1,11 +1,11 @@
 import type { ReactElement } from 'react';
 
-import { IconFilter, IconPackage, IconSearch } from '../icons.js';
+import { IconBrand, IconFilter, IconSearch } from '../icons.js';
 
 export type EmptyStateIcon = 'package' | 'search' | 'filter';
 
 const ICONS: Record<EmptyStateIcon, (props: { className?: string }) => ReactElement> = {
-  package: IconPackage,
+  package: IconBrand,
   search: IconSearch,
   filter: IconFilter,
 };
@@ -30,8 +30,10 @@ export function DependencyEmptyState({
   const Icon = ICONS[icon];
   return (
     <div className="empty-state">
-      <Icon className="empty-state__icon" />
-      <p className="empty-state__title">{title}</p>
+      <div className="empty-state__heading">
+        <Icon className="empty-state__icon" aria-hidden="true" />
+        <p className="empty-state__title">{title}</p>
+      </div>
       {detail !== undefined ? <p className="empty-state__detail">{detail}</p> : null}
       {onClearSearch !== undefined ? (
         <button type="button" className="button button--secondary" onClick={onClearSearch}>

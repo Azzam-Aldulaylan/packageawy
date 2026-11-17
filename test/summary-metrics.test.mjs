@@ -125,6 +125,8 @@ test('an empty row set is all zeros', () => {
     otherUpdates: 0,
     vulnerable: 0,
     advisoryFindings: 0,
+    knownVulnerabilities: 0,
+    knownVulnerabilitySeverities: { critical: 0, high: 0, moderate: 0, low: 0, info: 0 },
     criticalAdvisoryFindings: 0,
     highAdvisoryFindings: 0,
     moderateAdvisoryFindings: 0,
@@ -164,6 +166,8 @@ test('counts are tallied across a mixed row set', () => {
     otherUpdates: 1,
     vulnerable: 4,
     advisoryFindings: 0,
+    knownVulnerabilities: 0,
+    knownVulnerabilitySeverities: { critical: 0, high: 0, moderate: 0, low: 0, info: 0 },
     criticalAdvisoryFindings: 0,
     highAdvisoryFindings: 0,
     moderateAdvisoryFindings: 0,
@@ -299,10 +303,11 @@ test('advisory findings are distinct from vulnerable direct dependency rows', ()
   const metrics = summaryMetrics(rows);
   assert.equal(metrics.vulnerable, 2);
   assert.equal(metrics.advisoryFindings, 2);
+  assert.equal(metrics.knownVulnerabilities, 1);
   assert.equal(metrics.highAdvisoryFindings, 2);
   assert.equal(
     vulnerabilitiesCardSubtitle(metrics),
-    '2 advisory findings\n2 high'
+    '1 known vulnerability\n1 high'
   );
 });
 
@@ -369,4 +374,19 @@ test('unchecked registry packages make the Updates card a lower bound, never "Up
   assert.deepEqual(updatesCardValue(one, COMPLETE_AVAILABILITY), { count: '≥1', subtitle: '1 package not checked' });
   const linksOnly = summaryMetrics([row({ name: 'link', current: null, wanted: null, latest: null, unresolvable: 'workspace-link' })]);
   assert.deepEqual(updatesCardValue(linksOnly, COMPLETE_AVAILABILITY), { count: 0, subtitle: 'Up to date' });
+});
+
+test('dashboard counts separate published reports once across roots and packages', () => {
+  const metrics = summaryMetrics([
+    row({ name: 'a', worstSeverity: 'high', advisories: [
+      { advisory: { id: 1, severity: 'high' }, flaggedPackage: 'shared' },
+      { advisory: { id: 2, severity: 'low' }, flaggedPackage: 'shared' },
+    ] }),
+    row({ name: 'b', worstSeverity: 'high', advisories: [
+      { advisory: { id: 1, severity: 'high' }, flaggedPackage: 'other' },
+    ] }),
+  ]);
+  assert.equal(metrics.vulnerable, 2);
+  assert.equal(metrics.advisoryFindings, 3, 'cleanup finding count retains its original meaning');
+  assert.equal(vulnerabilitiesCardSubtitle(metrics), '2 known vulnerabilities\n1 high · 1 low');
 });

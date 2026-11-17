@@ -1,3 +1,4 @@
+import { dashboardError } from './dashboardError.js';
 import { isExpectedFsError, isFsError } from './expectedFsError.js';
 /**
  * The dashboard session behind the webview: lifecycle, the message boundary,
@@ -107,11 +108,6 @@ export interface DashboardPanelIntegrationTestSnapshot {
   selectedManifestPath: string | null;
   packageManager: 'npm' | 'pnpm' | null;
   messages: readonly DashboardPanelIntegrationTestEvent[];
-}
-
-function toProtocolError(cause: unknown): ProtocolError {
-  if (cause instanceof Error) return { code: cause.name, message: cause.message };
-  return { code: 'UNKNOWN', message: String(cause) };
 }
 
 function toProjectInfo(candidate: DiscoveredProject): SelectedProjectInfo {
@@ -1095,7 +1091,7 @@ export class DashboardPanel {
     } catch (cause) {
       performance.finish({ failed: true });
       if (this.disposed) return;
-      this.sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
+      this.sink.postMessage({ status: 'fatal-error', error: this.toProtocolError(cause) });
       return;
     }
     performance.finish({ candidates: candidates.length });
@@ -1174,7 +1170,7 @@ export class DashboardPanel {
     } catch (cause) {
       performance.finish({ failed: true });
       if (this.disposed) return;
-      this.sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
+      this.sink.postMessage({ status: 'fatal-error', error: this.toProtocolError(cause) });
       return;
     }
     performance.finish({ candidates: candidates.length });
@@ -1306,7 +1302,9 @@ export class DashboardPanel {
       } catch (cause) {
         if (!(cause instanceof SyntaxError) && !(options.strict ? isExpectedFsError(cause, 'read') : isFsError(cause))) throw cause;
         if (this.disposed || generation !== this.reloadGeneration) return { status: 'superseded' };
-        const error = toProtocolError(cause);
+        const settled = revalidation?.controller.settleProjectLoadFailure(cause, path.join(candidate.folder.path, candidate.dir), revalidation.generationAtReadStart);
+        if (sameProjectReload && settled === false) return { status: 'superseded' };
+        const error = this.toProtocolError(cause);
         if (options.clearOnLoadFailure === true) {
           this.clearCurrentProjectForBranch(
             'The selected package.json disappeared while this branch was loading. Select a project and try again.',
@@ -1627,7 +1625,7 @@ export class DashboardPanel {
         startup.controller = controller;
         controller.startStartup(this.sink);
       } catch (cause) {
-        if (isCurrent()) startup.error = toProtocolError(cause);
+        if (isCurrent()) startup.error = this.toProtocolError(cause);
       } finally {
         performance.finish();
       }
@@ -1679,7 +1677,7 @@ export class DashboardPanel {
       return this.controller;
     } catch (cause) {
       if (!isCurrent()) return undefined;
-      this.sink.postMessage({ status: 'fatal-error', error: toProtocolError(cause) });
+      this.sink.postMessage({ status: 'fatal-error', error: this.toProtocolError(cause) });
       return undefined;
     } finally {
       performance.finish();
@@ -1769,6 +1767,10 @@ export class DashboardPanel {
 
   private readonly performanceEnabled = (): boolean =>
     this.platform.getSetting<boolean>('debug.performance', false);
+
+  private toProtocolError(cause: unknown): ProtocolError {
+    return dashboardError(cause, (line) => this.platform.log?.(line));
+  }
 
   private async loadProjectMeasured(candidate: DiscoveredProject, operation: string, strict = false): Promise<ResolvedProject> {
     const performance = createPerformanceSession(operation, this.performanceEnabled());
@@ -1925,7 +1927,7 @@ export class DashboardPanel {
       performance.finish({ failed: true });
       if (this.upgradeCoordinator.isMutationBusy()) return;
       if (this.disposed || !this.branchChangeCoordinator.claim(headGeneration)) return;
-      this.clearCurrentProjectForBranch(toProtocolError(cause).message, 'BranchReconciliationError');
+      this.clearCurrentProjectForBranch(this.toProtocolError(cause).message, 'BranchReconciliationError');
       return;
     }
     performance.finish({ candidates: candidates.length });
@@ -2151,10 +2153,10 @@ export class DashboardPanel {
         isStillCurrent: () => !this.disposed && !this.backgroundStopped &&
           generation === this.reloadGeneration && candidate === this.selectedProject,
       });
-    } catch {
-      // Can't re-read the project right now (e.g. its manifest was deleted
-      // mid-edit): leave the last good render as-is. A later event (the
-      // file reappearing, or the user picking a different project) recovers.
+    } catch (cause) {
+      if (this.disposed || this.backgroundStopped || generation !== this.reloadGeneration || candidate !== this.selectedProject) return;
+      if (!controller.settleProjectLoadFailure(cause, path.join(candidate.folder.path, candidate.dir), generationAtReadStart)) return;
+      this.sink.postMessage({ status: 'fatal-error', error: this.toProtocolError(cause) });
       return;
     }
     if (this.disposed || !outcome.applied) return;

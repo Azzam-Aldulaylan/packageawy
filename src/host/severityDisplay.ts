@@ -29,7 +29,7 @@ const LABELS: Record<Severity, string> = {
 export const ADVISORY_CHECK_OFF_TEXT = 'Security checks are turned off for this project';
 
 /**
- * A null severity reads as "No known vulnerabilities" only after the package's
+ * A null severity reads as "Safe" only after the package's
  * version was checked. Missing version evidence gets a neutral label and an
  * install hint. When the project turned the advisory check off, every cell
  * reads Off.
@@ -45,8 +45,9 @@ export function severityDisplay(
     return { label: 'Not checked', className: 'info', reason: 'Install dependencies to check this package' };
   }
   if (!advisoriesAvailable) return { label: 'Unavailable', className: 'info' };
-  // "Safe" claimed more than is known; this says exactly what was checked.
-  if (severity === null) return { label: 'No known vulnerabilities', className: 'none', reason: 'No known vulnerabilities in the installed dependency tree.' };
+  // Safe is the compact completed-check label. Its explanation scopes the claim
+  // to published vulnerabilities in this package and its installed dependencies.
+  if (severity === null) return { label: 'Safe', className: 'none', reason: 'No known vulnerabilities. The latest security check found no published vulnerabilities in this package or its installed dependencies.' };
   return { label: LABELS[severity], className: severity };
 }
 

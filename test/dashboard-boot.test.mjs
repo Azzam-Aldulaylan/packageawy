@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import ts from 'typescript';
 
-const source = readFileSync('src/host/platform/vscode/dashboardWebview.ts', 'utf8');
+const source = readFileSync(path.join('src', 'host', 'platform', 'vscode', 'dashboardWebview.ts'), 'utf8');
 const javaScript = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-function open({ performance = false, mode = 1, testFlag = false } = {}) {
-  let changed, reload, createdOptions;
+function open({ performance = false, mode = 1, testFlag = false, paths = path, extensionUri = 'extension:' } = {}) {
+  let changed, reload, createdOptions, panelOptions, panelTitle;
   let now = 1000;
   const panel = {
     webview: { asWebviewUri: uri => uri, cspSource: 'webview:', onDidReceiveMessage() {} },
@@ -18,12 +19,12 @@ function open({ performance = false, mode = 1, testFlag = false } = {}) {
   };
   const exports = {};
   const context = {
-    extensionMode: mode, extensionUri: 'extension:', subscriptions: [], extension: { packageJSON: { version: 'test' } },
+    extensionMode: mode, extensionUri, subscriptions: [], extension: { packageJSON: { version: 'test' } },
   };
   const vscode = {
     ExtensionMode: { Production: 1, Development: 2, Test: 3 }, ViewColumn: { One: 1 },
-    Uri: { joinPath: (...parts) => parts.join('/') }, RelativePattern: class {},
-    window: { createWebviewPanel() { now = 1050; return panel; } },
+    Uri: { joinPath: (...parts) => paths.join(...parts) }, RelativePattern: class {},
+    window: { createWebviewPanel(_type, title, _column, options) { now = 1050; panelTitle = title; panelOptions = options; return panel; } },
     workspace: { createFileSystemWatcher: () => ({ onDidChange: listener => { changed = listener; }, onDidCreate() {} }) },
   };
   runInNewContext(javaScript, {
@@ -32,17 +33,28 @@ function open({ performance = false, mode = 1, testFlag = false } = {}) {
     require(name) {
       if (name === 'vscode') return vscode;
       if (name === 'node:crypto') return { randomBytes: () => Buffer.from('nonce') };
-      if (name.endsWith('/dashboardPanel.js')) return { DashboardPanel: {
+      if (/[\\/]dashboardPanel\.js$/.test(name)) return { DashboardPanel: {
         reveal: () => false, create: (_platform, _channel, options) => { createdOptions = options; },
       } };
-      if (name.endsWith('/openManifestTarget.js')) return {};
-      if (name.endsWith('/core/diagnostics.js')) return { runtimeFailureLine: () => 'runtime: failed' };
-      if (name.endsWith('/core/fireAndForget.js')) return { fireAndForget() {} };
+      if (/[\\/]openManifestTarget\.js$/.test(name)) return {};
+      if (/[\\/]core[\\/]diagnostics\.js$/.test(name)) return { runtimeFailureLine: () => 'runtime: failed' };
+      if (/[\\/]core[\\/]fireAndForget\.js$/.test(name)) return { fireAndForget() {} };
       throw new Error(name);
     },
   });
   exports.showDashboard(context, { getSetting: () => performance });
-  return { panel, get options() { return createdOptions; }, rebuild() { changed(); reload(); } };
+  return { panel, panelOptions, panelTitle, get options() { return createdOptions; }, rebuild() { changed(); reload(); } };
+}
+
+for (const paths of [path.posix, path.win32]) {
+  test(`dashboard tab uses packaged theme icons with ${paths === path.win32 ? 'Windows' : 'POSIX'} paths`, () => {
+    const extensionUri = paths.join(paths === path.win32 ? 'C:\\' : paths.sep, 'Extensions', 'Packageawy release');
+    const view = open({ paths, extensionUri });
+    assert.equal(view.panelTitle, 'Packageawy');
+    assert.equal(view.panel.iconPath.light, paths.join(extensionUri, 'media', 'editor-tab.svg'));
+    assert.equal(view.panel.iconPath.dark, paths.join(extensionUri, 'media', 'editor-tab_dark.svg'));
+    assert.deepEqual(Array.from(view.panelOptions.localResourceRoots), [paths.join(extensionUri, 'dist')]);
+  });
 }
 
 for (const [name, options, enabled] of [
@@ -68,6 +80,6 @@ test('a dev rebuild keeps integration render acknowledgements enabled without en
 });
 
 test('JetBrains boot data opts into acknowledgements with its performance debugging setting', () => {
-  const html = readFileSync('jetbrains/src/main/kotlin/io/github/azzamaldulaylan/packageawy/webview/WebviewHtml.kt', 'utf8');
+  const html = readFileSync(path.join('jetbrains', 'src', 'main', 'kotlin', 'io', 'github', 'azzamaldulaylan', 'packageawy', 'webview', 'WebviewHtml.kt'), 'utf8');
   assert.match(html, /data-render-acknowledgements="\$performanceDebug"/);
 });

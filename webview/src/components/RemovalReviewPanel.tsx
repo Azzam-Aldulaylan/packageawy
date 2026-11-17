@@ -16,7 +16,7 @@ import {
   IconHelpCircle,
   IconHistory,
   IconListChecks,
-  IconPackage,
+  IconBrand,
   IconRefresh,
   IconRoute,
   IconTarget,
@@ -279,7 +279,7 @@ function WhatWillBeRemovedCard({ row, analysis }: { row: PackageRow; analysis: R
         What will be removed
       </h3>
       <div className="removal-package">
-        <IconPackage className="removal-package__icon" aria-hidden="true" />
+        <IconBrand className="removal-package__icon" aria-hidden="true" />
         <span className="removal-package__identity">
           <strong>{row.name}</strong>
           <span>{row.current ?? row.range}</span>
@@ -344,7 +344,7 @@ function ImpactAfterRemovalCard({
       </h3>
       <div className="removal-impact">
         <ImpactItem
-          icon={<IconPackage />}
+          icon={<IconBrand />}
           label="Dependency relationship"
           value={requiredBy === 0 ? 'Direct declaration removed' : `Still required by ${requiredBy}`}
           detail={requiredBy === 0 ? 'No remaining dependency path found' : 'The package may remain transitively installed'}
