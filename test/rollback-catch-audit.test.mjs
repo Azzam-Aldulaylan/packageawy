@@ -62,7 +62,7 @@ for (const row of catchTable.filter(row => row.mode === 'refuse')) test(`TypeErr
   assert.deepEqual(messages, [{ status: 'remove-error', package: 'audit', error: { code: 'TypeError', message: error.message } }]);
 });
 
-for (const row of catchTable.filter(row => row.mode.startsWith('presentation'))) test(`TypeError at ${row.id} preserves known completion and invalidates the snapshot`, async () => {
+for (const row of catchTable.filter(row => row.mode.startsWith('presentation'))) test(`TypeError at ${row.id} preserves existing settlement`, async () => {
   let invalidated = false;
   const error = new TypeError('post-completion evidence read');
   const receiver = { logChangeFailure: cause => assert.equal(cause, error), options: { invalidateSnapshot: () => { invalidated = true; } } };
@@ -125,7 +125,7 @@ for (const row of catchTable.filter(row => row.mode !== 'refuse' && !row.mode.st
     isCancellation: () => false, isAbortOrTimeout: () => false, signal: undefined, cwd: fixture.root, runner: {},
     controller: { signal: { aborted: false } }, message: { type: 'confirm-remove' }, changeTarget: 'audit',
     RECOVERY_INSPECTION_MAX_ATTEMPTS: 3, RECOVERY_INSPECTION_RETRY_MS: 250,
-    processId: 'audit', run: { stopObserving() {} }, checks: [], dispatched: true, options: { journal }, RestoreConflictError, StorageFenceError, receiver, isExpectedFsError, isFsError, isMissingPathError, isMissing: cause => isExpectedFsError(cause, 'missingFile'),
+    processId: 'audit', run: { stopObserving() {}, terminal: { dispose() {} } }, checks: [], dispatched: true, options: { journal }, RestoreConflictError, StorageFenceError, receiver, isExpectedFsError, isFsError, isMissingPathError, isMissing: cause => isExpectedFsError(cause, 'missingFile'),
     rethrowUnexpectedResolverError, throwIfAborted, reject: cause => { throw cause; }, RecoveryError, RecoveryOutcomeUnknownError, UpgradeTransactionPathError, RestoreFileError, YAMLException, FetchError,
     RECOVERY_MESSAGES, strict: false, input: { throwOnUnexpectedError: false }, deps: { throwOnUnexpectedError: false },
     uncertainErrors: false, step: 'recovery-completion', handle, journal, session,

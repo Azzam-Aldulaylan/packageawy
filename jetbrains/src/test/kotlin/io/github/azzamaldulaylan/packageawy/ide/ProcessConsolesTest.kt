@@ -13,6 +13,7 @@ import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 
 class ProcessConsolesTest {
     @TempDir
@@ -68,5 +69,105 @@ class ProcessConsolesTest {
         assertNotEquals(0, code)
         Thread.sleep(200)
         assertTrue(exits.isEmpty())
+    }
+
+    @Test
+    fun `success removes only its descriptor on the UI queue after acknowledgement`() {
+        val tabs = ConcurrentHashMap<String, Any>()
+        val descriptor = Any()
+        val other = Any()
+        tabs["test"] = descriptor
+        tabs["other"] = other
+        val queue = mutableListOf<() -> Unit>()
+        val removed = mutableListOf<Any>()
+        val completion = ConsoleCompletion(tabs, "test", queue::add, { true }, removed::add)
+        completion.shown(descriptor)
+        completion.exited(0)
+        assertTrue(queue.isEmpty())
+        completion.closeAfterSuccess()
+        completion.closeAfterSuccess()
+        assertTrue(removed.isEmpty())
+        assertEquals(1, queue.size)
+        queue.single().invoke()
+        assertEquals(listOf(descriptor), removed)
+        assertEquals(mapOf("other" to other), tabs)
+    }
+
+    @Test
+    fun `failure unknown cancellation replacement and disposal all keep consoles`() {
+        for (scenario in listOf("failure", "unknown", "cancelled", "cancelled on UI", "reused", "closed", "disposed", "no descriptor")) {
+            val tabs = ConcurrentHashMap<String, Any>()
+            val descriptor = Any()
+            tabs["test"] = descriptor
+            val queue = mutableListOf<() -> Unit>()
+            val removed = mutableListOf<Any>()
+            val completion = ConsoleCompletion(tabs, "test", queue::add, { scenario != "disposed" }, removed::add)
+            if (scenario != "no descriptor") completion.shown(descriptor)
+            completion.exited(when (scenario) { "failure" -> 1; "unknown" -> null; else -> 0 })
+            if (scenario == "cancelled") completion.cancel()
+            completion.closeAfterSuccess()
+            if (scenario == "cancelled on UI") completion.cancel()
+            if (scenario == "reused") tabs["test"] = Any()
+            if (scenario == "closed") tabs.clear()
+            queue.forEach { it() }
+            assertTrue(removed.isEmpty(), scenario)
+            if (scenario != "closed") assertTrue(tabs.containsKey("test"), scenario)
+        }
+    }
+
+    @Test
+    fun `descriptor disposal drops ownership listeners and cannot erase a replacement`() {
+        val tabs = ConcurrentHashMap<String, Any>()
+        val descriptor = Any()
+        val replacement = Any()
+        tabs["test"] = descriptor
+        val queue = mutableListOf<() -> Unit>()
+        val removed = mutableListOf<Any>()
+        val completion = ConsoleCompletion(tabs, "test", queue::add, { true }, removed::add)
+        completion.shown(descriptor)
+        completion.exited(0)
+        var disposed = 0
+        completion.onDisposed { disposed += 1 }
+        val unsubscribed = completion.onDisposed { error("Released handles must not be retained") }
+        unsubscribed.close()
+        completion.closeAfterSuccess()
+        tabs["test"] = replacement
+        completion.disposed()
+        completion.disposed()
+        completion.onDisposed { disposed += 1 }
+        queue.forEach { it() }
+        assertEquals(2, disposed)
+        assertTrue(tabs["test"] === replacement)
+        assertTrue(removed.isEmpty())
+    }
+
+    @Test
+    fun `manual descriptor disposal removes its tab mapping without requesting a close`() {
+        val tabs = ConcurrentHashMap<String, Any>()
+        val descriptor = Any()
+        tabs["test"] = descriptor
+        val completion = ConsoleCompletion(tabs, "test", { error("No UI close expected") }, { true }, { error("Already disposed") })
+        completion.shown(descriptor)
+        completion.disposed()
+        completion.exited(0)
+        completion.closeAfterSuccess()
+        assertTrue(tabs.isEmpty())
+    }
+
+    @Test
+    fun `cleanup cannot erase a replacement mapping`() {
+        // Even a replacement that compares equal is a different descriptor.
+        data class Descriptor(val title: String)
+        val tabs = ConcurrentHashMap<String, Descriptor>()
+        val descriptor = Descriptor("Packageawy")
+        val replacement = Descriptor("Packageawy")
+        tabs["test"] = descriptor
+        val queue = mutableListOf<() -> Unit>()
+        val completion = ConsoleCompletion(tabs, "test", queue::add, { true }, { tabs["test"] = replacement })
+        completion.shown(descriptor)
+        completion.exited(0)
+        completion.closeAfterSuccess()
+        queue.single().invoke()
+        assertTrue(tabs["test"] === replacement)
     }
 }

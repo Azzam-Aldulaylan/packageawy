@@ -366,6 +366,58 @@ test('runProcess rejects when the client cannot start the process', async () => 
   await assert.rejects(platform.runProcess({ executable: 'npm', args: [], cwd: '/w', title: 't', scope: 's' }), /npm not found/);
 });
 
+test('repeated verification settlement releases handles once without closing consoles', async () => {
+  const client = fakeClient();
+  const platform = new RpcPlatform(client, init());
+  for (let index = 0; index < 25; index += 1) {
+    const running = await platform.runProcess({ executable: 'node', args: [], cwd: FOLDER.path, title: 'Verify test', scope: 'test' });
+    const { processId } = client.requests.at(-1).params;
+    client.emit('process/didExit', { processId, exitCode: 0 });
+    const before = client.notifications.length;
+    running.release();
+    running.release();
+    running.closeAfterSuccess();
+    assert.deepEqual(client.notifications.slice(before), [{ method: 'process/release', params: { processId } }]);
+  }
+});
+
+test('release before exit preserves the exit notification and forbids console cleanup', async () => {
+  const client = fakeClient();
+  const platform = new RpcPlatform(client, init());
+  const running = await platform.runProcess({ executable: 'node', args: [], cwd: FOLDER.path, title: 't', scope: 's' });
+  const { processId } = client.requests.at(-1).params;
+  const exits = [];
+  running.onDidExit(code => exits.push(code));
+  running.release();
+  client.emit('process/didExit', { processId, exitCode: 0 });
+  running.closeAfterSuccess();
+  assert.deepEqual(exits, [0]);
+  assert.deepEqual(client.notifications, [{ method: 'process/release', params: { processId } }]);
+});
+
+test('successful console cleanup requires a zero exit and explicit settlement and is sent once', async () => {
+  const client = fakeClient();
+  const platform = new RpcPlatform(client, init());
+  for (const code of [0, 1, null]) {
+    const running = await platform.runProcess({ executable: 'node', args: [], cwd: FOLDER.path, title: 't', scope: 's' });
+    const { processId } = client.requests.at(-1).params;
+    const before = client.notifications.length;
+    running.closeAfterSuccess();
+    assert.equal(client.notifications.length, before);
+    client.emit('process/didExit', { processId, exitCode: code });
+    assert.equal(client.notifications.length, before);
+    running.closeAfterSuccess();
+    running.closeAfterSuccess();
+    assert.deepEqual(client.notifications.slice(before), code === 0 ? [{ method: 'process/succeeded', params: { processId } }] : []);
+  }
+  const running = await platform.runProcess({ executable: 'node', args: [], cwd: FOLDER.path, title: 't', scope: 's' });
+  client.emit('process/didExit', { processId: client.requests.at(-1).params.processId, exitCode: 0 });
+  const before = client.notifications.length;
+  platform.dispose();
+  running.closeAfterSuccess();
+  assert.equal(client.notifications.length, before, 'teardown cannot close an unobserved console');
+});
+
 for (const lateReply of ['resolve', 'reject']) test(`pending RPC startup disposal settles the owner before a late ${lateReply}`, async t => {
   const project = await makeProject(t);
   let reached, resolveLaunch, rejectLaunch;

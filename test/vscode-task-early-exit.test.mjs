@@ -20,9 +20,36 @@ let current;
 
 function fakeTasks() {
   const native = new Set();
+  const processStarts = new Set();
+  const taskStarts = new Set();
+  const taskEnds = new Set();
+  const opens = new Set();
+  const closes = new Set();
   const fake = {
-    native,
+    native, processStarts, taskStarts, taskEnds, opens, closes, terminals: [],
     starts: [],
+    start(execution, processId) {
+      fake.taskStart(execution);
+      fake.processStart(execution, processId);
+    },
+    processStart(execution, processId) {
+      for (const handler of [...processStarts]) handler({ execution, processId });
+    },
+    taskStart(execution) {
+      execution.task ??= { execution: new vscode.ProcessExecution(REQUEST.executable, REQUEST.args, { cwd: REQUEST.cwd }) };
+      for (const handler of [...taskStarts]) handler({ execution });
+    },
+    taskEnd(execution) {
+      for (const handler of [...taskEnds]) handler({ execution });
+    },
+    open(terminal) {
+      fake.terminals.push(terminal);
+      for (const handler of [...opens]) handler(terminal);
+    },
+    close(terminal) {
+      fake.terminals = fake.terminals.filter(value => value !== terminal);
+      for (const handler of [...closes]) handler(terminal);
+    },
     /** Each executeTask call waits here until the test resolves or rejects it. */
     executeTask(task) {
       return new Promise((resolve, reject) => {
@@ -36,6 +63,11 @@ function fakeTasks() {
   return fake;
 }
 
+function subscribe(set, handler) {
+  set.add(handler);
+  return { dispose: () => set.delete(handler) };
+}
+
 const vscode = {
   RelativePattern: class {},
   workspace: {},
@@ -44,6 +76,8 @@ const vscode = {
       Object.assign(this, { process, args, options });
     }
   },
+  ShellExecution: class {},
+  CustomExecution: class {},
   Task: class {
     constructor(definition, scope, name, source, execution) {
       Object.assign(this, { definition, scope, name, source, execution });
@@ -54,7 +88,16 @@ const vscode = {
   TaskPanelKind: { Dedicated: 2 },
   // A folder that cannot be created keeps the cache in global state, off disk.
   Uri: { joinPath: (...parts) => ({ fsPath: path.join('/dev/null', 'packageawy-test', ...parts.slice(1)) }) },
+  window: {
+    get terminals() { return current.terminals; },
+    get activeTerminal() { return current.activeTerminal; },
+    onDidOpenTerminal: handler => subscribe(current.opens, handler),
+    onDidCloseTerminal: handler => subscribe(current.closes, handler),
+  },
   tasks: {
+    onDidStartTask: handler => subscribe(current.taskStarts, handler),
+    onDidEndTask: handler => subscribe(current.taskEnds, handler),
+    onDidStartTaskProcess: handler => subscribe(current.processStarts, handler),
     onDidEndTaskProcess(handler) {
       const native = current.native;
       const entry = { handler };
@@ -72,6 +115,7 @@ Module._load = function (request, ...rest) {
 const require = createRequire(import.meta.url);
 const { VsCodePlatform } = require('../out/host/platform/vscode/vsCodePlatform.js');
 const { UpgradeAssistantCoordinator } = require('../out/host/upgradeAssistantCoordinator.js');
+const { UpgradeExecutionSession } = require('../out/host/upgradeRunner.js');
 
 function memoryStore() {
   const values = new Map();
@@ -84,7 +128,347 @@ function setup() {
   return { tasks: current, platform };
 }
 
-const REQUEST = { executable: '/usr/bin/npm', args: ['install'], cwd: '/project', title: 'Packageawy: Upgrade react', scope: 'react' };
+const REQUEST = { executable: path.join(path.parse(process.cwd()).root, 'usr', 'bin', 'npm'), args: ['install'], cwd: path.join(process.cwd(), 'project'), title: 'Packageawy: Upgrade react', scope: 'react' };
+
+function terminal(tasks, pid) {
+  const value = { processId: Promise.resolve(pid), disposed: 0, dispose() { this.disposed += 1; tasks.close(this); } };
+  tasks.open(value);
+  return value;
+}
+
+async function launch(tasks, platform, pid) {
+  const starting = platform.runProcess(REQUEST);
+  const execution = {};
+  if (pid !== undefined) tasks.start(execution, pid);
+  tasks.starts.at(-1).resolve(execution);
+  return { execution, running: await starting };
+}
+
+test('successful settlement closes only the pid-matched terminal and keeps native task presentation', async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const { execution, running } = await launch(tasks, platform, 101);
+  const own = terminal(tasks, 101);
+  const unrelated = terminal(tasks, 999);
+  tasks.activeTerminal = unrelated;
+  assert.ok(tasks.starts[0].task.execution instanceof vscode.ProcessExecution);
+  assert.deepEqual(tasks.starts[0].task.presentationOptions, { reveal: 1, panel: 2, clear: true });
+  assert.equal(tasks.starts[0].task.execution.options.cwd, REQUEST.cwd);
+  tasks.end(execution, 0);
+  await settle();
+  assert.equal(own.disposed, 0, 'exit zero alone does not authorize closing');
+  running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 1);
+  assert.equal(unrelated.disposed, 0);
+  running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 1);
+  assert.equal(tasks.taskStarts.size + tasks.taskEnds.size + tasks.processStarts.size + tasks.opens.size + tasks.closes.size, 0);
+});
+
+for (const code of [1, -1, undefined]) test(`failure or cancellation with exit ${code} keeps the terminal open`, async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const { execution, running } = await launch(tasks, platform, 101);
+  const own = terminal(tasks, 101);
+  tasks.end(execution, code);
+  running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 0);
+});
+
+test('two concurrent runs close their own successful terminal independently', async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const first = await launch(tasks, platform, 101);
+  const own = terminal(tasks, 101);
+  const second = await launch(tasks, platform, 102);
+  const other = terminal(tasks, 102);
+  tasks.end(second.execution, 1);
+  second.running.closeAfterSuccess();
+  tasks.end(first.execution, 0);
+  first.running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 1);
+  assert.equal(other.disposed, 0, 'the failed concurrent run stays open');
+});
+
+test('two successful concurrent runs each close their own terminal', async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const first = await launch(tasks, platform, 101);
+  const second = await launch(tasks, platform, 102);
+  const own = terminal(tasks, 101);
+  const other = terminal(tasks, 102);
+  tasks.end(first.execution, 0);
+  tasks.end(second.execution, 0);
+  first.running.closeAfterSuccess();
+  second.running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 1);
+  assert.equal(other.disposed, 1);
+});
+
+for (const resolveOrder of [[0, 1], [1, 0]]) test(`interleaved task launches resolve ${resolveOrder} and keep independent console ownership`, async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const starting = [platform.runProcess(REQUEST), platform.runProcess(REQUEST)];
+  const executions = [{}, {}];
+  const consoles = [terminal(tasks, 101), terminal(tasks, 102)];
+  tasks.start(executions[0], 101);
+  tasks.start(executions[1], 102);
+  // The first run can even exit while both executeTask promises are pending.
+  tasks.end(executions[0], 0);
+  const running = [];
+  for (const index of resolveOrder) {
+    tasks.starts[index].resolve(executions[index]);
+    running[index] = await starting[index];
+  }
+  tasks.end(executions[1], 0);
+  running.forEach(run => run.closeAfterSuccess());
+  await settle();
+  assert.deepEqual(consoles.map(value => value.disposed), [1, 1]);
+});
+
+for (const duringLookup of [false, true]) test(`unrelated task starts during ${duringLookup ? 'pid lookup' : 'journal settlement'} and leaves successful cleanup enabled`, async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const { execution, running } = await launch(tasks, platform, 101);
+  let resolvePid;
+  const own = terminal(tasks, duringLookup ? new Promise(resolve => { resolvePid = resolve; }) : 101);
+  tasks.end(execution, 0);
+  if (duringLookup) running.closeAfterSuccess();
+  const unrelated = terminal(tasks, 202);
+  tasks.start({}, 202);
+  tasks.activeTerminal = unrelated;
+  if (duringLookup) resolvePid(101);
+  else running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 1);
+  assert.equal(unrelated.disposed, 0);
+});
+
+for (const NativeExecution of [vscode.ProcessExecution, vscode.ShellExecution]) {
+  for (const duringLookup of [false, true]) test(`separated ${NativeExecution.name} start during ${duringLookup ? 'pid lookup' : 'settlement'} defers cleanup until its unrelated pid arrives`, async t => {
+    const { tasks, platform } = setup();
+    t.after(() => platform.dispose());
+    const { execution, running } = await launch(tasks, platform, 101);
+    let resolvePid;
+    const own = terminal(tasks, duringLookup ? new Promise(resolve => { resolvePid = resolve; }) : 101);
+    const otherExecution = { task: { execution: new NativeExecution() } };
+    const unrelated = terminal(tasks, 202);
+    tasks.activeTerminal = unrelated;
+    tasks.end(execution, 0);
+    if (duringLookup) running.closeAfterSuccess();
+    tasks.taskStart(otherExecution);
+    if (duringLookup) resolvePid(101);
+    else running.closeAfterSuccess();
+    await settle();
+    assert.equal(own.disposed, 0, 'cleanup waits while terminal reuse is unresolved');
+    assert.equal(tasks.processStarts.size, 1, 'the tracker still observes the delayed pid');
+    tasks.processStart(otherExecution, 202);
+    await settle();
+    assert.equal(own.disposed, 1, 'cleanup resumes after the unrelated pid establishes ownership');
+    assert.equal(unrelated.disposed, 0);
+    assert.equal(tasks.taskStarts.size + tasks.taskEnds.size + tasks.processStarts.size + tasks.opens.size + tasks.closes.size, 0);
+  });
+}
+
+for (const duringLookup of [false, true]) test(`unrelated CustomExecution during ${duringLookup ? 'pid lookup' : 'settlement'} never blocks successful cleanup`, async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const { execution, running } = await launch(tasks, platform, 101);
+  let resolvePid;
+  const own = terminal(tasks, duringLookup ? new Promise(resolve => { resolvePid = resolve; }) : 101);
+  const unrelated = terminal(tasks, 202);
+  tasks.end(execution, 0);
+  if (duringLookup) running.closeAfterSuccess();
+  tasks.taskStart({ task: { execution: new vscode.CustomExecution() } });
+  if (duringLookup) resolvePid(101);
+  else running.closeAfterSuccess();
+  // CustomExecution has no process-start event, and may remain active indefinitely.
+  await settle();
+  assert.equal(own.disposed, 1);
+  assert.equal(unrelated.disposed, 0);
+  assert.equal(tasks.taskStarts.size + tasks.taskEnds.size + tasks.processStarts.size + tasks.opens.size + tasks.closes.size, 0);
+});
+
+for (const outcome of ['unrelated task ends', 'terminal reused', 'platform disposed', 'ownership released']) {
+  test(`deferred successful cleanup handles ${outcome}`, async t => {
+    const { tasks, platform } = setup();
+    t.after(() => platform.dispose());
+    const { execution, running } = await launch(tasks, platform, 101);
+    const own = terminal(tasks, 101);
+    const otherExecution = {};
+    tasks.taskStart(otherExecution);
+    tasks.end(execution, 0);
+    running.closeAfterSuccess();
+    await settle();
+    assert.equal(own.disposed, 0);
+    assert.equal(tasks.processStarts.size, 1);
+    if (outcome === 'unrelated task ends') tasks.taskEnd(otherExecution);
+    if (outcome === 'terminal reused') tasks.processStart(otherExecution, 101);
+    if (outcome === 'platform disposed') platform.dispose();
+    if (outcome === 'ownership released') running.release();
+    await settle();
+    assert.equal(own.disposed, outcome === 'unrelated task ends' ? 1 : 0);
+    tasks.processStart(otherExecution, 202);
+    await settle();
+    assert.equal(own.disposed, outcome === 'unrelated task ends' ? 1 : 0, 'late events cannot close a released terminal');
+    assert.equal(tasks.taskStarts.size + tasks.taskEnds.size + tasks.processStarts.size + tasks.opens.size + tasks.closes.size, 0);
+  });
+}
+
+test('cleanup waits for every pending native start and ignores unrelated task-end events', async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const { execution, running } = await launch(tasks, platform, 101);
+  const own = terminal(tasks, 101);
+  const pending = [{}, {}];
+  pending.forEach(other => tasks.taskStart(other));
+  tasks.end(execution, 0);
+  running.closeAfterSuccess();
+  await settle();
+  tasks.taskEnd(execution);
+  tasks.taskEnd({});
+  tasks.processStart(pending[0], 202);
+  await settle();
+  assert.equal(own.disposed, 0);
+  tasks.taskEnd(pending[1]);
+  await settle();
+  assert.equal(own.disposed, 1);
+});
+
+test('a shared pid during interleaved startup is still ambiguous', async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const starting = platform.runProcess(REQUEST);
+  const execution = {};
+  const own = terminal(tasks, 101);
+  tasks.start({}, 101);
+  tasks.starts[0].resolve(execution);
+  const running = await starting;
+  tasks.start(execution, 101);
+  tasks.end(execution, 0);
+  running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 0);
+});
+
+for (const scenario of ['missing start pid', 'missing terminal pid', 'ambiguous pid', 'reused before launch', 'reused after exit', 'reuse before next pid', 'closed', 'pid changed']) {
+  test(`${scenario} leaves the terminal open`, async t => {
+    const { tasks, platform } = setup();
+    t.after(() => platform.dispose());
+    const reused = scenario === 'reused before launch' ? terminal(tasks, 101) : undefined;
+    const { execution, running } = await launch(tasks, platform, scenario === 'missing start pid' ? undefined : 101);
+    const own = reused ?? terminal(tasks, scenario === 'missing terminal pid' ? undefined : 101);
+    const duplicate = scenario === 'ambiguous pid' ? terminal(tasks, 101) : undefined;
+    await settle();
+    tasks.end(execution, 0);
+    if (scenario === 'reused after exit') tasks.start({}, 101);
+    if (scenario === 'reuse before next pid') tasks.taskStart({});
+    if (scenario === 'closed') tasks.close(own);
+    if (scenario === 'pid changed') own.processId = Promise.resolve(202);
+    running.closeAfterSuccess();
+    await settle();
+    assert.equal(own.disposed, 0);
+    assert.equal(duplicate?.disposed ?? 0, 0);
+  });
+}
+
+test('start and exit before executeTask resolves still establish identity by pid', async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const starting = platform.runProcess(REQUEST);
+  const execution = {};
+  const own = terminal(tasks, 101);
+  tasks.start(execution, 101);
+  tasks.end(execution, 0);
+  tasks.starts[0].resolve(execution);
+  const running = await starting;
+  running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 1);
+});
+
+test('restart without fresh identity leaves the old terminal open', async t => {
+  const { tasks, platform } = setup();
+  const { execution, running } = await launch(tasks, platform, 101);
+  let resolvePid;
+  const own = terminal(tasks, new Promise(resolve => { resolvePid = resolve; }));
+  tasks.end(execution, 0);
+  running.closeAfterSuccess();
+  platform.dispose();
+  const restarted = new VsCodePlatform({ workspaceState: memoryStore(), globalState: memoryStore(), globalStorageUri: {} });
+  t.after(() => restarted.dispose());
+  tasks.end(execution, 0);
+  resolvePid(101);
+  await settle();
+  running.closeAfterSuccess();
+  assert.equal(own.disposed, 0);
+  assert.equal(tasks.taskStarts.size + tasks.taskEnds.size + tasks.processStarts.size + tasks.opens.size + tasks.closes.size, 0);
+});
+
+test('Windows executable and cwd paths pass through unchanged while matching by pid', async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const request = { ...REQUEST, executable: path.win32.join('C:\\', 'Program Files', 'nodejs', 'node.exe'), cwd: path.win32.join('C:\\', 'work', 'my project') };
+  const starting = platform.runProcess(request);
+  const execution = {};
+  tasks.start(execution, 101);
+  const own = terminal(tasks, 101);
+  tasks.starts[0].resolve(execution);
+  const running = await starting;
+  assert.equal(tasks.starts[0].task.execution.process, request.executable);
+  assert.equal(tasks.starts[0].task.execution.options.cwd, request.cwd);
+  tasks.end(execution, 0);
+  const otherExecution = {};
+  tasks.taskStart(otherExecution);
+  running.closeAfterSuccess();
+  await settle();
+  assert.equal(own.disposed, 0);
+  tasks.processStart(otherExecution, 202);
+  await settle();
+  assert.equal(own.disposed, 1);
+});
+
+test('cancellation keeps the matched terminal even when the process exits zero', async t => {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'packageawy-cancelled-terminal-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const abort = new AbortController();
+  let own;
+  tasks.executeTask = async () => {
+    const execution = {};
+    tasks.start(execution, 101);
+    own = terminal(tasks, 101);
+    abort.abort();
+    tasks.end(execution, 0);
+    return execution;
+  };
+  const session = new UpgradeExecutionSession({ isWorkspaceTrusted: () => true, runProcess: request => platform.runProcess(request) },
+    () => ({ executable: process.execPath, prefixArgs: [], version: '22.0.0' }));
+  t.after(() => session.dispose());
+  await session.run({ cwd, packageName: 'pkg', currentVersion: '1.0.0', target: '2.0.0', classification: 'prod', packageManager: 'npm', ignoreScripts: true, signal: abort.signal });
+  await settle();
+  assert.equal(own.disposed, 0);
+});
+
+test('reuse while pid lookup is pending prevents a delayed close', async t => {
+  const { tasks, platform } = setup();
+  t.after(() => platform.dispose());
+  const { execution, running } = await launch(tasks, platform, 101);
+  let resolvePid;
+  const own = terminal(tasks, new Promise(resolve => { resolvePid = resolve; }));
+  tasks.end(execution, 0);
+  running.closeAfterSuccess();
+  tasks.start({}, 101);
+  resolvePid(101);
+  await settle();
+  assert.equal(own.disposed, 0);
+});
 
 /** Lets microtasks and zero-delay timers run. */
 async function settle() {
@@ -403,9 +787,12 @@ test('an install that exits before VS Code says it started still settles the cha
 
   const { tasks, platform } = setup();
   // The package manager does its work and exits before executeTask resolves.
+  let own;
   tasks.executeTask = async () => {
     await writeFile(lockfilePath, lockfile(false));
     const execution = {};
+    tasks.start(execution, 101);
+    own = terminal(tasks, 101);
     tasks.end(execution, 0);
     return execution;
   };
@@ -467,6 +854,8 @@ test('an install that exits before VS Code says it started still settles the cha
   assert.equal(coordinator.isBusy(), false, 'the project lock was released');
   assert.equal(coordinator.isMutationBusy(), false);
   assert.equal(tasks.native.size, 0);
+  await settle();
+  assert.equal(own.disposed, 1, 'the recorded removal success closes its own terminal');
   platform.dispose();
 });
 

@@ -23,6 +23,13 @@ data class ProcessStart(
     val scope: String,
 )
 
+/** Optional console cleanup after the engine has recorded a successful exit. */
+interface SuccessfulProcess : AutoCloseable {
+    fun closeAfterSuccess()
+    /** Notifies when console ownership is lost, including disposal or replacement. */
+    fun onConsoleDisposed(listener: () -> Unit): AutoCloseable = AutoCloseable {}
+}
+
 /** The IDE side of every client handler. The plugin implements it on the IntelliJ Platform. Tests use fakes. */
 interface HostServices {
     fun showMessage(severity: Severity, message: String)

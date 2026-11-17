@@ -376,7 +376,18 @@ export class RpcPlatform implements HostPlatform {
       state.exited = true;
       state.exitCode = undefined;
     }
+    let closeRequested = false;
     return {
+      release: () => {
+        if (this.disposed || closeRequested) return;
+        closeRequested = true;
+        this.connection.sendNotification(Methods.processRelease, { processId });
+      },
+      closeAfterSuccess: () => {
+        if (this.disposed || closeRequested || !state.exited || state.exitCode !== 0) return;
+        closeRequested = true;
+        this.connection.sendNotification(Methods.processSucceeded, { processId });
+      },
       onDidExit: (listener) => {
         if (state.exited) return callSoon(() => listener(state.exitCode));
         state.listeners.add(listener);

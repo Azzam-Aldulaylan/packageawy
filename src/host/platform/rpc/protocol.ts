@@ -198,6 +198,8 @@ export const Methods = {
   processStart: 'process/start',
   processDidExit: 'process/didExit',
   processTerminate: 'process/terminate',
+  processSucceeded: 'process/succeeded',
+  processRelease: 'process/release',
   openFile: 'window/openFile',
   openExternal: 'window/openExternal',
   openSettings: 'window/openSettings',

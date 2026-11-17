@@ -47,7 +47,9 @@
  *   request fails if the process cannot start. The client then sends a
  *   `process/didExit` notification with the exit code, or null when none
  *   was observed. A late start after teardown is stopped with a
- *   `process/terminate` notification carrying that process id.
+ *   `process/terminate` notification carrying that process id. Settlement sends
+ *   `process/succeeded` to close a successful console, or `process/release` to
+ *   release its handle while keeping the console open.
  * - `openFile`, `openExternal` and `openSettings` are `window/openFile`,
  *   `window/openExternal` and `window/openSettings` notifications.
  * - `updateWorkspaceSetting` is a `settings/update` request with the key and
@@ -128,6 +130,10 @@ export interface ProcessRequest {
 export interface RunningProcess {
   /** Fires once with the exit code, or undefined when the process ended without one. */
   onDidExit(listener: (exitCode: number | undefined) => void): Disposable;
+  /** Best effort. Call only after a zero exit has settled successfully, without cancellation. */
+  closeAfterSuccess?(): void;
+  /** Release console ownership after settlement without closing or stopping the process. */
+  release?(): void;
 }
 
 /** One-based line and column. */
