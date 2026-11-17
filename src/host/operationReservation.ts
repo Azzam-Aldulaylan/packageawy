@@ -147,7 +147,7 @@ class Handle implements OwnerHandle {
     this.result = result;
     if (this.journal !== undefined) {
       try {
-        if (!await this.journal.finish(result, this.journal.data.operation === 'cleanup' && result === 'kept')) {
+        if (!await this.journal.finish(result)) {
           if (this.settled) return false;
           this.state = 'retained';
           return false;

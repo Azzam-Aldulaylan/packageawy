@@ -196,7 +196,7 @@ for (const trigger of ['snapshot', 'rendered', 'Refresh', 'Retry discovery']) {
     t.mock.timers.tick(1); await turn(); assert.equal(attempts, 3);
     const error = s.posted.findLast(m => m.status === 'recovery');
     assert.equal(error.recovery.state, 'discovery-error');
-    assert.match(error.recovery.message, /Retry discovery or use Refresh/);
+    assert.match(error.recovery.message, /Retry discovery or Refresh/);
     assert.equal(s.current.runtimeFailed, false, 'discovery errors do not pause dashboard operations');
     t.mock.timers.tick(60_000); await turn(); assert.equal(attempts, 3, 'automatic retries stop');
     if (trigger === 'snapshot') s.current.sink.postMessage(s.snapshots()[0]);

@@ -49,9 +49,11 @@ try {
         }) : { execute: async () => { const outcome = await prepared.execute(); return outcome.ok ? { status: 'succeeded' } : { status: 'failed' }; } },
         verifier: { verify: () => session.verify({ cwd: target.root, packageManager: 'npm', packageName: 'a', scripts: [{ id: 'test', scriptName: 'test' }] }) },
       });
-      await journal.finish(result.completion, flow === 'cleanup');
+      await journal.finish(result.completion);
       session.dispose();
     }
+  } else if (mode === 'undo') {
+    await RecoverySession.open(target, true, null, hooks, JSON.parse(claimJson));
   } else if (mode === 'dismiss') {
     const inspected = await inspectRecovery(target);
     const session = await RecoverySession.open(target, true, inspected.view.claim, hooks);

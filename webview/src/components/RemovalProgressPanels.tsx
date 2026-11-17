@@ -1,3 +1,4 @@
+import { UndoChangeButton } from './UndoChangeButton.js';
 import { useContext } from 'react';
 import { DependencyChangeContext } from './DependencyChangeStatus.js';
 import type { ReactElement } from 'react';
@@ -103,7 +104,7 @@ export function removalInstallLabel(result: RemoveResultPresentation): string {
 
 export function removalVerificationLabel(result: RemoveResultPresentation): string {
   if (result.verification === 'passed') return 'Passed';
-  if (result.verification === 'not-configured') return 'Not configured';
+  if (result.verification === 'not-configured') return result.projectScriptsPresent === false ? 'No test scripts to run' : 'No checks selected';
   if (result.verification === 'failed') return 'Failed';
   return 'Not run';
 }
@@ -138,6 +139,7 @@ export function RemovalResultPanel({
             <dd>{result.rollback === 'succeeded' ? 'Restore point applied' : 'Not needed'}</dd>
           </div>
         </dl>
+        <UndoChangeButton undoId={result.undoId} />
         {kept ? null : (
           <p className="analysis-card__hint">
             {result.message}

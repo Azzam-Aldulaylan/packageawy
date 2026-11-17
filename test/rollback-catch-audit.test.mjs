@@ -12,7 +12,7 @@ import { RecoveryJournal } from '../out/host/recovery/journal.js';
 import { Storage } from '../out/host/recovery/storage.js';
 import { RecoverySession } from '../out/host/recovery/session.js';
 import { RecoveryCoordinator } from '../out/host/recovery/coordinator.js';
-import { RecoveryError, RecoveryOutcomeUnknownError, RECOVERY_MESSAGES } from '../out/host/recovery/model.js';
+import { RecoveryError, RecoveryOutcomeUnknownError, RecoveryUndoUnavailableError, RECOVERY_MESSAGES } from '../out/host/recovery/model.js';
 import { UpgradeTransactionPathError } from '../out/host/nodeUpgradeTransactionFiles.js';
 import { RestoreFileError } from '../out/host/upgradeTransaction.js';
 import { OperationReservation } from '../out/host/operationReservation.js';
@@ -126,7 +126,7 @@ for (const row of catchTable.filter(row => row.mode !== 'refuse' && !row.mode.st
     controller: { signal: { aborted: false } }, message: { type: 'confirm-remove' }, changeTarget: 'audit',
     RECOVERY_INSPECTION_MAX_ATTEMPTS: 3, RECOVERY_INSPECTION_RETRY_MS: 250,
     processId: 'audit', run: { stopObserving() {}, terminal: { dispose() {} } }, checks: [], dispatched: true, options: { journal }, RestoreConflictError, StorageFenceError, receiver, isExpectedFsError, isFsError, isMissingPathError, isMissing: cause => isExpectedFsError(cause, 'missingFile'),
-    rethrowUnexpectedResolverError, throwIfAborted, reject: cause => { throw cause; }, RecoveryError, RecoveryOutcomeUnknownError, UpgradeTransactionPathError, RestoreFileError, YAMLException, FetchError,
+    rethrowUnexpectedResolverError, throwIfAborted, reject: cause => { throw cause; }, RecoveryError, RecoveryOutcomeUnknownError, RecoveryUndoUnavailableError, UpgradeTransactionPathError, RestoreFileError, YAMLException, FetchError,
     RECOVERY_MESSAGES, strict: false, input: { throwOnUnexpectedError: false }, deps: { throwOnUnexpectedError: false },
     uncertainErrors: false, step: 'recovery-completion', handle, journal, session,
     uncertain: cause => session.invalidate(cause), errorMessage: cause => cause.message,

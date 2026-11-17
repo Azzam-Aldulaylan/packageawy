@@ -1,7 +1,7 @@
 /** Removal from the Manage dialog: running state, result panel, close labels and peer wording. */
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { build } from 'esbuild';
@@ -101,9 +101,9 @@ test('the result panel reports what was removed, install, verification and rollb
 });
 
 test('a kept removal without build or test checks says so', () => {
-  const html = text(renderToStaticMarkup(createElement(RemovalResultPanel, { row, result: result('verified', 'not-configured') })));
+  const html = text(renderToStaticMarkup(createElement(RemovalResultPanel, { row, result: { ...result('verified', 'not-configured'), projectScriptsPresent: false } })));
   assert.match(html, /Package removed/);
-  assert.match(html, /Verification Not configured/);
+  assert.match(html, /Verification No test scripts to run/);
   assert.match(html, /Run your project checks before you commit\./);
 });
 
@@ -320,4 +320,53 @@ for (const reinstall of ['succeeded', 'failed', 'skipped']) test(`upgrade result
   assert.ok(html.includes(note), html);
   if (reinstall === 'succeeded') assert.doesNotMatch(html, /Run your package manager|run npm install|To reinstall by hand|node_modules were not restored/);
   assertPlainCopy(raw);
+});
+
+for (const hostKind of ['vscode', 'jetbrains']) for (const operation of ['removal', 'upgrade']) {
+  for (const scripts of [{}, { build: 'tsc', test: 'node --test' }, { 'check:custom': 'node check.js', dev: 'vite' }]) {
+    test(`${hostKind} ${operation} result snapshots ${Object.keys(scripts).length ? 'existing unselected' : 'absent'} manifest scripts`, async t => {
+      const f = await rollbackFixture(t, operation);
+      f.coordinator.options.platform.hostKind = hostKind;
+      t.after(() => f.coordinator.disposeWhenIdle());
+      const manifest = JSON.parse(await readFile(f.project.manifestPath, 'utf8'));
+      await writeFile(f.project.manifestPath, JSON.stringify({ ...manifest, scripts }));
+      // Capture the same reviewed manifest that real analysis stores.
+      if (operation === 'upgrade') {
+        f.coordinator.analysis.snapshot = await f.read();
+        f.coordinator.options.readAndApplyMutationLocalState = async () => ({ project: await f.read(), structurallyCurrent: true });
+        const upgradedLockfile = (await readFile(f.project.lockfilePath, 'utf8')).replace('18.2.0', '18.3.0').replace('^18.0.0', '^18.3.0');
+        const runProcess = f.coordinator.options.platform.runProcess;
+        f.coordinator.options.platform.runProcess = async request => {
+          const running = await runProcess(request);
+          if (request.args.includes('install')) await writeFile(f.project.lockfilePath, upgradedLockfile);
+          return running;
+        };
+      } else {
+        await f.coordinator.handleAnalyzeBulkRemove({ changes: [{ package: 'react' }] });
+      }
+      f.state.installExitCode = 0;
+      if (operation === 'upgrade') await f.confirm();
+      else await f.coordinator.handleConfirmRemove({ analysisId: f.messages.findLast(message => message.status === 'remove-analysis').analysis.analysisId });
+      const hostResult = f.messages.findLast(message => message.status === `${operation === 'upgrade' ? 'upgrade' : 'remove'}-result`).result;
+      const present = Object.keys(scripts).length > 0;
+      if (operation === 'upgrade') assert.equal(hostResult.application, 'applied', JSON.stringify({ hostResult, messages: f.messages }));
+      assert.equal(hostResult.verification, 'not-configured');
+      assert.equal(hostResult.projectScriptsPresent, present);
+      assert.deepEqual(f.commands, operation === 'upgrade' ? ['install', 'install'] : ['install'], 'only dependency installs run, including upgrade range reconciliation');
+      // Later edits do not change the reviewed script-presence snapshot.
+      await writeFile(f.project.manifestPath, JSON.stringify({ ...manifest, scripts: present ? {} : { test: 'node --test' } }));
+      const html = text(renderManage(operation === 'upgrade'
+        ? { activeTab: 'upgrade', upgradeResult: hostResult }
+        : { removalRun: { phase: 'result', result: hostResult } }));
+      assert.match(html, present ? /Verification No checks selected/ : /Verification No test scripts to run/);
+      assert.doesNotMatch(html, present ? /No test scripts to run/ : /No checks selected/);
+    });
+  }
+}
+for (const operation of ['removal', 'upgrade']) test(`${operation} result does not claim scripts are absent without a host snapshot`, () => {
+  const html = text(renderManage(operation === 'upgrade' ? { activeTab: 'upgrade', upgradeResult: {
+    install: 'succeeded', application: 'applied', verification: 'not-configured', changes: [],
+  } } : { removalRun: { phase: 'result', result: result('verified', 'not-configured') } }));
+  assert.match(html, /Verification No checks selected/);
+  assert.doesNotMatch(html, /No test scripts to run/);
 });

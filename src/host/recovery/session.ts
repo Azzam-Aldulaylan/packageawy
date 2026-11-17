@@ -4,7 +4,7 @@ import { precheckRestore } from '../restorePrecheck.js';
 import { manualReinstallNote, recoveryPackageManager } from '../manualReinstallCopy.js';
 import type { RecoveryChoice, RecoveryPresentation } from '../webviewProtocol.js';
 import {
-  hash, isClaim, isOwner, newId, RECOVERY_MESSAGES, RecoveryError, RecoveryOutcomeUnknownError, type Claim, type RecoveryTarget,
+  hash, isClaim, isOwner, newId, RECOVERY_MESSAGES, RecoveryError, RecoveryOutcomeUnknownError, RecoveryUndoUnavailableError, type Claim, type RecoveryTarget,
 } from './model.js';
 import { inspectRecovery, type Inspection } from './inspection.js';
 import { type StorageHooks } from './storage.js';
@@ -18,10 +18,11 @@ export class RecoverySession {
   private outcomeUnknown = false;
   private constructor(readonly inspection: Inspection, readonly token: string | null) {}
 
-  static async open(target: RecoveryTarget, stopped: boolean, confirmedClaim: string | null, hooks: StorageHooks = {}): Promise<RecoverySession> {
+  static async open(target: RecoveryTarget, stopped: boolean, confirmedClaim: string | null, hooks: StorageHooks = {}, transactionId?: string): Promise<RecoverySession> {
     if (!stopped) throw new RecoveryError(RECOVERY_MESSAGES.stop);
-    const inspection = await inspectRecovery(target, hooks);
+    const inspection = await inspectRecovery(target, hooks, transactionId);
     const { storage, owner, journal, view } = inspection;
+    if (transactionId !== undefined && owner?.transactionId !== transactionId) throw new RecoveryUndoUnavailableError(RECOVERY_MESSAGES.undoUnavailable);
     if (view.state === 'none') throw new RecoveryError(RECOVERY_MESSAGES.blocked);
     if (view.state === 'takeover') throw new RecoveryError(RECOVERY_MESSAGES.interruptedTakeover);
     if (view.state === 'uninitialized') return new RecoverySession(inspection, null);
@@ -33,7 +34,12 @@ export class RecoverySession {
     const claim: Claim = { token, createdAt: new Date().toISOString(), previousToken: null };
     const checkOwner = async (): Promise<void> => {
       const current = await storage.json('owner.json');
-      if (!isOwner(current) || current.ownerToken !== owner.ownerToken || current.transactionId !== owner.transactionId) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+      if (!isOwner(current) || current.ownerToken !== owner.ownerToken || current.transactionId !== owner.transactionId) {
+        // Both guards run before the exclusive link can publish our claim.
+        // Takeover has already published ownership intent and stays protected.
+        if (transactionId !== undefined && confirmedClaim === null) throw new RecoveryUndoUnavailableError(RECOVERY_MESSAGES.undoUnavailable);
+        throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+      }
     };
     if (confirmedClaim !== null) {
       try { await storage.mkdir('takeover'); }
@@ -65,6 +71,9 @@ export class RecoverySession {
       });
     }
     journal.claimToken = token;
+    // Opening undo claims the backup. Until choices are resolved it is recovery,
+    // so a new mutation must not replace it, even after a process restart.
+    if (journal.data.outcome === 'kept') journal.data.outcome = 'unknown';
     // Keep takeover serialized through both durable publications. Otherwise a
     // delayed contender can acquire the directory and fence this save.
     await journal.save(confirmedClaim !== null);
@@ -85,7 +94,8 @@ export class RecoverySession {
       latest.view.state = 'open'; latest.view.canDismiss = true;
     } else if (this.token !== null && latest.view.claim === this.inspection.view.claim) {
       const outcome = this.inspection.journal?.data.outcome;
-      latest.view.canApply = (this.inspection.journal?.data.step !== 'recovery-completion' || outcome === 'recovery-incomplete') && outcome !== 'removing';
+      latest.view.canApply = (this.inspection.journal?.data.step !== 'recovery-completion' || outcome === 'recovery-incomplete' ||
+        (outcome === 'completed' && latest.view.files.some(file => file.current !== file.backup))) && outcome !== 'removing';
       if (latest.view.state === 'blocked' || this.inspection.journal?.data.step === 'completion') {
         latest.view.state = 'open'; latest.view.message = RECOVERY_MESSAGES.open;
       }
@@ -166,8 +176,20 @@ export class RecoverySession {
     if (view.state === 'uninitialized') { await removeUninitialized(storage, stopped); return; }
     if (owner === undefined) throw new RecoveryError(RECOVERY_MESSAGES.invalid);
     if (view.state !== 'removing' && journal?.data.outcome !== 'completed' && journal?.data.outcome !== 'rolled-back' && !discardIncomplete) throw new RecoveryError(RECOVERY_MESSAGES.incomplete);
-    try { await validateRemovalInventory(storage, journal?.data); }
-    catch (cause) {
+    try {
+      // A removal already in progress was durably authorized before its first
+      // delete. Fresh normal finishes must still match every backed up file.
+      if (!discardIncomplete && journal !== undefined && journal.data.outcome !== 'removing') {
+        await journal.assertOwner();
+        for (const file of journal.data.files) {
+          const current = await journal.files.read(await journal.filePath(file.backup));
+          if ((current.exists ? hash(current.contents) : 'absent') !== (file.backup.sha256 ?? 'absent')) {
+            throw new RecoveryError(RECOVERY_MESSAGES.confirmDiscard);
+          }
+        }
+      }
+      await validateRemovalInventory(storage, journal?.data);
+    } catch (cause) {
       if (cause instanceof RecoveryError) throw cause;
       return this.invalidate(cause);
     }

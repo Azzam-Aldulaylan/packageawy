@@ -287,7 +287,7 @@ test('an upgrade stopped before writing answers with a terminal message', async 
   assert.equal(fixture.coordinator.isBusy(), false);
 });
 
-test('opening a durable Smart Cleanup restore point never restores or releases it', async t => {
+test('opening a durable Smart Cleanup restore point never restores or locks it', async t => {
   const project = await makeProject(t);
   const fixture = makeCoordinator(project);
   const analysisId = await review(fixture);
@@ -296,10 +296,10 @@ test('opening a durable Smart Cleanup restore point never restores or releases i
   assert.equal(fixture.messages.at(-1).status, 'recovery');
   assert.equal(await readFile(project.lockfilePath, 'utf8'), lockfile(false));
   assert.deepEqual(fixture.commands, ['install']);
-  assert.equal(fixture.coordinator.isBusy(), true);
+  assert.equal(fixture.coordinator.isBusy(), false);
 });
 
-test('reviews release their locks and durable cleanup keeps its lock until recovery dismissal', async (t) => {
+test('reviews and successful cleanup release their locks before undo is claimed', async (t) => {
   const project = await makeProject(t);
   const locks = new ProjectMutationLocks();
   const released = [];
@@ -335,13 +335,12 @@ test('reviews release their locks and durable cleanup keeps its lock until recov
 
   await fixture.coordinator.handleConfirmRemove({ analysisId });
   assert.equal(fixture.messages.findLast(message => message.status === 'remove-result').result.outcome, 'verified');
-  assert.equal(fixture.coordinator.isBusy(), true);
-  assert.equal(locks.holderOf(key).state, 'retained');
-  await fixture.coordinator.recovery.inspect();
+  free();
+  await fixture.coordinator.handleRestoreSmartCleanup({ analysisId });
   const view = fixture.messages.at(-1).recovery;
   await fixture.coordinator.recovery.start(true, view.claim);
   await fixture.coordinator.recovery.apply(choices(fixture.messages.at(-1).recovery));
-  await fixture.coordinator.recovery.dismiss(true, false);
+  await fixture.coordinator.recovery.dismiss(true, true);
   free();
   assert.ok(released.length >= 4);
 

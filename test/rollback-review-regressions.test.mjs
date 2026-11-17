@@ -48,7 +48,7 @@ test('failed optional reinstall keeps a completed recovery restore successful', 
   const project = await makeProject(t);
   const f = makeCoordinator(project, { mutationRoot: () => project.root });
   await f.coordinator.handleConfirmRemove({ analysisId: await review(f) });
-  await f.coordinator.recovery.inspect();
+  await f.coordinator.handleRestoreSmartCleanup({ analysisId: f.coordinator.cleanupBackups.keys().next().value });
   await f.coordinator.recovery.start(true, f.messages.at(-1).recovery.claim);
   f.state.reinstallChoice = 'Reinstall'; f.state.reinstallExitCode = 1;
   await f.coordinator.recovery.apply(choices(f.messages.at(-1).recovery, 'restore'));

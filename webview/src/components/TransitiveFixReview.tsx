@@ -1,3 +1,4 @@
+import { UndoChangeButton } from './UndoChangeButton.js';
 import { useContext } from 'react';
 import { DependencyChangeContext } from './DependencyChangeStatus.js';
 import type { ReactElement } from 'react';
@@ -355,6 +356,7 @@ export function TransitiveFixReview({
             </p>
           </section>
         ) : null}
+        <UndoChangeButton undoId={result.undoId} />
         <AdvisoryList title="Resolved" advisories={result.resolvedAdvisories} tone="resolved" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
         <AdvisoryList title="Still present" advisories={result.remainingAdvisories} tone="remaining" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
         <AdvisoryList title="Introduced" advisories={result.introducedAdvisories} tone="introduced" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />

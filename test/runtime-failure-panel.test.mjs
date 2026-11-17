@@ -365,7 +365,7 @@ test('the sidecar entry point reaches the open panel and reports when none is op
 
 test('the webview keeps the banner through later snapshots and never shows a Reload button for it', () => {
   const app = readFileSync('webview/src/App.tsx', 'utf8');
-  assert.match(app, /case 'runtime-error': \{\s*setRuntimeErrorText\(incoming\.message\);\s*setRefreshStopped\(true\);\s*return;\s*\}/);
+  assert.match(app, /case 'runtime-error': \{\s*if \(openingUndoRef\.current !== null\) setUndoError\(\{ id: openingUndoRef\.current, message: incoming\.message \}\);\s*openingUndoRef\.current = null;\s*setOpeningUndo\(null\);\s*setRuntimeErrorText\(incoming\.message\);\s*setRefreshStopped\(true\);\s*return;\s*\}/);
   assert.deepEqual([...app.matchAll(/setRuntimeErrorText\(([^)]*)\)/g)].map((match) => match[1]), ['incoming.message'],
     'nothing clears the banner while the panel is open');
   assert.match(app, /runtimeErrorText !== null \? \(\s*<StatusBanner tone="error" action=\{\{ label: 'Show Log', onClick: requestShowLog \}\}>/);
@@ -419,7 +419,7 @@ for (const phase of ['refresh', 'refresh-after-message', 'watcher']) test(`unrel
   assert.equal(handle.state, 'mutating');
   hold.release();
   await confirming;
-  assert.equal(handle.state, 'retained');
+  assert.equal(handle.state, 'completed');
   assert.equal(handle.result, 'kept');
   assert.equal(fixture.messages.findLast(message => message.status === 'remove-result').result.outcome, 'verified');
   assert.equal(panel.logs.some(line => line.startsWith('runtime:')), true);

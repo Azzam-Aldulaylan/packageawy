@@ -241,7 +241,7 @@ for (const boundary of ['journal:completion:finished', 'removal:1']) test(`failu
   const o = owner(f.target);
   o.handle.journal = journal;
   o.handle.state = 'mutating';
-  const completing = o.handle.complete('kept');
+  const completing = o.handle.complete(boundary === 'removal:1' ? 'rolled-back' : 'kept');
   await hold.arrived;
   await o.handle.fail('internal settlement failure');
   hold.release();

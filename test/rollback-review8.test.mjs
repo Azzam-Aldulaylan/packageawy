@@ -113,7 +113,7 @@ for (const operation of ['upgrade', 'removal', 'cleanup', 'transitive', 'reinsta
     // Cleanup restore points and displaced rollback files retain their normal recovery ownership.
     if (f.coordinator.reservation.held) {
       assert.equal(f.owner().state, 'retained');
-      assert.equal(f.owner().journal.data.outcome, expected === 'kept' ? 'completed' : 'rolled-back');
+      assert.equal(f.owner().journal.data.outcome, expected === 'kept' ? 'kept' : 'rolled-back');
     } else {
       assert.equal(f.coordinator.isBusy(), false);
     }
@@ -122,7 +122,9 @@ for (const operation of ['upgrade', 'removal', 'cleanup', 'transitive', 'reinsta
     if (operation === 'cleanup') {
       assert.equal(terminal.result.outcome, 'verified');
       assert.equal(terminal.result.smartCleanup.status, 'partial');
-      assert.match(terminal.result.smartCleanup.reason, /evidence is unavailable/);
+      assert.equal(terminal.result.smartCleanup.reason, 'Final dashboard counts could not be refreshed. Analyze the current project to update them.');
+      assert.deepEqual(terminal.result.smartCleanup.completedActionIds, terminal.result.packages.map(name => `remove-direct:${name}`));
+      assert.deepEqual(terminal.result.smartCleanup.failedActionIds, []);
       assert.equal(terminal.result.restoreAvailable, true);
     }
     if (operation === 'reinstall') assert.deepEqual(f.commands, ['install', 'ci']);
@@ -189,11 +191,13 @@ test('Smart Cleanup refresh TypeError reports partial evidence and keeps the obs
   f.coordinator.options.reloadSmartCleanupFinalState = async () => { throw new TypeError('presentation bug'); };
   await f.confirm();
   assert.equal(f.owner().result, 'kept');
-  assert.equal(f.owner().journal.data.outcome, 'completed');
+  assert.equal(f.owner().journal.data.outcome, 'kept');
   const result = f.messages.findLast(message => message.status === 'remove-result').result;
   assert.equal(result.outcome, 'verified');
   assert.equal(result.smartCleanup.status, 'partial');
-  assert.match(result.smartCleanup.reason, /evidence is unavailable/);
+  assert.equal(result.smartCleanup.reason, 'Final dashboard counts could not be refreshed. Analyze the current project to update them.');
+  assert.deepEqual(result.smartCleanup.completedActionIds, result.packages.map(name => `remove-direct:${name}`));
+  assert.deepEqual(result.smartCleanup.failedActionIds, []);
   assert.equal(f.s.current.controller, undefined);
 });
 

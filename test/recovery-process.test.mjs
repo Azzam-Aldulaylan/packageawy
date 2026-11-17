@@ -251,3 +251,42 @@ for (const boundary of ['synced:claim.json', 'linked:claim.json', 'published:cla
   if (takeover) assert.equal(inspected.view.message, RECOVERY_MESSAGES.interruptedTakeover);
   assert.equal(await f.read('package-lock.json'), 'original lockfile');
 });
+
+
+test('two real hosts serialize replacement of a successful backup', async t => {
+  const f = await recoveryFixture(t);
+  await (await f.prepare()).finish('kept');
+  const runs = [child(f.target, 'prepare'), child({ ...f.target, hostKind: 'jetbrains' }, 'prepare')];
+  const results = await Promise.all(runs.map(run => run.result));
+  await Promise.all(runs.map(run => run.exit));
+  assert.equal(results.filter(result => result.done).length, 1);
+  assert.equal(results.filter(result => result.error).length, 1);
+  assert.equal((await f.inspect()).journal.data.outcome, 'running');
+});
+
+test('undo and a new mutation in different hosts cannot both claim the retained backup', async t => {
+  const f = await recoveryFixture(t);
+  const journal = await f.prepare();
+  await journal.finish('kept');
+  const runs = [child(f.target, 'prepare'), child({ ...f.target, hostKind: 'jetbrains' }, 'undo', '', journal.owner.transactionId)];
+  const results = await Promise.all(runs.map(run => run.result));
+  await Promise.all(runs.map(run => run.exit));
+  assert.equal(results.filter(result => result.done).length, 1);
+  assert.equal(results.filter(result => result.error).length, 1);
+  assert.equal((await f.inspect()).view.state, 'blocked');
+});
+
+test('crashes while replacing a retained backup never authorize an uncertain change', async t => {
+  const boundaries = ['published:claim.json', 'removal:1', 'removal:2', 'removal:3', 'removal:4', 'removal:5', 'removal:6', 'removal:7', 'removal:8', 'removal:9', 'folder:created', 'prepared'];
+  for (const boundary of boundaries) await t.test(boundary, async t => {
+    const f = await recoveryFixture(t);
+    await (await f.prepare()).finish('kept');
+    const before = await f.read('package.json');
+    assert.equal((await runChild(f.target, 'prepare', boundary)).boundary, boundary);
+    assert.equal(await f.read('package.json'), before);
+    assert.equal(await f.read('package-lock.json'), 'original lockfile');
+    const view = (await f.inspect()).view;
+    assert.notEqual(view.state, 'undo-available');
+    if (view.state !== 'none') await assert.rejects(f.prepare());
+  });
+});

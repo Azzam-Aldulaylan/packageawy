@@ -19,6 +19,8 @@
  * not necessarily one we sent.
  */
 
+import { isUndoOperation, isRecoveryReinstall, type UndoOperation, type RecoveryReinstall } from './recoveryCopy.js';
+
 import type {
   Advisory,
   AttributedAdvisory,
@@ -251,6 +253,8 @@ export type TransitiveRemediationApplyOutcome =
   | 'recovery-required';
 
 export interface TransitiveRemediationApplyResult {
+  /** Exact retained transaction, offered only while its validated backup is available. */
+  undoId?: string;
   outcome: TransitiveRemediationApplyOutcome;
   message: string;
   verification: 'passed' | 'not-configured' | 'failed' | 'not-run' | 'unavailable';
@@ -450,6 +454,8 @@ export interface UpgradeResultChange {
  * absent and must be treated as refreshing until a new dashboard snapshot.
  */
 export interface UpgradeResultPresentation {
+  /** Exact retained transaction, offered only while its validated backup is available. */
+  undoId?: string;
   package: string;
   /** Host-minted correlation id for the exact targeted enrichment lifecycle following this result. */
   refreshId: string;
@@ -458,6 +464,8 @@ export interface UpgradeResultPresentation {
   /** Reinstall guidance for a completed rollback, supplied by the host. */
   rollbackMessage?: string;
   verification: 'passed' | 'not-configured' | 'failed' | 'not-run';
+  /** Script presence in the host-read, reviewed manifest, independent of selected checks. */
+  projectScriptsPresent?: boolean;
   changes: UpgradeResultChange[];
   refreshingDerivedData: boolean;
 }
@@ -589,11 +597,15 @@ export interface SmartCleanupCompletionPresentation {
 export type RemoveProgressPhase = 'installing' | 'verifying' | 'refreshing';
 
 export interface RemoveResultPresentation {
+  /** Exact retained transaction, offered only while its validated backup is available. */
+  undoId?: string;
   /** Correlates this terminal outcome to the exact host-issued removal review that was confirmed. */
   analysisId: string;
   packages: string[];
   outcome: 'verified' | 'unverified' | 'rolled-back';
   verification: 'passed' | 'not-configured' | 'failed' | 'not-run';
+  /** Script presence snapshot from the host-read, reviewed package.json. */
+  projectScriptsPresent?: boolean;
   rollback: 'not-needed' | 'succeeded';
   message: string;
   /** Present only for Smart Cleanup. Derived and correlated entirely by the host. */
@@ -685,7 +697,10 @@ export type ScanProgressStage =
   | 'rows';
 
 export interface RecoveryPresentation {
-  state: 'none' | 'discovery-error' | 'running' | 'blocked' | 'uninitialized' | 'invalid' | 'takeover' | 'open' | 'incomplete' | 'completed' | 'removing';
+  reinstall?: RecoveryReinstall;
+  undoReview?: true;
+  undoOperation?: UndoOperation;
+  state: 'none' | 'undo-available' | 'discovery-error' | 'running' | 'blocked' | 'uninitialized' | 'invalid' | 'takeover' | 'open' | 'incomplete' | 'completed' | 'removing';
   message: string;
   claim: string | null;
   canDismiss: boolean;
@@ -699,12 +714,16 @@ export interface RecoveryChoice {
   approveDeletion: boolean;
 }
 
+export interface UndoBackupEntry { analysisId: string; label: string; operation?: UndoOperation }
+
 export type DependencyTaskState = 'running' | 'still-running' | 'idle';
 
 export type HostToWebviewMessage =
   | { status: 'dependency-task'; state: DependencyTaskState }
   | { status: 'recovery-entries'; entries: Array<{ id: string; label: string }> }
   | { status: 'recovery'; recovery: RecoveryPresentation }
+  | { status: 'smart-cleanup-backup'; analysisId: string; outcome: 'changed' | 'restored' | 'resolved' | 'unavailable' }
+  | { status: 'smart-cleanup-backups'; entries: UndoBackupEntry[] }
   | { status: 'update-advisories'; context: UpdateAdvisoryContext; results: UpdateAdvisoryResult[] }
   | { status: 'loading' }
   | { status: 'scan-progress'; stage: ScanProgressStage; completed?: number; total?: number }
@@ -780,8 +799,8 @@ export type HostToWebviewMessage =
   | { status: 'remove-progress'; analysisId: string; phase: RemoveProgressPhase }
   /** A coordinated removal reached a stable kept/restored boundary. */
   | { status: 'remove-result'; result: RemoveResultPresentation }
-  /** A removal could not run: rejected by host-side validation, cancelled, or the task itself failed. */
-  | { status: 'remove-error'; package: string; error: ProtocolError }
+  /** A removal could not run. undoId instead identifies a failed read-only Undo review request. */
+  | { status: 'remove-error'; package: string; undoId?: string; error: ProtocolError }
   /** A transitive-vulnerability "Analyze remediation" request has started. See analyze-remediation below. */
   | { status: 'remediation-analyzing'; package: string }
   /** The host-owned remediation analysis result for `package`, ready for the Action cell to render. */
@@ -848,6 +867,8 @@ export const HOST_MESSAGE_STATUSES = {
   'dependency-task': true,
   'recovery-entries': true,
   'recovery': true,
+  'smart-cleanup-backup': true,
+  'smart-cleanup-backups': true,
   'update-advisories': true,
   'loading': true,
   'scan-progress': true,
@@ -2063,6 +2084,7 @@ function isTransitiveRemediationApplyResult(value: unknown): value is Transitive
   const valid = (
     isRecord(value) &&
     hasOnlyKeys(value, [
+      'undoId',
       'outcome',
       'message',
       'verification',
@@ -2073,6 +2095,7 @@ function isTransitiveRemediationApplyResult(value: unknown): value is Transitive
     ]) &&
     typeof value['outcome'] === 'string' &&
     TRANSITIVE_REMEDIATION_APPLY_OUTCOMES.has(value['outcome']) &&
+    (value['undoId'] === undefined || (isRecoveryId(value['undoId']) && ['verified', 'partial', 'unverified'].includes(value['outcome']))) &&
     isNonEmptyString(value['message']) &&
     typeof value['verification'] === 'string' &&
     TRANSITIVE_REMEDIATION_VERIFICATION_OUTCOMES.has(value['verification']) &&
@@ -2310,6 +2333,11 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
     Array.isArray(value['entries']) && value['entries'].length <= 1000 && value['entries'].every((entry: unknown) =>
       isRecord(entry) && hasOnlyKeys(entry, ['id', 'label']) && isRecoveryHash(entry['id']) && typeof entry['label'] === 'string');
   if (status === 'recovery') return hasOnlyKeys(value, ['status', 'recovery']) && isRecoveryPresentation(value['recovery']);
+  if (status === 'smart-cleanup-backup') return hasOnlyKeys(value, ['status', 'analysisId', 'outcome']) && isNonEmptyString(value['analysisId']) &&
+    (value['outcome'] === 'changed' || value['outcome'] === 'restored' || value['outcome'] === 'resolved' || value['outcome'] === 'unavailable');
+  if (status === 'smart-cleanup-backups') return hasOnlyKeys(value, ['status', 'entries']) &&
+    Array.isArray(value['entries']) && value['entries'].length <= 1000 && value['entries'].every((entry: unknown) =>
+      isRecord(entry) && hasOnlyKeys(entry, ['analysisId', 'label', 'operation']) && (entry['operation'] === undefined || isUndoOperation(entry['operation'])) && isNonEmptyString(entry['analysisId']) && typeof entry['label'] === 'string');
   if (status === 'update-advisories') {
     return hasOnlyKeys(value, ['status', 'context', 'results']) &&
       isUpdateAdvisoryContext(value['context']) && isUpdateAdvisoryResults(value['results']);
@@ -2361,16 +2389,18 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'upgrade-result') {
     const result = value['result'];
-    if (!isRecord(result) || !hasOnlyKeys(result, ['package', 'refreshId', 'install', 'application', 'rollbackMessage', 'verification', 'changes', 'refreshingDerivedData'])) {
+    if (!isRecord(result) || !hasOnlyKeys(result, ['undoId', 'package', 'refreshId', 'install', 'application', 'rollbackMessage', 'verification', 'projectScriptsPresent', 'changes', 'refreshingDerivedData'])) {
       return false;
     }
     const changes = result['changes'];
     return (
+      (result['undoId'] === undefined || (isRecoveryId(result['undoId']) && result['application'] !== 'rolled-back')) &&
       isNonEmptyString(result['package']) &&
       isNonEmptyString(result['refreshId']) &&
       (result['install'] === 'succeeded' || result['install'] === 'failed') &&
       (result['application'] === 'applied' || result['application'] === 'unconfirmed' || result['application'] === 'rolled-back') &&
       (result['verification'] === 'passed' || result['verification'] === 'not-configured' || result['verification'] === 'failed' || result['verification'] === 'not-run') &&
+      (result['projectScriptsPresent'] === undefined || typeof result['projectScriptsPresent'] === 'boolean') &&
       Array.isArray(changes) &&
       changes.length > 0 &&
       new Set(changes.map((change) => isRecord(change) ? change['packageName'] : undefined)).size === changes.length &&
@@ -2457,11 +2487,12 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'remove-result') {
     const result = value['result'];
-    if (!isRecord(result) || !hasOnlyKeys(result, ['analysisId', 'packages', 'outcome', 'verification', 'rollback', 'message', 'smartCleanup', 'restoreAvailable'])) {
+    if (!isRecord(result) || !hasOnlyKeys(result, ['undoId', 'analysisId', 'packages', 'outcome', 'verification', 'projectScriptsPresent', 'rollback', 'message', 'smartCleanup', 'restoreAvailable'])) {
       return false;
     }
     const packages = result['packages'];
     return (
+      (result['undoId'] === undefined || (isRecoveryId(result['undoId']) && result['outcome'] !== 'rolled-back')) &&
       isNonEmptyString(result['analysisId']) &&
       Array.isArray(packages) &&
       (packages.length > 0 || result['smartCleanup'] !== undefined) &&
@@ -2473,6 +2504,7 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
         result['verification'] === 'failed' ||
         result['verification'] === 'not-run') &&
       (result['rollback'] === 'not-needed' || result['rollback'] === 'succeeded') &&
+      (result['projectScriptsPresent'] === undefined || typeof result['projectScriptsPresent'] === 'boolean') &&
       isNonEmptyString(result['message']) &&
       (result['smartCleanup'] === undefined || isSmartCleanupCompletionPresentation(result['smartCleanup'])) &&
       (result['restoreAvailable'] === undefined ||
@@ -2481,7 +2513,8 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'remove-error') {
     return (
-      hasOnlyKeys(value, ['status', 'package', 'error']) &&
+      hasOnlyKeys(value, ['status', 'package', 'undoId', 'error']) &&
+      (value['undoId'] === undefined || isNonEmptyString(value['undoId'])) &&
       isNonEmptyString(value['package']) &&
       isProtocolError(value['error'])
     );
@@ -2664,8 +2697,11 @@ function isRecoveryId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
 }
 function isRecoveryPresentation(value: unknown): value is RecoveryPresentation {
-  return isRecord(value) && hasOnlyKeys(value, ['state', 'message', 'claim', 'canDismiss', 'canApply', 'files']) &&
-    ['none', 'discovery-error', 'running', 'blocked', 'uninitialized', 'invalid', 'takeover', 'open', 'incomplete', 'completed', 'removing'].includes(value['state'] as string) &&
+  return isRecord(value) && hasOnlyKeys(value, ['state', 'message', 'claim', 'canDismiss', 'canApply', 'files', 'undoReview', 'undoOperation', 'reinstall']) &&
+    (value['reinstall'] === undefined || isRecoveryReinstall(value['reinstall'])) &&
+    (value['undoReview'] === undefined || value['undoReview'] === true) &&
+    (value['undoOperation'] === undefined || isUndoOperation(value['undoOperation'])) &&
+    ['none', 'undo-available', 'discovery-error', 'running', 'blocked', 'uninitialized', 'invalid', 'takeover', 'open', 'incomplete', 'completed', 'removing'].includes(value['state'] as string) &&
     typeof value['message'] === 'string' && (value['claim'] === null || isRecoveryHash(value['claim'])) && typeof value['canDismiss'] === 'boolean' && typeof value['canApply'] === 'boolean' &&
     Array.isArray(value['files']) && value['files'].length <= 1000 && value['files'].every((file: unknown) =>
       isRecord(file) && hasOnlyKeys(file, ['id', 'path', 'existed', 'backup', 'current', 'backupPreview', 'currentPreview', 'progress']) && isRecoveryId(file['id']) &&

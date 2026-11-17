@@ -6,10 +6,10 @@ import type { HostPlatform, WorkspaceFolder } from '../platform/hostPlatform.js'
 import { resolveMutationTarget } from '../mutationTarget.js';
 import { canonicalPath, isMissingPathError, relatePaths } from '../pathIdentity.js';
 import { isOwner, RECOVERY_FOLDER, type RecoveryTarget } from './model.js';
-import { Storage } from './storage.js';
+import { Storage, type StorageHooks } from './storage.js';
 
 /** A journal is discoverable even when an interrupted restore moved package.json aside. */
-export async function targetFromRecoveryFolder(folder: WorkspaceFolder, root: string, platform: HostPlatform): Promise<RecoveryTarget | undefined> {
+export async function targetFromRecoveryFolder(folder: WorkspaceFolder, root: string, platform: Pick<HostPlatform, 'hostKind'>, hooks: StorageHooks = {}): Promise<RecoveryTarget | undefined> {
   // Absence needs no canonical walk. Present journals still undergo every
   // path and ownership check before their metadata can authorize recovery.
   try { await lstat(path.join(root, RECOVERY_FOLDER)); }
@@ -17,7 +17,7 @@ export async function targetFromRecoveryFolder(folder: WorkspaceFolder, root: st
   const canonicalFolder = await canonicalPath(folder.path);
   if (relatePaths(canonicalFolder, await canonicalPath(root)) === 'outside') return undefined;
   const provisional: RecoveryTarget = { workspaceRoot: folder.path, root, identity: '', allowlistedPaths: [path.join(root, 'package.json')], operation: 'upgrade', hostKind: platform.hostKind ?? 'vscode' };
-  const storage = new Storage(provisional);
+  const storage = new Storage(provisional, hooks);
   await storage.initialize();
   const owner = await storage.json('owner.json');
   let packageManager: 'npm' | 'pnpm' = 'npm';

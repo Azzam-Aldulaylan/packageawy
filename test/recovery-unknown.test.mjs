@@ -133,7 +133,7 @@ test('the real coordinator settles missing task results with markUnknown and tra
   assert.equal(await handle.complete('kept'), false);
   await fixture.coordinator.recovery.apply(choices(fixture.messages.at(-1).recovery));
   assert.equal(locks.holderOf(canonicalProjectRoot(project.root)).state, 'recovery');
-  await fixture.coordinator.recovery.dismiss(true, false);
+  await fixture.coordinator.recovery.dismiss(true, true);
   assert.equal(locks.holderOf(canonicalProjectRoot(project.root)), undefined);
   assert.equal(await readFile(project.lockfilePath, 'utf8'), lockfile(true), 'unknown never ran rollback');
 });
@@ -243,6 +243,6 @@ test('partial recovery preserves its incomplete message and reports the filesyst
   assert.equal(await f.read('package.json'), '{"dependencies":{"a":"1.0.0"}}');
   assert.equal(await f.read('package-lock.json'), 'changed lockfile');
   assert.equal(messages.at(-1).recovery.state, 'incomplete');
-  assert.equal(messages.at(-1).recovery.message, `Recovery is incomplete. Saved and displaced files are kept. ${manualReinstallNote('npm')}`);
+  assert.equal(messages.at(-1).recovery.message, `Restoring files is not complete. The backup and files moved aside during restore are kept. ${manualReinstallNote('npm')}`);
   assert.deepEqual(warnings, ['lockfile sharing violation']);
 });

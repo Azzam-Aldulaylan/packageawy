@@ -20,7 +20,7 @@ export interface Inspection {
   journal?: RecoveryJournal;
   view: RecoveryPresentation;
 }
-export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHooks = {}): Promise<Inspection> {
+export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHooks = {}, expectedTransactionId?: string): Promise<Inspection> {
   const storage = new Storage(target, hooks);
   const view: RecoveryPresentation = { state: 'none', message: '', claim: null, files: [], canDismiss: false, canApply: false };
   const result: Inspection = { storage, view };
@@ -29,9 +29,13 @@ export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHook
   catch (error) { if (isExpectedFsError(error, 'missingFile')) return result; throw error; }
   await storage.initialize();
   if (!await folderExists(storage)) return result;
+  const owner = await storage.json('owner.json');
+  // Workspace members share storage, but have different identities and file
+  // allowlists. A replaced undo point is absent for this request. Do not try
+  // to inspect another member's dependency files with the old allowlist.
+  if (expectedTransactionId !== undefined && (!isOwner(owner) || owner.transactionId !== expectedTransactionId)) return result;
   view.state = 'blocked'; view.message = RECOVERY_MESSAGES.blocked;
   if (await storage.exists('takeover')) { view.state = 'takeover'; view.message = RECOVERY_MESSAGES.interruptedTakeover; return result; }
-  const owner = await storage.json('owner.json');
   const raw = await storage.json('journal.json');
   const claim = await storage.read('claim.json').catch((error: unknown) => {
     if (isExpectedFsError(error, 'missingFile')) return undefined;
@@ -104,8 +108,10 @@ export async function inspectRecovery(target: RecoveryTarget, hooks: StorageHook
   if (view.state !== 'invalid') {
   if (data.outcome === 'removing') { view.state = 'removing'; view.message = RECOVERY_MESSAGES.completed; view.canDismiss = false; }
   else if (data.outcome === 'recovery-incomplete' || data.outcome === 'rollback-incomplete') { view.state = 'incomplete'; view.message = RECOVERY_MESSAGES.incomplete; view.canDismiss = false; }
+  else if (data.outcome === 'kept' && data.phase === 'finished' && data.step === 'completion' && data.claimToken === null && claim === undefined) { view.state = 'undo-available'; view.message = RECOVERY_MESSAGES.undoAvailable; }
   else if (data.outcome === 'completed' || data.outcome === 'rolled-back') { view.state = 'completed'; view.message = RECOVERY_MESSAGES.completed; view.canDismiss = false; }
   }
+  if (view.state === 'completed' && (data.step === 'recovery-completion' || data.recoveryReinstall !== undefined)) view.reinstall = data.recoveryReinstall ?? 'not-run';
   if (data.outcome === 'recovery-incomplete' || data.outcome === 'rollback-incomplete') {
     view.message += ` ${manualReinstallNote(recoveryPackageManager(target.allowlistedPaths))}`;
   }

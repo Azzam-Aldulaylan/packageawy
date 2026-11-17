@@ -83,7 +83,7 @@ test('a reopened panel observes Still running from its detached coordinator and 
   exit(0); await pending;
   assert.equal(reopened.messages.findLast(m => m.status === 'dependency-task').state, 'idle');
   await reopened.coordinator.recovery.inspect();
-  assert.equal(reopened.messages.findLast(m => m.status === 'recovery').recovery.state, 'completed');
+  assert.equal(reopened.messages.findLast(m => m.status === 'recovery').recovery.state, 'none');
 });
 
 test('a task-status presentation error cannot prevent a writer from finishing', async t => {

@@ -1,3 +1,4 @@
+import { UndoChangeButton } from './UndoChangeButton.js';
 import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { useEffect, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react';
@@ -133,7 +134,7 @@ function UpgradeResultPanel({
     result.verification === 'passed'
       ? 'Passed'
       : result.verification === 'not-configured'
-        ? 'Not configured'
+        ? result.projectScriptsPresent === false ? 'No test scripts to run' : 'No checks selected'
         : result.verification === 'failed'
           ? 'Failed'
           : 'Not run';
@@ -156,6 +157,7 @@ function UpgradeResultPanel({
         {result.application === 'rolled-back' && result.rollbackMessage ? (
           <p className="analysis-card__hint">{result.rollbackMessage}</p>
         ) : null}
+        <UndoChangeButton undoId={result.undoId} />
         {enrichment?.phase === 'refreshing' ? (
           <p className="analysis-card__pending-label">
             <IconRefresh className="banner__icon--spin" aria-hidden="true" /> Refreshing dependency security and update data…

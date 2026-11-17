@@ -5,7 +5,20 @@ import {
   buildVerificationScriptArgs,
   selectVerificationScripts,
   suggestVerificationScriptNames,
+  hasProjectScripts,
 } from '../out/host/verificationPolicy.js';
+
+test('script presence is independent of selected and suggested verification scripts', () => {
+  for (const scripts of [{ build: 'tsc', test: 'node --test' }, { 'check:custom': 'node check.js' }, { test: 'vitest', dev: 'vite' }]) {
+    const manifest = JSON.stringify({ scripts });
+    assert.equal(hasProjectScripts(manifest), true);
+    assert.deepEqual(selectVerificationScripts(manifest, []), []);
+  }
+  for (const manifest of ['{}', '{', JSON.stringify({ scripts: {} }), JSON.stringify({ scripts: [] }),
+    JSON.stringify({ scripts: { test: 42, build: null, lint: '  ' } })]) {
+    assert.equal(hasProjectScripts(manifest), false);
+  }
+});
 
 test('suggestions come from the host-read manifest and fail closed on malformed input', () => {
   const manifest = JSON.stringify({ scripts: { build: 'tsc', test: 'echo "Error: no test specified" && exit 1', dev: 'vite' } });

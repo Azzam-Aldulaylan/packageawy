@@ -40,7 +40,7 @@ for (const deletion of ['journal.json', 'backup']) test(`failure during cleanup 
     }
     return resolved;
   };
-  const completing = handle.complete('kept');
+  const completing = handle.complete('rolled-back');
   await hold.arrived;
   await handle.fail('failure while cleanup resolves its deletion path');
   const backups = deletion === 'backup' ? await readdir(`${f.folder}/backups`) : [];

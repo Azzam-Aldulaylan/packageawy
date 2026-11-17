@@ -18,8 +18,9 @@ test('rollback copy and README describe observed conflicts without promises', as
       assert.doesNotMatch(sentence, /never overwrit|never los(?:e|t)|guarantee(?:d|s)? (?:roll.?back|restor)|(?:roll.?back|restor)[^.\n]*guarantee|(?:atomic|all.or.nothing) (?:roll.?back|restor)|(?:roll.?back|restor)[^.\n]*(?:is atomic|atomically)/i, `${file}: ${sentence}`);
     }
   }
+  assert.ok((await readFile('src/host/recoveryCopy.ts', 'utf8')).includes('Packageawy stops restoring if it sees that a file changed.'));
   const honest = 'Packageawy restores your dependency files and stops if it sees they changed.';
-  for (const file of ['README.md', 'src/host/upgradeAssistantCoordinator.ts', 'src/host/recoveryCopy.ts', 'webview/src/components/FilesSection.tsx']) {
+  for (const file of ['README.md', 'src/host/upgradeAssistantCoordinator.ts', 'webview/src/components/FilesSection.tsx']) {
     assert.ok((await readFile(file, 'utf8')).includes(honest), `${file} must explain observed conflicts`);
   }
 });

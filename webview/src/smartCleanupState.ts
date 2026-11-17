@@ -94,6 +94,8 @@ export interface SmartCleanupResultAdvisory {
 }
 
 export interface SmartCleanupResult {
+  analysisId?: string;
+  metricsNote?: string;
   metrics: readonly SmartCleanupMetric[];
   completedActionIds: readonly string[];
   skippedActionIds: readonly string[];
@@ -102,6 +104,8 @@ export interface SmartCleanupResult {
   introducedAdvisories: readonly SmartCleanupResultAdvisory[];
   /** `not-configured`: the dependency files were checked, but no build or test scripts ran. */
   verification: 'passed' | 'failed' | 'not-configured' | 'not-run';
+  /** Only an explicit false confirms that the reviewed package.json had no scripts. */
+  projectScriptsPresent?: boolean;
   rollback: 'not-needed' | 'restored' | 'incomplete';
   detail?: string;
 }
@@ -127,7 +131,9 @@ export type SmartCleanupPhase =
 export type SmartCleanupRestoreState =
   | { status: 'available'; analysisId: string }
   | { status: 'restoring'; analysisId: string }
+  | { status: 'changed'; analysisId: string }
   | { status: 'restored' }
+  | { status: 'resolved' }
   | { status: 'refused'; message: string };
 
 export interface SmartCleanupState {
@@ -201,6 +207,7 @@ export type SmartCleanupAction =
   | { type: 'restore-started'; analysisId: string }
   | { type: 'restore-finished' }
   | { type: 'restore-refused'; message: string }
+  | { type: 'backup-updated'; analysisId: string; outcome: 'changed' | 'restored' | 'resolved' | 'unavailable' }
   | { type: 'reset' };
 
 const DEFAULT_EXPANDED_CATEGORIES: ReadonlySet<SmartCleanupCategory> = new Set();
@@ -401,6 +408,26 @@ export function smartCleanupReducer(state: SmartCleanupState, action: SmartClean
       return state.restore?.status === 'restoring'
         ? { ...state, restore: { status: 'refused', message: action.message } }
         : state;
+    case 'backup-updated': {
+      const matchesBackup = state.restore !== null && 'analysisId' in state.restore && state.restore.analysisId === action.analysisId;
+      if (!matchesBackup && state.result?.analysisId !== action.analysisId) return state;
+      if (state.restore?.status === 'restored' || state.restore?.status === 'resolved') return state;
+      if (action.outcome === 'resolved') {
+        if (state.phase === 'complete' && state.restore?.status !== 'changed') return { ...state, restore: null };
+        return { ...state, phase: 'complete', restore: { status: 'resolved' }, message: null,
+          result: state.result === null ? null : { ...state.result, metrics: [], resolvedAdvisories: [], introducedAdvisories: [], verification: 'not-run' } };
+      }
+      if (action.outcome === 'unavailable') return { ...state, restore: null };
+      // Recovery may restore only some files or fail partway. Hide the old
+      // outcome until a full restore is confirmed or the project is analyzed.
+      const result = state.result === null ? null : {
+        ...state.result, metrics: [], resolvedAdvisories: [], introducedAdvisories: [], verification: 'not-run' as const,
+      };
+      return action.outcome === 'restored'
+        ? { ...state, phase: 'complete', result, restore: { status: 'restored' }, message: null }
+        : { ...state, phase: 'stale', result, restore: { status: 'changed', analysisId: action.analysisId }, selectedActionIds: new Set(),
+            message: 'Dependency files may have changed during recovery. Analyze the current project to review the result.' };
+    }
     case 'reset':
       return createSmartCleanupState(state.projectName);
     case 'execution-unknown':

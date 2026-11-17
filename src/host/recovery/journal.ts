@@ -184,11 +184,14 @@ export class RecoveryJournal {
       },
     };
   }
-  async finish(completion: string, retain = false): Promise<boolean> {
+  /** True releases admission. A kept success retains undo files, other retained outcomes stay blocking. */
+  async finish(completion: string): Promise<boolean> {
     await this.assertOwner();
-    this.data.outcome = completion === 'kept' ? 'completed' : completion === 'incomplete' ? 'rollback-incomplete' : 'rolled-back';
+    this.data.outcome = completion === 'kept' ? 'kept' : completion === 'incomplete' ? 'rollback-incomplete' : 'rolled-back';
     await this.record('completion', 'finished');
-    if (retain || completion === 'incomplete' || this.data.files.some((file) => file.displacedIds.length > 0)) return false;
+    // A durably observed success retains undo files without retaining admission.
+    if (completion === 'kept') return true;
+    if (completion === 'incomplete' || this.data.files.some((file) => file.displacedIds.length > 0)) return false;
     await removeSavedFiles(this.storage, this.owner, this.data, null, () => this.assertOwner());
     return true;
   }
@@ -200,6 +203,27 @@ export async function prepareJournal(target: RecoveryTarget, hooks: StorageHooks
   const files = await createNodeUpgradeTransactionFileAdapter({ workspaceRoot: target.workspaceRoot, allowlistedPaths: target.allowlistedPaths });
   for (const candidate of target.allowlistedPaths) {
     if (relatePaths(await canonicalPath(target.root), await canonicalPath(candidate)) !== 'inside') throw new RecoveryError(RECOVERY_MESSAGES.unsafe);
+  }
+  if (await folderExists(storage)) {
+    const { inspectRecovery } = await import('./inspection.js');
+    const { targetFromRecoveryFolder } = await import('./targetDiscovery.js');
+    // Workspace members share a journal folder, but not an identity or manifest.
+    // Reconstruct the saved target with fixed filenames and containment checks,
+    // then validate its own allowlist before claiming or removing any bytes.
+    const savedTarget = await targetFromRecoveryFolder({ id: '', name: '', path: target.workspaceRoot }, target.root, { hostKind: target.hostKind }, hooks);
+    if (savedTarget === undefined) throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+    const previous = await inspectRecovery(savedTarget, hooks);
+    if (previous.view.state !== 'undo-available' || previous.journal === undefined || previous.owner === undefined) {
+      throw new RecoveryError(RECOVERY_MESSAGES.blocked);
+    }
+    // Exclusive claim creation serializes replacement against undo in other hosts.
+    // Recheck the captured owner before publication and at every deletion boundary.
+    // A crash after claiming or during removal remains blocking for manual recovery.
+    const journal = previous.journal;
+    const token = newId();
+    await previous.storage.writeJson('claim.json', { token, createdAt: new Date().toISOString(), previousToken: null }, true, () => journal.assertOwner());
+    journal.claimToken = token;
+    await removeSavedFiles(previous.storage, previous.owner, journal.data, token);
   }
   const folder = await storage.safeAbsolute(storage.folder);
   storage.assertWritable();

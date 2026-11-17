@@ -58,8 +58,8 @@ test('a running cleanup finishes and retains its recovery files after a failure 
   const result = fixture.messages.findLast((message) => message.status === 'remove-result');
   assert.ok(result, `the removal finished: ${JSON.stringify(fixture.messages.at(-1))}`);
   assert.equal(result.result.outcome, 'verified');
-  assert.equal(fixture.coordinator.isBusy(), true, 'the durable cleanup restore point keeps the lock');
-  assert.equal(fixture.coordinator.reservation.held.state, 'retained');
+  assert.equal(fixture.coordinator.isBusy(), false, 'a successful cleanup releases the lock');
+  assert.equal(fixture.coordinator.reservation.held, undefined);
 });
 
 test('recovery can be inspected after a failure without touching files', async (t) => {

@@ -9,6 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 
 import { MAX_BULK_REMOVE_CHANGES } from '../out/core/upgrade/validate.js';
 import {
@@ -23,6 +24,28 @@ const ADVISORY = {
   url: 'https://github.com/advisories/GHSA-f8q6-p94x-37v3',
   vulnerableVersions: '<=3.1.3',
 };
+
+test('cleanup backup outcomes require an analysis identity and a known outcome in both hosts', () => {
+  for (const outcome of ['changed', 'restored', 'resolved', 'unavailable']) {
+    const message = { status: 'smart-cleanup-backup', analysisId: 'cleanup-a', outcome };
+    assert.equal(isHostToWebviewMessage(message), true);
+    assert.equal(isHostToWebviewMessage({ ...message, analysisId: '' }), false);
+    assert.equal(isHostToWebviewMessage({ ...message, analysisId: undefined }), false);
+    assert.equal(isHostToWebviewMessage({ ...message, transactionId: 'untrusted' }), false);
+  }
+  assert.equal(isHostToWebviewMessage({ status: 'smart-cleanup-backup', analysisId: 'a', outcome: 'kept' }), false);
+});
+
+test('discovered cleanup undo actions require identities and labels without accepting paths or transactions', () => {
+  const entry = { analysisId: 'cleanup-a', label: 'fixture' };
+  const message = entries => ({ status: 'smart-cleanup-backups', entries });
+  assert.equal(isHostToWebviewMessage(message([entry])), true);
+  assert.equal(isHostToWebviewMessage(message([])), true);
+  for (const invalid of [{ ...entry, analysisId: '' }, { ...entry, label: undefined }, { ...entry, transactionId: 'other' }, { ...entry, root: path.join('outside', 'project') }]) {
+    assert.equal(isHostToWebviewMessage(message([invalid])), false);
+  }
+  assert.equal(isHostToWebviewMessage(message(Array.from({ length: 1001 }, () => entry))), false);
+});
 
 const ATTRIBUTED = {
   advisory: ADVISORY,
@@ -1923,6 +1946,12 @@ test('a stable coordinated removal result is accepted and malformed results are 
     message: 'Removed left-pad; verification passed.',
   };
   assert.equal(isHostToWebviewMessage({ status: 'remove-result', result }), true);
+  for (const projectScriptsPresent of [true, false]) {
+    assert.equal(isHostToWebviewMessage({ status: 'remove-result', result: { ...result, projectScriptsPresent } }), true);
+  }
+  for (const projectScriptsPresent of [null, 'false', 0, [], {}]) {
+    assert.equal(isHostToWebviewMessage({ status: 'remove-result', result: { ...result, projectScriptsPresent } }), false);
+  }
   const smartCleanup = {
     status: 'verified',
     metrics: [{ id: 'dependencies', label: 'Direct dependencies', before: 4, after: 3, detail: 'Correlated inventory' }],
@@ -2173,7 +2202,7 @@ test('recovery messages carry choices and confirmation, never filesystem authori
   const id = '11111111-1111-4111-8111-111111111111';
   const digest = 'a'.repeat(64);
   const choice = { id, current: digest, action: 'keep', approveDeletion: false };
-  const view = { state: 'blocked', message: 'An earlier change may still be running. Dependency changes are blocked.', claim: null, canDismiss: false, canApply: false,
+  const view = { state: 'blocked', message: 'An earlier change may still be running. Dependency changes are paused until it is resolved.', claim: null, canDismiss: false, canApply: false,
     files: [{ id, path: 'package.json', existed: true, backup: digest, current: digest, backupPreview: '{}', currentPreview: '{}', progress: 'pending' }] };
   assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: view }), true);
   assert.equal(isWebviewToHostMessage({ type: 'inspect-recovery' }), true);
@@ -2230,4 +2259,30 @@ test('unhandled host reports carry no payload and retired batch statuses are rej
     { status: 'remediation-batch-complete', completed: 1, total: 1, cancelled: false },
     { status: 'remediation-batch-error', error: { code: 'UNKNOWN', message: 'failed' } },
   ]) assert.equal(isHostToWebviewMessage(message), false);
+});
+
+test('only an explicit undo review signal may open a successful backup review', () => {
+  const view = { state: 'undo-available', message: 'Backup available.', claim: null, canApply: false, canDismiss: false, files: [] };
+  assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: view }), true);
+  assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: { ...view, undoReview: true } }), true);
+  assert.equal(isHostToWebviewMessage({ status: 'recovery', recovery: { ...view, undoReview: 'true' } }), false);
+});
+
+test('upgrade results validate the reviewed manifest script-presence snapshot', () => {
+  const result = { package: 'react', refreshId: 'refresh', install: 'succeeded', application: 'applied', verification: 'not-configured',
+    refreshingDerivedData: false, changes: [{ packageName: 'react', previousVersion: '18.2.0', requestedVersion: '18.3.0',
+      currentVersion: '18.3.0', declaredRange: '^18.0.0', classification: 'prod' }] };
+  for (const projectScriptsPresent of [undefined, true, false]) {
+    assert.equal(isHostToWebviewMessage({ status: 'upgrade-result', result: { ...result, projectScriptsPresent } }), true);
+  }
+  for (const projectScriptsPresent of [null, 'false', 0, [], {}]) {
+    assert.equal(isHostToWebviewMessage({ status: 'upgrade-result', result: { ...result, projectScriptsPresent } }), false);
+  }
+});
+test('Undo errors validate the request identity without changing ordinary removal errors', () => {
+  const message = { status: 'remove-error', package: 'Smart Cleanup', error: { code: 'CHANGES_PAUSED', message: 'Changes are paused.' } };
+  for (const undoId of [undefined, 'cleanup-review', '11111111-1111-4111-8111-111111111111']) {
+    assert.equal(isHostToWebviewMessage({ ...message, undoId }), true);
+  }
+  for (const undoId of ['', null, true, 1, [], {}]) assert.equal(isHostToWebviewMessage({ ...message, undoId }), false);
 });

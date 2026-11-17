@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { FileState } from '../upgradeTransaction.js';
 import { isRecord } from '../../core/validation.js';
+import { isRecoveryReinstall, type RecoveryReinstall } from '../recoveryCopy.js';
 
 export const RECOVERY_FOLDER = '.packageawy-recovery';
 export { RECOVERY_MESSAGES } from '../recoveryCopy.js';
 
 export type Operation = 'upgrade' | 'removal' | 'remediation' | 'cleanup';
-export type Outcome = 'running' | 'unknown' | 'completed' | 'rolled-back' | 'rollback-incomplete' | 'recovery-incomplete' | 'removing';
+export type Outcome = 'running' | 'unknown' | 'kept' | 'completed' | 'rolled-back' | 'rollback-incomplete' | 'recovery-incomplete' | 'removing';
 export type Expected = { kind: 'absent' } | { kind: 'present'; sha256: string } | { kind: 'unknown' };
 export interface RecoveryTarget {
   workspaceRoot: string;
@@ -48,6 +49,8 @@ export interface Journal {
   claimToken: string | null;
   sequence: number;
   operation: Operation;
+  cleanupAnalysisId?: string;
+  recoveryReinstall?: RecoveryReinstall;
   phase: string;
   step: string;
   outcome: Outcome;
@@ -80,7 +83,9 @@ export function isJournal(value: unknown): value is Journal {
   return isRecord(value) && value['version'] === 1 && isId(value['transactionId']) && isId(value['ownerToken']) &&
     (value['claimToken'] === null || isId(value['claimToken'])) && Number.isSafeInteger(value['sequence']) && (value['sequence'] as number) >= 0 &&
     ['upgrade', 'removal', 'remediation', 'cleanup'].includes(value['operation'] as string) &&
-    ['running', 'unknown', 'completed', 'rolled-back', 'rollback-incomplete', 'recovery-incomplete', 'removing'].includes(value['outcome'] as string) &&
+    (value['cleanupAnalysisId'] === undefined || (value['operation'] === 'cleanup' && typeof value['cleanupAnalysisId'] === 'string' && value['cleanupAnalysisId'].length > 0 && value['cleanupAnalysisId'].length <= 256)) &&
+    (value['recoveryReinstall'] === undefined || isRecoveryReinstall(value['recoveryReinstall'])) &&
+    ['running', 'unknown', 'kept', 'completed', 'rolled-back', 'rollback-incomplete', 'recovery-incomplete', 'removing'].includes(value['outcome'] as string) &&
     typeof value['phase'] === 'string' && typeof value['step'] === 'string' && Array.isArray(value['files']) && value['files'].length <= 1000 &&
     value['files'].every((file: unknown) => isRecord(file) && isBackup(file['backup']) && isExpected(file['expected']) &&
       ['pending', 'keep', 'displace', 'displaced', 'restored', 'unknown'].includes(file['progress'] as string) &&
@@ -88,6 +93,9 @@ export function isJournal(value: unknown): value is Journal {
       (file['move'] === undefined || (isRecord(file['move']) && isId(file['move']['id']) && isExpected(file['move']['before']) && file['displacedIds'].includes(file['move']['id']))));
 }
 export class RecoveryError extends Error {}
+
+/** The requested undo point was replaced before this session claimed it. */
+export class RecoveryUndoUnavailableError extends RecoveryError {}
 
 export class RecoveryOutcomeUnknownError extends RecoveryError {
   readonly code = 'OUTCOME_UNKNOWN';

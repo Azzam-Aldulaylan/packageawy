@@ -245,13 +245,41 @@ test('disconnect during prepare never reopens admission on a timer', async t => 
   assert.equal(restartLocks.tryAcquire('/restart-after-disconnect', {}), null);
 });
 
-test('restart refuses saved unknown journals even without a local holder', async t => {
+for (const backupState of ['kept', 'interrupted', 'unknown', 'claimed', 'claim-only', 'corrupt-backup', 'takeover']) {
+  test(`restart preparation and commit validate a ${backupState} backup without a local holder`, async t => {
+    const { recoveryFixture } = await import('./helpers/recovery.mjs');
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const f = await recoveryFixture(t); const journal = await f.prepare();
+    if (backupState === 'unknown') await journal.unknown('missing task result');
+    else if (backupState !== 'interrupted') await journal.finish('kept');
+    if (backupState === 'claimed') await f.open();
+    if (backupState === 'claim-only') await journal.storage.writeJson('claim.json', { token: randomUUID(), createdAt: new Date().toISOString(), previousToken: null }, true);
+    if (backupState === 'corrupt-backup') await writeFile(join(f.folder, 'backups', `${journal.data.files[0].backup.id}.bin`), 'corrupt backup');
+    if (backupState === 'takeover') await mkdir(join(f.folder, 'takeover'));
+    assert.equal((await f.inspect()).view.state, backupState === 'kept' ? 'undo-available' : backupState === 'corrupt-backup' ? 'invalid' : backupState === 'takeover' ? 'takeover' : 'blocked');
+    const s = session(); const id = randomUUID();
+    t.after(() => { restartLocks.cancelRestart(id); s.close(); });
+    await s.request('initialize', { workspaceFolders: [{ id: f.root, path: f.root, name: 'fixture' }], isWorkspaceTrusted: false });
+    const expected = { sessionId: id, state: backupState === 'kept' ? 'idle' : 'unknown' };
+    assert.deepEqual((await s.request('restart/prepare', { sessionId: id })).result, expected);
+    assert.deepEqual((await s.request('restart/commit', { sessionId: id })).result, expected);
+    assert.equal(restartLocks.admissionClosed, true, 'restart validation never reopens admission');
+    assert.equal((await journal.storage.json('owner.json')).transactionId, journal.owner.transactionId, 'restart leaves the backup intact');
+  });
+}
+
+test('restart commit rechecks a successful backup claimed after preparation', async t => {
   const { recoveryFixture } = await import('./helpers/recovery.mjs');
-  const f = await recoveryFixture(t); const journal = await f.prepare(); await journal.unknown('missing task result');
+  const f = await recoveryFixture(t); const journal = await f.prepare(); await journal.finish('kept');
   const s = session(); const id = randomUUID();
   t.after(() => { restartLocks.cancelRestart(id); s.close(); });
   await s.request('initialize', { workspaceFolders: [{ id: f.root, path: f.root, name: 'fixture' }], isWorkspaceTrusted: false });
-  assert.equal((await s.request('restart/prepare', { sessionId: id })).result.state, 'unknown');
+  assert.equal((await s.request('restart/prepare', { sessionId: id })).result.state, 'idle');
+  // A different engine can claim the on-disk backup while local admission is closed.
+  await f.open();
+  assert.equal((await s.request('restart/commit', { sessionId: id })).result.state, 'unknown');
+  assert.equal(restartLocks.admissionClosed, true);
 });
 
 test('restart request validators reject invalid sessions without closing admission', async t => {
