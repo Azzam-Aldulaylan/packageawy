@@ -127,5 +127,5 @@ for (const results of [[], [result('2.3.0', 0)], [{ name: 'app', version: '2.3.0
 
 test('alias warnings use registry identity and the installed Safe badge describes the tree', () => {
   assert.ok(render(AvailableVersionCell, { row: { ...row, name: 'alias', registryName: 'app' } }).includes(plural));
-  assert.match(render(SeverityBadge, { severity: null }), /title="No known vulnerabilities in the installed dependency tree\."/);
+  assert.match(render(SeverityBadge, { severity: null }), /aria-label="Safe"[^>]*aria-describedby=/);
 });

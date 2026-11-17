@@ -183,6 +183,11 @@ function renderManage(props) {
   }));
 }
 
+test('Manage package tile uses the decorative Packageawy logo', () => {
+  const html = renderManage({});
+  assert.match(html, /<span class="package-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false"><path fill-rule="evenodd"/);
+});
+
 test('Manage shows the running removal instead of Analyze removal and locks Close', () => {
   const html = renderManage({ removalRun: { phase: 'running', progress: 'verifying' }, blockClose: true });
   assert.match(text(html), /Removing left-pad/);

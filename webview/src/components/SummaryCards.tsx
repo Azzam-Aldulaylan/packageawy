@@ -6,8 +6,9 @@ import {
   updatesCardValue,
   vulnerabilitiesCardValue,
 } from '../../../src/host/summaryMetrics.js';
+import { InfoTooltip } from './Tooltip.js';
 import type { ScanDataAvailability } from '../../../src/core/types.js';
-import { IconAlertTriangle, IconPackage, IconShield, IconTrendUp } from '../icons.js';
+import { IconAlertTriangle, IconBrand, IconShield, IconTrendUp } from '../icons.js';
 
 interface CardSpec {
   id: SummaryFilterId;
@@ -25,7 +26,7 @@ function buildCards(metrics: SummaryMetrics, availability: ScanDataAvailability)
     {
       id: 'all',
       label: 'Total Dependencies',
-      icon: <IconPackage />,
+      icon: <IconBrand />,
       count: metrics.total,
       subtitle: 'All direct dependencies',
     },
@@ -38,7 +39,7 @@ function buildCards(metrics: SummaryMetrics, availability: ScanDataAvailability)
     },
     {
       id: 'vulnerabilities',
-      label: 'Vulnerable Dependencies',
+      label: 'Affected packages',
       icon: <IconShield />,
       count: vulnerabilities.count,
       subtitle: vulnerabilities.subtitle,
@@ -102,7 +103,19 @@ export function SummaryCards({
   return (
     <div className="summary-cards" role="group" aria-label="Filter dependencies by category">
       {cards.map((card) => (
-        <SummaryCard key={card.id} card={card} selected={selected === card.id} onSelect={onSelect} />
+        <div key={card.id} className={`summary-card-slot${card.id === 'vulnerabilities' ? ' summary-card-slot--with-help' : ''}`}>
+          <SummaryCard card={card} selected={selected === card.id} onSelect={onSelect} />
+          {card.id === 'vulnerabilities' ? (
+            <InfoTooltip className="summary-card__help" label="About security counts" content={
+              <dl>
+                <dt>Affected packages</dt>
+                <dd>Your direct dependencies affected by a known vulnerability, directly or through their own dependencies.</dd>
+                <dt>Known vulnerabilities</dt>
+                <dd>Separate published security reports that apply, counted once even when several packages reach them.</dd>
+              </dl>
+            } />
+          ) : null}
+        </div>
       ))}
     </div>
   );

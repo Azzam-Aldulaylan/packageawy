@@ -5,6 +5,8 @@
 !dist/webview.css
 !media/icon.png
 !media/activity-bar.svg
+!media/editor-tab.svg
+!media/editor-tab_dark.svg
 !README.md
 !CHANGELOG.md
 !LICENSE

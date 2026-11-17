@@ -1,3 +1,4 @@
+import { MISSING_MANIFEST_MESSAGE, PROJECT_UNAVAILABLE_MESSAGE } from './projectLoadCopy.js';
 /**
  * Pure eligibility check for an upgrade request. This is the actual security
  * boundary between a webview message and a running task: it only ever trusts
@@ -21,6 +22,8 @@ import { isSafeNpmPackageName, isSafeSemverVersion } from './plan.js';
 
 export type UpgradeRejectionReason =
   | 'no-scan-result'
+  | 'missing-manifest'
+  | 'project-unavailable'
   | 'revalidating'
   | 'unknown-package'
   | 'no-eligible-upgrade'
@@ -61,7 +64,7 @@ export type BulkUpgradeEligibility =
     };
 
 /** Reasons a remove request is rejected: a strict subset of an upgrade's: removal never depends on an available update or a matching target version. */
-export type RemoveRejectionReason = 'no-scan-result' | 'revalidating' | 'unknown-package' | 'not-declared' | 'unsafe-identifier';
+export type RemoveRejectionReason = 'no-scan-result' | 'missing-manifest' | 'project-unavailable' | 'revalidating' | 'unknown-package' | 'not-declared' | 'unsafe-identifier';
 
 export interface EligibleRemoval {
   ok: true;
@@ -251,6 +254,10 @@ export function describeRemoveRejection(reason: RemoveRejectionReason): Rejectio
   switch (reason) {
     case 'no-scan-result':
       return { code: 'NO_SCAN_RESULT', message: 'Run a scan before requesting a removal.' };
+    case 'missing-manifest':
+      return { code: 'MISSING_MANIFEST', message: MISSING_MANIFEST_MESSAGE };
+    case 'project-unavailable':
+      return { code: 'PROJECT_LOAD_FAILED', message: PROJECT_UNAVAILABLE_MESSAGE };
     case 'revalidating':
       return {
         code: 'REVALIDATING',
@@ -294,6 +301,10 @@ export function describeRejection(reason: UpgradeRejectionReason): RejectionDesc
   switch (reason) {
     case 'no-scan-result':
       return { code: 'NO_SCAN_RESULT', message: 'Run a scan before requesting an upgrade.' };
+    case 'missing-manifest':
+      return { code: 'MISSING_MANIFEST', message: MISSING_MANIFEST_MESSAGE };
+    case 'project-unavailable':
+      return { code: 'PROJECT_LOAD_FAILED', message: PROJECT_UNAVAILABLE_MESSAGE };
     case 'revalidating':
       return {
         code: 'REVALIDATING',

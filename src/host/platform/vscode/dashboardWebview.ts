@@ -165,6 +165,11 @@ export function showDashboard(context: vscode.ExtensionContext, platform: HostPl
     retainContextWhenHidden: true,
   });
   const createdAt = Date.now();
+  // Native tab resources do not need access through the webview's resource roots.
+  panel.iconPath = {
+    light: vscode.Uri.joinPath(context.extensionUri, 'media', 'editor-tab.svg'),
+    dark: vscode.Uri.joinPath(context.extensionUri, 'media', 'editor-tab_dark.svg'),
+  };
   const integrationTestMode = context.extensionMode === vscode.ExtensionMode.Test ||
     process.env['PACKAGEAWY_EXTENSION_TEST'] === '1';
   const performanceEnabled = (): boolean => platform.getSetting<boolean>('debug.performance', false);

@@ -73,3 +73,7 @@ test('dependency compatibility does not imply complete project or runtime safety
   assert.equal(upgradeSafetyHeadline('compatible').label, 'No dependency conflicts found');
   assert.doesNotMatch(upgradeSafetyHeadline('compatible').label, /safe|all checks passed/i);
 });
+
+test('completed security with no applicable vulnerability reads Safe', () => {
+  assert.deepEqual(securityOutcomeDisplay('not-applicable'), { label: 'Safe', className: 'not-applicable' });
+});

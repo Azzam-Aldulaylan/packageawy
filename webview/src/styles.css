@@ -29,6 +29,10 @@ body {
    * panel-border, so these four hues stand out rather than blending into a
    * dozen other coloured things.
    */
+  --secondary-fill: var(--vscode-button-secondaryBackground, color-mix(in srgb, var(--vscode-editor-background, #1f1f1f) 90%, var(--vscode-foreground, #ffffff)));
+  --secondary-foreground: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #ffffff));
+  --secondary-border: var(--vscode-contrastBorder, var(--vscode-button-border, color-mix(in srgb, var(--vscode-foreground, #ffffff) 45%, var(--secondary-fill))));
+  --secondary-hover: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--secondary-fill) 80%, var(--secondary-foreground)));
   --accent-total: var(--vscode-charts-blue, #3794ff);
   --accent-updates: var(--vscode-charts-purple, #b180d7);
   --accent-vulnerabilities: var(--vscode-charts-red, #f14c4c);
@@ -290,7 +294,7 @@ button {
 }
 
 .button:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
+  outline: 2px solid var(--vscode-focusBorder, var(--vscode-contrastBorder, currentColor));
   outline-offset: 2px;
 }
 
@@ -305,30 +309,27 @@ button {
 }
 
 .button--secondary {
-  color: var(--vscode-foreground);
-  background: transparent;
-  border-color: var(--vscode-panel-border, transparent);
-}
-
-.button--secondary:hover:not(:disabled) {
-  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  color: var(--secondary-foreground);
+  background: var(--secondary-fill);
+  border-color: var(--secondary-border);
 }
 
 .button--subtle {
-  border-color: transparent;
-  color: var(--vscode-foreground);
-  background: transparent;
+  color: var(--secondary-foreground);
+  background: var(--secondary-fill);
+  border-color: var(--secondary-border);
 }
 
+.button--secondary:hover:not(:disabled),
 .button--subtle:hover:not(:disabled) {
-  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  background: var(--secondary-hover);
 }
 
 /* Risky-but-allowed: visually related to every other button, with only its semantic tone changed. */
 .button--caution {
   border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
   color: var(--vscode-inputValidation-warningForeground, var(--vscode-editorWarning-foreground));
-  background: var(--vscode-inputValidation-warningBackground, transparent);
+  background: var(--vscode-inputValidation-warningBackground, var(--secondary-fill));
 }
 
 .button--caution:hover:not(:disabled) {
@@ -343,7 +344,7 @@ button {
 .button--danger {
   border-color: var(--vscode-editorError-foreground);
   color: var(--vscode-editorError-foreground);
-  background: transparent;
+  background: var(--secondary-fill);
 }
 
 .button--danger:hover:not(:disabled) {
@@ -417,6 +418,12 @@ button {
   background: var(--dashboard-surface-raised);
 }
 
+.summary-card-slot {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+
 .summary-card {
   --card-accent: var(--vscode-focusBorder);
   position: relative;
@@ -440,7 +447,7 @@ button {
     box-shadow 150ms ease;
 }
 
-.summary-card:last-child {
+.summary-card-slot:last-child > .summary-card {
   border-right: 0;
 }
 
@@ -550,6 +557,27 @@ button {
 
 .summary-card[data-selected='true'] .summary-card__selection {
   visibility: visible;
+}
+
+/* The second grid column reserves the corner even when Viewing is hidden.
+ * Keep the help button in that column and the selection text below it. */
+.summary-card-slot--with-help .summary-card__selection {
+  min-width: 1.5rem;
+  margin-top: 1.8rem;
+}
+
+.summary-card__help {
+  position: absolute;
+  /* Stay above the sibling card while it has keyboard focus. */
+  z-index: 2;
+  top: 0.8rem;
+  right: 0.9rem;
+}
+
+.summary-card__help .info-tooltip__trigger {
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0;
 }
 
 /* Keep the finding total and its severity breakdown on separate lines, then
@@ -707,6 +735,9 @@ button {
 }
 
 .packages {
+  --cell-inset-inline: 0.75rem;
+  --security-badge-inset: 0.5rem;
+  --cell-inset-block: 0.65rem;
   width: 100%;
   min-width: 58rem;
   table-layout: fixed;
@@ -716,7 +747,7 @@ button {
 
 .packages th,
 .packages td {
-  padding: 0.65rem 0.75rem;
+  padding: var(--cell-inset-block) var(--cell-inset-inline);
   border-bottom: 1px solid var(--dashboard-line);
   vertical-align: middle;
   /* table-layout:fixed clips nothing by default: a column label with no
@@ -750,8 +781,8 @@ button {
 /*
  * Specificity has to beat ".packages th" (0 classes + 1 element = higher
  * than a bare class) so the header's padding doesn't stack with the sort
- * button's: the button fills the cell so the entire header, not a small
- * inset button, is clickable.
+ * button's. The inner row owns the same inset as the body cells and makes
+ * the entire header clickable while keeping the controls beside the label.
  *
  * The `<th>` itself must not become a flex container: `display: flex`
  * overrides `display: table-cell`, which pulls it out of the table's column
@@ -769,6 +800,8 @@ button {
   display: flex;
   align-items: center;
   height: 100%;
+  padding-inline: var(--cell-inset-inline);
+  gap: 0.3rem;
   cursor: pointer;
 }
 
@@ -780,7 +813,8 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  padding: 0.65rem 0.75rem;
+  padding: var(--cell-inset-block) 0;
+  text-align: start;
   border: none;
   color: inherit;
   background: none;
@@ -866,7 +900,6 @@ button {
 
 .info-tooltip__trigger[aria-expanded='true'] {
   color: var(--vscode-foreground);
-  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 }
 
 .info-tooltip__popover {
@@ -1018,9 +1051,9 @@ button {
 }
 
 .packages__manage-button {
-  border-color: var(--dashboard-line-strong);
-  color: var(--vscode-foreground);
-  background: var(--dashboard-surface-raised);
+  border-color: var(--secondary-border);
+  color: var(--secondary-foreground);
+  background: var(--secondary-fill);
 }
 
 .packages__manage-button:hover:not(:disabled) {
@@ -1193,7 +1226,6 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 4.5rem;
   padding: 0.1rem 0.5rem;
   border: 1px solid currentColor;
   border-radius: 3px;
@@ -1226,11 +1258,6 @@ button {
 }
 /* Safe: a calm, subtle green, never louder than an actual vulnerability. */
 .severity--none {
-  /* The longest label ("No known vulnerabilities") may wrap to two lines
-     rather than spill into the next column. */
-  white-space: normal;
-  max-width: 100%;
-  line-height: 1.2;
   border-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 55%, var(--vscode-panel-border, transparent));
   color: var(--vscode-charts-green, #89d185);
   font-weight: 500;
@@ -1839,11 +1866,11 @@ button {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .summary-card:nth-child(2) {
+  .summary-card-slot:nth-child(2) > .summary-card {
     border-right: 0;
   }
 
-  .summary-card:nth-child(-n + 2) {
+  .summary-card-slot:nth-child(-n + 2) > .summary-card {
     border-bottom: 1px solid var(--dashboard-line);
   }
 
@@ -1870,13 +1897,13 @@ button {
   }
 
   .summary-card,
-  .summary-card:nth-child(2) {
+  .summary-card-slot:nth-child(2) > .summary-card {
     min-height: 6.6rem;
     border-right: 0;
     border-bottom: 1px solid var(--dashboard-line);
   }
 
-  .summary-card:last-child {
+  .summary-card-slot:last-child > .summary-card {
     border-bottom: 0;
   }
 
@@ -9028,3 +9055,60 @@ body.vscode-high-contrast-light .upgrade-decision {
 .smart-cleanup-results__actions .button:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
 
 .dashboard__title:focus-visible, [role="dialog"] [tabindex="-1"]:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+
+/* Shared icon controls retain a visible surface before hover in either host. */
+.modal__close,
+.disclosure,
+.pagination__nav,
+.pagination__page,
+.search__clear {
+  border: 1px solid var(--secondary-border);
+  color: var(--secondary-foreground);
+  background: var(--secondary-fill);
+}
+.modal__close:hover:not(:disabled),
+.disclosure:hover:not(:disabled),
+.pagination__nav:hover:not(:disabled),
+.pagination__page:hover:not(:disabled):not([data-selected='true']),
+.search__clear:hover:not(:disabled) {
+  background: var(--secondary-hover);
+}
+.modal__close:focus-visible,
+.disclosure:focus-visible,
+.pagination__nav:focus-visible,
+.pagination__page:focus-visible,
+.search__clear:focus-visible,
+.info-tooltip__trigger:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, var(--vscode-contrastBorder, currentColor));
+  outline-offset: 2px;
+}
+.info-tooltip__trigger:disabled,
+.search__clear:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.severity-help .info-tooltip__trigger {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+}
+.empty-state__heading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.empty-state__heading .empty-state__icon,
+.empty-state__heading .empty-state__title { margin: 0; }
+
+/* Include the badge's own border and padding in the column's shared text inset. */
+.packages td.packages__security-cell {
+  padding-inline-start: calc(var(--cell-inset-inline) - var(--security-badge-inset) - 1px);
+}
+.packages .severity {
+  justify-content: flex-start;
+  padding-inline: var(--security-badge-inset);
+}

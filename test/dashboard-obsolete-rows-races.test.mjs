@@ -76,7 +76,7 @@ test('old-options scan during a newer held refresh cannot publish or cache after
   s.current.controller.options.ttlMinutesProvider = () => 0;
   const ready = s.ready(); await until(() => f.requests() > before);
   reloadGate.resolve(); await refresh;
-  assert.ok(s.posted.slice(start).some(m => m.status === 'fatal-error' && m.error.message === 'held EACCES'));
+  assert.ok(s.posted.slice(start).some(m => m.status === 'fatal-error' && m.error.code === 'PROJECT_LOAD_FAILED' && !m.error.message.includes('held EACCES')));
   networkGate.resolve(); await ready;
   await verify(s, start, c, cachedAtStart);
 });

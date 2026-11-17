@@ -37,7 +37,7 @@ function Svg({ children, ...props }: IconProps & { children: ReactElement }): Re
   );
 }
 
-/** The Packageawy logo for the dashboard header. Filled, unlike the stroke icons, and drawn from media/activity-bar.svg. */
+/** The Packageawy logo for shared dashboard surfaces. Filled, unlike the stroke icons, and drawn from media/activity-bar.svg. */
 export function IconBrand(props: IconProps): ReactElement {
   return (
     <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true" focusable="false" {...props}>
@@ -46,19 +46,6 @@ export function IconBrand(props: IconProps): ReactElement {
       <path fillRule="evenodd" d="M1.830 6.840 Q1.830 5.827 2.730 6.292 L5.670 7.808 Q6.150 8.055 6.150 8.595 L6.150 18.922 Q6.150 19.598 5.566 19.260 L2.707 17.607 Q1.830 17.100 1.830 16.087 Z" />
       <path fillRule="evenodd" d="M7.365 9.203 Q7.365 8.393 8.094 8.745 L10.639 9.976 Q11.550 10.417 12.490 10.040 L21.184 6.551 Q21.810 6.300 21.810 6.975 L21.810 17.438 Q21.810 18.315 20.981 18.602 L11.630 21.832 Q10.672 22.162 9.801 21.647 L7.946 20.549 Q7.365 20.205 7.365 19.530 Z M8.850 12.037 Q8.850 11.362 9.364 11.801 L12.721 14.664 Q13.440 15.277 12.751 15.925 L9.428 19.047 Q8.985 19.462 8.948 18.856 L8.887 17.841 Q8.850 17.235 9.294 16.820 L10.776 15.437 Q10.875 15.345 10.775 15.255 L9.302 13.929 Q8.850 13.523 8.850 12.915 Z M13.710 17.235 Q13.710 16.627 14.317 16.627 L19.312 16.627 Q19.920 16.627 19.920 17.235 L19.920 17.640 Q19.920 18.247 19.312 18.247 L14.317 18.247 Q13.710 18.247 13.710 17.640 Z" />
     </svg>
-  );
-}
-
-/** Generic package/library glyph: the Total card and the table's package-name fallback icon. */
-export function IconPackage(props: IconProps): ReactElement {
-  return (
-    <Svg {...props}>
-      <>
-        <path d="M8 1.5 14 4.75v6.5L8 14.5 2 11.25v-6.5z" />
-        <path d="M2 4.75 8 8l6-3.25" />
-        <path d="M8 8v6.5" />
-      </>
-    </Svg>
   );
 }
 

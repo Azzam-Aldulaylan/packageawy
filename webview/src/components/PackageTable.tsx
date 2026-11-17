@@ -327,7 +327,7 @@ export function PackageTable({
                     signInHost={signInHosts?.get(row.name)}
                   />
                 </td>
-                <td>
+                <td className="packages__security-cell">
                   <SeverityBadge
                     severity={row.worstSeverity}
                     advisoriesAvailable={advisoriesAvailable}

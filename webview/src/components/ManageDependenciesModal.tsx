@@ -37,7 +37,7 @@ import { trapFocus } from '../focusTrap.js';
 import {
   IconBroom,
   IconFilter,
-  IconPackage,
+  IconBrand,
   IconRefresh,
   IconShield,
   IconTrendUp,
@@ -495,7 +495,7 @@ export function ManageDependenciesModal({
               />
 
               <CriteriaGroup
-                icon={<IconPackage className="criteria-group__icon" />}
+                icon={<IconBrand className="criteria-group__icon" />}
                 label="Type"
                 ids={TYPE_IDS}
                 labels={TYPE_LABELS}

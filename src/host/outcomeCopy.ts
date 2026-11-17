@@ -33,7 +33,7 @@ const SECURITY_LABELS: Record<SecurityOutcomeStatus, string> = {
   resolved: 'All known vulnerabilities addressed',
   remains: 'A known vulnerability remains',
   unknown: 'Security outcome could not be fully verified',
-  'not-applicable': 'No known vulnerabilities',
+  'not-applicable': 'Safe',
 };
 
 export function securityOutcomeDisplay(status: SecurityOutcomeStatus): OutcomeDisplay {
