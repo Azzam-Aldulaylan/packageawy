@@ -5,7 +5,9 @@ import { recoveryFixture, choices } from './helpers/recovery.mjs';
 import { RECOVERY_MESSAGES } from '../out/host/recoveryCopy.js';
 
 for (const platform of ['darwin', 'win32']) for (const selection of ['keep', 'mixed', 'restore']) {
-  test(`${platform} normal finish requires all files to match the backup after ${selection}`, async t => {
+  // The darwin case syncs directories, which a real Windows file system refuses with EPERM.
+  const skip = platform === 'darwin' && process.platform === 'win32' && 'POSIX directory sync needs a POSIX file system';
+  test(`${platform} normal finish requires all files to match the backup after ${selection}`, { skip }, async t => {
     const f = await recoveryFixture(t);
     await f.prepare();
     await writeFile(f.manifest, '{"dependencies":{}}'); await writeFile(f.lockfile, 'empty lockfile');
