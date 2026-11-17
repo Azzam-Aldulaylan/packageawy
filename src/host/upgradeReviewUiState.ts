@@ -1,10 +1,14 @@
 import type {
   DashboardData,
+  UpgradeAnalysisPresentation,
+  ProjectCompatibilityAnalysis,
   HostToWebviewMessage,
   UpgradeAnalysisChange,
   UpgradeAnalysisSmartPlanChange,
   UpgradeResultPresentation,
 } from './webviewProtocol.js';
+import { summarizeProjectCompatibility } from './projectCompatibilityUiState.js';
+import { summarizeUpgradeSecurity } from './upgradeSecuritySummary.js';
 import { isUpgradeAnalysisSoftStale } from './upgradeFreshness.js';
 
 /** Dashboard enrichment is not a review lifecycle event. Preserve the reader's
@@ -204,4 +208,27 @@ export function advisoryNavigationRequest(
 } {
   const request = { type: 'open-advisory' as const, package: packageName, advisoryId, path: [...path] };
   return reference === undefined ? request : { ...request, reference };
+}
+
+export function applicableIncompleteProjectChecks(projectCompatibility: ProjectCompatibilityAnalysis): number {
+  const incomplete = summarizeProjectCompatibility(projectCompatibility).incompleteAnalyzers.filter((entry) => !(
+    entry.reason === 'deprecated-api-rules-unavailable' && projectCompatibility.identity.packageName !== 'next'
+  )).length;
+  if (projectCompatibility.analyzers.length === 0) return incomplete;
+  const missingRequired = ['runtime-compatibility', 'import-compatibility'].filter((analyzerId) => !projectCompatibility.analyzers.some(
+    (entry) => entry.analyzerId === analyzerId
+  )).length;
+  return incomplete + missingRequired;
+}
+
+/** Coverage is independent of findings. A warning can coexist with missing evidence. */
+export function upgradeReviewHasIncompleteChecks(analysis: UpgradeAnalysisPresentation, advisoriesOff = false): boolean {
+  return analysis.compatibility.status === 'unknown' || analysis.compatibility.completeness !== 'complete' ||
+    analysis.compatibility.resolverVerification?.status === 'unknown' ||
+    applicableIncompleteProjectChecks(analysis.projectCompatibility) > 0 ||
+    analysis.projectCompatibility.analyzers.length === 0 ||
+    (!advisoriesOff && analysis.security?.checkState !== 'off' && (
+      analysis.security === null || analysis.security.checkState === 'unavailable' ||
+      analysis.security.status === 'unknown' || summarizeUpgradeSecurity(analysis.security).unknownCount > 0
+    ));
 }

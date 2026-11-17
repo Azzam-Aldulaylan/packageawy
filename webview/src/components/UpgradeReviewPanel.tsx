@@ -8,26 +8,12 @@ import { semanticButtonClassName, upgradeConfirmationAction } from '../../../src
 import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
 import type { UpgradeAnalysisSections as UpgradeAnalysisSectionsState } from '../../../src/host/upgradeAnalysisSections.js';
 import { hasPlannerAddedCoordination, upgradeAnalysisFreshness } from '../../../src/host/upgradeReviewUiState.js';
-import { deriveUpgradeReviewDecision } from '../../../src/host/upgradeReviewDecision.js';
-import { summarizeProjectCompatibility } from '../../../src/host/projectCompatibilityUiState.js';
-import { classifyUpdate } from '../../../src/host/updateClassification.js';
-import { summarizeUpgradeSecurity } from '../../../src/host/upgradeSecuritySummary.js';
 import {
-  IconAlertTriangle,
-  IconCheck,
-  IconChevronRight,
-  IconFile,
-  IconHelpCircle,
-  IconListChecks,
   IconRefresh,
-  IconRoute,
-  IconShield,
   IconTrendUp,
-  IconXCircle,
 } from '../icons.js';
 import { DirectionalButton } from './DirectionalButton.js';
 import type { ManageTabId } from './ManageDependencyModal.js';
-import { OutcomeStatus } from './OutcomeStatus.js';
 import {
   CompatibilityCheckCard,
   CoordinatedUpgradePlanCard,
@@ -39,168 +25,13 @@ import {
 import { buildUpgradeReviewSignals, UpgradeAnalysisSections, UpgradeReviewDisclosure } from './UpgradeAnalysisSections.js';
 import type { UpgradeReviewArea, UpgradeReviewSignal, UpgradeReviewTone as ReviewTone } from './UpgradeAnalysisSections.js';
 import { ProjectCompatibilitySection } from './ProjectCompatibilitySection.js';
+import { UpgradeDecisionBrief } from './UpgradeReviewSummary.js';
+import { UpgradeReviewAnnouncement } from './UpgradeAnalysisLoading.js';
 import { StatusBanner } from './StatusBanner.js';
 import { UpgradeTargetSelector } from './UpgradeTargetSelector.js';
 import { selectedSuggestions, VerificationOptInContext } from './VerificationSuggestions.js';
 import type { UpgradeTargetLoadState } from './UpgradeTargetSelector.js';
 import type { UsageRequestState } from './UsageReferencesPanel.js';
-import { usageSummaryCounts } from '../../../src/host/dependencyDetailsCopy.js';
-
-const UPDATE_KIND_LABEL: Record<'major' | 'minor' | 'patch', string> = {
-  major: 'Major',
-  minor: 'Minor',
-  patch: 'Patch',
-};
-
-function usageAnalysisLabel(usage: UsageRequestState | undefined): string {
-  if (usage === undefined || usage.phase === 'analyzing') return 'Checking usage…';
-  if (usage.phase === 'error') return 'Usage check failed';
-  const count = usageSummaryCounts(usage.result.references).referencedInFiles;
-  return count === 0 ? 'No references found' : `Used in ${count} file${count === 1 ? '' : 's'}`;
-}
-
-function joinedReviewAreas(areas: readonly string[]): string {
-  if (areas.length < 2) return areas[0] ?? 'the analysis details below';
-  if (areas.length === 2) return `${areas[0]} and ${areas[1]}`;
-  return `${areas.slice(0, -1).join(', ')}, and ${areas.at(-1)}`;
-}
-
-/**
- * The one summary sentence set for the review. Findings to look at come
- * first. Checks that could not fully run are a coverage limit, not a
- * finding, so they get their own sentence instead of a "review" item.
- */
-function upgradeReviewSummary(analysis: UpgradeAnalysisPresentation, coordinated: boolean): string {
-  const findings: string[] = [];
-  const sentences: string[] = [];
-  let partialCoverage = analysis.compatibility.status === 'unknown' || analysis.compatibility.completeness !== 'complete';
-  if (analysis.compatibility.status === 'conflict') {
-    if (coordinated) findings.push('the coordinated dependency changes');
-    else sentences.push('Choose another target or resolve the dependency conflict first.');
-  } else if (analysis.compatibility.status === 'warning') {
-    const count = analysis.compatibility.findings.filter((finding) => finding.status !== 'compatible').length;
-    findings.push(count > 0 ? `${count} dependency compatibility ${count === 1 ? 'warning' : 'warnings'}` : 'the dependency compatibility warnings');
-  }
-
-  const projectSummary = summarizeProjectCompatibility(analysis.projectCompatibility);
-  if (projectSummary.total > 0) {
-    findings.push(`${projectSummary.total} project compatibility ${projectSummary.total === 1 ? 'finding' : 'findings'}`);
-  }
-  const applicableIncompleteAnalyzers = projectSummary.incompleteAnalyzers.filter((entry) => !(
-    entry.reason === 'deprecated-api-rules-unavailable' && analysis.projectCompatibility.identity.packageName !== 'next'
-  ));
-  if (analysis.projectCompatibility.analyzers.length === 0 || applicableIncompleteAnalyzers.length > 0) partialCoverage = true;
-
-  let resolvedCount = 0;
-  if (analysis.security !== null) {
-    const security = summarizeUpgradeSecurity(analysis.security);
-    resolvedCount = analysis.security.resolvedAdvisories.length;
-    if (security.introducedCount > 0) findings.push(`${security.introducedCount} introduced vulnerabilit${security.introducedCount === 1 ? 'y' : 'ies'}`);
-    if (analysis.security.checkState === 'unavailable') findings.push('Security check unavailable');
-    if (security.confirmedRemainingCount > 0) {
-      findings.push(`${security.confirmedRemainingCount} ${security.confirmedRemainingCount === 1 ? 'vulnerability that remains' : 'vulnerabilities that remain'}`);
-    }
-    if (security.unknownCount > 0) {
-      findings.push(`${security.unknownCount} undetermined security ${security.unknownCount === 1 ? 'outcome' : 'outcomes'}`);
-    }
-  }
-
-  if (findings.length > 0) sentences.push(`Review ${joinedReviewAreas(findings)} before upgrading.`);
-  if (coordinated) sentences.push('The coordinated plan changes dependencies only, not your source or configuration.');
-  if (resolvedCount > 0) sentences.push(`Fixes ${resolvedCount} known ${resolvedCount === 1 ? 'vulnerability' : 'vulnerabilities'}.`);
-  sentences.push(partialCoverage
-    ? 'Some checks could not fully run, so run your build and tests after upgrading.'
-    : sentences.length > 0 || findings.length > 0 ? 'Run your build and tests after upgrading.' : 'No issues were found. Run your build and tests after upgrading.');
-  return sentences.join(' ');
-}
-
-function baseName(path: string): string {
-  const parts = path.split(/[\\/]/);
-  return parts.at(-1) ?? path;
-}
-
-function iconForReviewSignal(area: UpgradeReviewSignal['area'], tone: ReviewTone): ReactElement {
-  if (area === 'security') return <IconShield />;
-  if (area === 'verification') return <IconListChecks />;
-  if (tone === 'error') return <IconXCircle />;
-  if (tone === 'warning') return <IconAlertTriangle />;
-  if (tone === 'unknown') return <IconHelpCircle />;
-  return area === 'dependency' ? <IconRoute /> : <IconCheck />;
-}
-
-function UpgradeReviewSignalRow({ signal, onOpen }: {
-  signal: UpgradeReviewSignal;
-  onOpen: (area: UpgradeReviewArea) => void;
-}): ReactElement {
-  const content = (
-    <>
-      <span className="upgrade-decision__signal-icon" aria-hidden="true">{iconForReviewSignal(signal.area, signal.tone)}</span>
-      <span className="upgrade-decision__signal-label">{signal.label}</span>
-      <span className="upgrade-decision__signal-value">{signal.value}</span>
-      <IconChevronRight className="upgrade-decision__signal-arrow" />
-    </>
-  );
-  return (
-    <li className={`upgrade-decision__signal upgrade-decision__signal--${signal.tone}`}>
-      <button type="button" onClick={() => onOpen(signal.area)} aria-label={`${signal.label}: ${signal.value}. View details`}>
-        {content}
-      </button>
-    </li>
-  );
-}
-
-function UpgradeDecisionBrief({
-  row,
-  analysis,
-  coordinated,
-  signals,
-  usage,
-  onOpenArea,
-}: {
-  row: PackageRow;
-  analysis: UpgradeAnalysisPresentation;
-  coordinated: boolean;
-  signals: readonly UpgradeReviewSignal[];
-  usage: UsageRequestState | undefined;
-  onOpenArea: (area: UpgradeReviewArea) => void;
-}): ReactElement {
-  const decision = deriveUpgradeReviewDecision(analysis, coordinated);
-  const updateKind = classifyUpdate(analysis.currentVersion, analysis.targetVersion);
-  const signalsNeedingReview = signals.filter((signal) => signal.needsReview);
-  const firstReviewSignal = signalsNeedingReview[0];
-
-  return (
-    <section className={`upgrade-decision upgrade-decision--${decision.headline.className}`} aria-labelledby="upgrade-decision-heading">
-      <div className="upgrade-decision__lead">
-        <OutcomeStatus label={decision.headline.label} className={decision.headline.className} size="large" />
-        <h3 id="upgrade-decision-heading">Upgrade {row.name}</h3>
-        <div className="upgrade-decision__versions">
-          <code>{analysis.currentVersion}</code>
-          <span aria-hidden="true">→</span>
-          <code>{analysis.targetVersion}</code>
-          <span className="status-badge status-badge--neutral">{updateKind !== null ? UPDATE_KIND_LABEL[updateKind] : 'Unknown'} update</span>
-        </div>
-        <p className="upgrade-decision__reason">{upgradeReviewSummary(analysis, coordinated)}</p>
-        {decision.caution && firstReviewSignal !== undefined ? (
-          <button type="button" className="button button--secondary upgrade-decision__review" onClick={() => onOpenArea(firstReviewSignal.area)}>
-            Start with {firstReviewSignal.label}
-            <IconChevronRight />
-          </button>
-        ) : null}
-        <div className="upgrade-decision__context">
-          <span><IconFile /> {usageAnalysisLabel(usage)}</span>
-          <span>
-            Will update <code>{baseName(analysis.files.manifestPath)}</code> and <code>{baseName(analysis.files.lockfilePath)}</code>
-            {analysis.files.rollbackAvailable ? ' · Restore point included' : ''}
-          </span>
-        </div>
-      </div>
-      <ul className="upgrade-decision__signals" aria-label="Upgrade review status">
-        {signals.map((signal) => <UpgradeReviewSignalRow signal={signal} onOpen={onOpenArea} key={signal.area} />)}
-      </ul>
-    </section>
-  );
-}
 
 /**
  * This is the evidence-heavy half of a completed review. It does not depend
@@ -417,7 +248,7 @@ export function UpgradeReviewPanel({
   targetVersion: string | null;
   targetState: UpgradeTargetLoadState;
   analysis: UpgradeAnalysisPresentation | null;
-  /** Per-section progressive state, rendered while `analysis` is still null. See src/host/upgradeAnalysisSections.ts. */
+  /** Streamed progress is never used to reveal results before the final message. */
   sections: UpgradeAnalysisSectionsState;
   /** True when the host has flagged `analysis` as structurally stale. See UpgradeFreshnessBar. */
   hardStale: boolean;
@@ -491,12 +322,13 @@ export function UpgradeReviewPanel({
   const withTargetSelector = (content: ReactElement): ReactElement => (
     <div className="upgrade-review-stack">
       {targetSelector}
-      {error !== null ? (
+      <UpgradeReviewAnnouncement analysis={analysis} advisoriesOff={advisoriesOff} />
+      {error !== null && (!active || analysis !== null) ? (
         <StatusBanner
           tone="error"
           className="upgrade-review__error"
           action={{
-            label: 'Refresh data',
+            label: 'Retry',
             onClick: onRefresh,
             disabled: busy || disabled,
             icon: <IconRefresh />,
@@ -572,17 +404,11 @@ export function UpgradeReviewPanel({
   if (analysis === null) {
     return withTargetSelector(
       <div className="review-panel">
-            <UpgradeAnalysisSections
-              row={row}
-              targetVersion={targetVersion}
-              sections={sections}
-              advisoriesAvailable={advisoriesAvailable}
-              advisoriesOff={advisoriesOff}
-              onChangeTab={onChangeTab}
-          onConfigureVerification={onConfigureVerification}
-          onOpenAdvisory={onOpenAdvisory}
-          onOpenUsageReference={onOpenUsageReference}
-        />
+        <UpgradeDecisionBrief row={row} targetVersion={targetVersion} analysis={null} coordinated={false} signals={[]} usage={usage} onOpenArea={openReviewArea} error={error} onRetry={onRefresh} retryDisabled={busy || disabled} />
+        {error === null ? <UpgradeAnalysisSections sections={sections} /> : null}
+        <div className="review-panel__footer" key="review-footer">
+          <button type="button" className="button button--secondary" onClick={onCancel}>Cancel</button>
+        </div>
       </div>
     );
   }
@@ -610,8 +436,10 @@ export function UpgradeReviewPanel({
       />
       <UpgradeDecisionBrief
         row={row}
+        targetVersion={targetVersion}
         analysis={analysis}
         coordinated={coordinated}
+        advisoriesOff={advisoriesOff}
         signals={signals}
         usage={usage}
         onOpenArea={openReviewArea}
@@ -631,7 +459,7 @@ export function UpgradeReviewPanel({
       </div>
 
       <UpgradeSecurityAcknowledgement consent={consent} />
-      <div className="review-panel__footer">
+      <div className="review-panel__footer" key="review-footer">
         <button type="button" className="button button--secondary" onClick={onCancel} disabled={busy}>
           Close review
         </button>

@@ -80,8 +80,16 @@ test('only a completed idle review for the same Manage dependency can coexist', 
 
 // ------------------------------------------------------- clearing active state
 
-test('UPGRADE_IN_PROGRESS does not clear the active state, it is about a different, rejected request', () => {
+test('duplicate contention does not clear the tracked review', () => {
   assert.equal(upgradeErrorClearsActiveState('UPGRADE_IN_PROGRESS'), false);
+  assert.equal(upgradeErrorClearsActiveState('UPGRADE_IN_PROGRESS', false), false);
+});
+
+test('contention rejecting the active request clears its pending state and is visible', () => {
+  assert.equal(upgradeErrorClearsActiveState('UPGRADE_IN_PROGRESS', true), true);
+  assert.equal(upgradeErrorIsUserVisible('UPGRADE_IN_PROGRESS', true), true);
+  assert.equal(upgradeErrorIsUserVisible('CANCELLED', true), false);
+  assert.equal(upgradeErrorIsUserVisible('OUTCOME_UNKNOWN', true), false);
 });
 
 test('a real terminal outcome clears the active state', () => {

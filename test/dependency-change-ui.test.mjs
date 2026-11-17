@@ -187,7 +187,8 @@ function startManageUpgrade(app) {
   let manage = component(app.tree(), 'ManageDependencyModal');
   manage.props.onChangeTab('upgrade');
   manage = component(app.tree(), 'ManageDependencyModal');
-  manage.props.upgrade.onAnalyze('19.0.0');
+  if (manage.props.upgrade.active && manage.props.upgrade.error !== null) manage.props.upgrade.onRefresh();
+  else manage.props.upgrade.onAnalyze('19.0.0');
   assert.equal(sent.at(-1).type, 'upgrade');
   return sent.at(-1).requestId;
 }
@@ -244,7 +245,7 @@ for (const correlation of ['requestId', 'analysisId']) for (const order of ['clo
   assert.equal((app.html().match(/New Manage failure\./g) ?? []).length, 1);
 });
 
-test('an upgrade error from dashboard bulk actions stays in the banner', () => {
+test('an upgrade error from dashboard bulk actions stays in the review with Retry', () => {
   const app = readyApp();
   component(app.tree(), 'Dashboard').props.onOpenBulkActions();
   component(app.tree(), 'ManageDependenciesModal').props.onBulkUpgrade([
@@ -254,11 +255,14 @@ test('an upgrade error from dashboard bulk actions stays in the banner', () => {
   const requestId = sent.at(-1).requestId;
   app.receive({ status: 'upgrade-error', requestId, package: 'react', error: { code: 'UNKNOWN', message: 'The upgrade fixture failed.' } });
   const html = app.html();
-  assert.match(html, /Couldn(?:'|&#x27;)t upgrade react: The upgrade fixture failed\./);
+  assert.match(html, /The upgrade fixture failed\./);
+  assert.match(html, />Retry</);
+  assert.ok(component(app.tree(), 'UpgradeAnalysisModal'));
+  assert.doesNotMatch(html, /Couldn(?:'|&#x27;)t upgrade/);
   assert.equal((html.match(/The upgrade fixture failed\./g) ?? []).length, 1);
 });
 
-test('a dashboard-origin upgrade error stays in the banner while Manage is open and after it closes', () => {
+test('a dashboard-origin upgrade error stays in its review while Manage is open and after it closes', () => {
   const app = readyApp();
   component(app.tree(), 'Dashboard').props.onOpenBulkActions();
   component(app.tree(), 'ManageDependenciesModal').props.onBulkUpgrade([
@@ -269,7 +273,9 @@ test('a dashboard-origin upgrade error stays in the banner while Manage is open 
   component(app.tree(), 'ManageDependencyModal').props.onChangeTab('upgrade');
   app.receive({ status: 'upgrade-error', requestId, package: 'react', error: { code: 'UNKNOWN', message: 'Dashboard failure during Manage.' } });
   assert.equal(component(app.tree(), 'ManageDependencyModal').props.upgrade.error, null);
-  assert.match(app.html(), /Couldn(?:'|&#x27;)t upgrade react: Dashboard failure during Manage\./);
+  assert.match(app.html(), /Dashboard failure during Manage\./);
+  assert.match(app.html(), />Retry</);
+  assert.ok(component(app.tree(), 'UpgradeAnalysisModal'));
   component(app.tree(), 'ManageDependencyModal').props.onClose();
   assert.match(app.html(), /Dashboard failure during Manage/);
 });

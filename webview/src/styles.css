@@ -4206,6 +4206,16 @@ button {
   list-style: none;
 }
 
+/* The bulk dialog is capped at 44rem even in a wide editor window. */
+.modal__body .upgrade-decision {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.modal__body .upgrade-decision__signals {
+  border-top: 1px solid var(--upgrade-review-line);
+  border-left: none;
+}
+
 .upgrade-decision__signal + .upgrade-decision__signal {
   border-top: 1px solid color-mix(in srgb, var(--upgrade-review-line) 72%, transparent);
 }
@@ -6130,6 +6140,11 @@ button {
   border-radius: 4px;
 }
 
+.finding--warning {
+  padding: 0;
+  border: 0;
+}
+
 /*
  * The single icon+colour vocabulary shared by every outcome state in the
  * modal: compatibility's four statuses and security's four statuses both
@@ -6183,6 +6198,21 @@ button {
 
 .outcome-status--warning .outcome-status__icon {
   color: var(--vscode-editorWarning-foreground);
+}
+
+.upgrade-compatibility__findings .outcome-status--warning,
+.compatibility-card .outcome-status--warning {
+  padding: 0.75rem;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground, var(--vscode-foreground)));
+  border-radius: 5px;
+  background: var(--vscode-inputValidation-warningBackground, var(--vscode-editor-background));
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  overflow-wrap: anywhere;
+}
+
+.upgrade-compatibility__findings .outcome-status--warning .outcome-status__detail,
+.compatibility-card .outcome-status--warning .outcome-status__detail {
+  color: inherit;
 }
 
 .outcome-status--conflict .outcome-status__icon,
@@ -8876,3 +8906,77 @@ button {
 .recovery__contents summary { cursor: pointer; padding: 8px 0; }
 .recovery__contents h2 { font-size: 1rem; margin: 16px 0 8px; }
 .recovery__contents pre { overflow: auto; max-height: 20rem; padding: 12px; background: var(--vscode-textCodeBlock-background); color: var(--vscode-foreground); font-size: 0.9em; tab-size: 2; }
+
+/* Upgrade review stays in its final card layout while evidence is collected. */
+.upgrade-summary-skeleton {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  min-height: 3rem;
+}
+
+.upgrade-skeleton-line {
+  display: block;
+  width: 100%;
+  height: 0.75rem;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, var(--vscode-editor-background));
+}
+
+.upgrade-skeleton-line--short { width: 65%; }
+
+.upgrade-section-skeleton {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(4rem, 25%);
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 5px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.upgrade-decision__signal > button:disabled {
+  cursor: default;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+}
+
+.upgrade-major-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding: 0.8rem;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+  border-radius: 5px;
+  background: var(--vscode-inputValidation-warningBackground);
+  color: var(--vscode-foreground);
+  overflow-wrap: anywhere;
+}
+
+.upgrade-major-notice > svg { flex: 0 0 1.2rem; }
+.upgrade-major-notice p { margin: 0; }
+.upgrade-major-notice p + p { margin-top: 0.5rem; }
+
+[data-review-area]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+body.vscode-high-contrast .upgrade-decision,
+body.vscode-high-contrast-light .upgrade-decision {
+  border-color: var(--vscode-contrastBorder, var(--vscode-foreground));
+}
+
+@media (forced-colors: active) {
+  .upgrade-decision, .upgrade-major-notice, .upgrade-skeleton-line, .upgrade-section-skeleton {
+    border-color: CanvasText;
+  }
+}
+
+.modal__grid > .analysis-review-area {
+  grid-column: 1 / -1;
+  min-width: 0;
+}

@@ -1,0 +1,10 @@
+{
+  "name": "chalk-upgrade-review-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "chalk": "4.1.2",
+    "lodash": "4.17.20",
+    "is-number": "6.0.0"
+  }
+}

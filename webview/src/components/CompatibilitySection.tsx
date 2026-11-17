@@ -3,6 +3,7 @@ import type { ReactElement } from 'react';
 
 import { findingCopy } from '../../../src/host/findingCopy.js';
 import { compatibilityOutcomeDisplay, resolverOutcomeDisplay } from '../../../src/host/outcomeCopy.js';
+import { dependencyWarningCount } from '../../../src/host/upgradeReviewDecision.js';
 import type { CompatibilityFinding, UpgradeAnalysisCompatibility } from '../../../src/host/webviewProtocol.js';
 import { IconRoute } from '../icons.js';
 import { OutcomeStatus } from './OutcomeStatus.js';
@@ -13,9 +14,9 @@ function FindingItem({ finding, context }: { finding: CompatibilityFinding; cont
   const copy = findingCopy(finding, context);
   const display = compatibilityOutcomeDisplay(finding.status);
   return (
-    <li className={`finding finding--${display.className}`}>
+    <li className={`finding finding--${display.className}`} data-finding-id={finding.id}>
       <OutcomeStatus
-        label={copy.label}
+        label={finding.status === 'warning' ? `Warning: ${copy.label}` : copy.label}
         className={display.className}
         detail={
           <>
@@ -34,9 +35,8 @@ function FindingItem({ finding, context }: { finding: CompatibilityFinding; cont
 /**
  * The Compatibility card: the reasons behind whatever the modal's own
  * overall status banner already announced, never a second announcement of
- * the same headline. Strongest evidence first: real package-manager
- * resolver evidence, when available, outranks the static peer-dependency
- * findings it's meant to corroborate.
+ * the same headline. Warning and conflict causes lead. Successful resolution
+ * cannot hide a static warning about application compatibility.
  */
 export function CompatibilityFindings({
   compatibility,
@@ -49,26 +49,36 @@ export function CompatibilityFindings({
 
   const nonCompatible = compatibility.findings.filter((f) => f.status !== 'compatible');
   const conflicts = nonCompatible.filter((f) => f.status === 'conflict');
-  const rest = nonCompatible.filter((f) => f.status !== 'conflict');
-  // Every conflict is always shown, never hidden behind a collapsed
-  // section (spec: blocking information is never collapsed by default).
-  const restCap = Math.max(0, DEFAULT_VISIBLE_CAP - conflicts.length);
+  const warnings = nonCompatible.filter((f) => f.status === 'warning');
+  const rest = nonCompatible.filter((f) => f.status !== 'conflict' && f.status !== 'warning');
+  // Every signal cause is visible as soon as its section opens.
+  const restCap = Math.max(0, DEFAULT_VISIBLE_CAP - conflicts.length - warnings.length);
   const visibleRest = expanded ? rest : rest.slice(0, restCap);
   const visibleCompatible = expanded ? compatibility.findings.filter((f) => f.status === 'compatible') : [];
-  const visible = [...conflicts, ...visibleRest, ...visibleCompatible];
+  const visible = [...conflicts, ...warnings, ...visibleRest, ...visibleCompatible];
   const hiddenCount = compatibility.findings.length - visible.length;
+  const resolver = compatibility.resolverVerification;
+  const resolverNeedsReview = resolver?.status === 'warning' || resolver?.status === 'conflict';
+  const resolverItem = resolver === undefined ? null : (
+    <OutcomeStatus
+      label={resolver.status === 'warning' ? `Warning: ${resolverOutcomeDisplay(resolver.status).label}` : resolverOutcomeDisplay(resolver.status).label}
+      className={resolverOutcomeDisplay(resolver.status).className}
+      detail={resolverNeedsReview
+        ? <>{resolver.explanation} Review the package manager findings before upgrading.</>
+        : resolver.status === 'unknown'
+          ? 'Static checks completed, but npm/pnpm verification was unavailable.'
+          : `${resolver.packageManager} resolved the proposed dependency tree.`}
+    />
+  );
 
   return (
     <>
-      {compatibility.resolverVerification !== undefined ? (
+      {resolverNeedsReview ? resolverItem : null}
+      {compatibility.status === 'warning' && dependencyWarningCount(compatibility) === 0 ? (
         <OutcomeStatus
-          label={resolverOutcomeDisplay(compatibility.resolverVerification.status).label}
-          className={resolverOutcomeDisplay(compatibility.resolverVerification.status).className}
-          detail={
-            compatibility.resolverVerification.status === 'unknown'
-              ? 'Static checks completed, but npm/pnpm verification was unavailable.'
-              : `${compatibility.resolverVerification.packageManager} resolved the proposed dependency tree.`
-          }
+          label="Warning details unavailable"
+          className="warning"
+          detail="Analyze again to get the dependency warning details before upgrading."
         />
       ) : null}
 
@@ -80,7 +90,9 @@ export function CompatibilityFindings({
         </ul>
       ) : null}
 
-      {compatibility.resolverVerification === undefined && visible.length === 0 ? (
+      {!resolverNeedsReview ? resolverItem : null}
+
+      {compatibility.status !== 'warning' && resolver === undefined && visible.length === 0 ? (
         <p className="analysis-card__hint">No peer-dependency or resolver signals were available to check for this package.</p>
       ) : null}
 

@@ -111,8 +111,9 @@ function FindingItem({
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
 }): ReactElement {
   return (
-    <li className="project-compat__finding">
+    <li className="project-compat__finding" data-finding-id={finding.id}>
       <div className="project-compat__finding-head">
+        <IconAlertTriangle aria-hidden="true" />
         <span className="project-compat__category">{CATEGORY_LABEL[finding.category]}</span>
         <strong>{finding.title}</strong>
       </div>
@@ -197,7 +198,7 @@ export function ProjectCompatibilitySection({
             if (findings.length === 0) return null;
             const presentation = CONFIDENCE_PRESENTATION[confidence];
             return (
-              <details className={`project-compat__group ${presentation.className}`} open={confidence === 'confirmed'} key={confidence}>
+              <details className={`project-compat__group ${presentation.className}`} open key={confidence}>
                 <summary>
                   <span className="project-compat__confidence-icon" aria-hidden="true">{confidenceIcon(confidence)}</span>
                   <span>{presentation.label}</span>

@@ -19,6 +19,12 @@ export interface UpgradeReviewDecision {
 
 type ProjectCoverageState = 'missing' | 'incomplete' | 'checked';
 
+/** Count the warning evidence rendered in Dependency compatibility, including resolver-only warnings. */
+export function dependencyWarningCount(compatibility: UpgradeAnalysisCompatibility): number {
+  return compatibility.findings.filter((finding) => finding.status === 'warning').length +
+    (compatibility.resolverVerification?.status === 'warning' ? 1 : 0);
+}
+
 function projectCoverageState(project: ProjectCompatibilityAnalysis | undefined): ProjectCoverageState {
   if (project === undefined || project.analyzers.length === 0) return 'missing';
   // Missing legacy evidence is not a completed check. These two analyzers

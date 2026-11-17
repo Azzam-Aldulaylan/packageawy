@@ -29,9 +29,8 @@ import { QueuedScriptSteps, useVerificationOptIn, VerificationSuggestions } from
 import { patchedVersionText, VulnerabilityIdentifierLinks } from './VulnerabilityCard.js';
 
 /**
- * The five Upgrade review cards shared between the fully-populated review
- * (UpgradeReviewPanel.tsx) and the progressive per-section loading view
- * (UpgradeAnalysisSections.tsx): each takes only the narrow slice of data
+ * The Upgrade review evidence cards shown after the final host result.
+ * Each takes only the narrow slice of data
  * it actually renders (not the whole `UpgradeAnalysisPresentation`) so
  * either caller can feed it a section's data as soon as that section alone
  * is ready. Lives in its module, not either caller's file, so the
@@ -132,11 +131,15 @@ export function CompatibilityCheckCard({
           Compatibility check
         </h3>
       </div>
+      <div className="upgrade-compatibility__findings" aria-label="Dependency compatibility findings">
+        <h4 className="upgrade-compatibility__findings-heading">Dependency findings</h4>
+        <CompatibilityFindings compatibility={compatibility} context={context} />
+      </div>
       {summary !== undefined ? (
         <p className={`usage-status upgrade-compatibility__summary${summaryTone === 'compatible' ? ' usage-status--ok' : summaryTone === 'conflict' ? ' usage-status--error' : ''}`}>
           {summaryTone === 'compatible' ? (
             <IconCheck className="usage-status__icon" />
-          ) : summaryTone === 'conflict' ? (
+          ) : summaryTone === 'conflict' || summaryTone === 'warning' ? (
             <IconAlertTriangle className="usage-status__icon" />
           ) : (
             <IconHelpCircle className="usage-status__icon" />
@@ -161,10 +164,6 @@ export function CompatibilityCheckCard({
           detail={runtimeReason?.includes('runtime-node-version-unknown')
             ? 'Declared range checked. Development, CI, and deployment runtimes still need verification.'
             : undefined} />
-      </div>
-      <div className="upgrade-compatibility__findings" aria-label="Dependency compatibility findings">
-        <h4 className="upgrade-compatibility__findings-heading">Dependency findings</h4>
-        <CompatibilityFindings compatibility={compatibility} context={context} />
       </div>
     </section>
   );
@@ -424,9 +423,11 @@ export function SecurityOutcomeCard({
         </span>
         <section className="security-outcome__box" aria-labelledby="security-after-heading">
           <h4 className="security-outcome__label" id="security-after-heading">After upgrade</h4>
-          <p className={`security-outcome__value${afterCount === 0 && unknownCount === 0 ? ' security-outcome__value--good' : ''}`}>
-            {afterCount} vulnerabilit{afterCount === 1 ? 'y' : 'ies'}
-            {unknownCount > 0 ? `, ${unknownCount} undetermined` : ''}
+          <p className={`security-outcome__value${security.status !== 'unknown' && afterCount === 0 && unknownCount === 0 ? ' security-outcome__value--good' : ''}`}>
+            {security.status === 'unknown' && afterCount === 0 && unknownCount === 0 ? 'Undetermined' : <>
+              {afterCount} vulnerabilit{afterCount === 1 ? 'y' : 'ies'}
+              {unknownCount > 0 ? `, ${unknownCount} undetermined` : ''}
+            </>}
           </p>
           <p className="security-outcome__detail">{after.label}</p>
           {security.remaining.length > 0 ? (
@@ -538,7 +539,7 @@ export function VerificationStepsCard({
         ) : (
           <li className="verification-steps__item">
             <span>Build / test verification</span>
-            <span className="status-badge status-badge--warning">Not configured</span>
+            <span className="status-badge status-badge--warning"><IconAlertTriangle aria-hidden="true" />Not configured</span>
           </li>
         )}
       </ul>
