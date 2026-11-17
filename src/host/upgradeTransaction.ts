@@ -962,6 +962,8 @@ export async function runUpgradeTransaction(options: UpgradeTransactionOptions):
   try {
     return await executeTransaction({ ...options, install: { execute: (context) => { dispatched = true; return options.install.execute(context); } } });
   } catch (error) {
+    // Once journaled work or install dispatch begins, an exception cannot prove files are unchanged,
+    // so settlement is unknown.
     if (!dispatched && options.journal === undefined) throw error;
     return { completion: 'unknown', reason: 'unknown', snapshot: { status: 'not-run' }, manifestStage: { status: 'not-run' },
       install: { status: 'unknown', message: errorMessage(error) }, verification: { status: 'not-run', reason: 'unknown' },

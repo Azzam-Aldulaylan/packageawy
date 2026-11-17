@@ -446,7 +446,3 @@ export function selectedSmartCleanupRecommendations(
 export function canCloseSmartCleanup(state: SmartCleanupState): boolean {
   return state.phase !== 'executing' && state.phase !== 'rolling-back' && state.restore?.status !== 'restoring';
 }
-
-export function smartCleanupAnalysisIsActionable(state: SmartCleanupState): boolean {
-  return state.phase === 'ready' || state.phase === 'partial';
-}

@@ -8,7 +8,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
+import { fireAndForget } from '../../core/fireAndForget.js';
 import { isSafeNpmPackageName, isSafeSemverVersion } from '../../core/upgrade/plan.js';
 import type { PackageManagerInvocation } from '../resolverVerifier.js';
 import { NodeTargetPackagePackRunner, type TargetPackagePackRunner } from './targetPackagePackRunner.js';
@@ -174,6 +176,31 @@ export function parseTargetPackagePackOutput(
   return { packageName: expected.packageName, version: expected.version, files: [...files].sort() };
 }
 
+async function removeTemporaryRoot(temporaryRoot: string, signal?: AbortSignal): Promise<void> {
+  try {
+    for (let retries = 0; ; retries++) {
+      signal?.throwIfAborted();
+      try {
+        await rm(temporaryRoot, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        // Match rm's transient errors and bounded linear backoff, but let cancellation end the wait.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (retries >= 5 || !['EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY', 'EPERM'].includes(code ?? '')) throw error;
+        signal?.throwIfAborted();
+        await delay(100 * (retries + 1), undefined, { signal });
+      }
+    }
+  } catch (error) {
+    if (!signal?.aborted) throw error;
+    // Only this private temp folder remains owned here. No project reservation is retained.
+    fireAndForget(rm(temporaryRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }), () => {
+      console.error('Packageawy: could not remove the target package temporary folder.');
+      return undefined;
+    });
+  }
+}
+
 export class TargetPackageInspector {
   private readonly runner: TargetPackagePackRunner;
 
@@ -200,7 +227,9 @@ export class TargetPackageInspector {
       if (result.exitCode !== 0) throw new Error('Target package inventory could not be materialized.');
       return parseTargetPackagePackOutput(result.stdout, { packageName, version });
     } finally {
-      await rm(temporaryRoot, { recursive: true, force: true });
+      // Windows may briefly retain directory handles after the child has stopped.
+      await removeTemporaryRoot(temporaryRoot, signal);
+      signal?.throwIfAborted();
     }
   }
 }

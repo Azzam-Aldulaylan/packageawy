@@ -989,7 +989,7 @@ export type WebviewToHostMessage =
   | { type: 'load-upgrade-targets'; package: string; requestId: string }
   /** Stops a version list load the webview no longer needs (dialog closed, package changed, retry). */
   | { type: 'cancel-upgrade-targets'; requestId: string }
-  /** `requestId` is a client-minted correlation nonce for this analysis attempt, never trust/execution surface, never stored on the host's analysis, and never compared against anything. It exists only so the webview can tell which `upgrade-analyzing`/`upgrade-analysis-partial`/`upgrade-analysis` messages belong to this attempt versus a superseded one (e.g. re-analyzing the same package after Cancel). Distinct from `analysisId`, which is host-minted, execution-trusted, and doesn't exist until the analysis completes. */
+  /** Client correlation only. Retained transiently for request cleanup and never used as mutation authority. */
   | { type: 'upgrade'; package: string; target: string; requestId: string }
   | { type: 'bulk-upgrade'; changes: Array<{ package: string; target: string }>; requestId: string }
   /** Coordinated removal of one or more declared direct dependencies. See src/core/upgrade/validate.ts's validateBulkRemoveRequest. */

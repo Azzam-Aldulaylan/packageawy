@@ -50,6 +50,8 @@ class StateFile(
         }
     }
 
+    // These delayed state writes are best effort. Atomic replacement prevents partial JSON
+    // but does not provide recovery-journal durability.
     private fun writeLocked() {
         try {
             Files.createDirectories(path.parent)

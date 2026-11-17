@@ -159,18 +159,7 @@ function formatUpgradeAnalysisAge(analyzedAt: string, now: number): string {
   return `${hours}h ${remainingMinutes}m ago`;
 }
 
-/**
- * Soft (time-based, ~1hr) vs hard (structural: the project changed since
- * this analysis ran) freshness for the analysis currently on screen. The
- * soft case reuses the dashboard's `.stale-status` tone verbatim
- * (non-alarming, matching App.tsx's whole-scan revalidation banner). The
- * hard case gets a `.stale-status--hard` warning tone and also disables
- * Confirm/Use-smart-plan (see the primary action button below): pure time
- * passing never does that on its own. Refresh is not a new mechanism: it
- * simply re-runs analysis (Cancel + Analyze): the host's STALE_SOURCE
- * recheck at confirm time remains the sole authority regardless of what
- * this bar shows.
- */
+/** Age alone recommends refresh. Host-issued expiry or structural staleness blocks confirmation. */
 function UpgradeFreshnessBar({
   analyzedAt,
   expiresAt,

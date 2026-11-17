@@ -44,14 +44,6 @@ export interface FileDidChangeParams {
   path: string;
 }
 
-export interface GitDidChangeHeadParams {
-  watchId: number;
-}
-
-export interface ProgressCancelParams {
-  progressId: number;
-}
-
 export interface ProcessDidExitParams {
   processId: number;
   exitCode: number | null;
@@ -90,37 +82,6 @@ export interface FilesFindParams {
   maxResults?: number;
 }
 
-export interface FilesWatchParams {
-  watchId: number;
-  baseDir: string;
-  glob: string;
-}
-
-export interface WatchIdParams {
-  watchId: number;
-}
-
-export interface GitWatchHeadParams {
-  watchId: number;
-  projectPath: string;
-}
-
-export interface ProgressStartParams {
-  progressId: number;
-  title: string;
-  cancellable: boolean;
-}
-
-export interface ProgressReportParams {
-  progressId: number;
-  message?: string;
-  increment?: number;
-}
-
-export interface ProgressEndParams {
-  progressId: number;
-}
-
 export interface ShowMessageParams {
   severity: 'info' | 'warning' | 'error';
   message: string;
@@ -155,14 +116,6 @@ export interface ProcessStartParams {
 export interface OpenFileParams {
   path: string;
   position?: { line: number; column: number };
-}
-
-export interface OpenExternalParams {
-  url: string;
-}
-
-export interface OpenSettingsParams {
-  key: string;
 }
 
 /** Stores a project-level setting value. The client answers null. */

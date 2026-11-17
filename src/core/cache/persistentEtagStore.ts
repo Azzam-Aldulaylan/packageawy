@@ -146,11 +146,6 @@ function loadValidatedPersistedEtagEntries(store: KeyValueStore): Array<[string,
   return raw.entries;
 }
 
-/** Reads, validates, and bounds the persisted collection. Returns [] for anything missing, corrupt, or the wrong schema version, never throws. */
-export function loadPersistedEtagEntries(store: KeyValueStore): Array<[string, CachedResponse]> {
-  return boundPersistedEtagEntries(loadValidatedPersistedEtagEntries(store));
-}
-
 export class PersistentEtagStore implements EtagStore {
   private readonly cache: WriteBackCache<CachedResponse>;
 

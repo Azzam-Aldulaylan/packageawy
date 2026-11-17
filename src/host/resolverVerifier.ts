@@ -288,6 +288,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
   private readonly reviewResolutions = new Map<string, Promise<ResolverVerification>>();
   private readonly reviewGraphs = new Map<string, DependencyGraph>();
 
+  // This cache belongs to one source, registry, and policy snapshot. Keys distinguish only proposal changes.
   private proposalKey(proposal: UpgradeProposal): string {
     return JSON.stringify(proposal.changes.map(({ packageName, targetVersion, classification }) =>
       [packageName, targetVersion, classification]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));

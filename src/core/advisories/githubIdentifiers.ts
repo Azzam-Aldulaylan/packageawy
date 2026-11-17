@@ -154,58 +154,6 @@ function compactCachedBody(
   });
 }
 
-/** Fetch one exact GitHub advisory. A cached CVE alias is immutable enough to reuse without another request. */
-export async function fetchGitHubAdvisoryIdentifiers(
-  client: HttpClient,
-  store: EtagStore,
-  ghsa: string,
-  signal?: AbortSignal
-): Promise<AdvisoryIdentifier[]> {
-  const normalizedGhsa = normalizedIdentifier('GHSA', ghsa)?.value;
-  if (normalizedGhsa === undefined) throw new FetchError('BAD_URL', 'invalid GHSA identifier');
-
-  const url = `${GITHUB_ADVISORIES_API}/${encodeURIComponent(normalizedGhsa)}`;
-  const cached = cachedIdentifiers(store, url, normalizedGhsa);
-  if (cached !== null && hasFreshCachedCve(cached, Date.now())) {
-    return cached.identifiers;
-  }
-
-  const headers: Record<string, string> = {
-    accept: 'application/vnd.github+json',
-    'x-github-api-version': GITHUB_API_VERSION,
-    'user-agent': 'packageawy',
-  };
-  if (cached !== null) headers['if-none-match'] = cached.etag;
-
-  const response = await client.get(url, {
-    headers,
-    timeoutMs: GITHUB_IDENTIFIER_TIMEOUT_MS,
-    ...(signal === undefined ? {} : { signal }),
-  });
-  if (response.status === 304) {
-    if (cached === null) throw new FetchError('NETWORK', `304 for ${url} with nothing cached`);
-    store.set(url, {
-      etag: cached.etag,
-      body: compactCachedBody(normalizedGhsa, cached.identifiers, Date.now()),
-    });
-    return cached.identifiers;
-  }
-  if (response.status === 403 && response.headers['x-ratelimit-remaining'] === '0') {
-    throw new FetchError('RATE_LIMITED', `rate limited: ${url}`, 403);
-  }
-  if (response.status !== 200) throw errorForStatus(response.status, url);
-
-  const identifiers = parseGitHubAdvisoryIdentifiers(response.body, normalizedGhsa, url);
-  const etag = response.headers['etag'];
-  if (etag !== undefined) {
-    store.set(url, {
-      etag,
-      body: compactCachedBody(normalizedGhsa, identifiers, Date.now()),
-    });
-  }
-  return identifiers;
-}
-
 function mergeIdentifiers(advisory: Advisory, identifiers: readonly AdvisoryIdentifier[]): Advisory {
   if (identifiers.length === 0) return advisory;
   const merged: AdvisoryIdentifier[] = [];

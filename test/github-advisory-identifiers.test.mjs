@@ -5,13 +5,11 @@ import {
   GITHUB_ADVISORIES_API,
   GITHUB_API_VERSION,
   enrichAdvisoriesWithGitHubIdentifiers,
-  fetchGitHubAdvisoryIdentifiers,
   ghsaIdentifierFromAdvisoryUrl,
 } from '../out/core/advisories/githubIdentifiers.js';
 import { MemoryEtagStore } from '../out/core/registry/versions.js';
 
 const GHSA = 'GHSA-2V37-7H3G-55P8';
-const URL = `${GITHUB_ADVISORIES_API}/${GHSA}`;
 
 function githubBody({ cve = 'CVE-2026-67213', ghsa = GHSA } = {}) {
   return JSON.stringify({
@@ -43,81 +41,6 @@ test('only an exact public GitHub advisory URL can produce a GHSA lookup key', (
   assert.equal(ghsaIdentifierFromAdvisoryUrl(`https://user@github.com/advisories/${GHSA}`), null);
   assert.equal(ghsaIdentifierFromAdvisoryUrl(`http://github.com/advisories/${GHSA}`), null);
   assert.equal(ghsaIdentifierFromAdvisoryUrl(`https://github.com/issues/${GHSA}`), null);
-});
-
-test('an exact GitHub advisory lookup returns normalized CVE-first aliases and persists its ETag', async () => {
-  const store = new MemoryEtagStore();
-  let calls = 0;
-  const client = {
-    async get(url, options) {
-      calls += 1;
-      assert.equal(url, URL);
-      assert.equal(options.headers.accept, 'application/vnd.github+json');
-      assert.equal(options.headers['x-github-api-version'], GITHUB_API_VERSION);
-      assert.equal(options.headers['user-agent'], 'packageawy');
-      return { status: 200, headers: { etag: 'W/"github-1"' }, body: githubBody(), wireBytes: 200 };
-    },
-  };
-
-  const first = await fetchGitHubAdvisoryIdentifiers(client, store, GHSA);
-  const second = await fetchGitHubAdvisoryIdentifiers(client, store, GHSA);
-  assert.deepEqual(first, [
-    { type: 'CVE', value: 'CVE-2026-67213' },
-    { type: 'GHSA', value: GHSA },
-  ]);
-  assert.deepEqual(second, first);
-  assert.equal(calls, 1, 'a cached CVE alias is reused without spending another API request');
-  assert.equal(store.get(URL).etag, 'W/"github-1"');
-});
-
-test('a cached advisory with no CVE is conditionally revalidated so a later CVE assignment can appear', async () => {
-  const store = new MemoryEtagStore();
-  store.set(URL, { etag: 'W/"github-no-cve"', body: githubBody({ cve: null }) });
-  const client = {
-    async get(_url, options) {
-      assert.equal(options.headers['if-none-match'], 'W/"github-no-cve"');
-      return { status: 304, headers: {}, body: '', wireBytes: 0 };
-    },
-  };
-  assert.deepEqual(await fetchGitHubAdvisoryIdentifiers(client, store, GHSA), [
-    { type: 'GHSA', value: GHSA },
-  ]);
-});
-
-test('an expired CVE cache is conditionally revalidated once, then becomes fresh again', async () => {
-  const store = new MemoryEtagStore();
-  store.set(URL, {
-    etag: 'W/"github-stale"',
-    body: JSON.stringify({
-      ...JSON.parse(githubBody()),
-      cached_at: 0,
-    }),
-  });
-  let calls = 0;
-  const client = {
-    async get(_url, options) {
-      calls += 1;
-      assert.equal(options.headers['if-none-match'], 'W/"github-stale"');
-      return { status: 304, headers: {}, body: '', wireBytes: 0 };
-    },
-  };
-  const first = await fetchGitHubAdvisoryIdentifiers(client, store, GHSA);
-  const second = await fetchGitHubAdvisoryIdentifiers(client, store, GHSA);
-  assert.deepEqual(second, first);
-  assert.equal(calls, 1);
-});
-
-test('a mismatched or malformed GitHub response is rejected instead of attaching the wrong CVE', async () => {
-  const store = new MemoryEtagStore();
-  const client = {
-    async get() {
-      return { status: 200, headers: {}, body: githubBody({ ghsa: 'GHSA-AAAA-BBBB-CCCC' }), wireBytes: 100 };
-    },
-  };
-  await assert.rejects(
-    () => fetchGitHubAdvisoryIdentifiers(client, store, GHSA),
-    (error) => error.code === 'PARSE_ERROR'
-  );
 });
 
 test('enrichment batches package filters, deduplicates GHSA aliases, and preserves unmatched npm findings', async () => {

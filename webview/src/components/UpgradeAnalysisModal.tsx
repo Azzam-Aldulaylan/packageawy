@@ -223,9 +223,7 @@ export function UpgradeAnalysisModal({
     section?.focus({ preventScroll: true });
   }, []);
 
-  // Focus trap + initial focus + restoration: a hand-rolled dialog pattern
-  // rather than a library: this is the one interactive overlay in the whole
-  // webview, and the CSP already forbids pulling in a remote dependency.
+  // Set initial focus, trap keyboard focus, and restore the previous focus when this dialog closes.
   useEffect(() => {
     previouslyFocused.current = document.activeElement;
     closeButtonRef.current?.focus();

@@ -40,18 +40,6 @@ export function securityOutcomeDisplay(status: SecurityOutcomeStatus): OutcomeDi
   return { label: SECURITY_LABELS[status], className: status };
 }
 
-const UPGRADE_SAFETY_LABELS: Record<CompatibilityStatus, string> = {
-  compatible: 'No dependency conflicts found',
-  warning: 'Upgrade has warnings',
-  conflict: 'Upgrade is blocked',
-  unknown: 'Upgrade safety is unknown',
-};
-
-/** Same compatibility status, phrased as the Upgrade review tab's one-line headline, never a second, independently-derived safety judgment. */
-export function upgradeSafetyHeadline(status: CompatibilityStatus): OutcomeDisplay {
-  return { label: UPGRADE_SAFETY_LABELS[status], className: status };
-}
-
 const RESOLVER_LABELS: Record<CompatibilityStatus, string> = {
   compatible: 'Package manager resolution succeeded',
   warning: 'Package manager resolution succeeded with warnings',

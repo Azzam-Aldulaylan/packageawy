@@ -31,9 +31,3 @@ export function isUpgradeAnalysisSoftStale(analyzedAt: string, now: number): boo
   if (analyzedMs === null) return false;
   return now - analyzedMs >= UPGRADE_ANALYSIS_SOFT_STALE_MS;
 }
-
-/** Hard retained-analysis expiry. Malformed values fail closed for execution. */
-export function isUpgradeAnalysisExpired(expiresAt: string, now: number): boolean {
-  const expiresMs = parseCanonicalIsoTimestamp(expiresAt);
-  return expiresMs === null || now >= expiresMs;
-}
