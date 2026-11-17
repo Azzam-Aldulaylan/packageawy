@@ -11,8 +11,8 @@ export function resolvedTarget(root, {
   lockfileExists = true,
   importerId = '.',
   targetRoot = root,
+  lockfilePath = path.join(targetRoot, lockfileName),
 } = {}) {
-  const lockfilePath = path.join(targetRoot, lockfileName);
   return {
     ok: true,
     target: {

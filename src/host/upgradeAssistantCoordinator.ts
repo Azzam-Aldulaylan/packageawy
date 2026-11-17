@@ -3792,14 +3792,7 @@ export class UpgradeAssistantCoordinator {
       }
       const sourceStillMatches =
         disk.root === controller.root &&
-        sameMutationTarget(disk, stored.snapshot) &&
-        disk.manifestText === stored.snapshot.manifestText &&
-        disk.lockfileText === stored.snapshot.lockfileText &&
-        disk.lockfilePath === stored.snapshot.lockfilePath &&
-        disk.registry === stored.snapshot.registry &&
-        disk.packageManager === stored.snapshot.packageManager &&
-        (disk.otherPackageManager ?? null) === (stored.snapshot.otherPackageManager ?? null) &&
-        disk.importerId === stored.snapshot.importerId;
+        resolvedProjectSourceMatches(disk, stored.snapshot);
       const rechecked = stored.requests.length === 0
         ? { ok: true as const }
         : controller.validateBulkRemoveRequest(stored.requests);

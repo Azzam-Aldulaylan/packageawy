@@ -75,6 +75,35 @@ test('MessageDecoder rejects a missing or invalid Content-Length', () => {
   assert.throws(() => new MessageDecoder().push(Buffer.from('Content-Length: abc\r\n\r\n{}')), /Invalid Content-Length/);
 });
 
+test('MessageDecoder bounds unterminated headers across chunks', () => {
+  const decoder = new MessageDecoder();
+  assert.deepEqual(decoder.push(Buffer.alloc(8 * 1024, 'x')), []);
+  assert.throws(() => decoder.push(Buffer.from('x')), /Malformed header line/);
+});
+
+test('MessageDecoder rejects oversized terminated headers', () => {
+  const header = `X-Padding: ${'x'.repeat(8 * 1024)}\r\nContent-Length: 2\r\n\r\n`;
+  assert.throws(() => new MessageDecoder().push(Buffer.from(`${header}{}`)), /Malformed header line/);
+});
+
+test('MessageDecoder accepts a header at the limit even with a split separator', () => {
+  const prefix = 'Content-Length: 2\r\nX-Padding: ';
+  const header = Buffer.from(`${prefix}${'x'.repeat(8 * 1024 - prefix.length - 4)}\r\n\r\n`);
+  const decoder = new MessageDecoder();
+  assert.deepEqual(decoder.push(header.subarray(0, -1)), []);
+  assert.deepEqual(decoder.push(Buffer.concat([header.subarray(-1), Buffer.from('{}')])), ['{}']);
+});
+
+test('MessageDecoder keeps the header limit separate from a split message body', () => {
+  const body = JSON.stringify({ text: 'x'.repeat(16 * 1024) });
+  const message = frame(body);
+  const decoder = new MessageDecoder();
+  assert.deepEqual(decoder.push(message.subarray(0, 10 * 1024)), []);
+  assert.deepEqual(decoder.push(message.subarray(10 * 1024)), [body]);
+  assert.deepEqual(new MessageDecoder().push(message), [body]);
+  assert.throws(() => new MessageDecoder().push(Buffer.from('Content-Length: 268435457\r\n\r\n')), /Content-Length too large/);
+});
+
 test('requests and notifications round-trip in both directions', async () => {
   const { a, b } = pair();
   const seen = [];

@@ -6,11 +6,13 @@ import com.intellij.openapi.util.Key
 import io.github.azzamaldulaylan.packageawy.host.ProcessStart
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
@@ -59,16 +61,31 @@ class ProcessConsolesTest {
     @Test
     fun `stopping from the console reports one non zero exit`() {
         val exits = LinkedBlockingQueue<Int?>()
+        val ready = CountDownLatch(1)
+        val output = StringBuilder()
         // Waits on stdin, so it runs until stopped.
-        dir.resolve("Wait.java").toFile().writeText("class Wait { public static void main(String[] a) throws Exception { System.in.read(); } }")
+        dir.resolve("Wait.java").toFile().writeText("class Wait { public static void main(String[] a) throws Exception { System.out.println(\"READY\"); System.out.flush(); System.in.read(); } }")
         val handler = ProcessConsoles.launch(request("Wait.java")) { exits.add(it) }
-        handler.startNotify()
-        Thread.sleep(500)
-        handler.destroyProcess()
-        val code = exits.poll(30, TimeUnit.SECONDS)
-        assertNotEquals(0, code)
-        Thread.sleep(200)
-        assertTrue(exits.isEmpty())
+        handler.addProcessListener(object : ProcessListener {
+            override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
+                synchronized(output) {
+                    output.append(event.text)
+                    if (output.contains("READY")) ready.countDown()
+                }
+            }
+        })
+        try {
+            handler.startNotify()
+            assertTrue(ready.await(30, TimeUnit.SECONDS), "The child did not become ready")
+            handler.destroyProcess()
+            val code = exits.poll(30, TimeUnit.SECONDS)
+            assertNotNull(code, "The exit callback did not run")
+            assertNotEquals(0, code)
+            assertTrue(handler.waitFor(30_000), "The process did not finish")
+            assertTrue(exits.isEmpty(), "The exit callback ran more than once")
+        } finally {
+            if (!handler.isProcessTerminated) handler.destroyProcess()
+        }
     }
 
     @Test

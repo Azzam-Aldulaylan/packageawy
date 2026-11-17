@@ -43,13 +43,16 @@ import io.github.azzamaldulaylan.packageawy.webview.ThemeVariables
 import io.github.azzamaldulaylan.packageawy.webview.WebviewPanel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JComponent
 import javax.swing.SwingConstants
 
 /** Owns the tool window's webview and the sidecar behind it for one project. */
 @Service(Service.Level.PROJECT)
 class PackageawyProject(private val project: Project) : Disposable {
-    private class Session(val sidecar: SidecarProcess, val handlers: ClientHandlers, val host: IdeHostServices, val scope: Disposable) {
+    private class Session(val sidecar: SidecarProcess, val handlers: ClientHandlers, val host: IdeHostServices, val scope: Disposable, lock: Any) {
+        val cleaned = AtomicBoolean(false)
+        val folders = SessionWorkspaceFolders(lock)
         @Volatile var ready = false
         @Volatile var stopping = false
         val pending = ArrayList<JsonElement>()
@@ -58,11 +61,10 @@ class PackageawyProject(private val project: Project) : Disposable {
     private val lock = Any()
     private val workspaceState = StatePaths.open(StatePaths.workspace(project.locationHash))
     private var panel: WebviewPanel? = null
-    private var session: Session? = null
-    private var starting = false
+    private val startup = SidecarStartup<Session>(lock, ::cleanUp)
+    private val session: Session? get() = startup.session
     private var restartPending = false
     private val earlyMessages = ArrayList<JsonElement>()
-    private var folders: List<WorkspaceFolder> = emptyList()
     /** A package.json to open once the sidecar is ready. */
     private var requestedManifest: String? = null
 
@@ -87,7 +89,7 @@ class PackageawyProject(private val project: Project) : Disposable {
     fun restart() {
         val current = synchronized(lock) {
             if (restartPending) return
-            if (starting) { notifyFailure(RestartHandshake.REFUSAL); return }
+            if (startup.starting) { notifyFailure(RestartHandshake.REFUSAL); return }
             val active = session
             if (active == null) { panel?.let(::loadPage); return }
             if (!active.ready) { notifyFailure(RestartHandshake.REFUSAL); return }
@@ -162,75 +164,83 @@ class PackageawyProject(private val project: Project) : Disposable {
     }
 
     private fun startSidecar() {
-        synchronized(lock) {
-            if (session != null || starting) return
-            starting = true
-        }
-        ApplicationManager.getApplication().executeOnPooledThread {
-            try {
-                launch()
-            } catch (e: Exception) {
-                LOG.warn("Could not start the Packageawy sidecar", e)
-                notifyFailure(e.message ?: "Could not start the Packageawy engine.")
-            } finally {
-                synchronized(lock) { starting = false }
-            }
-        }
+        val token = startup.begin() ?: return
+        ApplicationManager.getApplication().executeOnPooledThread { launch(token) }
     }
 
-    private fun launch() {
-        val script = bundledSidecar() ?: throw IllegalStateException("The bundled Packageawy engine is missing.")
-        val node = NodeLocator.find(project)
-            ?: throw IllegalStateException("Node.js was not found. Configure a Node.js interpreter or add node to PATH.")
-        NodeVersion.probe(node)?.let { version -> NodeVersion.unsupportedMessage(version)?.let { throw IllegalStateException(it) } }
-        val sidecar = SidecarProcess.start(node, script.toFile(), EnvironmentUtil.getEnvironmentMap(), LOG::warn) {
-            LOG.info("sidecar: $it")
-        }
-        val scope = Disposer.newDisposable(this, "Packageawy sidecar")
-        val host = IdeHostServices(project, scope) { message -> panel?.postMessage(message) }
-        val handlers = ClientHandlers(
-            sidecar.connection, host, workspaceState, GlobalState.getInstance().file,
-            AppExecutorUtil.getAppExecutorService(), LOG::warn,
-        )
-        handlers.register()
-        val current = Session(sidecar, handlers, host, scope)
-        synchronized(lock) {
-            current.pending.addAll(earlyMessages)
-            earlyMessages.clear()
-            session = current
-        }
-        sidecar.connection.onClose { onClosed(current) }
-        subscribe(current)
-        sidecar.connection.start()
+    private fun launch(token: Long) = startup.launch(
+        token = token,
+        spawn = {
+            val script = bundledSidecar() ?: throw IllegalStateException("The bundled Packageawy engine is missing.")
+            val node = NodeLocator.find(project)
+                ?: throw IllegalStateException("Node.js was not found. Configure a Node.js interpreter or add node to PATH.")
+            NodeVersion.probe(node)?.let { version -> NodeVersion.unsupportedMessage(version)?.let { throw IllegalStateException(it) } }
+            SidecarProcess.start(node, script.toFile(), EnvironmentUtil.getEnvironmentMap(), LOG::warn) {
+                LOG.info("sidecar: $it")
+            }
+        },
+        prepare = { sidecar ->
+            val scope = Disposer.newDisposable(this, "Packageawy sidecar")
+            var host: IdeHostServices? = null
+            try {
+                val services = IdeHostServices(project, scope) { message -> panel?.postMessage(message) }
+                host = services
+                val handlers = ClientHandlers(
+                    sidecar.connection, services, workspaceState, GlobalState.getInstance().file,
+                    AppExecutorUtil.getAppExecutorService(), LOG::warn,
+                )
+                Session(sidecar, handlers, services, scope, lock)
+            } catch (e: Exception) {
+                host?.endAllProgress()
+                ApplicationManager.getApplication().invokeLater { Disposer.dispose(scope) }
+                throw e
+            }
+        },
+        initialize = { current ->
+            val sidecar = current.sidecar
+            current.handlers.register()
+            synchronized(lock) {
+                if (session === current) {
+                    current.pending.addAll(earlyMessages)
+                    earlyMessages.clear()
+                }
+            }
+            sidecar.connection.onClose { onClosed(current) }
+            subscribe(current)
+            sidecar.connection.start()
 
-        folders = workspaceFolders()
-        val params = Initialize.params(
-            folders,
-            TrustedProjects.isProjectTrusted(project),
-            settingsSnapshot(PackageawySettings.getInstance().state),
-            workspaceState.snapshot(),
-            GlobalState.getInstance().file.snapshot(),
-        )
-        sidecar.connection.sendRequest("initialize", params).whenComplete { _, error ->
-            if (error != null) {
+            val folders = current.folders.initialize(workspaceFolders())
+            val params = Initialize.params(
+                folders,
+                TrustedProjects.isProjectTrusted(project),
+                settingsSnapshot(PackageawySettings.getInstance().state),
+                workspaceState.snapshot(),
+                GlobalState.getInstance().file.snapshot(),
+            )
+            sidecar.connection.sendRequest("initialize", params)
+        },
+        ready = { current ->
+            current.ready = true
+            val manifest = requestedManifest
+            requestedManifest = null
+            val queued = ArrayList(current.pending).also { current.pending.clear() }
+            // Before the page's queued `ready`, so the first load selects this project.
+            manifest?.let { current.sidecar.connection.sendNotification("dashboard/openManifest", mapOf("path" to it)) }
+            for (message in queued) {
+                current.sidecar.connection.sendNotification("webview/didReceiveMessage", mapOf("message" to message))
+            }
+        },
+        failure = { error, initializing ->
+            if (initializing) {
                 LOG.warn("initialize failed", error)
                 notifyFailure("The Packageawy engine did not start: ${error.message}")
-                return@whenComplete
+            } else {
+                LOG.warn("Could not start the Packageawy sidecar", error)
+                notifyFailure(error.message ?: "Could not start the Packageawy engine.")
             }
-            var manifest: String? = null
-            val queued = synchronized(lock) {
-                current.ready = true
-                manifest = requestedManifest
-                requestedManifest = null
-                ArrayList(current.pending).also { current.pending.clear() }
-            }
-            // Before the page's queued `ready`, so the first load selects this project.
-            manifest?.let { sidecar.connection.sendNotification("dashboard/openManifest", mapOf("path" to it)) }
-            for (message in queued) {
-                sidecar.connection.sendNotification("webview/didReceiveMessage", mapOf("message" to message))
-            }
-        }
-    }
+        },
+        stopProcess = { sidecar -> AppExecutorUtil.getAppExecutorService().execute { sidecar.close() } },
+    )
 
     private fun subscribe(current: Session) {
         val connection = current.sidecar.connection
@@ -255,25 +265,19 @@ class PackageawyProject(private val project: Project) : Disposable {
             override fun rootsChanged(event: ModuleRootEvent) {
                 ApplicationManager.getApplication().executeOnPooledThread {
                     val next = workspaceFolders()
-                    if (next == folders) return@executeOnPooledThread
-                    folders = next
-                    connection.sendNotification("workspace/didChangeFolders", mapOf("workspaceFolders" to WorkspaceFolder.toJson(next)))
+                    current.folders.update(next, { session === current }) { folders ->
+                        connection.sendNotification("workspace/didChangeFolders", mapOf("workspaceFolders" to WorkspaceFolder.toJson(folders)))
+                    }
                 }
             }
         })
     }
 
     private fun onClosed(closed: Session) {
-        val wasCurrent = synchronized(lock) {
-            if (session === closed) {
-                session = null
-                true
-            } else {
-                false
-            }
-        }
+        val wasCurrent = startup.release(closed)
+        val unexpected = !closed.stopping
         cleanUp(closed)
-        if (wasCurrent && !closed.stopping && !project.isDisposed) {
+        if (wasCurrent && unexpected && !project.isDisposed) {
             notifyFailure("The Packageawy engine stopped.")
         }
     }
@@ -281,18 +285,29 @@ class PackageawyProject(private val project: Project) : Disposable {
     private fun stopSidecar() {
         val current = synchronized(lock) {
             earlyMessages.clear()
-            session.also { session = null }
+            startup.invalidate()
         } ?: return
         current.stopping = true
-        current.sidecar.connection.sendNotification("webview/didDispose", emptyMap<String, Any>())
-        cleanUp(current)
-        AppExecutorUtil.getAppExecutorService().execute { current.sidecar.close() }
+        try {
+            current.sidecar.connection.sendNotification("webview/didDispose", emptyMap<String, Any>())
+        } finally {
+            cleanUp(current)
+        }
     }
 
     private fun cleanUp(closed: Session) {
-        closed.handlers.close()
-        closed.host.endAllProgress()
-        ApplicationManager.getApplication().invokeLater { Disposer.dispose(closed.scope) }
+        if (!closed.cleaned.compareAndSet(false, true)) return
+        closed.stopping = true
+        try {
+            closed.handlers.close()
+            closed.host.endAllProgress()
+        } finally {
+            try {
+                ApplicationManager.getApplication().invokeLater { Disposer.dispose(closed.scope) }
+            } finally {
+                AppExecutorUtil.getAppExecutorService().execute { closed.sidecar.close() }
+            }
+        }
     }
 
     private fun notifyFailure(message: String) {
