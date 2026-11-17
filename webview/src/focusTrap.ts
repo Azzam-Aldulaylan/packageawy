@@ -8,7 +8,7 @@
  */
 
 const TABBABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  'summary, a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
  * Where focus should go for one Tab press, or null to let the browser move it.
@@ -37,7 +37,8 @@ export function nextFocusTarget<T>(
 
 function tabbableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR)).filter(
-    (element) => element.tabIndex >= 0 && element.offsetParent !== null
+    (element) => (element.tabIndex >= 0 || element.tagName === 'SUMMARY') && element.offsetParent !== null &&
+      ![...container.querySelectorAll('details:not([open])')].some(details => details.contains(element) && !details.querySelector(':scope > summary')?.contains(element))
   );
 }
 

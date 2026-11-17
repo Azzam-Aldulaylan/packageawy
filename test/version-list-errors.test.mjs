@@ -438,7 +438,10 @@ test('a review reset clears the whole target request lifecycle and reruns the ef
 
 test('Refresh uses the dashboard refresh, separate from re-analysing the upgrade', () => {
   assert.match(app, /onRetryTargets: retryUpgradeTargets,\s*onRefreshDashboard: refresh,/);
-  assert.match(app, /const refresh = useCallback\(\(\) => \{\s*vscode\.postMessage\(\{ type: 'refresh' \}\);/);
+  const refresh = app.match(/const refresh = useCallback\(\(\) => \{([\s\S]*?)\n  \}, \[\]\);/)?.[1];
+  assert.ok(refresh);
+  assert.match(refresh, /vscode\.postMessage\(\{ type: 'refresh' \}\);/);
+  assert.doesNotMatch(refresh, /type: '(?:upgrade|bulk-upgrade)'/);
 });
 
 // ---------------------------------------------------------------------------

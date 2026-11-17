@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const app = readFileSync(new URL('../webview/src/App.tsx', import.meta.url), 'utf8');
 const modal = readFileSync(new URL('../webview/src/components/ManageDependencyModal.tsx', import.meta.url), 'utf8');
+const result = readFileSync(new URL('../webview/src/components/ChangeResult.tsx', import.meta.url), 'utf8');
 const panel = readFileSync(new URL('../src/host/dashboardPanel.ts', import.meta.url), 'utf8');
 
 test('upgrade result keeps Manage context, patches local facts, and preserves usage during enrichment', () => {
@@ -16,10 +17,11 @@ test('upgrade result keeps Manage context, patches local facts, and preserves us
 });
 
 test('Manage renders completion and section-level refreshing states without blanking usage', () => {
-  assert.match(modal, /Upgrade verified/);
-  assert.match(modal, /Install/);
-  assert.match(modal, /Applied state/);
-  assert.match(modal, /Verification/);
+  assert.match(modal, /UpgradeChangeResult/);
+  assert.match(result, /Upgrade done/);
+  assert.match(result, /Install/);
+  assert.match(result, /Applied state/);
+  assert.match(result, /Verification/);
   assert.match(modal, /Refreshing vulnerability data/);
   assert.match(modal, /Refreshing security and available-version information/);
   assert.match(modal, /activeTab === 'usage'[\s\S]*?<UsageReferencesPanel/);

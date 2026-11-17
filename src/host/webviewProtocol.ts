@@ -253,6 +253,7 @@ export type TransitiveRemediationApplyOutcome =
   | 'recovery-required';
 
 export interface TransitiveRemediationApplyResult {
+  checks?: ProjectCheckResult[];
   /** Exact retained transaction, offered only while its validated backup is available. */
   undoId?: string;
   outcome: TransitiveRemediationApplyOutcome;
@@ -453,7 +454,21 @@ export interface UpgradeResultChange {
  * checks that actually ran. Derived registry/security data is intentionally
  * absent and must be treated as refreshing until a new dashboard snapshot.
  */
+/** Command exit observations only. Output remains in the editor console. */
+export interface ProjectCheckResult {
+  id: string;
+  kind: 'install' | 'script';
+  scriptName?: string;
+  command: string;
+  status: 'passed' | 'failed' | 'not-run' | 'no-script' | 'unknown';
+  exitCode?: number;
+  reason?: string;
+  message?: string;
+  terminalAvailable?: boolean;
+}
+
 export interface UpgradeResultPresentation {
+  checks?: ProjectCheckResult[];
   /** Exact retained transaction, offered only while its validated backup is available. */
   undoId?: string;
   package: string;
@@ -461,7 +476,8 @@ export interface UpgradeResultPresentation {
   refreshId: string;
   install: 'succeeded' | 'failed';
   application: 'applied' | 'unconfirmed' | 'rolled-back';
-  /** Reinstall guidance for a completed rollback, supplied by the host. */
+  rollback?: 'not-needed' | 'succeeded' | 'conflict' | 'failed';
+  /** Rollback failure details or reinstall guidance, supplied by the host. */
   rollbackMessage?: string;
   verification: 'passed' | 'not-configured' | 'failed' | 'not-run';
   /** Script presence in the host-read, reviewed manifest, independent of selected checks. */
@@ -596,7 +612,19 @@ export interface SmartCleanupCompletionPresentation {
 /** Transaction phases a confirmed removal reports while it runs, in order. */
 export type RemoveProgressPhase = 'installing' | 'verifying' | 'refreshing';
 
+export interface RemovalFailureDetails {
+  /** Missing only for older hosts. Never infer a clean stop from an error code. */
+  completion?: import('./upgradeTransaction.js').TransactionCompletion;
+  analysisId: string;
+  packages: string[];
+  checks: ProjectCheckResult[];
+  install: string;
+  verification: string;
+  rollback: string;
+}
+
 export interface RemoveResultPresentation {
+  checks?: ProjectCheckResult[];
   /** Exact retained transaction, offered only while its validated backup is available. */
   undoId?: string;
   /** Correlates this terminal outcome to the exact host-issued removal review that was confirmed. */
@@ -720,6 +748,7 @@ export type DependencyTaskState = 'running' | 'still-running' | 'idle';
 
 export type HostToWebviewMessage =
   | { status: 'dependency-task'; state: DependencyTaskState }
+  | { status: 'check-terminal'; commandId: string; available: boolean }
   | { status: 'recovery-entries'; entries: Array<{ id: string; label: string }> }
   | { status: 'recovery'; recovery: RecoveryPresentation }
   | { status: 'smart-cleanup-backup'; analysisId: string; outcome: 'changed' | 'restored' | 'resolved' | 'unavailable' }
@@ -799,8 +828,8 @@ export type HostToWebviewMessage =
   | { status: 'remove-progress'; analysisId: string; phase: RemoveProgressPhase }
   /** A coordinated removal reached a stable kept/restored boundary. */
   | { status: 'remove-result'; result: RemoveResultPresentation }
-  /** A removal could not run. undoId instead identifies a failed read-only Undo review request. */
-  | { status: 'remove-error'; package: string; undoId?: string; error: ProtocolError }
+  /** A removal failed, or undoId identifies a failed read-only Undo review request. */
+  | { status: 'remove-error'; package: string; undoId?: string; error: ProtocolError; details?: RemovalFailureDetails }
   /** A transitive-vulnerability "Analyze remediation" request has started. See analyze-remediation below. */
   | { status: 'remediation-analyzing'; package: string }
   /** The host-owned remediation analysis result for `package`, ready for the Action cell to render. */
@@ -865,6 +894,7 @@ export type HostToWebviewMessage =
 /** Kept complete by the compiler, used only to distinguish malformed known events. */
 export const HOST_MESSAGE_STATUSES = {
   'dependency-task': true,
+  'check-terminal': true,
   'recovery-entries': true,
   'recovery': true,
   'smart-cleanup-backup': true,
@@ -953,6 +983,7 @@ export type WebviewToHostMessage =
   | { type: 'ready' }
   | { type: 'rendered'; generatedAt: string }
   | { type: 'refresh' }
+  | { type: 'reveal-check-terminal'; commandId: string }
   | { type: 'change-project' }
   /** On-demand, bounded published-version choices for one host-owned direct dependency. */
   | { type: 'load-upgrade-targets'; package: string; requestId: string }
@@ -1289,6 +1320,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     const analysisId = value['analysisId'];
     return hasOnlyKeys(value, ['type', 'analysisId']) && (analysisId === null || isNonEmptyString(analysisId));
   }
+  if (type === 'reveal-check-terminal') return hasOnlyKeys(value, ['type', 'commandId']) && isNonEmptyString(value['commandId']);
   if (type === 'configure-verification' || type === 'configure-advisory-check') {
     return hasOnlyKeys(value, ['type']);
   }
@@ -2084,7 +2116,7 @@ function isTransitiveRemediationApplyResult(value: unknown): value is Transitive
   const valid = (
     isRecord(value) &&
     hasOnlyKeys(value, [
-      'undoId',
+      'checks', 'undoId',
       'outcome',
       'message',
       'verification',
@@ -2097,6 +2129,7 @@ function isTransitiveRemediationApplyResult(value: unknown): value is Transitive
     TRANSITIVE_REMEDIATION_APPLY_OUTCOMES.has(value['outcome']) &&
     (value['undoId'] === undefined || (isRecoveryId(value['undoId']) && ['verified', 'partial', 'unverified'].includes(value['outcome']))) &&
     isNonEmptyString(value['message']) &&
+    isProjectChecks(value['checks']) &&
     typeof value['verification'] === 'string' &&
     TRANSITIVE_REMEDIATION_VERIFICATION_OUTCOMES.has(value['verification']) &&
     typeof value['rollback'] === 'string' &&
@@ -2321,12 +2354,44 @@ function isUpdateAdvisoryResults(value: unknown): value is UpdateAdvisoryResult[
   });
 }
 
+function isRemovalFailureDetails(value: unknown): boolean {
+  return isRecord(value) && hasOnlyKeys(value, ['analysisId', 'packages', 'checks', 'install', 'verification', 'rollback', 'completion']) &&
+    (value['completion'] === undefined || ['kept', 'rolled-back', 'not-started', 'incomplete', 'unknown'].includes(String(value['completion']))) &&
+    isNonEmptyString(value['analysisId']) && Array.isArray(value['packages']) && value['packages'].length > 0 && value['packages'].every(isNonEmptyString) &&
+    new Set(value['packages']).size === value['packages'].length && Array.isArray(value['checks']) && isProjectChecks(value['checks']) &&
+    ['succeeded', 'failed', 'cancelled', 'unknown', 'not-run'].includes(String(value['install'])) &&
+    ['passed', 'failed', 'cancelled', 'unknown', 'not-run'].includes(String(value['verification'])) &&
+    ['succeeded', 'failed', 'conflict', 'not-needed'].includes(String(value['rollback']));
+}
+
+function isProjectChecks(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  const ids = new Set<string>();
+  return value.every(check => {
+    if (!isRecord(check) || !hasOnlyKeys(check, ['id', 'kind', 'scriptName', 'command', 'status', 'exitCode', 'reason', 'message', 'terminalAvailable'])) return false;
+    if (!isNonEmptyString(check['id']) || ids.has(check['id'])) return false;
+    ids.add(check['id']);
+    const status = check['status'];
+    const exit = check['exitCode'];
+    return (check['kind'] === 'install' || (check['kind'] === 'script' && isNonEmptyString(check['scriptName']))) &&
+      (check['scriptName'] === undefined || isNonEmptyString(check['scriptName'])) && isNonEmptyString(check['command']) &&
+      ['passed', 'failed', 'not-run', 'no-script', 'unknown'].includes(String(status)) &&
+      (exit === undefined || (typeof exit === 'number' && Number.isSafeInteger(exit) && (status === 'passed' ? exit === 0 : status === 'failed' && exit !== 0))) &&
+      (status !== 'no-script' || check['kind'] === 'script') &&
+      (!['not-run', 'no-script'].includes(String(status)) || isNonEmptyString(check['reason'])) &&
+      (check['reason'] === undefined || isNonEmptyString(check['reason'])) && (check['message'] === undefined || isNonEmptyString(check['message'])) &&
+      (check['terminalAvailable'] === undefined || (check['terminalAvailable'] === true && status === 'failed'));
+  });
+}
+
 export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMessage {
   if (!isRecord(value)) return false;
 
   const status = value['status'];
   if (typeof status !== 'string') return false;
 
+  if (status === 'check-terminal') return hasOnlyKeys(value, ['status', 'commandId', 'available']) && isNonEmptyString(value['commandId']) && typeof value['available'] === 'boolean';
   if (status === 'dependency-task') return hasOnlyKeys(value, ['status', 'state']) &&
     ['running', 'still-running', 'idle'].includes(value['state'] as string);
   if (status === 'recovery-entries') return hasOnlyKeys(value, ['status', 'entries']) &&
@@ -2389,11 +2454,12 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'upgrade-result') {
     const result = value['result'];
-    if (!isRecord(result) || !hasOnlyKeys(result, ['undoId', 'package', 'refreshId', 'install', 'application', 'rollbackMessage', 'verification', 'projectScriptsPresent', 'changes', 'refreshingDerivedData'])) {
+    if (!isRecord(result) || !hasOnlyKeys(result, ['checks', 'undoId', 'package', 'refreshId', 'install', 'application', 'rollback', 'rollbackMessage', 'verification', 'projectScriptsPresent', 'changes', 'refreshingDerivedData'])) {
       return false;
     }
     const changes = result['changes'];
     return (
+      isProjectChecks(result['checks']) &&
       (result['undoId'] === undefined || (isRecoveryId(result['undoId']) && result['application'] !== 'rolled-back')) &&
       isNonEmptyString(result['package']) &&
       isNonEmptyString(result['refreshId']) &&
@@ -2414,7 +2480,11 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
         (change['declaredRange'] === null || typeof change['declaredRange'] === 'string') &&
         (change['classification'] === null || change['classification'] === 'prod' || change['classification'] === 'dev' || change['classification'] === 'optional')
       ) &&
-      (result['rollbackMessage'] === undefined || (result['application'] === 'rolled-back' && isNonEmptyString(result['rollbackMessage']))) &&
+      (result['rollback'] === undefined ||
+        (result['rollback'] === 'not-needed' && result['application'] !== 'rolled-back') ||
+        (result['rollback'] === 'succeeded' && result['application'] === 'rolled-back') ||
+        ((result['rollback'] === 'conflict' || result['rollback'] === 'failed') && result['application'] === 'unconfirmed' && isNonEmptyString(result['rollbackMessage']))) &&
+      (result['rollbackMessage'] === undefined || ((result['application'] === 'rolled-back' || result['rollback'] === 'conflict' || result['rollback'] === 'failed') && isNonEmptyString(result['rollbackMessage']))) &&
       typeof result['refreshingDerivedData'] === 'boolean'
     );
   }
@@ -2487,11 +2557,12 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'remove-result') {
     const result = value['result'];
-    if (!isRecord(result) || !hasOnlyKeys(result, ['undoId', 'analysisId', 'packages', 'outcome', 'verification', 'projectScriptsPresent', 'rollback', 'message', 'smartCleanup', 'restoreAvailable'])) {
+    if (!isRecord(result) || !hasOnlyKeys(result, ['checks', 'undoId', 'analysisId', 'packages', 'outcome', 'verification', 'projectScriptsPresent', 'rollback', 'message', 'smartCleanup', 'restoreAvailable'])) {
       return false;
     }
     const packages = result['packages'];
     return (
+      isProjectChecks(result['checks']) &&
       (result['undoId'] === undefined || (isRecoveryId(result['undoId']) && result['outcome'] !== 'rolled-back')) &&
       isNonEmptyString(result['analysisId']) &&
       Array.isArray(packages) &&
@@ -2513,10 +2584,11 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   }
   if (status === 'remove-error') {
     return (
-      hasOnlyKeys(value, ['status', 'package', 'undoId', 'error']) &&
+      hasOnlyKeys(value, ['status', 'package', 'undoId', 'error', 'details']) &&
       (value['undoId'] === undefined || isNonEmptyString(value['undoId'])) &&
       isNonEmptyString(value['package']) &&
-      isProtocolError(value['error'])
+      isProtocolError(value['error']) &&
+      (value['details'] === undefined || isRemovalFailureDetails(value['details']))
     );
   }
   if (status === 'remediation-analyzing') {

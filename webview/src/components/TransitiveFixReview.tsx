@@ -1,4 +1,5 @@
-import { UndoChangeButton } from './UndoChangeButton.js';
+import { AnalysisLoading } from './AnalysisLoading.js';
+import { ChangeResult } from './ChangeResult.js';
 import { useContext } from 'react';
 import { DependencyChangeContext } from './DependencyChangeStatus.js';
 import type { ReactElement } from 'react';
@@ -15,7 +16,6 @@ import {
   IconCheck,
   IconFile,
   IconHelpCircle,
-  IconInfo,
   IconListChecks,
   IconRefresh,
   IconRoute,
@@ -306,11 +306,9 @@ export function TransitiveFixReview({
   if (state.phase === 'applying') {
     return (
       <div className="transitive-review">
-        {change.task !== 'still-running' && !change.blocked ? <p className="transitive-review__progress" role="status" aria-live="polite">
-          <IconRefresh className="banner__icon--spin" />
-          {state.cancelRequested ? 'Stopping at a safe point, then restoring if needed…' : PROGRESS_LABEL[state.progress]}
-        </p> : null}
-        <DetailedPlan plan={plan} onOpenAdvisory={onOpenAdvisory} />
+        <AnalysisLoading headingId="transitive-running-heading" label={state.cancelRequested ? 'Stopping at a safe point, then restoring if needed…' : `Applying dependency fix for ${plan.rootPackage}...`}
+          paused={change.task === 'still-running' || change.blocked}
+          announcement={state.cancelRequested ? 'Stopping at a safe point, then restoring if needed…' : PROGRESS_LABEL[state.progress]} />
         <button type="button" className="button button--secondary" disabled={state.cancelRequested} onClick={() => onCancel(plan.analysisId)}>
           {state.cancelRequested ? 'Cancelling…' : 'Cancel fix'}
         </button>
@@ -320,48 +318,32 @@ export function TransitiveFixReview({
 
   if (state.phase === 'result') {
     const result = state.result;
+    const recovery = result.outcome === 'recovery-required';
     const success = result.outcome === 'verified';
-    const caution = result.outcome === 'partial';
-    const recheckAvailable = result.outcome !== 'recovery-required';
-    return (
-      <div className="transitive-review">
-        <StatusBanner
-          tone={result.outcome === 'recovery-required' ? 'error' : success ? 'info' : 'warning'}
-          icon={success ? <IconCheck /> : result.outcome === 'recovery-required' || caution ? <IconAlertTriangle /> : <IconInfo />}
-          {...(recheckAvailable
-            ? { action: { label: 'Check again', onClick: onAnalyze, disabled, icon: <IconRefresh /> } }
-            : {})}
-        >
-          <strong>{
-            result.outcome === 'verified' ? 'Transitive fix applied and verified'
-              : result.outcome === 'partial' ? 'Partial transitive fix applied'
-                : result.outcome === 'rolled-back' ? 'Changes rolled back'
-                  : result.outcome === 'cancelled' ? 'Fix cancelled'
-                    : result.outcome === 'unverified' ? 'Fix applied but not verified'
-                      : 'Recovery required'
-          }</strong>
-          <span>{result.message}</span>
-        </StatusBanner>
-        <dl className="transitive-review__result-facts">
-          <div><dt>Security verification</dt><dd>{result.verification.replaceAll('-', ' ')}</dd></div>
-          <div><dt>Rollback</dt><dd>{result.rollback.replaceAll('-', ' ')}</dd></div>
-        </dl>
-        {result.outcome === 'recovery-required' ? (
-          <section className="transitive-review__recovery">
-            <h5>Recover the installed dependency state</h5>
-            <p>
-              Review <code>{plan.files.manifestPath}</code> and <code>{plan.files.lockfilePath}</code>, then run{' '}
-              <code>{plan.packageManager === 'pnpm' ? 'pnpm install --frozen-lockfile' : 'npm ci'}</code> from the project root.
-              Refresh the dashboard after it succeeds.
-            </p>
-          </section>
-        ) : null}
-        <UndoChangeButton undoId={result.undoId} />
-        <AdvisoryList title="Resolved" advisories={result.resolvedAdvisories} tone="resolved" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
-        <AdvisoryList title="Still present" advisories={result.remainingAdvisories} tone="remaining" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
-        <AdvisoryList title="Introduced" advisories={result.introducedAdvisories} tone="introduced" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
-      </div>
-    );
+    const kept = ['verified', 'partial', 'unverified'].includes(result.outcome) && result.rollback === 'not-needed';
+    const restored = !recovery && (result.rollback === 'succeeded' || (result.outcome === 'cancelled' && result.rollback === 'not-needed'));
+    return <ChangeResult flow="Transitive fix" headingId="transitive-result-heading"
+      title={success ? 'Transitive fix done' : recovery ? 'Recovery required' : result.outcome === 'rolled-back' ? 'Changes rolled back' : result.outcome === 'cancelled' ? 'Fix cancelled' : 'Transitive fix done with a warning'}
+      summary={result.message} warning={!success} error={recovery} blocked={recovery}
+      packages={plan.changes.map(change => kept
+        ? { name: change.packageName, from: versionSet(change.fromVersions, 'not installed'), to: versionSet(change.toVersions, 'removed') }
+        : { name: change.packageName, ...(restored ? { from: versionSet(change.fromVersions, 'not installed') } : {}), status: restored ? result.rollback === 'succeeded' ? 'Restored' : 'Unchanged' : 'Current version unknown' })}
+      {...(result.checks === undefined ? {} : { checks: result.checks })} {...(result.undoId === undefined ? {} : { undoId: result.undoId })}
+      facts={[
+        { label: 'Security verification', value: result.verification.replaceAll('-', ' ') },
+        { label: 'Rollback', value: result.rollback.replaceAll('-', ' ') },
+        { label: 'Manifest', value: plan.files.manifestPath },
+        { label: 'Lockfile', value: plan.files.lockfilePath },
+      ]}>
+      {recovery ? <section className="transitive-review__recovery"><h5>Recover the installed dependency state</h5><p>
+        Review <code>{plan.files.manifestPath}</code> and <code>{plan.files.lockfilePath}</code>, then run{' '}
+        <code>{plan.packageManager === 'pnpm' ? 'pnpm install --frozen-lockfile' : 'npm ci'}</code> from the project root.
+        Refresh the dashboard after it succeeds.
+      </p></section> : null}
+      <AdvisoryList title="Resolved" advisories={result.resolvedAdvisories} tone="resolved" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
+      <AdvisoryList title="Still present" advisories={result.remainingAdvisories} tone="remaining" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
+      <AdvisoryList title="Introduced" advisories={result.introducedAdvisories} tone="introduced" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
+    </ChangeResult>;
   }
 
   if (plan.outcome === 'no-fix' || plan.outcome === 'unsafe' || plan.outcome === 'unavailable') {

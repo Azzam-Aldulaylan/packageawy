@@ -4,6 +4,7 @@ import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.openapi.util.Key
 import io.github.azzamaldulaylan.packageawy.host.ProcessStart
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -187,4 +188,25 @@ class ProcessConsolesTest {
         queue.single().invoke()
         assertTrue(tabs["test"] === replacement)
     }
+    @Test
+    fun `reveal checks the exact descriptor on the UI queue and never shows a replacement`() {
+        for (scenario in listOf("open", "closed", "replaced", "project disposed")) {
+            val tabs = ConcurrentHashMap<String, Any>()
+            val own = Any()
+            tabs["test"] = own
+            val queue = mutableListOf<() -> Unit>()
+            val shown = mutableListOf<Any>()
+            val completion = ConsoleCompletion(tabs, "test", queue::add, { scenario != "project disposed" }, { error("Reveal must not close") })
+            completion.shown(own)
+            completion.exited(7)
+            val result = completion.reveal(shown::add)
+            assertFalse(result.isDone)
+            if (scenario == "closed") completion.disposed()
+            if (scenario == "replaced") tabs["test"] = Any()
+            queue.single().invoke()
+            assertEquals(scenario == "open", result.get())
+            assertEquals(if (scenario == "open") listOf(own) else emptyList(), shown)
+        }
+    }
+
 }

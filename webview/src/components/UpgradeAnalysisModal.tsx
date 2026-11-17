@@ -1,3 +1,4 @@
+import { ChangeApplyingLoading, upgradeApplyingLabel, useApplyingFailureFocus } from './AnalysisLoading.js';
 import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { memo, useCallback, useContext, useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
@@ -212,6 +213,7 @@ export function UpgradeAnalysisModal({
   publisherLtsByPackage?: ReadonlyMap<string, string>;
 }): ReactElement {
   const consent = useUpgradeSecurityAcknowledgement(analysis);
+  const { reviewRef, loadingRef } = useApplyingFailureFocus(busy, error);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocused = useRef<Element | null>(null);
@@ -311,7 +313,7 @@ export function UpgradeAnalysisModal({
           </button>
         </header>
 
-        <div className="modal__body">
+        <div ref={reviewRef} className="modal__body">
           <UpgradeReviewAnnouncement analysis={analysis} advisoriesOff={advisoriesOff} />
           <DependencyChangeStatus />
           {analysis !== null && (freshness !== 'fresh' || hardStale) ? (
@@ -327,7 +329,7 @@ export function UpgradeAnalysisModal({
               </button>
             </p>
           ) : null}
-          <UpgradeAnalysisBody
+          {busy && analysis !== null ? <ChangeApplyingLoading loadingRef={loadingRef} label={upgradeApplyingLabel(coordinated && analysis.smartPlan !== null ? analysis.smartPlan.changes : analysis.changes)} /> : <UpgradeAnalysisBody
             error={error}
             onRetry={error === null ? undefined : onRefresh}
             retryDisabled={busy}
@@ -341,8 +343,8 @@ export function UpgradeAnalysisModal({
             publisherLtsByPackage={publisherLtsByPackage}
             advisoriesOff={advisoriesOff}
             onOpenArea={openReviewArea}
-          />
-          <UpgradeSecurityAcknowledgement consent={consent} />
+          />}
+          {!busy ? <UpgradeSecurityAcknowledgement consent={consent} /> : null}
         </div>
 
         <footer className="modal__footer">

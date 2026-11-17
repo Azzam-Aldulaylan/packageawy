@@ -43,6 +43,7 @@ export interface ManageRemovalHold<Row extends { name: string }> {
   result: RemoveResultPresentation | null;
   /** Set in the `error` phase: the removal failed after its package left the project. */
   error: { code: string; message: string } | null;
+  failureDetails?: import('../../src/host/webviewProtocol.js').RemovalFailureDetails;
 }
 
 export function beginManageRemoval<Row extends { name: string }>(
@@ -86,11 +87,13 @@ export function manageRemovalAfterResult<Row extends { name: string }>(
 export function manageRemovalAfterError<Row extends { name: string }>(
   hold: ManageRemovalHold<Row> | null,
   error: { code: string; message: string },
-  listedNames: readonly string[]
+  listedNames: readonly string[],
+  details?: import('../../src/host/webviewProtocol.js').RemovalFailureDetails
 ): ManageRemovalHold<Row> | null {
   if (hold === null || hold.phase !== 'running') return hold;
-  if (listedNames.includes(hold.row.name)) return null;
-  return { ...hold, phase: 'error', progress: null, error };
+  if (details === undefined && listedNames.includes(hold.row.name)) return null;
+  if (details !== undefined && details.analysisId !== hold.analysisId) return hold;
+  return { ...hold, phase: 'error', progress: null, error, ...(details === undefined ? {} : { failureDetails: details }) };
 }
 
 /** A snapshot from another project drops the hold. Same-project rescans keep it. */

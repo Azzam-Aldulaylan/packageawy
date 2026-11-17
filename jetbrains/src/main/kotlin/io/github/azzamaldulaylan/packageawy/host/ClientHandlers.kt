@@ -41,6 +41,7 @@ class ClientHandlers(
         private var requested = false
         private var successRequested = false
         private var completed = false
+        private var successful = false
         private var handle: AutoCloseable? = null
         private var disposalWatch: AutoCloseable? = null
         @Volatile var released = false
@@ -58,8 +59,9 @@ class ClientHandlers(
             }
         }
 
-        @Synchronized fun exited() {
+        @Synchronized fun exited(exitCode: Int?) {
             completed = true
+            successful = exitCode == 0
             if (released) handle = null
         }
 
@@ -71,7 +73,12 @@ class ClientHandlers(
             onRelease()
         }
 
+        @Synchronized fun reveal(): CompletableFuture<Boolean> =
+            if (released || requested) CompletableFuture.completedFuture(false)
+            else (handle as? SuccessfulProcess)?.reveal() ?: CompletableFuture.completedFuture(false)
+
         @Synchronized fun closeAfterSuccess() {
+            if (!successful) return
             successRequested = true
             disposalWatch?.close()
             disposalWatch = null
@@ -237,8 +244,8 @@ class ClientHandlers(
             successfulProcesses.remove(processId)?.release()
             try {
                 val stop = host.startProcess(start) { exitCode ->
-                    slot.exited()
-                    if (exitCode == 0 && !slot.cancelled && !slot.released) {
+                    slot.exited(exitCode)
+                    if (exitCode != null && !slot.cancelled && !slot.released) {
                         successfulProcesses[processId] = slot
                         // Disposal or settlement can race the exit notification.
                         if (slot.released) successfulProcesses.remove(processId, slot)
@@ -264,6 +271,14 @@ class ClientHandlers(
         notification("process/release") { p ->
             val id = p.processId()
             (successfulProcesses.remove(id) ?: processes[id])?.release()
+        }
+
+        connection.onRequest("process/reveal") { params, _ ->
+            try {
+                val id = Params.of(params).processId()
+                (successfulProcesses[id] ?: processes[id])?.reveal()?.thenApply { JsonPrimitive(it) }
+                    ?: CompletableFuture.completedFuture(JsonPrimitive(false))
+            } catch (e: Exception) { CompletableFuture.failedFuture(e) }
         }
 
         notification("process/succeeded") { p ->

@@ -187,7 +187,7 @@ test('security target stays labeled when the version list cannot be loaded', () 
   assert.match(html, /value="0\.21\.4" selected="">0\.21\.4 \(Security fix\)/);
 });
 
-test('Review upgrade from Overview restores the card target after a different picker choice', () => {
+test('Review upgrade from Overview restores and analyzes the card target after a different picker choice', () => {
   const events = [];
   let startReview;
   // Capture the real callback passed by the modal to its Overview panel.
@@ -210,12 +210,13 @@ test('Review upgrade from Overview restores the card target after a different pi
     upgrade: {
       targetVersion: '1.21.1', active: false, analysis: null,
       onTargetChange: target => events.push(['target', target]),
+      onAnalyze: target => events.push(['analyze', target]),
     },
     removal: { error: null, active: false, analysis: null },
     onChangeTab: tab => events.push(['tab', tab]), onClose: noop,
   });
   startReview('axios', '0.21.4');
-  assert.deepEqual(events, [['target', '0.21.4'], ['tab', 'upgrade']]);
+  assert.deepEqual(events, [['target', '0.21.4'], ['analyze', '0.21.4'], ['tab', 'upgrade']]);
 });
 
 for (const [target, reason] of [['3.0.0', 'update'], ['1.0.1', 'security-fix']]) {

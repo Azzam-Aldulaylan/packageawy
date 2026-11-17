@@ -132,9 +132,8 @@ test('the redesign leaves the Manage header, tabs, and target selector in place'
   assert.match(targetSelector, /<label[^>]+htmlFor="upgrade-target-version">\s*Upgrade to/);
 });
 
-test('compatibility summary is separated from checks and unsupported checks stay honest', () => {
+test('compatibility retains incomplete-check context and unsupported checks stay honest', () => {
   assert.match(cards, /upgrade-compatibility__summary/);
-  assert.match(styles, /\.upgrade-tab \.upgrade-compatibility__summary \{\s*margin-bottom: 0\.8rem;/);
   assert.match(cards, /label="Node requirements" value=\{runtimeValue\}/);
   assert.match(cards, /runtimeStatus === 'partial'/);
   assert.doesNotMatch(cards, /label="Source & config"/);

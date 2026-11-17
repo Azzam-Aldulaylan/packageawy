@@ -1,3 +1,5 @@
+import { ChangeResultContext } from './components/ChangeResult.js';
+import { ChangeResultModal, RemovalChangeResultModal } from './components/ChangeResultModal.js';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { createSnapshotRenderTracker } from './snapshotRender.js';
@@ -409,8 +411,12 @@ export function App(): ReactElement {
   // standalone UpgradeAnalysisModal). Same split removeOrigin already uses
   // for removal below.
   const [upgradeOrigin, setUpgradeOrigin] = useState<'dashboard' | 'manage-dependency' | null>(null);
+  const pendingStandaloneRemoval = useRef<string | null>(null);
+  const [standaloneRemoval, setStandaloneRemoval] = useState<import('./components/ChangeResultModal.js').RemovalChangeResultOutcome | null>(null);
+  const [checkTerminals, setCheckTerminals] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [upgradeResult, setUpgradeResult] = useState<UpgradeResultPresentation | null>(null);
   const upgradeResultRef = useRef<UpgradeResultPresentation | null>(null);
+  const upgradeResultProjectKeyRef = useRef<string | null>(null);
   const [upgradeEnrichment, setUpgradeEnrichment] = useState<UpgradeEnrichmentUiState | null>(null);
   const upgradeEnrichmentRef = useRef<UpgradeEnrichmentUiState | null>(null);
   const pendingEnrichmentDashboardMessageRef = useRef<HostToWebviewMessage | null>(null);
@@ -538,10 +544,12 @@ export function App(): ReactElement {
             // result immediately rather than presenting its old success again.
             if (upgradeResultRef.current?.undoId === incoming.analysisId) {
               upgradeResultRef.current = null;
+              upgradeResultProjectKeyRef.current = null;
               setUpgradeResult(null);
               upgradeEnrichmentRef.current = null;
               setUpgradeEnrichment(null);
             }
+            setStandaloneRemoval(previous => previous !== null && 'result' in previous && previous.result.undoId === incoming.analysisId ? null : previous);
             const removal = manageRemovalRef.current;
             if (removal?.phase === 'result' && removal.result?.undoId === incoming.analysisId) setManageRemoval(null);
             setRemediationByPackage(previous => new Map([...previous].filter(([, state]) =>
@@ -629,7 +637,13 @@ export function App(): ReactElement {
           return;
         }
 
+        case 'check-terminal': {
+          setCheckTerminals(previous => new Map(previous).set(incoming.commandId, incoming.available));
+          return;
+        }
+
         case 'upgrade-result': {
+          upgradeResultProjectKeyRef.current = dashboardDataRef.current === null ? null : smartCleanupProjectKey(dashboardDataRef.current);
           const enrichment = beginUpgradeEnrichment(incoming.result);
           upgradeEnrichmentRef.current = enrichment;
           setUpgradeEnrichment(enrichment);
@@ -795,6 +809,10 @@ export function App(): ReactElement {
             }
             return;
           }
+          if (incoming.details !== undefined && pendingStandaloneRemoval.current === incoming.details.analysisId) {
+            setStandaloneRemoval({ error: incoming.error, details: incoming.details });
+            pendingStandaloneRemoval.current = null;
+          }
           if (incoming.error.code !== 'OUTCOME_UNKNOWN' && manageRemovalRef.current?.phase === 'running') {
             // Show the failure in the Manage dialog that started the removal,
             // even if a rescan during the run reset the review state or the
@@ -802,7 +820,8 @@ export function App(): ReactElement {
             setManageRemoval(manageRemovalAfterError(
               manageRemovalRef.current,
               incoming.error,
-              dashboardDataRef.current?.rows.map((candidate) => candidate.name) ?? []
+              dashboardDataRef.current?.rows.map((candidate) => candidate.name) ?? [],
+              incoming.details
             ));
             removeOriginRef.current = 'manage-dependency';
             setRemoveOrigin('manage-dependency');
@@ -903,6 +922,20 @@ export function App(): ReactElement {
         }
 
         case 'remove-result': {
+          if (pendingStandaloneRemoval.current === incoming.result.analysisId) {
+            setStandaloneRemoval({ result: incoming.result });
+            pendingStandaloneRemoval.current = null;
+            activeRemoveRef.current = null;
+            removeOriginRef.current = null;
+            setActiveRemove(null);
+            setActiveRemoveChanges([]);
+            setRemoveMatchTags(new Map());
+            setRemoveAnalysis(null);
+            setRemoveBusy(false);
+            setRemoveError(null);
+            setRemoveOrigin(null);
+            return;
+          }
           if (manageRemovalRef.current?.analysisId === incoming.result.analysisId) {
             setManageRemoval(manageRemovalAfterResult(manageRemovalRef.current, incoming.result));
             activeRemoveRef.current = null;
@@ -1354,6 +1387,22 @@ export function App(): ReactElement {
             // the project changed. Otherwise a later snapshot that lists the
             // package again (files reset outside VS Code) would reopen it.
             const previousData = dashboardDataRef.current;
+            const projectChanged = previousData !== null && smartCleanupProjectKey(previousData) !== smartCleanupProjectKey(incoming.data);
+            if (projectChanged) {
+              pendingStandaloneRemoval.current = null;
+              setStandaloneRemoval(null);
+              setRemediationByPackage(new Map());
+              setCheckTerminals(new Map());
+            }
+            if (projectChanged || (upgradeResultProjectKeyRef.current !== null && upgradeResultProjectKeyRef.current !== smartCleanupProjectKey(incoming.data))) {
+              upgradeResultRef.current = null;
+              upgradeResultProjectKeyRef.current = null;
+              setUpgradeResult(null);
+              upgradeEnrichmentRef.current = null;
+              setUpgradeEnrichment(null);
+              pendingEnrichmentDashboardMessageRef.current = null;
+              setUpgradeOrigin(null);
+            }
             const rememberedManageRow = manageRowRef.current;
             const removalHold = manageRemovalAfterSnapshot(manageRemovalRef.current, smartCleanupProjectKey(incoming.data));
             if (removalHold !== manageRemovalRef.current) setManageRemoval(removalHold);
@@ -1405,6 +1454,7 @@ export function App(): ReactElement {
               // targeted result instead of calling it successful. This snapshot
               // now owns the UI and its availability flags remain honest.
               upgradeResultRef.current = null;
+              upgradeResultProjectKeyRef.current = null;
               setUpgradeResult(null);
               upgradeEnrichmentRef.current = null;
               setUpgradeEnrichment(null);
@@ -1425,6 +1475,7 @@ export function App(): ReactElement {
               // completion card. Time-only refreshes do not emit stale, so the
               // result survives its enrichment replacement.
               upgradeResultRef.current = null;
+              upgradeResultProjectKeyRef.current = null;
               setUpgradeResult(null);
               upgradeEnrichmentRef.current = null;
               setUpgradeEnrichment(null);
@@ -1443,7 +1494,7 @@ export function App(): ReactElement {
             setHardStaleAnalysisId(null);
             setConfirmBusy(false);
             setUpgradeError(null);
-            setUpgradeOrigin(null);
+            if (upgradeResultRef.current === null) setUpgradeOrigin(null);
             // Reset the whole request lifecycle together, then ask the targets
             // effect to run again. A repeated snapshot with the same generatedAt
             // would not rerun it on its own, leaving the list idle with Retry blocked.
@@ -1540,7 +1591,17 @@ export function App(): ReactElement {
   }, [message, trackSnapshotRender]);
 
   const refresh = useCallback(() => {
+    setRemediationByPackage(previous => new Map([...previous].filter(([, state]) => state.phase !== 'result')));
     vscode.postMessage({ type: 'refresh' });
+  }, []);
+
+  const dismissRemediationResult = useCallback((packageName: string) => {
+    setRemediationByPackage(previous => {
+      if (previous.get(packageName)?.phase !== 'result') return previous;
+      const next = new Map(previous);
+      next.delete(packageName);
+      return next;
+    });
   }, []);
 
   const requestRetryUpgradeEnrichment = useCallback(() => {
@@ -1559,7 +1620,17 @@ export function App(): ReactElement {
     vscode.postMessage({ type: 'retry-upgrade-enrichment', refreshId: current.refreshId });
   }, []);
 
+  const closeStandaloneRemoval = useCallback(() => setStandaloneRemoval(null), []);
+  const closeStandaloneResult = useCallback(() => {
+    upgradeResultRef.current = null;
+    upgradeResultProjectKeyRef.current = null;
+    setUpgradeResult(null);
+    setUpgradeOrigin(null);
+  }, []);
+
   const changeProject = useCallback(() => {
+    pendingStandaloneRemoval.current = null;
+    setStandaloneRemoval(null);
     vscode.postMessage({ type: 'change-project' });
   }, []);
 
@@ -1578,6 +1649,7 @@ export function App(): ReactElement {
     activeUpgradeRef.current = packageName;
     analysisIdRef.current = null;
     upgradeResultRef.current = null;
+    upgradeResultProjectKeyRef.current = null;
     setUpgradeResult(null);
     upgradeEnrichmentRef.current = null;
     setUpgradeEnrichment(null);
@@ -1604,6 +1676,7 @@ export function App(): ReactElement {
     activeUpgradeRef.current = first.packageName;
     analysisIdRef.current = null;
     upgradeResultRef.current = null;
+    upgradeResultProjectKeyRef.current = null;
     setUpgradeResult(null);
     upgradeEnrichmentRef.current = null;
     setUpgradeEnrichment(null);
@@ -1729,6 +1802,7 @@ export function App(): ReactElement {
       setRemoveError(null);
       setRemoveOrigin(origin);
       removeOriginRef.current = origin;
+      setStandaloneRemoval(null);
       vscode.postMessage({ type: 'bulk-remove', changes: packageNames.map((name) => ({ package: name })) });
     },
     []
@@ -1748,6 +1822,7 @@ export function App(): ReactElement {
     if (heldRow !== undefined && dashboard !== null) {
       setManageRemoval(beginManageRemoval(heldRow, smartCleanupProjectKey(dashboard), removeAnalysis.analysisId));
     }
+    if (heldRow === undefined) pendingStandaloneRemoval.current = removeAnalysis.analysisId;
     vscode.postMessage({
       type: 'confirm-remove',
       analysisId: removeAnalysis.analysisId,
@@ -1920,6 +1995,7 @@ export function App(): ReactElement {
   const openManage = useCallback((packageName: string) => {
     if (upgradeResultRef.current?.package !== packageName) {
       upgradeResultRef.current = null;
+      upgradeResultProjectKeyRef.current = null;
       setUpgradeResult(null);
       upgradeEnrichmentRef.current = null;
       setUpgradeEnrichment(null);
@@ -2008,6 +2084,7 @@ export function App(): ReactElement {
   // a real file-mutating install/removal or the removal-impact scan is
   // actually running.
   const closeManage = useCallback(() => {
+    if (manageRowRef.current !== null) dismissRemediationResult(manageRowRef.current);
     // Closing dismisses even a failed request whose active state was already cleared.
     for (const owner of upgradeRequestOwnersRef.current.values()) {
       if (owner.origin === 'manage-dependency') owner.dismissed = true;
@@ -2020,6 +2097,7 @@ export function App(): ReactElement {
     setManageRow(null);
     setManageRemoval(null);
     upgradeResultRef.current = null;
+    upgradeResultProjectKeyRef.current = null;
     setUpgradeResult(null);
     upgradeEnrichmentRef.current = null;
     setUpgradeEnrichment(null);
@@ -2067,6 +2145,7 @@ export function App(): ReactElement {
       setSmartCleanupOpen(true);
     }
   }, [
+    dismissRemediationResult,
     removalImpact,
     requestCancelRemovalImpact,
     requestAnalyzeRemovalImpact,
@@ -2580,6 +2659,7 @@ export function App(): ReactElement {
 
   return (
     <DependencyChangeContext.Provider value={{ task: dependencyTask, blocked: recoveryBlocked, protocolMismatch, message: recovery?.message ?? RECOVERY_MESSAGES.blocked, retryDiscovery: recovery?.state === 'discovery-error', openRecovery: () => { if (recovery?.state !== 'discovery-error') setRecoveryOpen(true); vscode.postMessage({ type: 'inspect-recovery' }); } }}>
+    <ChangeResultContext.Provider value={{ analyze: refresh, analyzeDisabled: actionsDisabled, reveal: commandId => vscode.postMessage({ type: 'reveal-check-terminal', commandId }), terminals: checkTerminals }}>
     <UndoBackupContext.Provider value={{ entries: cleanupBackups, disabled: actionsDisabled, openingId: openingUndo, error: undoError, review: restoreSmartCleanup }}>
     <UpdateAdvisoryContext.Provider value={data?.availability.advisories === 'off' ? [] : data?.updateAdvisories ?? []}>
     <VerificationOptInContext.Provider value={verificationOptInStore}>
@@ -2778,6 +2858,7 @@ export function App(): ReactElement {
                 row={row}
                 allRows={data.rows}
                 remediation={remediationByPackage.get(row.name)}
+                onDismissRemediation={() => dismissRemediationResult(row.name)}
                 removalImpact={removalImpact}
                 usage={usageByPackage.get(row.name)}
                 hygieneFindings={allHygieneFindings}
@@ -2844,7 +2925,7 @@ export function App(): ReactElement {
                     : heldRemoval.phase === 'result' && heldRemoval.result !== null
                       ? { phase: 'result', result: heldRemoval.result }
                       : heldRemoval.phase === 'error' && heldRemoval.error !== null
-                        ? { phase: 'error', error: heldRemoval.error }
+                        ? { phase: 'error', error: heldRemoval.error, ...(heldRemoval.failureDetails === undefined ? {} : { details: heldRemoval.failureDetails }) }
                         : { phase: 'running', progress: heldRemoval.progress }
                 }
                 onAnalyzeRemediation={requestAnalyzeRemediation}
@@ -2902,6 +2983,10 @@ export function App(): ReactElement {
         />
       ) : null}
 
+      {standaloneRemoval !== null ? <RemovalChangeResultModal outcome={standaloneRemoval} onClose={closeStandaloneRemoval} /> : null}
+
+      {upgradeResult !== null && upgradeOrigin !== 'manage-dependency' ? <ChangeResultModal result={upgradeResult} enrichment={upgradeEnrichment} onClose={closeStandaloneResult} /> : null}
+
       {activeUpgrade !== null && activeTarget !== null && upgradeOrigin !== 'manage-dependency' ? (
         <UpgradeAnalysisModal
           packageName={activeUpgrade}
@@ -2944,6 +3029,7 @@ export function App(): ReactElement {
     </VerificationOptInContext.Provider>
     </UpdateAdvisoryContext.Provider>
     </UndoBackupContext.Provider>
+    </ChangeResultContext.Provider>
     </DependencyChangeContext.Provider>
   );
 }

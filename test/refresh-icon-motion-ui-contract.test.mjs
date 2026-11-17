@@ -45,3 +45,12 @@ test('refresh motion is disabled when reduced motion is requested', () => {
   assert.match(reducedMotionBlock, /\.stale-status__icon,/);
   assert.match(reducedMotionBlock, /\.removal-review__loading-icon,/);
 });
+
+test('the reduced-motion override for banner spinners comes after their animation rule', () => {
+  // Same specificity, so the later rule wins: an override placed before the
+  // animation rule would leave the spinner moving for reduced-motion users.
+  const animationRule = styles.search(/\n\.banner__icon--spin\s*{\s*animation:\s*dashboard-refresh-spin/);
+  const override = styles.lastIndexOf('@media (prefers-reduced-motion: reduce) {\n  .banner__icon--spin {\n    animation: none;');
+  assert.notEqual(animationRule, -1);
+  assert.ok(override > animationRule, 'a reduced-motion override must follow the banner spinner animation');
+});

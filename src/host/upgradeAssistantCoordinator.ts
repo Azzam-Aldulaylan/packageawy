@@ -1,3 +1,4 @@
+import { projectChecks, snapshotProjectScripts } from './projectChecks.js';
 import { describeRejection } from '../core/upgrade/validate.js';
 import { isExpectedFsError } from './expectedFsError.js';
 /**
@@ -926,6 +927,11 @@ export class UpgradeAssistantCoordinator {
     const answer = failedRequestSettlement(message, this.requestTarget(message),
       { code: CHANGES_PAUSED_CODE, message: this.mutationLocks.restartRequired ? RECOVERY_MESSAGES.restartRequired : CHANGES_PAUSED_TEXT });
     if (answer !== undefined) this.options.sink.postMessage(answer);
+  }
+
+  async revealCheckTerminal(commandId: string): Promise<void> {
+    const available = await this.session.revealCheckTerminal(commandId);
+    if (!this.options.isDisposed()) this.options.sink.postMessage({ status: 'check-terminal', commandId, available });
   }
 
   /**
@@ -2960,6 +2966,7 @@ export class UpgradeAssistantCoordinator {
         manifestText: disk.manifestText,
         request: optIn,
       });
+      const checkSnapshot = snapshotProjectScripts(disk.manifestText, this.options.platform.getSetting<unknown[]>('upgrade.verificationScripts', []), stored.verificationScripts);
 
       const prepared = await this.session.prepareLockfileReconciliation({
         toolchain,
@@ -3060,9 +3067,9 @@ export class UpgradeAssistantCoordinator {
             });
             const outcome = await prepared.execute();
             return outcome.ok
-              ? { status: 'succeeded' as const }
-              : outcome.status === 'unknown' ? { status: 'unknown' as const, message: outcome.message }
-                : { status: 'failed' as const, code: outcome.code, message: outcome.message };
+              ? { status: 'succeeded' as const, ...(outcome.command === undefined ? {} : { commands: [outcome.command], exitCode: outcome.command.exitCode }) }
+              : outcome.status === 'unknown' ? { status: 'unknown' as const, message: outcome.message, ...(outcome.command === undefined ? {} : { commands: [outcome.command] }) }
+                : { status: 'failed' as const, code: outcome.code, message: outcome.message, ...(outcome.command === undefined ? {} : { commands: [outcome.command], exitCode: outcome.command.exitCode }) };
           },
         },
         verifier: {
@@ -3073,7 +3080,7 @@ export class UpgradeAssistantCoordinator {
               analysisId: stored.id,
               phase: 'verifying-security',
             });
-            const checks: Array<{ id: string; status: 'passed' | 'failed' | 'cancelled'; message?: string }> = [];
+            const checks: import('./upgradeTransaction.js').VerificationCheckResult[] = [];
             try {
               const applied = await this.projectLoader(selected, true);
               if (
@@ -3256,6 +3263,7 @@ export class UpgradeAssistantCoordinator {
         : stored.presentation;
       const result: TransitiveRemediationApplyResult = {
         ...(transaction.completion === 'kept' && handle.journal !== undefined ? { undoId: handle.journal.owner.transactionId } : {}),
+        checks: projectChecks(transaction, checkSnapshot, disk.packageManager),
         outcome,
         message:
           outcome === 'verified'
@@ -3460,6 +3468,7 @@ export class UpgradeAssistantCoordinator {
         manifestText: disk.manifestText,
         request: optIn,
       });
+      const checkSnapshot = snapshotProjectScripts(disk.manifestText, this.options.platform.getSetting<unknown[]>('upgrade.verificationScripts', []), stored.verificationScripts);
 
       const source = controller.upgradeSource;
       const manifestPath = path.join(controller.root, 'package.json');
@@ -3646,6 +3655,12 @@ export class UpgradeAssistantCoordinator {
             : transaction.verification.status === 'not-run' && transaction.verification.reason === 'not-configured'
               ? 'not-configured'
               : 'not-run';
+      const presentation = describeUpgradeTransactionOutcome(
+        stored.eligibility.packageName,
+        source.packageManager,
+        transaction,
+        structurallyCurrent && appliedState.confirmed
+      );
 
       if (transaction.install.status === 'succeeded' || application === 'rolled-back') {
         this.options.sink.postMessage({
@@ -3654,13 +3669,16 @@ export class UpgradeAssistantCoordinator {
             package: stored.eligibility.packageName,
             ...(transaction.completion === 'kept' && handle.journal !== undefined ? { undoId: handle.journal.owner.transactionId } : {}),
             refreshId,
+            checks: projectChecks(transaction, checkSnapshot, source.packageManager),
             install: transaction.install.status === 'succeeded' ? 'succeeded' : 'failed',
             application,
+            rollback: transaction.rollback.status,
             verification,
             projectScriptsPresent: hasProjectScripts(stored.snapshot.manifestText),
             changes: appliedState.changes,
             refreshingDerivedData: usedTargetedRefresh,
-            ...(application === 'rolled-back' ? { rollbackMessage: reinstallResultNote(source.packageManager, reconciliation.reinstall) } : {}),
+            ...(application === 'rolled-back' ? { rollbackMessage: reinstallResultNote(source.packageManager, reconciliation.reinstall) }
+              : (transaction.rollback.status === 'conflict' || transaction.rollback.status === 'failed') && presentation.kind === 'error' ? { rollbackMessage: presentation.error.message } : {}),
           },
         });
       }
@@ -3681,12 +3699,6 @@ export class UpgradeAssistantCoordinator {
       });
       if (this.options.isDisposed()) return;
 
-      const presentation = describeUpgradeTransactionOutcome(
-        stored.eligibility.packageName,
-        source.packageManager,
-        transaction,
-        structurallyCurrent && appliedState.confirmed
-      );
       if (presentation.kind === 'rolled-back') {
         presentation.message += ` ${reinstallResultNote(source.packageManager, reconciliation.reinstall)}`;
       }
@@ -3836,6 +3848,7 @@ export class UpgradeAssistantCoordinator {
         manifestText: disk.manifestText,
         request: optIn,
       });
+      const checkSnapshot = snapshotProjectScripts(disk.manifestText, this.options.platform.getSetting<unknown[]>('upgrade.verificationScripts', []), stored.verificationScripts);
 
       const source = controller.upgradeSource;
       const manifestPath = path.join(controller.root, 'package.json');
@@ -3939,9 +3952,9 @@ export class UpgradeAssistantCoordinator {
             this.options.sink.postMessage({ status: 'remove-progress', analysisId: stored.id, phase: 'installing' });
             const outcome = await prepared.execute();
             return outcome.ok
-              ? { status: 'succeeded' as const }
-              : outcome.status === 'unknown' ? { status: 'unknown' as const, message: outcome.message }
-                : { status: 'failed' as const, code: outcome.code, message: outcome.message };
+              ? { status: 'succeeded' as const, ...(outcome.command === undefined ? {} : { commands: [outcome.command], exitCode: outcome.command.exitCode }) }
+              : outcome.status === 'unknown' ? { status: 'unknown' as const, message: outcome.message, ...(outcome.command === undefined ? {} : { commands: [outcome.command] }) }
+                : { status: 'failed' as const, code: outcome.code, message: outcome.message, ...(outcome.command === undefined ? {} : { commands: [outcome.command], exitCode: outcome.command.exitCode }) };
           },
         },
         verifier: {
@@ -4136,6 +4149,7 @@ export class UpgradeAssistantCoordinator {
           status: 'remove-result',
           result: {
             analysisId: stored.id,
+            checks: projectChecks(transaction, checkSnapshot, source.packageManager),
             packages: removedPackages,
             outcome: 'verified',
             verification,
@@ -4153,6 +4167,12 @@ export class UpgradeAssistantCoordinator {
           status: 'remove-error',
           package: stored.reservationKey,
           error: presentation.error,
+          details: {
+            completion: transaction.completion,
+            analysisId: stored.id, packages: removedPackages,
+            checks: projectChecks(transaction, checkSnapshot, source.packageManager),
+            install: transaction.install.status, verification: transaction.verification.status, rollback: transaction.rollback.status,
+          },
         });
       } else {
         if (presentation.kind === 'unverified' || presentation.kind === 'rolled-back') {
@@ -4160,6 +4180,7 @@ export class UpgradeAssistantCoordinator {
             status: 'remove-result',
             result: {
               analysisId: stored.id,
+              checks: projectChecks(transaction, checkSnapshot, source.packageManager),
               packages: removedPackages,
               outcome: presentation.kind,
               verification,

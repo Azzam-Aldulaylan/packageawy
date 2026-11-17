@@ -5,7 +5,7 @@ import type { ReactElement } from 'react';
 import type { RemoveAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
 import { trapFocus } from '../focusTrap.js';
 import { IconAlertTriangle, IconX } from '../icons.js';
-import { LoadingRing } from './DependencyLoadingState.js';
+import { AnalysisLoading, ChangeApplyingLoading } from './AnalysisLoading.js';
 import { FilesSection } from './FilesSection.js';
 import { OutcomeStatus } from './OutcomeStatus.js';
 import { StatusBadge } from './StatusBadge.js';
@@ -40,13 +40,8 @@ export function RemoveAnalysisBody({
 
   if (analysis === null) {
     return (
-      <div className="analysis-loading" role="status" aria-live="polite">
-        <LoadingRing progress={undefined} />
-        <p className="analysis-loading__title">
-          {displayedPackages.length > 1 ? `Checking ${displayedPackages.length} dependencies` : `Checking ${displayedPackages[0] ?? ''}`}
-        </p>
-        <p className="analysis-loading__detail">Looking for anything else that still depends on them…</p>
-      </div>
+      <AnalysisLoading label={displayedPackages.length > 1 ? `Checking ${displayedPackages.length} dependencies` : `Checking ${displayedPackages[0] ?? ''}`}
+        detail="Looking for anything else that still depends on them…" />
     );
   }
 
@@ -201,12 +196,12 @@ export function RemoveAnalysisModal({
 
         <div className="modal__body">
           <DependencyChangeStatus />
-          <RemoveAnalysisBody
+          {busy ? <ChangeApplyingLoading label={packages.length === 1 ? `Removing ${packages[0]}...` : `Removing ${packages.length} dependencies...`} /> : <RemoveAnalysisBody
             packages={packages}
             analysis={analysis}
             matchTags={matchTags}
             onConfigureVerification={onConfigureVerification}
-          />
+          />}
         </div>
 
         <footer className="modal__footer">

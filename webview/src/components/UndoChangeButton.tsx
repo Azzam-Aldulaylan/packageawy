@@ -13,14 +13,14 @@ export const UndoBackupContext = createContext<{
   review(id: string): void;
 }>({ entries: [], disabled: true, review: () => {} });
 
-export function UndoChangeButton({ undoId }: { undoId: string | undefined }): ReactElement | null {
+export function UndoChangeButton({ undoId, disabled = false, describedBy }: { undoId: string | undefined; disabled?: boolean; describedBy?: string }): ReactElement | null {
   const undo = useContext(UndoBackupContext);
   const entry = undo.entries.find(candidate => candidate.analysisId === undoId);
   if (entry === undefined) return null;
   const opening = undo.openingId === entry.analysisId;
   return <>
     <button type="button" className="button button--secondary" data-undo-id={entry.analysisId} data-undo-location="result"
-      disabled={undo.disabled} aria-busy={opening} onClick={() => undo.review(entry.analysisId)}>{undoLabel(entry.operation)}</button>
+      aria-describedby={describedBy} disabled={undo.disabled || disabled || undo.openingId != null} aria-busy={opening} onClick={() => undo.review(entry.analysisId)}>{undoLabel(entry.operation)}</button>
     <UndoChangeFeedback undoId={entry.analysisId} />
   </>;
 }

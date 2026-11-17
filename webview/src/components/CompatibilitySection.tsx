@@ -72,7 +72,7 @@ export function CompatibilityFindings({
   );
 
   return (
-    <>
+    <div className="compatibility-findings">
       {resolverNeedsReview ? resolverItem : null}
       {compatibility.status === 'warning' && dependencyWarningCount(compatibility) === 0 ? (
         <OutcomeStatus
@@ -101,7 +101,7 @@ export function CompatibilityFindings({
           Show {hiddenCount} more finding{hiddenCount === 1 ? '' : 's'}
         </button>
       ) : null}
-    </>
+    </div>
   );
 }
 

@@ -26,6 +26,7 @@ import { buildUpgradeReviewSignals, UpgradeAnalysisSections, UpgradeReviewDisclo
 import type { UpgradeReviewArea, UpgradeReviewSignal, UpgradeReviewTone as ReviewTone } from './UpgradeAnalysisSections.js';
 import { ProjectCompatibilitySection } from './ProjectCompatibilitySection.js';
 import { UpgradeDecisionBrief } from './UpgradeReviewSummary.js';
+import { ChangeApplyingLoading, upgradeApplyingLabel, useApplyingFailureFocus } from './AnalysisLoading.js';
 import { UpgradeReviewAnnouncement } from './UpgradeAnalysisLoading.js';
 import { StatusBanner } from './StatusBanner.js';
 import { UpgradeTargetSelector } from './UpgradeTargetSelector.js';
@@ -283,6 +284,7 @@ export function UpgradeReviewPanel({
   onOpenUsageReference?: ((usageId: string, referenceIndex: number) => void) | undefined;
 }): ReactElement {
   const consent = useUpgradeSecurityAcknowledgement(analysis);
+  const { reviewRef, loadingRef } = useApplyingFailureFocus(busy, error);
   const verificationOptIn = useContext(VerificationOptInContext);
   const dependencyRef = useRef<HTMLDetailsElement>(null);
   const projectRef = useRef<HTMLDetailsElement>(null);
@@ -320,7 +322,7 @@ export function UpgradeReviewPanel({
     />
   );
   const withTargetSelector = (content: ReactElement): ReactElement => (
-    <div className="upgrade-review-stack">
+    <div ref={reviewRef} className="upgrade-review-stack">
       {targetSelector}
       <UpgradeReviewAnnouncement analysis={analysis} advisoriesOff={advisoriesOff} />
       {error !== null && (!active || analysis !== null) ? (
@@ -411,6 +413,15 @@ export function UpgradeReviewPanel({
         </div>
       </div>
     );
+  }
+
+  if (busy) {
+    return withTargetSelector(<div className="review-panel">
+      <ChangeApplyingLoading loadingRef={loadingRef} label={upgradeApplyingLabel(analysis.smartPlan !== null && hasPlannerAddedCoordination(analysis.changes, analysis.smartPlan.changes) ? analysis.smartPlan.changes : analysis.changes)} />
+      <div className="review-panel__footer" key="review-footer">
+        <button type="button" className="button button--secondary" disabled onClick={onCancel}>Close review</button>
+      </div>
+    </div>);
   }
 
   const coordinated =

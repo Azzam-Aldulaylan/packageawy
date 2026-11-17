@@ -480,9 +480,9 @@
     "fsMode": "Strict mutation or parse boundary"
   },
   {
-    "id": "upgradeRunner.ts#1",
+    "id": "upgradeRunner.ts#3",
     "file": "src/host/upgradeRunner.ts",
-    "line": 503,
+    "line": 526,
     "func": "executeTask",
     "mode": "propagate",
     "allowed": "none",
@@ -490,9 +490,9 @@
     "fsMode": "Strict mutation or parse boundary"
   },
   {
-    "id": "upgradeRunner.ts#3",
+    "id": "upgradeRunner.ts#5",
     "file": "src/host/upgradeRunner.ts",
-    "line": 550,
+    "line": 582,
     "func": "executeTask",
     "mode": "propagate",
     "allowed": "none",
@@ -1280,9 +1280,9 @@
     "fsMode": "Strict mutation or parse boundary"
   },
   {
-    "id": "upgradeRunner.ts#6",
+    "id": "upgradeRunner.ts#10",
     "file": "src/host/upgradeRunner.ts",
-    "line": 585,
+    "line": 630,
     "func": "workspaceManifestExists",
     "mode": "propagate",
     "allowed": "expected probe filesystem errors",
@@ -1290,9 +1290,9 @@
     "fsMode": "Strict mutation or parse boundary"
   },
   {
-    "id": "upgradeRunner.ts#4",
+    "id": "upgradeRunner.ts#6",
     "file": "src/host/upgradeRunner.ts",
-    "line": 559,
+    "line": 591,
     "func": "executeTask",
     "mode": "presentation-console",
     "allowed": "console cleanup failures after recorded success",
@@ -1300,9 +1300,9 @@
     "fsMode": "No filesystem or recovery mutation"
   },
   {
-    "id": "upgradeRunner.ts#2",
+    "id": "upgradeRunner.ts#4",
     "file": "src/host/upgradeRunner.ts",
-    "line": 513,
+    "line": 536,
     "func": "executeTask",
     "mode": "presentation-console-release",
     "allowed": "console ownership release failures after settlement or session disposal",
@@ -1310,13 +1310,53 @@
     "fsMode": "No filesystem or recovery mutation"
   },
   {
-    "id": "upgradeRunner.ts#5",
+    "id": "upgradeRunner.ts#8",
     "file": "src/host/upgradeRunner.ts",
-    "line": 564,
+    "line": 607,
     "func": "executeTask",
     "mode": "presentation-console-release",
     "allowed": "console ownership release failures after settlement or session disposal",
     "decision": "Releasing a handle must not stop the process or change settlement, journal integrity or recovery ownership. Preserve the existing outcome if the host refuses release.",
     "fsMode": "No filesystem or recovery mutation"
+  },
+  {
+    "id": "upgradeRunner.ts#1",
+    "file": "src/host/upgradeRunner.ts",
+    "func": "revealCheckTerminal",
+    "mode": "presentation-console-release",
+    "allowed": "console reveal and release failures after settlement",
+    "decision": "Only reveals or releases a completed console handle. Failure preserves transaction settlement and leaves the console open.",
+    "fsMode": "No filesystem or recovery mutation",
+    "line": 161
+  },
+  {
+    "id": "upgradeRunner.ts#2",
+    "file": "src/host/upgradeRunner.ts",
+    "func": "revealCheckTerminal",
+    "mode": "presentation-console-release",
+    "allowed": "console reveal and release failures after settlement",
+    "decision": "Only reveals or releases a completed console handle. Failure preserves transaction settlement and leaves the console open.",
+    "fsMode": "No filesystem or recovery mutation",
+    "line": 163
+  },
+  {
+    "id": "upgradeRunner.ts#7",
+    "file": "src/host/upgradeRunner.ts",
+    "func": "executeTask",
+    "mode": "presentation-console-release",
+    "allowed": "console reveal and release failures after settlement",
+    "decision": "Only reveals or releases a completed console handle. Failure preserves transaction settlement and leaves the console open.",
+    "fsMode": "No filesystem or recovery mutation",
+    "line": 600
+  },
+  {
+    "id": "upgradeRunner.ts#9",
+    "file": "src/host/upgradeRunner.ts",
+    "func": "dispose",
+    "mode": "presentation-console-release",
+    "allowed": "console reveal and release failures after settlement",
+    "decision": "Only reveals or releases a completed console handle. Failure preserves transaction settlement and leaves the console open.",
+    "fsMode": "No filesystem or recovery mutation",
+    "line": 614
   }
 ]

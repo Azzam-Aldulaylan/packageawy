@@ -50,9 +50,9 @@ for (const scenario of ['success', 'nonzero', 'unknown', 'cancelled', 'record fa
     const result = ['verification', 'release refused'].includes(scenario)
       ? await session.verify({ cwd, packageName: 'test', packageManager: 'npm', scripts: [{ id: 'test', scriptName: 'test' }], signal: abort.signal })
       : await session.run({ cwd, packageName: 'pkg', currentVersion: '1.0.0', target: '2.0.0', classification: 'prod', packageManager: 'npm', ignoreScripts: true, signal: abort.signal });
-    assert.equal(closed, ['success', 'close refused'].includes(scenario) ? 1 : 0);
-    assert.equal(released, scenario === 'success' ? 0 : 1, 'settlement releases ownership when it keeps output open');
-    if (['success', 'cancelled', 'disposed', 'close refused'].includes(scenario)) assert.deepEqual(result, { ok: true }, 'cleanup does not change existing settlement');
+    assert.equal(closed, ['success', 'close refused', 'verification', 'release refused'].includes(scenario) ? 1 : 0);
+    assert.equal(released, ['success', 'verification', 'release refused'].includes(scenario) ? 0 : 1, 'settlement releases ownership when it keeps output open');
+    if (['success', 'cancelled', 'disposed', 'close refused'].includes(scenario)) assert.equal(result.ok, true, 'cleanup does not change existing settlement');
     if (scenario === 'record failed' || scenario === 'unknown') assert.equal(result.status, 'unknown');
     if (scenario === 'nonzero') assert.equal(result.code, 'TASK_FAILED');
     if (['verification', 'release refused'].includes(scenario)) assert.equal(result.status, 'passed');
@@ -76,7 +76,7 @@ for (const kind of ['manifest', 'lockfile']) test(`${kind} reconciliation acknow
   const params = { cwd, packageManager: 'npm', ignoreScripts: true };
   const prepared = await (kind === 'manifest' ? session.prepareManifestReconciliation(params) : session.prepareLockfileReconciliation(params));
   assert.equal(prepared.ok, true);
-  assert.deepEqual(await prepared.execute(), { ok: true });
+  assert.equal((await prepared.execute()).ok, true);
   assert.equal(closed, 1);
 });
 

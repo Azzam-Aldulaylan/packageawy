@@ -68,7 +68,11 @@ test('cleanup result disables Undo and announces opening inside the dialog until
   const element = openingId => h(UndoBackupContext.Provider, { value: { entries: [], disabled: openingId !== null, openingId, review: noop } },
     workspace(state, {}, { onRestoreFiles: () => requests++ }));
   const dom = mount(t, element(null));
-  const button = dom.document.querySelector('[data-undo-id]');
+  const footer = dom.document.querySelector('.smart-cleanup-footer');
+  assert.equal(footer.previousElementSibling.className, 'smart-cleanup-body');
+  assert.deepEqual(texts(footer.querySelectorAll('button')), ['Undo cleanup', 'Analyze current project']);
+  assert.equal(dom.document.querySelector('.smart-cleanup-results__headline button'), null);
+  const button = footer.querySelector('[data-undo-id]');
   assert.equal(button.disabled, false);
   act(() => button.click());
   assert.equal(requests, 1);
@@ -136,16 +140,18 @@ for (const retryDiscovery of [false, true]) test(`cleanup has one blocked status
   const { document } = dom;
   assert.equal(document.querySelectorAll('.smart-cleanup-results__headline').length, 1);
   assert.equal(document.querySelector('.banner'), null);
-  assert.equal(document.querySelector('.smart-cleanup-footer'), null);
+  assert.equal(document.querySelector('.smart-cleanup-footer').parentElement, document.querySelector('[role="dialog"]'));
+  assert.ok(document.querySelector('.smart-cleanup-footer .smart-cleanup-results__actions'));
+  assert.equal(document.querySelector('.smart-cleanup-body .smart-cleanup-results__actions'), null);
   const group = document.querySelector('.smart-cleanup-results__actions');
-  assert.deepEqual(texts(group.querySelectorAll('button')), [retryDiscovery ? 'Retry discovery' : 'Open recovery', 'Analyze current project', 'Close']);
+  assert.deepEqual(texts(group.querySelectorAll('button')), [retryDiscovery ? 'Retry discovery' : 'Open recovery', 'Analyze current project']);
   assert.equal(group.querySelectorAll('.button--primary').length, 1);
   assert.equal(group.children[1].disabled, true);
   assert.doesNotMatch(document.body.textContent, /before the result can be trusted|Undo cleanup/);
   assert.match(document.querySelector('[role="status"]').textContent, /Finish dependency recovery/);
   act(() => group.children[0].click());
   assert.equal(opened, 1);
-  const last = group.lastElementChild;
+  const last = group.querySelector('button:not(:disabled)');
   last.focus();
   const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
   document.dispatchEvent(event);
@@ -172,7 +178,7 @@ test('resolved recovery replaces failed outcome, announces next step and keeps f
   const group = dom.document.querySelector('.smart-cleanup-results__actions');
   assert.equal(group.children[0].disabled, false);
   act(() => group.children[0].click()); assert.equal(analyzed, 1);
-  act(() => group.children[1].click()); assert.equal(closed, 1);
+  act(() => dom.document.querySelector('.modal__close').click()); assert.equal(closed, 1);
   dom.unmount();
   assert.equal(dom.document.activeElement.id, 'opener');
 });
@@ -220,7 +226,7 @@ test('successful removals show missing counts separately and announce both outco
   assert.match(dom.document.querySelector('[role="status"]').textContent, /Cleanup done\. 3 packages removed\./);
   assert.ok(dom.document.querySelector('[role="status"]').textContent.includes(metricsNote));
   const actions = dom.document.querySelector('.smart-cleanup-results__actions');
-  assert.deepEqual(texts(actions.querySelectorAll('button')), ['Undo cleanup', 'Analyze current project', 'Close']);
+  assert.deepEqual(texts(actions.querySelectorAll('button')), ['Undo cleanup', 'Analyze current project']);
   for (const button of actions.querySelectorAll('button')) { button.focus(); assert.equal(dom.document.activeElement, button); }
   assert.doesNotMatch(dom.document.body.textContent, /Failed actions|manual review|Cleanup needs attention/);
   dom.update(workspace(reduce(state, { type: 'backup-updated', analysisId: 'cleanup-a', outcome: 'changed' })));

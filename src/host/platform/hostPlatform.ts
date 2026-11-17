@@ -49,7 +49,8 @@
  *   was observed. A late start after teardown is stopped with a
  *   `process/terminate` notification carrying that process id. Settlement sends
  *   `process/succeeded` to close a successful console, or `process/release` to
- *   release its handle while keeping the console open.
+ *   release its handle while keeping the console open. `process/reveal` is a
+ *   request that reveals the exact retained console and returns false if it closed.
  * - `openFile`, `openExternal` and `openSettings` are `window/openFile`,
  *   `window/openExternal` and `window/openSettings` notifications.
  * - `updateWorkspaceSetting` is a `settings/update` request with the key and
@@ -128,6 +129,8 @@ export interface ProcessRequest {
 }
 
 export interface RunningProcess {
+  /** Reveals only this launch's console. False when closed or ownership was lost. */
+  reveal?(): Promise<boolean>;
   /** Fires once with the exit code, or undefined when the process ended without one. */
   onDidExit(listener: (exitCode: number | undefined) => void): Disposable;
   /** Best effort. Call only after a zero exit has settled successfully, without cancellation. */

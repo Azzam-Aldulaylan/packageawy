@@ -25,6 +25,7 @@ data class ProcessStart(
 
 /** Optional console cleanup after the engine has recorded a successful exit. */
 interface SuccessfulProcess : AutoCloseable {
+    fun reveal(): CompletableFuture<Boolean> = CompletableFuture.completedFuture(false)
     fun closeAfterSuccess()
     /** Notifies when console ownership is lost, including disposal or replacement. */
     fun onConsoleDisposed(listener: () -> Unit): AutoCloseable = AutoCloseable {}

@@ -946,3 +946,27 @@ for (const lateReply of ['resolve', 'reject']) test(`pending VS Code startup dis
   assert.deepEqual(await readFile(project.manifestPath), before);
   await assert.rejects(platform.runProcess(REQUEST), /disposed/);
 });
+
+for (const paths of [path.posix, path.win32]) test(`failed task reveal uses its exact terminal with ${paths.sep === '/' ? 'POSIX' : 'Windows'} paths`, async t => {
+  const { tasks, platform } = setup(); t.after(() => platform.dispose());
+  const cwd = paths.join(paths.sep === '/' ? paths.resolve('fixture') : 'C:\\work tree', 'app');
+  const starting = platform.runProcess({ ...REQUEST, cwd, executable: paths.join(cwd, 'node') });
+  const execution = {}; tasks.start(execution, 880); tasks.starts.at(-1).resolve(execution);
+  const running = await starting;
+  assert.equal(tasks.starts.at(-1).task.execution.options.cwd, cwd);
+  const own = terminal(tasks, 880); let shown = 0; own.show = () => shown++;
+  const unrelated = terminal(tasks, 990); unrelated.show = () => assert.fail('must not reveal another task');
+  tasks.end(execution, 17); await settle();
+  assert.equal(await running.reveal(), true); assert.equal(shown, 1); assert.equal(own.disposed, 0);
+  tasks.close(own); assert.equal(await running.reveal(), false); assert.equal(shown, 1);
+});
+test('terminal reveal refuses a reused console and pending ownership changes', async t => {
+  const { tasks, platform } = setup(); t.after(() => platform.dispose());
+  const { execution, running } = await launch(tasks, platform, 801);
+  const own = terminal(tasks, 801); own.show = () => assert.fail('ownership changed');
+  tasks.end(execution, 1); await settle();
+  const other = {}; tasks.taskStart(other);
+  assert.equal(await running.reveal(), false);
+  tasks.processStart(other, 801);
+  assert.equal(await running.reveal(), false);
+});

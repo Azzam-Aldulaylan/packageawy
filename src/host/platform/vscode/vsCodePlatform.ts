@@ -369,6 +369,7 @@ export class VsCodePlatform implements HostPlatform {
     }
     return {
       onDidExit: (listener) => run.onDidExit(listener),
+      reveal: () => run.terminal.reveal(),
       closeAfterSuccess: () => fireAndForget(run.terminal.closeAfterSuccess(), () => undefined),
       release: () => run.terminal.dispose(),
     };
