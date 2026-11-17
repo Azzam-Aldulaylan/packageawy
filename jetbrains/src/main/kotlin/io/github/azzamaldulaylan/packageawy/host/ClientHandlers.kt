@@ -17,8 +17,6 @@ import java.util.Base64
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Registers every client side handler of the protocol in hostPlatform.ts on
@@ -35,20 +33,56 @@ class ClientHandlers(
     private val fileWatches = ConcurrentHashMap<String, AutoCloseable>()
     private val headWatches = ConcurrentHashMap<String, AutoCloseable>()
     private val processes = ConcurrentHashMap<Long, ProcessStop>()
+    private val successfulProcesses = ConcurrentHashMap<Long, ProcessStop>()
 
-    private class ProcessStop : AutoCloseable {
-        private val requested = AtomicBoolean(false)
-        private val handle = AtomicReference<AutoCloseable?>()
+    internal val retainedProcessCount: Int get() = successfulProcesses.size
 
-        fun attach(stop: AutoCloseable) {
-            handle.set(stop)
-            // Termination may arrive while the host is still starting the process.
-            if (requested.get()) handle.getAndSet(null)?.close()
+    private class ProcessStop(private val onRelease: () -> Unit) : AutoCloseable {
+        private var requested = false
+        private var successRequested = false
+        private var completed = false
+        private var handle: AutoCloseable? = null
+        private var disposalWatch: AutoCloseable? = null
+        @Volatile var released = false
+            private set
+        val cancelled: Boolean @Synchronized get() = requested
+
+        @Synchronized fun attach(stop: AutoCloseable) {
+            handle = stop
+            if (requested) handle.also { handle = null }?.close()
+            else if (successRequested) (handle.also { handle = null } as? SuccessfulProcess)?.closeAfterSuccess()
+            else if (completed && released) handle = null
+            else if (!released && stop is SuccessfulProcess) {
+                val watch = stop.onConsoleDisposed { release() }
+                if (released) watch.close() else disposalWatch = watch
+            }
         }
 
-        override fun close() {
-            requested.set(true)
-            handle.getAndSet(null)?.close()
+        @Synchronized fun exited() {
+            completed = true
+            if (released) handle = null
+        }
+
+        @Synchronized fun release() {
+            released = true
+            if (completed) handle = null
+            disposalWatch?.close()
+            disposalWatch = null
+            onRelease()
+        }
+
+        @Synchronized fun closeAfterSuccess() {
+            successRequested = true
+            disposalWatch?.close()
+            disposalWatch = null
+            if (!requested && !released) (handle.also { handle = null } as? SuccessfulProcess)?.closeAfterSuccess()
+        }
+
+        @Synchronized override fun close() {
+            requested = true
+            disposalWatch?.close()
+            disposalWatch = null
+            handle.also { handle = null }?.close()
         }
     }
 
@@ -196,11 +230,20 @@ class ClientHandlers(
                 title = p.string("title"),
                 scope = p.string("scope"),
             )
-            val slot = ProcessStop()
+            lateinit var slot: ProcessStop
+            slot = ProcessStop { successfulProcesses.remove(processId, slot) }
             // Reserve before launch so a duplicate can never replace a live stop handle.
             if (processes.putIfAbsent(processId, slot) != null) Params.invalid("processId is already active")
+            successfulProcesses.remove(processId)?.release()
             try {
                 val stop = host.startProcess(start) { exitCode ->
+                    slot.exited()
+                    if (exitCode == 0 && !slot.cancelled && !slot.released) {
+                        successfulProcesses[processId] = slot
+                        // Disposal or settlement can race the exit notification.
+                        if (slot.released) successfulProcesses.remove(processId, slot)
+                    } else slot.release()
+                    // Keep the active entry reachable until completed ownership is published.
                     processes.remove(processId, slot)
                     connection.sendNotification("process/didExit", mapOf("processId" to processId, "exitCode" to exitCode))
                 }
@@ -213,7 +256,18 @@ class ClientHandlers(
         }
 
         notification("process/terminate") { p ->
-            processes.remove(p.processId())?.close()
+            val id = p.processId()
+            successfulProcesses.remove(id)?.release()
+            processes.remove(id)?.close()
+        }
+
+        notification("process/release") { p ->
+            val id = p.processId()
+            (successfulProcesses.remove(id) ?: processes[id])?.release()
+        }
+
+        notification("process/succeeded") { p ->
+            successfulProcesses.remove(p.processId())?.closeAfterSuccess()
         }
 
         notification("window/openFile") { p ->
@@ -240,7 +294,9 @@ class ClientHandlers(
         for (watch in fileWatches.values + headWatches.values) runCatching { watch.close() }
         fileWatches.clear()
         headWatches.clear()
+        for (slot in processes.values + successfulProcesses.values) slot.release()
         processes.clear()
+        successfulProcesses.clear()
     }
 
     private fun request(method: String, handle: (Params) -> JsonElement?) {

@@ -482,7 +482,7 @@
   {
     "id": "upgradeRunner.ts#1",
     "file": "src/host/upgradeRunner.ts",
-    "line": 495,
+    "line": 503,
     "func": "executeTask",
     "mode": "propagate",
     "allowed": "none",
@@ -490,9 +490,9 @@
     "fsMode": "Strict mutation or parse boundary"
   },
   {
-    "id": "upgradeRunner.ts#2",
+    "id": "upgradeRunner.ts#3",
     "file": "src/host/upgradeRunner.ts",
-    "line": 536,
+    "line": 550,
     "func": "executeTask",
     "mode": "propagate",
     "allowed": "none",
@@ -1280,13 +1280,43 @@
     "fsMode": "Strict mutation or parse boundary"
   },
   {
-    "id": "upgradeRunner.ts#3",
+    "id": "upgradeRunner.ts#6",
     "file": "src/host/upgradeRunner.ts",
-    "line": 557,
+    "line": 585,
     "func": "workspaceManifestExists",
     "mode": "propagate",
     "allowed": "expected probe filesystem errors",
     "decision": "Missing or inaccessible workspace metadata leaves workspace mode off. Unexpected filesystem and programming failures propagate.",
     "fsMode": "Strict mutation or parse boundary"
+  },
+  {
+    "id": "upgradeRunner.ts#4",
+    "file": "src/host/upgradeRunner.ts",
+    "line": 559,
+    "func": "executeTask",
+    "mode": "presentation-console",
+    "allowed": "console cleanup failures after recorded success",
+    "decision": "Closing the completed console is cosmetic. Leave it open and preserve the recorded outcome if the host refuses cleanup.",
+    "fsMode": "No filesystem or recovery mutation"
+  },
+  {
+    "id": "upgradeRunner.ts#2",
+    "file": "src/host/upgradeRunner.ts",
+    "line": 513,
+    "func": "executeTask",
+    "mode": "presentation-console-release",
+    "allowed": "console ownership release failures after settlement or session disposal",
+    "decision": "Releasing a handle must not stop the process or change settlement, journal integrity or recovery ownership. Preserve the existing outcome if the host refuses release.",
+    "fsMode": "No filesystem or recovery mutation"
+  },
+  {
+    "id": "upgradeRunner.ts#5",
+    "file": "src/host/upgradeRunner.ts",
+    "line": 564,
+    "func": "executeTask",
+    "mode": "presentation-console-release",
+    "allowed": "console ownership release failures after settlement or session disposal",
+    "decision": "Releasing a handle must not stop the process or change settlement, journal integrity or recovery ownership. Preserve the existing outcome if the host refuses release.",
+    "fsMode": "No filesystem or recovery mutation"
   }
 ]

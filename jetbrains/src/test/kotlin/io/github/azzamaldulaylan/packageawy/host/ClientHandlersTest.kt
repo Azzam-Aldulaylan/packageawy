@@ -222,6 +222,112 @@ class ClientHandlersTest {
     }
 
     @Test
+    fun `only an acknowledged zero exit closes its console once`() {
+        for (code in listOf(0, 1)) {
+            host.immediateProcessExit = code
+            call("process/start", mapOf("processId" to code + 1, "executable" to "npm", "args" to listOf("install"),
+                "cwd" to dir.toString(), "title" to "t", "scope" to "p$code"))
+            assertEquals("process:npm:install:p$code", nextEvent())
+            assertEquals("process/didExit", notifications.poll(5, TimeUnit.SECONDS)?.first)
+            assertTrue(host.events.isEmpty())
+            repeat(2) { sidecar.sendNotification("process/succeeded", mapOf("processId" to code + 1)) }
+            // A request is a barrier for the preceding notifications.
+            call("files/stat", mapOf("path" to dir.toString()))
+            if (code == 0) assertEquals("process-closed:p0", nextEvent())
+            assertTrue(host.events.isEmpty())
+        }
+    }
+
+    @Test
+    fun `repeated verification releases completed handles without closing consoles`() {
+        host.immediateProcessExit = 0
+        repeat(25) { index ->
+            val id = index + 1
+            call("process/start", mapOf("processId" to id, "executable" to "npm", "args" to listOf("run", "test"),
+                "cwd" to dir.toString(), "title" to "Verify test", "scope" to "test"))
+            nextEvent()
+            notifications.poll(5, TimeUnit.SECONDS)
+            assertEquals(1, handlers.retainedProcessCount)
+            repeat(2) { sidecar.sendNotification("process/release", mapOf("processId" to id)) }
+            sidecar.sendNotification("process/succeeded", mapOf("processId" to id))
+            call("files/stat", mapOf("path" to dir.toString()))
+            assertEquals(0, handlers.retainedProcessCount)
+            assertTrue(host.consoleDisposals.isEmpty())
+            assertTrue(host.events.isEmpty(), "Releasing verification must keep its console open")
+        }
+    }
+
+    @Test
+    fun `manual console disposal releases completed handles before settlement`() {
+        host.immediateProcessExit = 0
+        call("process/start", mapOf("processId" to 1, "executable" to "npm", "args" to listOf("install"),
+            "cwd" to dir.toString(), "title" to "t", "scope" to "s"))
+        nextEvent()
+        notifications.poll(5, TimeUnit.SECONDS)
+        assertEquals(1, handlers.retainedProcessCount)
+        host.consoleDisposals.single().invoke()
+        assertEquals(0, handlers.retainedProcessCount)
+        assertTrue(host.consoleDisposals.isEmpty())
+        sidecar.sendNotification("process/succeeded", mapOf("processId" to 1))
+        call("files/stat", mapOf("path" to dir.toString()))
+        assertTrue(host.events.isEmpty())
+    }
+
+    @Test
+    fun `console disposal during a run prevents retention when it later exits zero`() {
+        host.holdProcess = true
+        call("process/start", mapOf("processId" to 1, "executable" to "npm", "args" to listOf("install"),
+            "cwd" to dir.toString(), "title" to "t", "scope" to "s"))
+        nextEvent()
+        host.consoleDisposals.single().invoke()
+        assertTrue(host.consoleDisposals.isEmpty())
+        assertTrue(host.events.isEmpty(), "Disposal cleanup must not stop the process")
+        host.processExits.single().invoke(0)
+        notifications.poll(5, TimeUnit.SECONDS)
+        assertEquals(0, handlers.retainedProcessCount)
+        sidecar.sendNotification("process/succeeded", mapOf("processId" to 1))
+        call("files/stat", mapOf("path" to dir.toString()))
+        assertTrue(host.events.isEmpty())
+    }
+
+    @Test
+    fun `release during a run keeps its stop handle and prevents later retention`() {
+        host.holdProcess = true
+        call("process/start", mapOf("processId" to 1, "executable" to "npm", "args" to listOf("install"),
+            "cwd" to dir.toString(), "title" to "t", "scope" to "s"))
+        nextEvent()
+        sidecar.sendNotification("process/release", mapOf("processId" to 1))
+        sidecar.sendNotification("process/terminate", mapOf("processId" to 1))
+        assertEquals("process-stopped:s", nextEvent())
+        host.processExits.single().invoke(0)
+        notifications.poll(5, TimeUnit.SECONDS)
+        assertEquals(0, handlers.retainedProcessCount)
+        sidecar.sendNotification("process/succeeded", mapOf("processId" to 1))
+        call("files/stat", mapOf("path" to dir.toString()))
+        assertTrue(host.events.isEmpty())
+    }
+
+    @Test
+    fun `terminate and restart discard successful console identity`() {
+        host.immediateProcessExit = 0
+        for (id in listOf(1, 2)) {
+            call("process/start", mapOf("processId" to id, "executable" to "npm", "args" to listOf("install"),
+                "cwd" to dir.toString(), "title" to "t", "scope" to "p$id"))
+            nextEvent()
+            notifications.poll(5, TimeUnit.SECONDS)
+        }
+        sidecar.sendNotification("process/terminate", mapOf("processId" to 1))
+        call("files/stat", mapOf("path" to dir.toString()))
+        sidecar.sendNotification("process/succeeded", mapOf("processId" to 1))
+        call("files/stat", mapOf("path" to dir.toString()))
+        assertTrue(host.events.isEmpty())
+        handlers.close()
+        sidecar.sendNotification("process/succeeded", mapOf("processId" to 2))
+        call("files/stat", mapOf("path" to dir.toString()))
+        assertTrue(host.events.isEmpty())
+    }
+
+    @Test
     fun `terminate stops only the matching late process once`() {
         host.holdProcess = true
         for (id in listOf(1, 2)) {

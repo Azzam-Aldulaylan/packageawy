@@ -19,9 +19,12 @@ class FakeHost : HostServices {
     var holdQuickPick = false
     var failProcessStart = false
     var holdProcess = false
+    var immediateProcessExit: Int? = null
     var hasRepository = true
     var trusted = true
     val openWatches = CopyOnWriteArrayList<String>()
+    val consoleDisposals = CopyOnWriteArrayList<() -> Unit>()
+    val processExits = CopyOnWriteArrayList<(Int?) -> Unit>()
 
     override fun showMessage(severity: Severity, message: String) {
         messages.add(severity to message)
@@ -46,13 +49,27 @@ class FakeHost : HostServices {
     override fun startProcess(request: ProcessStart, onExit: (Int?) -> Unit): AutoCloseable {
         if (failProcessStart) throw IllegalStateException("no such executable")
         events.add("process:${request.executable}:${request.args.joinToString(" ")}:${request.scope}")
-        if (holdProcess) return AutoCloseable { events.add("process-stopped:${request.scope}") }
+        processExits.add(onExit)
+        immediateProcessExit?.let { code ->
+            onExit(code)
+            return processHandle(request.scope)
+        }
+        if (holdProcess) return processHandle(request.scope)
         val process = ProcessBuilder(listOf(request.executable) + request.args).start()
         Thread {
             val code = process.waitFor()
             onExit(code)
         }.start()
         return AutoCloseable { process.destroy() }
+    }
+
+    private fun processHandle(scope: String) = object : SuccessfulProcess {
+        override fun close() { events.add("process-stopped:$scope") }
+        override fun closeAfterSuccess() { events.add("process-closed:$scope") }
+        override fun onConsoleDisposed(listener: () -> Unit): AutoCloseable {
+            consoleDisposals.add(listener)
+            return AutoCloseable { consoleDisposals.remove(listener) }
+        }
     }
 
     override fun openFile(path: String, line: Int?, column: Int?) {

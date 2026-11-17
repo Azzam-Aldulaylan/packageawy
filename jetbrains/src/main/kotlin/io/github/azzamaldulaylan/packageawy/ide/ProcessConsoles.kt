@@ -12,7 +12,9 @@ import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.execution.ui.RunContentManager
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import io.github.azzamaldulaylan.packageawy.host.ProcessStart
+import io.github.azzamaldulaylan.packageawy.host.SuccessfulProcess
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
@@ -21,10 +23,26 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** `process/start`: runs a command in a Run tool window tab, one tab per scope. */
 class ProcessConsoles(private val project: Project) {
     private val tabs = ConcurrentHashMap<String, RunContentDescriptor>()
+    private val completions = ConcurrentHashMap<String, ConsoleCompletion<RunContentDescriptor>>()
 
     /** Throws when the process cannot start. */
-    fun start(request: ProcessStart, onExit: (Int?) -> Unit): AutoCloseable {
-        val handler = launch(request, onExit)
+    fun start(request: ProcessStart, onExit: (Int?) -> Unit): SuccessfulProcess {
+        val completion = ConsoleCompletion(tabs, request.scope,
+            schedule = { ApplicationManager.getApplication().invokeLater(it) },
+            available = { !project.isDisposed },
+            remove = { descriptor ->
+                RunContentManager.getInstance(project).removeRunContent(DefaultRunExecutor.getRunExecutorInstance(), descriptor)
+            },
+        )
+        val handler = launch(request) { code ->
+            completion.exited(code)
+            onExit(code)
+        }
+        handler.addProcessListener(object : ProcessListener {
+            override fun processWillTerminate(event: ProcessEvent, willBeDestroyed: Boolean) {
+                if (willBeDestroyed) completion.cancel()
+            }
+        })
         ApplicationManager.getApplication().invokeLater {
             if (project.isDisposed) {
                 // No console to show it in. The install is left to finish, as in VS Code.
@@ -36,10 +54,24 @@ class ProcessConsoles(private val project: Project) {
             val descriptor = RunContentDescriptor(console, handler, console.component, request.title)
             val executor = DefaultRunExecutor.getRunExecutorInstance()
             RunContentManager.getInstance(project).showRunContent(executor, descriptor, tabs[request.scope])
+            completions.put(request.scope, completion)?.disposed()
             tabs[request.scope] = descriptor
+            completion.shown(descriptor)
+            Disposer.register(descriptor) {
+                completion.disposed()
+                completions.remove(request.scope, completion)
+            }
             handler.startNotify()
         }
-        return AutoCloseable { handler.destroyProcess() }
+        return object : SuccessfulProcess {
+            override fun close() {
+                completion.cancel()
+                handler.destroyProcess()
+            }
+
+            override fun closeAfterSuccess() = completion.closeAfterSuccess()
+            override fun onConsoleDisposed(listener: () -> Unit) = completion.onDisposed(listener)
+        }
     }
 
     companion object {
@@ -71,6 +103,59 @@ class ProcessConsoles(private val project: Project) {
         private fun resolve(executable: String): String {
             if (File(executable).isAbsolute) return executable
             return PathEnvironmentVariableUtil.findExecutableInPathOnAnyOS(executable)?.absolutePath ?: executable
+        }
+    }
+}
+
+/** Keeps delayed UI cleanup tied to the descriptor that actually ran the successful process. */
+internal class ConsoleCompletion<T : Any>(
+    private val tabs: ConcurrentHashMap<String, T>,
+    private val scope: String,
+    private val schedule: (() -> Unit) -> Unit,
+    private val available: () -> Boolean,
+    private val remove: (T) -> Unit,
+) {
+    @Volatile private var descriptor: T? = null
+    @Volatile private var exitCode: Int? = null
+    private val cancelled = AtomicBoolean(false)
+    private val requested = AtomicBoolean(false)
+    private var disposed = false
+    private val disposalListeners = mutableSetOf<() -> Unit>()
+
+    fun onDisposed(listener: () -> Unit): AutoCloseable {
+        val notify = synchronized(this) {
+            if (disposed) true else { disposalListeners.add(listener); false }
+        }
+        if (notify) listener()
+        return AutoCloseable { synchronized(this) { disposalListeners.remove(listener) } }
+    }
+
+    fun disposed() {
+        val listeners = synchronized(this) {
+            if (disposed) return
+            disposed = true
+            cancel()
+            descriptor?.let { value ->
+                tabs.computeIfPresent(scope) { _, current -> if (current === value) null else current }
+            }
+            descriptor = null
+            disposalListeners.toList().also { disposalListeners.clear() }
+        }
+        listeners.forEach { it() }
+    }
+
+    fun shown(value: T) { descriptor = value }
+    fun exited(code: Int?) { exitCode = code }
+    fun cancel() { cancelled.set(true) }
+
+    fun closeAfterSuccess() {
+        val value = descriptor ?: return
+        if (exitCode != 0 || cancelled.get() || !requested.compareAndSet(false, true)) return
+        schedule {
+            if (available() && !cancelled.get() && tabs[scope] === value) {
+                remove(value)
+                tabs.computeIfPresent(scope) { _, current -> if (current === value) null else current }
+            }
         }
     }
 }

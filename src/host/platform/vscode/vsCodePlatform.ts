@@ -27,6 +27,7 @@ import { fireAndForget } from '../../../core/fireAndForget.js';
 import { createCacheStore, migrateStoreKeys } from '../fileKeyValueStore.js';
 import { watchGitHead } from './gitHead.js';
 import { openScopedSettings } from './settingsScope.js';
+import { TaskTerminal } from './taskTerminal.js';
 
 const SETTINGS_SECTION = 'packageawy';
 
@@ -54,6 +55,7 @@ function toVsCodeToken(token: CancellationToken | undefined): {
  * to a caller that subscribes after the process already ended.
  */
 class TaskRun {
+  readonly terminal = new TaskTerminal();
   private native: vscode.Disposable | undefined;
   private execution: vscode.TaskExecution | undefined;
   /** Exits seen before startup resolved. Which one is ours is only known after. */
@@ -83,6 +85,7 @@ class TaskRun {
       return;
     }
     this.execution = execution;
+    this.terminal.started(execution);
     const early = this.early.get(execution);
     this.early.clear();
     if (early !== undefined) this.finish(early.exitCode);
@@ -125,6 +128,7 @@ class TaskRun {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.terminal.dispose();
     this.resolveTeardown();
     this.stopObserving();
     for (const [handle, listener] of this.replays) {
@@ -138,6 +142,7 @@ class TaskRun {
   private finish(exitCode: number | undefined): void {
     if (this.exit !== undefined || this.disposed) return;
     this.exit = { exitCode };
+    this.terminal.finished(exitCode);
     this.stopObserving();
     this.deliver(exitCode);
   }
@@ -359,9 +364,14 @@ export class VsCodePlatform implements HostPlatform {
       ]);
     } catch (error) {
       run.stopObserving();
+      run.terminal.dispose();
       if (!this.disposed) throw error;
     }
-    return { onDidExit: (listener) => run.onDidExit(listener) };
+    return {
+      onDidExit: (listener) => run.onDidExit(listener),
+      closeAfterSuccess: () => fireAndForget(run.terminal.closeAfterSuccess(), () => undefined),
+      release: () => run.terminal.dispose(),
+    };
   }
 
   openFile(filePath: string, position?: FilePosition): void {

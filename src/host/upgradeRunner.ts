@@ -28,7 +28,7 @@ import {
   buildManifestReconciliationArgs,
 } from '../core/upgrade/plan.js';
 import { ToolchainOperation } from './toolchainOperation.js';
-import type { Disposable, HostPlatform } from './platform/hostPlatform.js';
+import type { Disposable, HostPlatform, RunningProcess } from './platform/hostPlatform.js';
 import { PNPM_NOT_FOUND_MESSAGE } from './pnpmResolver.js';
 import type { PackageManagerInvocation } from './resolverVerifier.js';
 import { PendingUpgradeRuns, UpgradeLock, isSuccessfulExitCode } from './upgradeTracker.js';
@@ -258,7 +258,8 @@ export class UpgradeExecutionSession {
       params.packageName,
       args,
       `Packageawy: Upgrade ${params.packageName}`,
-      `${params.packageManager} ${args[0]}`
+      `${params.packageManager} ${args[0]}`,
+      params.signal
     );
   }
 
@@ -319,7 +320,8 @@ export class UpgradeExecutionSession {
           params.taskScope ?? 'smart-cleanup',
           reconcileArgs,
           params.taskTitle ?? 'Packageawy: Reconcile cleanup changes',
-          `${packageManager} ${reconcileArgs[0]}`
+          `${packageManager} ${reconcileArgs[0]}`,
+          params.signal
         );
       },
     };
@@ -374,7 +376,8 @@ export class UpgradeExecutionSession {
           'transitive-remediation',
           args,
           taskTitle ?? 'Packageawy: Apply transitive security fix',
-          `${packageManager} ${args[0]}`
+          `${packageManager} ${args[0]}`,
+          params.signal
         );
       },
     };
@@ -400,7 +403,9 @@ export class UpgradeExecutionSession {
         params.packageName,
         buildVerificationScriptArgs(params.packageManager, script.scriptName),
         `Packageawy: Verify ${script.scriptName}`,
-        `${params.packageManager} run ${script.scriptName}`
+        `${params.packageManager} run ${script.scriptName}`,
+        params.signal,
+        false
       );
       if (!outcome.ok && outcome.status === 'unknown') return { status: 'unknown', checks, message: outcome.message };
       if (cancelled()) return { status: 'cancelled', checks };
@@ -451,7 +456,9 @@ export class UpgradeExecutionSession {
     packageName: string,
     args: readonly string[],
     taskName: string,
-    failureCommand: string
+    failureCommand: string,
+    signal?: AbortSignal,
+    closeOnSuccess = true
   ): Promise<UpgradeRunOutcome> {
     // An argument array, never a shell string: `invocation.node` and every
     // element of `[invocation.npmCliJs, ...args]` reach the process as
@@ -472,6 +479,7 @@ export class UpgradeExecutionSession {
     this.onTaskState?.('running');
     // This timer only explains the wait. Visible writers have no deadline.
     const stillRunning = setTimeout(() => this.onTaskState?.('still-running'), STILL_RUNNING_THRESHOLD_MS);
+    let successfulRun: RunningProcess | undefined;
     const outcome = await new Promise<UpgradeRunOutcome>((resolve) => {
       let settled = false;
       // A Disposable only stops future events: disposing the
@@ -501,7 +509,11 @@ export class UpgradeExecutionSession {
           // was still pending: don't register a listener for a session that
           // is already torn down. The process itself keeps running regardless,
           // we simply stop caring about its outcome from here.
-          if (settled) return;
+          if (settled) {
+            try { started.release?.(); } catch { /* Keep the process and console open. */ }
+            return;
+          }
+          successfulRun = started;
           let disposable: Disposable | undefined;
           disposable = started.onDidExit((exitCode) => {
             disposable?.dispose();
@@ -529,13 +541,29 @@ export class UpgradeExecutionSession {
         }
       ).catch((error: unknown) => finish({ ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: error instanceof Error ? error.message : String(error) }));
     });
-    clearTimeout(stillRunning);
-    this.onTaskState?.('idle');
-    if (outcome.ok || outcome.status !== 'unknown') {
-      try { await this.journal?.record(taskName, 'finished'); }
-      catch { return { ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: 'The task result could not be recorded.' }; }
+    let closeRequested = false;
+    try {
+      clearTimeout(stillRunning);
+      this.onTaskState?.('idle');
+      if (outcome.ok || outcome.status !== 'unknown') {
+        try { await this.journal?.record(taskName, 'finished'); }
+        catch { return { ok: false, status: 'unknown', code: 'OUTCOME_UNKNOWN', message: 'The task result could not be recorded.' }; }
+      }
+      if (closeOnSuccess && outcome.ok && !signal?.aborted && !this.discoveryAbort.signal.aborted) {
+        // Closing is cosmetic. It must never change settlement or recovery if the host refuses.
+        try {
+          if (successfulRun?.closeAfterSuccess !== undefined) {
+            successfulRun.closeAfterSuccess();
+            closeRequested = true;
+          }
+        } catch { /* Leave the console open. */ }
+      }
+      return outcome;
+    } finally {
+      if (!closeRequested) {
+        try { successfulRun?.release?.(); } catch { /* Keep the process and console open. */ }
+      }
     }
-    return outcome;
   }
 
   dispose(): void {
