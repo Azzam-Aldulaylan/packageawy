@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  isUpgradeAnalysisExpired,
   isUpgradeAnalysisSoftStale,
   UPGRADE_ANALYSIS_RETENTION_MS,
   UPGRADE_ANALYSIS_SOFT_STALE_MS,
@@ -43,15 +42,4 @@ test('host retention outlives soft staleness so the hint does not itself expire 
 test('unparseable analysis timestamps degrade to unknown rather than stale', () => {
   assert.equal(isUpgradeAnalysisSoftStale('not-a-date', NOW), false);
   assert.equal(isUpgradeAnalysisSoftStale('1', NOW), false, 'parseable-but-non-ISO input is still malformed');
-});
-
-test('retained analysis expiry is strict before the two-hour deadline and hard at the deadline', () => {
-  const expiresAt = new Date(NOW + UPGRADE_ANALYSIS_RETENTION_MS).toISOString();
-  assert.equal(isUpgradeAnalysisExpired(expiresAt, NOW + UPGRADE_ANALYSIS_RETENTION_MS - 1), false);
-  assert.equal(isUpgradeAnalysisExpired(expiresAt, NOW + UPGRADE_ANALYSIS_RETENTION_MS), true);
-});
-
-test('malformed retained-analysis expiry fails closed', () => {
-  assert.equal(isUpgradeAnalysisExpired('not-a-date', NOW), true);
-  assert.equal(isUpgradeAnalysisExpired('1', NOW), true, 'parseable-but-non-ISO input is still malformed');
 });

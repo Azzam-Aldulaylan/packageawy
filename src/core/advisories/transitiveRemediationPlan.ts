@@ -173,11 +173,6 @@ function preferredIdentity(aliases: readonly string[]): string {
   );
 }
 
-/** Stable public-first identity used by plan consumers and host protocol summaries. */
-export function transitiveRemediationAdvisoryIdentity(advisory: Advisory): string {
-  return preferredIdentity(aliasesFor(advisory));
-}
-
 class AliasSets {
   private readonly parent = new Map<string, string>();
 

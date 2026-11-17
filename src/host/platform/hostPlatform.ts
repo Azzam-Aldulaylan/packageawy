@@ -23,8 +23,8 @@
  * The asynchronous members map one to one:
  * - `findFiles` is a `files/find` request. It returns absolute paths.
  *   Cancelling the token sends `$/cancelRequest`.
- * - `statFile` and `readFile` are `files/stat` and `files/read` requests.
- *   The sidecar runs on the same machine, so it may use node:fs instead.
+ * - The sidecar performs `statFile`, `readFile`, and `readFileChunks` locally
+ *   because it shares the client's filesystem.
  * - `watchFiles` is a `files/watch` request with a watch id. The client sends
  *   `files/didChange` notifications with that id and the path. Disposing
  *   sends a `files/unwatch` notification.

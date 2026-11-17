@@ -856,12 +856,6 @@ button {
   color: var(--vscode-foreground);
 }
 
-.th-with-info {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
 /*
  * Shared hover/focus/click tooltip-and-popover primitive. See
  * webview/src/components/Tooltip.tsx. One definition, reused for the
@@ -1062,7 +1056,6 @@ button {
   background: color-mix(in srgb, var(--dashboard-accent) 9%, var(--dashboard-surface-raised));
 }
 
-.packages__details-button,
 .packages__manage-button {
   flex-shrink: 0;
 }
@@ -1780,7 +1773,6 @@ button {
   .manage-removal-stat__spinner,
   .vuln-recommended__spin,
   .usage-status__icon--spin,
-  .removal-review__loading-icon,
   .banner__icon--spin {
     animation: none;
   }
@@ -2822,11 +2814,6 @@ button {
   gap: 0.55rem;
 }
 
-.manage-action-card__glance {
-  padding-top: 0;
-  border-top: none;
-}
-
 .manage-action-card__versions {
   display: flex;
   align-items: baseline;
@@ -2893,28 +2880,11 @@ button {
   animation: dashboard-refresh-spin 1.2s linear infinite;
 }
 
-.manage-action-card__evidence {
-  margin: 0;
-  padding-left: 1.1rem;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.85em;
-}
-
-.manage-action-card__evidence li + li {
-  margin-top: 0.2rem;
-}
-
 .manage-action-card__progress {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.85em;
-}
-
-.manage-action-card__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
 }
 
 .manage-action-card__cta {
@@ -3044,28 +3014,10 @@ button {
   font-size: 0.78em;
 }
 
-.transitive-review__result-facts {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 12px 0;
-}
-
-.transitive-review__result-facts > div,
 .transitive-review__recovery {
   border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
   border-radius: 6px;
   padding: 10px 12px;
-}
-
-.transitive-review__result-facts dt {
-  color: var(--vscode-descriptionForeground);
-  font-size: 12px;
-}
-
-.transitive-review__result-facts dd {
-  margin: 4px 0 0;
-  text-transform: capitalize;
 }
 
 .transitive-review__recovery h5,
@@ -3190,12 +3142,6 @@ button {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.5rem;
-}
-
-@media (max-width: 34rem) {
-  .transitive-review__result-facts {
-    grid-template-columns: 1fr;
-  }
 }
 
 /*
@@ -4476,12 +4422,6 @@ button {
   margin-top: 0;
 }
 
-.upgrade-tab__bottom-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.7rem;
-}
-
 .upgrade-tab .analysis-card,
 .upgrade-tab .vuln-recommended,
 .upgrade-tab .smart-plan-banner {
@@ -4631,11 +4571,6 @@ button {
 #project-compat-heading:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 3px;
-}
-
-.upgrade-tab .upgrade-recommended__cta {
-  align-self: stretch;
-  justify-content: center;
 }
 
 /* ------------------------------------------------------- removal review */
@@ -4958,13 +4893,6 @@ button {
   justify-content: center;
 }
 
-.removal-review__loading-icon {
-  width: 1.5rem;
-  height: 1.5rem;
-  color: var(--accent-total);
-  animation: dashboard-refresh-spin 1.2s linear infinite;
-}
-
 .removal-review__unknown {
   align-items: center;
   gap: 0.75rem;
@@ -4989,34 +4917,6 @@ button {
   gap: 0.5rem;
 }
 
-.upgrade-summary__before-after {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.upgrade-preview__versions {
-  flex-wrap: wrap;
-  font-size: 0.85rem;
-}
-
-.upgrade-preview__files {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.4rem;
-  margin: 0.55rem 0 0;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.78em;
-  line-height: 1.45;
-}
-
-.upgrade-preview__files svg {
-  flex-shrink: 0;
-  margin-top: 0.15em;
-}
-
-.upgrade-preview__files code,
 .upgrade-plan__requested code,
 .security-remaining__meta code,
 .security-remaining__advisory-id {
@@ -5286,7 +5186,6 @@ button {
 }
 
 @media (max-width: 63.99rem) {
-  .upgrade-tab__bottom-grid,
   .upgrade-tab .hygiene-strip,
   .removal-tab__bottom-grid,
   .removal-check,
@@ -5314,7 +5213,6 @@ button {
 }
 
 @media (max-width: 38rem) {
-  .upgrade-tab__bottom-grid,
   .upgrade-tab .hygiene-strip,
   .removal-tab__bottom-grid,
   .removal-check,
@@ -6634,23 +6532,6 @@ button {
   font-size: 0.85em;
 }
 
-/* Progressive Upgrade review's compact header: a small inline ring +
-   title above the section cards, not the full centered block used while
-   nothing at all is known yet (UpgradeAnalysisLoading.tsx's usage). */
-.analysis-loading--compact {
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-start;
-  padding: 0.1rem 0 0.3rem;
-  text-align: left;
-  gap: 0.6rem;
-}
-
-.analysis-loading--compact .analysis-loading__title {
-  margin: 0;
-  font-size: 0.85em;
-}
-
 /* -------------------------------------------------------------- narrow view */
 
 @media (max-width: 460px) {
@@ -6785,7 +6666,6 @@ button {
 .usage-card__head,
 .usage-card__meta,
 .stale-status,
-.upgrade-summary__before-after,
 .smart-plan__change,
 .upgrade-files-list__item,
 .verification-steps__item {
@@ -7093,7 +6973,7 @@ button {
 @media (max-height: 36rem) {
   .manage-modal .review-panel__empty,
   .manage-modal .manage-panel-empty,
-  .manage-modal .analysis-loading:not(.analysis-loading--compact) {
+  .manage-modal .analysis-loading {
     padding-block: 1.1rem;
   }
 }
@@ -7853,14 +7733,6 @@ button {
 
 .smart-cleanup-information-item--security {
   --smart-cleanup-information-accent: var(--accent-vulnerabilities);
-}
-
-.smart-cleanup-category__guidance {
-  margin: 0.15rem 0 0.55rem;
-  max-width: 72ch;
-  color: var(--smart-cleanup-muted);
-  font-size: 0.84em;
-  line-height: 1.5;
 }
 
 .smart-cleanup-finding-list__search {
@@ -8709,46 +8581,6 @@ button {
   margin: 0;
   color: var(--smart-cleanup-muted);
   line-height: 1.45;
-}
-
-.smart-cleanup-results__recovery {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.6rem 0.7rem;
-  border: 1px solid color-mix(in srgb, var(--accent-total) 42%, var(--smart-cleanup-border));
-  border-radius: 6px;
-  color: var(--vscode-inputValidation-infoForeground, var(--vscode-foreground));
-  background: color-mix(in srgb, var(--accent-total) 5%, transparent);
-  font-size: 0.82em;
-  flex-wrap: wrap;
-}
-
-.smart-cleanup-results__recovery[data-tone='attention'] {
-  border-color: var(--vscode-inputValidation-warningBorder, var(--smart-cleanup-border));
-  background: var(--vscode-inputValidation-warningBackground, transparent);
-}
-
-.smart-cleanup-results__recovery svg {
-  flex: 0 0 auto;
-  margin-top: 0.12rem;
-  color: var(--accent-total);
-}
-
-.smart-cleanup-results__recovery[data-tone='attention'] svg {
-  color: var(--vscode-editorWarning-foreground, #cca700);
-}
-
-.smart-cleanup-results__recovery p {
-  flex: 1 1 18rem;
-  margin: 0;
-  max-width: 72ch;
-  line-height: 1.45;
-}
-
-.smart-cleanup-results__recovery > .button {
-  flex: 0 0 auto;
-  margin-left: auto;
 }
 
 @media (max-width: 64rem) {

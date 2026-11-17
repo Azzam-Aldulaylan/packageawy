@@ -99,16 +99,3 @@ export async function runProjectCompatibilityAnalyzers(input: {
     completedAt: now().toISOString(),
   };
 }
-
-export function projectCompatibilityIdentityMatches(
-  left: ProjectCompatibilityIdentity,
-  right: ProjectCompatibilityIdentity
-): boolean {
-  return (
-    left.packageName === right.packageName &&
-    left.currentVersion === right.currentVersion &&
-    left.targetVersion === right.targetVersion &&
-    left.requestId === right.requestId &&
-    left.sourceFingerprint === right.sourceFingerprint
-  );
-}

@@ -282,10 +282,6 @@ export const RUNTIME_ERROR_CODE = 'INTERNAL_ERROR';
 export const RUNTIME_ERROR_TEXT =
   'Packageawy hit an internal error. Changes are paused until you close and reopen the Packageawy panel. The Packageawy log has the details.';
 
-/** The sidecar's notification when no panel was open to pause. */
-export const RUNTIME_ERROR_WITHOUT_PANEL_TEXT =
-  'Packageawy hit an internal error. The Packageawy log has the details.';
-
 /** Ends a request whose handler hit that internal error, next to the banner. */
 export const INTERNAL_REQUEST_FAILURE_TEXT =
   'This request stopped because of an internal error. The Packageawy log has the details.';

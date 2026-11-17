@@ -21,8 +21,7 @@ import type {
   Severity,
   UnresolvableReason,
 } from './types.js';
-import type { DependencyFinding, FindingConfidence, FindingSeverity, InstallPathVersionEntry } from './hygiene/types.js';
-import type { DependencyClassification } from './upgrade/plan.js';
+import type { DependencyFinding, FindingConfidence, FindingSeverity } from './hygiene/types.js';
 
 /** A failure flattened for transport or persistence. Never a live Error instance. */
 export interface ProtocolError {
@@ -205,29 +204,6 @@ function isSignInGroups(value: unknown, unavailable: ReadonlySet<string>): boole
 const FINDING_KINDS: ReadonlySet<string> = new Set(['deprecated', 'likely-unused']);
 const FINDING_CONFIDENCES: ReadonlySet<string> = new Set<FindingConfidence>(['high', 'medium', 'low']);
 const FINDING_SEVERITIES: ReadonlySet<string> = new Set<FindingSeverity>(['info', 'warning', 'attention']);
-const DEPENDENCY_CLASSIFICATIONS: ReadonlySet<string> = new Set<DependencyClassification>(['prod', 'dev', 'optional']);
-
-function isDependencyClassification(value: unknown): value is DependencyClassification {
-  return typeof value === 'string' && DEPENDENCY_CLASSIFICATIONS.has(value);
-}
-
-function isDirectMarker(value: unknown): value is { classification: DependencyClassification } | null {
-  if (value === null) return true;
-  return isRecord(value) && Object.keys(value).length === 1 && isDependencyClassification(value['classification']);
-}
-
-export function isInstallPathVersionEntry(value: unknown): value is InstallPathVersionEntry {
-  if (!isRecord(value)) return false;
-  const paths = value['paths'];
-  return (
-    typeof value['version'] === 'string' &&
-    isDirectMarker(value['direct']) &&
-    Array.isArray(paths) &&
-    paths.every((path) => Array.isArray(path) && path.every((segment) => typeof segment === 'string')) &&
-    typeof value['totalPaths'] === 'number' &&
-    typeof value['truncated'] === 'boolean'
-  );
-}
 
 function isDeprecatedEvidence(value: Record<string, unknown>): boolean {
   return (

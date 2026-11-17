@@ -9,7 +9,6 @@ import {
   createProjectCompatibilityFinding,
   InvalidProjectCompatibilityIdentityError,
   MAX_PROJECT_COMPATIBILITY_FINDINGS,
-  projectCompatibilityIdentityMatches,
   runProjectCompatibilityAnalyzers,
   validateProjectCompatibilityIdentity,
 } from '../out/core/projectCompatibility/index.js';
@@ -480,15 +479,6 @@ test('the analyzer runner quarantines findings for a different selected target',
   assert.equal(analysis.analyzers[0].status, 'unavailable');
   assert.equal(analysis.analyzers[0].unavailableReason, 'analyzer-output-identity-mismatch');
   assert.deepEqual(analysis.findings, []);
-});
-
-test('target and source/request identity changes do not correlate', () => {
-  assert.equal(projectCompatibilityIdentityMatches(identity, { ...identity }), true);
-  assert.equal(projectCompatibilityIdentityMatches(identity, { ...identity, packageName: 'react' }), false);
-  assert.equal(projectCompatibilityIdentityMatches(identity, { ...identity, currentVersion: '14.2.36' }), false);
-  assert.equal(projectCompatibilityIdentityMatches(identity, { ...identity, targetVersion: '16.0.0' }), false);
-  assert.equal(projectCompatibilityIdentityMatches(identity, { ...identity, requestId: 'request-2' }), false);
-  assert.equal(projectCompatibilityIdentityMatches(identity, { ...identity, sourceFingerprint: 'source-2' }), false);
 });
 
 test('malformed target identities are rejected before analyzers can run', () => {

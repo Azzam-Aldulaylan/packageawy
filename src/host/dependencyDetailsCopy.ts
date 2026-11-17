@@ -12,10 +12,6 @@ import type { DependencyFinding } from '../core/hygiene/types.js';
 import type { PackageRow } from '../core/types.js';
 import type { DependencyReference } from '../core/usage/types.js';
 
-export function dependencyDescriptionCopy(row: PackageRow): string {
-  return row.description ?? 'No package description is published for this dependency.';
-}
-
 export interface UsageSummaryCounts {
   /** Distinct files/locations touched by any reference: source files, `package.json` (for scripts), and config files alike. */
   referencedInFiles: number;

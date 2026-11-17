@@ -19,16 +19,6 @@
  */
 
 import semver from 'semver';
-import type { VersionInfo } from '../types.js';
-
-export interface PackumentLike {
-  name: string;
-  /** All published version strings. */
-  versions: string[];
-  distTags: Record<string, string>;
-  /** Deprecation message on the latest version, if any. */
-  deprecated?: string;
-}
 
 /** True when the version carries a prerelease tag (e.g. 1.0.0-beta.1). */
 export function isPrerelease(version: string): boolean {
@@ -89,22 +79,6 @@ export function resolveLatest(
   if (stableBase === null) return highestOnLine;
   // Whichever is actually ahead of what's installed.
   return semver.gt(stableBase, highestOnLine) ? stableBase : highestOnLine;
-}
-
-export function buildVersionInfo(
-  packument: PackumentLike,
-  range: string,
-  installed: string | null
-): VersionInfo {
-  const info: VersionInfo = {
-    name: packument.name,
-    wanted: resolveWanted(packument.versions, range, installed),
-    latest: resolveLatest(packument.versions, packument.distTags, installed),
-  };
-  if (packument.deprecated !== undefined) {
-    info.deprecated = packument.deprecated;
-  }
-  return info;
 }
 
 /**

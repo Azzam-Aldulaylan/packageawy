@@ -23,12 +23,6 @@ class Params(private val obj: JsonObject) {
         return value.asJsonPrimitive
     }
 
-    fun bool(name: String): Boolean {
-        val value = obj.get(name)
-        if (value == null || !value.isJsonPrimitive || !value.asJsonPrimitive.isBoolean) invalid("$name must be a boolean")
-        return value.asBoolean
-    }
-
     fun optInt(name: String): Int? {
         val value = obj.get(name)?.takeIf { !it.isJsonNull } ?: return null
         if (!value.isJsonPrimitive || !value.asJsonPrimitive.isNumber) invalid("$name must be a number")

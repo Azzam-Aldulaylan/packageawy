@@ -37,6 +37,7 @@ class ClientHandlers(
 
     internal val retainedProcessCount: Int get() = successfulProcesses.size
 
+    // Exit or cancellation may arrive before startProcess returns. Preserve that state until the handle is attached.
     private class ProcessStop(private val onRelease: () -> Unit) : AutoCloseable {
         private var requested = false
         private var successRequested = false

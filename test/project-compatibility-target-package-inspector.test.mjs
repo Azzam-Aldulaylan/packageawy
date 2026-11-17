@@ -3,6 +3,9 @@ import test from 'node:test';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 import {
   TargetPackageInspector,
@@ -284,6 +287,149 @@ test('inspector timeout cleans temporary files after bounded runner settlement',
   await assertChildStopped(pid);
   await assert.rejects(access(temporaryRoot), { code: 'ENOENT' });
 });
+
+for (const staysBusy of [false, true]) {
+  test(`inspector cleanup ${staysBusy ? 'bounds retries for persistent' : 'retries transient'} Windows EBUSY errors`, async () => {
+    // A fresh process lets us inject rmdir errors before Node loads its rm helper.
+    const inspectorPath = fileURLToPath(new URL('../out/host/projectCompatibility/targetPackageInspector.js', import.meta.url));
+    const { stdout } = await promisify(execFile)(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const { TargetPackageInspector } = require(${JSON.stringify(inspectorPath)});
+      const originalRmdir = fs.rmdir;
+      const timeout = Object.assign(new Error('inspection timed out'), { name: 'TimeoutError' });
+      let root;
+      let attempts = 0;
+      let injectBusy = true;
+      fs.rmdir = (target, callback) => {
+        if (String(target) === root) {
+          attempts += 1;
+          if (injectBusy && (${staysBusy} || attempts <= 2)) {
+            return process.nextTick(callback, Object.assign(new Error('busy directory'), { code: 'EBUSY' }));
+          }
+        }
+        return originalRmdir(target, callback);
+      };
+      const inspector = new TargetPackageInspector(
+        { executable: process.execPath, prefixArgs: [] }, 'https://registry.npmjs.org/',
+        { async run(_invocation, _args, cwd) { root = cwd; throw timeout; } }
+      );
+      (async () => {
+        try {
+          await assert.rejects(inspector.inspect('next', '15.5.24'), error =>
+            ${staysBusy} ? error.code === 'EBUSY' : error === timeout);
+          assert.equal(attempts, ${staysBusy ? 6 : 3});
+          if (!${staysBusy}) await assert.rejects(fs.promises.access(root), { code: 'ENOENT' });
+          console.log(JSON.stringify({ root }));
+        } finally {
+          injectBusy = false;
+          fs.rmdir = originalRmdir;
+          await fs.promises.rm(root, { recursive: true, force: true });
+        }
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `], { timeout: 10_000 });
+    await assert.rejects(access(JSON.parse(stdout).root), { code: 'ENOENT' });
+  });
+}
+
+for (const phase of ['before cleanup', 'before backoff', 'during backoff', 'after removal']) {
+  for (const cleanupFails of phase === 'during backoff' ? [false, true] : [false]) {
+    test(`inspection cancels ${phase} and owns deferred cleanup${cleanupFails ? ' failure' : ''}`, async () => {
+      // Isolate filesystem/timer stubs and make any unhandled rejection fail the child.
+      const inspectorPath = fileURLToPath(new URL('../out/host/projectCompatibility/targetPackageInspector.js', import.meta.url));
+      const { stdout } = await promisify(execFile)(process.execPath, ['--unhandled-rejections=strict', '-e', `
+        const assert = require('node:assert/strict');
+        const fs = require('node:fs/promises');
+        const path = require('node:path');
+        const timers = require('node:timers/promises');
+        const { TargetPackageInspector } = require(${JSON.stringify(inspectorPath)});
+        const phase = ${JSON.stringify(phase)};
+        const controller = new AbortController();
+        const reason = Object.assign(new Error('cancelled'), { name: 'AbortError' });
+        const busy = Object.assign(new Error('busy private path'), { code: 'EBUSY' });
+        const originalRm = fs.rm;
+        const originalDelay = timers.setTimeout;
+        let root;
+        let calls = 0;
+        let waits = 0;
+        let finishCleanup;
+        let failCleanup;
+        let cleanupSettled;
+        const deferred = new Promise((resolve, reject) => { finishCleanup = resolve; failCleanup = reject; });
+        const settled = new Promise(resolve => { cleanupSettled = resolve; });
+        const logs = [];
+        console.error = (...args) => logs.push(args);
+        timers.setTimeout = (ms, value, options) => {
+          waits++;
+          assert.equal(ms, 100);
+          assert.equal(options.signal, controller.signal);
+          assert.equal(phase, 'during backoff');
+          const waiting = originalDelay(ms, value, options);
+          controller.abort(reason);
+          return waiting;
+        };
+        fs.rm = async (target, options) => {
+          calls++;
+          assert.equal(target, root, 'cleanup owns only its unique temporary folder');
+          if (phase === 'after removal') {
+            await originalRm(target, options);
+            controller.abort(reason);
+          } else if (controller.signal.aborted) {
+            assert.deepEqual(options, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+            try {
+              await deferred;
+              await originalRm(target, options);
+            } finally { cleanupSettled(); }
+          } else {
+            assert.deepEqual(options, { recursive: true, force: true });
+            if (phase === 'before backoff') controller.abort(reason);
+            throw busy;
+          }
+        };
+        const inspector = new TargetPackageInspector(
+          { executable: process.execPath, prefixArgs: [] }, 'https://registry.npmjs.org/',
+          { async run(_invocation, args, cwd) {
+            root = cwd;
+            assert.equal(args[args.indexOf('--pack-destination') + 1], root);
+            await fs.writeFile(path.join(root, 'package.tgz'), 'temporary package');
+            if (phase === 'before cleanup') controller.abort(reason);
+            return { exitCode: 0, stderr: '', stdout: JSON.stringify([
+              { name: 'next', version: '15.5.24', files: [{ path: 'package.json' }] },
+            ]) };
+          } }
+        );
+        (async () => {
+          let deadline;
+          try {
+            await Promise.race([
+              assert.rejects(inspector.inspect('next', '15.5.24', controller.signal), error => error === reason),
+              new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('cancellation waited for cleanup')), 500); }),
+            ]);
+            clearTimeout(deadline);
+            assert.equal(waits, phase === 'during backoff' ? 1 : 0);
+            assert.equal(calls, ['before backoff', 'during backoff'].includes(phase) ? 2 : 1);
+            if (phase !== 'after removal') {
+              await fs.access(path.join(root, 'package.tgz'));
+              if (${cleanupFails}) failCleanup(busy);
+              else finishCleanup();
+              await settled;
+              // Flush fireAndForget's rejection handler after deferred removal settles.
+              await new Promise(resolve => setImmediate(resolve));
+            }
+            assert.deepEqual(logs, ${cleanupFails} ? [['Packageawy: could not remove the target package temporary folder.']] : []);
+            if (!${cleanupFails}) await assert.rejects(fs.access(root), { code: 'ENOENT' });
+            console.log(JSON.stringify({ root }));
+          } finally {
+            clearTimeout(deadline);
+            finishCleanup();
+            if (root) await originalRm(root, { recursive: true, force: true });
+          }
+        })().catch(error => { process.stderr.write(String(error.stack)); process.exitCode = 1; });
+      `], { timeout: 10_000 });
+      await assert.rejects(access(JSON.parse(stdout).root), { code: 'ENOENT' });
+    });
+  }
+}
 
 test('target package inventory rejects mismatched published identity', () => {
   assert.throws(

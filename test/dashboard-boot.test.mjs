@@ -57,29 +57,22 @@ for (const paths of [path.posix, path.win32]) {
   });
 }
 
-for (const [name, options, enabled] of [
-  ['normal session', {}, false],
-  ['performance debugging', { performance: true }, true],
-  ['extension test mode', { mode: 3 }, true],
-  ['integration runner flag', { testFlag: true }, true],
+for (const [name, options] of [
+  ['normal session', {}],
+  ['performance debugging', { performance: true }],
+  ['extension test mode', { mode: 3 }],
+  ['integration runner flag', { testFlag: true }],
 ]) {
-  test(`boot data enables render acknowledgements for ${name}: ${enabled}`, () => {
+  test(`boot data preserves performance debugging and startup options for ${name}`, () => {
     const view = open(options);
-    assert.match(view.panel.webview.html, new RegExp(`data-render-acknowledgements="${enabled}"`));
     assert.match(view.panel.webview.html, new RegExp(`data-performance-debug="${options.performance === true}"`));
     assert.equal(view.options.speculativeStartup, true, 'VS Code opts into startup at panel creation');
     assert.equal(view.options.createdAt, 1050, 'the timestamp is captured at native panel creation');
   });
 }
 
-test('a dev rebuild keeps integration render acknowledgements enabled without enabling performance logs', () => {
+test('a dev rebuild preserves disabled performance logs', () => {
   const view = open({ mode: 2, testFlag: true });
   view.rebuild();
-  assert.match(view.panel.webview.html, /data-render-acknowledgements="true"/);
   assert.match(view.panel.webview.html, /data-performance-debug="false"/);
-});
-
-test('JetBrains boot data opts into acknowledgements with its performance debugging setting', () => {
-  const html = readFileSync(path.join('jetbrains', 'src', 'main', 'kotlin', 'io', 'github', 'azzamaldulaylan', 'packageawy', 'webview', 'WebviewHtml.kt'), 'utf8');
-  assert.match(html, /data-render-acknowledgements="\$performanceDebug"/);
 });

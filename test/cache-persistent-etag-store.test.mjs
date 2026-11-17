@@ -11,7 +11,6 @@ import {
   PersistentEtagStore,
   REGISTRY_CACHE_STORAGE_KEY,
   boundPersistedEtagEntries,
-  loadPersistedEtagEntries,
   serializedEtagCacheBytes,
 } from '../out/core/cache/persistentEtagStore.js';
 
@@ -294,7 +293,6 @@ test('schema-v2 loading remains compatible, applies the byte bound, and heals ov
   ];
   const kv = fakeKeyValueStore({ schemaVersion: 2, entries: [valid, oversized] });
 
-  assert.deepEqual(loadPersistedEtagEntries(kv), [valid]);
   const store = persistentEtagStore(kv);
   assert.deepEqual(store.get(valid[0]), valid[1]);
   assert.equal(store.get(oversized[0]), undefined);

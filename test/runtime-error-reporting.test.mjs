@@ -6,7 +6,6 @@ import { test } from 'node:test';
 import {
   RUNTIME_ERROR_CODE,
   RUNTIME_ERROR_TEXT,
-  RUNTIME_ERROR_WITHOUT_PANEL_TEXT,
   SIDECAR_SHOW_LOG_TEXT,
   editorActionFailureText,
   runtimeFailureLine,
@@ -31,7 +30,7 @@ test('the banner text is the agreed sentence and contains no dashes', () => {
     RUNTIME_ERROR_TEXT,
     'Packageawy hit an internal error. Changes are paused until you close and reopen the Packageawy panel. The Packageawy log has the details.'
   );
-  for (const text of [RUNTIME_ERROR_TEXT, RUNTIME_ERROR_WITHOUT_PANEL_TEXT, SIDECAR_SHOW_LOG_TEXT,
+  for (const text of [RUNTIME_ERROR_TEXT, SIDECAR_SHOW_LOG_TEXT,
     editorActionFailureText('open-file'), editorActionFailureText('open-link'), editorActionFailureText('open-settings')]) {
     assert.doesNotMatch(text, /[–—]/);
   }

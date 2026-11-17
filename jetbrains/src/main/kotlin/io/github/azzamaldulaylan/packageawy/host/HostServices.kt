@@ -41,7 +41,7 @@ interface HostServices {
     /** Completes with the chosen index, or null when dismissed or cancelled. */
     fun showQuickPick(items: List<QuickPickEntry>, settings: QuickPickSettings, cancel: CancelSignal): CompletableFuture<Int?>
 
-    /** Returns a stop handle so a late launch can be terminated after sidecar teardown. */
+    /** The stop handle serves explicit termination. Sidecar teardown releases ownership without stopping an ongoing install. */
     fun startProcess(request: ProcessStart, onExit: (exitCode: Int?) -> Unit): AutoCloseable
 
     /** One-based line and column. */

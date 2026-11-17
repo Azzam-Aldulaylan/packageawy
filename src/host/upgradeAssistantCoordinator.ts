@@ -512,20 +512,6 @@ function attachTrustedProjectCompatibilityNavigation(input: {
   });
 }
 
-export function compatibilitySummary(analysis: Awaited<ReturnType<typeof analyzeCompatibility>>): string[] {
-  const important = analysis.findings.filter((finding) => finding.status !== 'compatible').slice(0, 4);
-  return [
-    `Result: ${analysis.status}${analysis.completeness === 'partial' ? ' (partial evidence)' : ''}.`,
-    ...important.map((finding) => `• ${finding.explanation}`),
-    ...(analysis.findings.length > important.length
-      ? [`• ${analysis.findings.length - important.length} additional finding(s).`]
-      : []),
-    ...(analysis.resolverVerification === undefined
-      ? []
-      : [`Resolver: ${analysis.resolverVerification.explanation}`]),
-  ];
-}
-
 interface StoredAnalysis {
   id: string;
   /** Original lookup keys: every item is re-validated fresh at confirm time. */
@@ -2346,8 +2332,7 @@ export class UpgradeAssistantCoordinator {
     const eligibility = eligibilities[0] ?? null;
     const reservationKey = eligibility?.packageName ?? requestedPackage;
 
-    // Same reservation discipline as an upgrade: held across analysis and
-    // however long the review modal stays open, not merely execution.
+    // Reserve during analysis only. Confirmation acquires a fresh mutation reservation.
     const handle = this.reserve(reservationKey);
     if (!handle.ok) {
       this.options.sink.postMessage({

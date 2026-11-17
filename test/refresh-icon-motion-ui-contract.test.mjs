@@ -16,7 +16,6 @@ test('refresh icons spin with their counter-clockwise arrowheads', () => {
     'manage-removal-stat__spinner',
     'vuln-recommended__spin',
     'usage-status__icon--spin',
-    'removal-review__loading-icon',
     'banner__icon--spin',
   ]) {
     assert.match(
@@ -43,7 +42,6 @@ test('refresh motion is disabled when reduced motion is requested', () => {
   assert.ok(reducedMotionEnd > reducedMotionStart, 'reduced-motion styles should be bounded');
   assert.match(reducedMotionBlock, /\.banner__icon--spin\s*{\s*animation:\s*none;/s);
   assert.match(reducedMotionBlock, /\.stale-status__icon,/);
-  assert.match(reducedMotionBlock, /\.removal-review__loading-icon,/);
 });
 
 test('the reduced-motion override for banner spinners comes after their animation rule', () => {
