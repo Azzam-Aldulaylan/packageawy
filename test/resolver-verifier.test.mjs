@@ -488,6 +488,8 @@ test('a pnpm workspace member resolves inside a rebuilt workspace, so workspace:
   const verifier = workspaceVerifier(observed, { retainResolvedGraph: true });
   const verification = await verifier.verify(workspaceProposal);
   assert.equal(verification.status, 'compatible');
+  assert.equal(verification.code, 'RESOLVED');
+  assert.doesNotMatch(verification.explanation, /partial|not included|may differ/);
   assert.deepEqual(observed.rootEntries, ['apps', 'package.json', 'packages', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']);
   assert.match(observed.workspaceYaml, /packages\/\*/);
   assert.equal(observed.siblingManifest.name, '@acme/shared');

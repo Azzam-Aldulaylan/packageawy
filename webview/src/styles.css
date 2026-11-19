@@ -7363,6 +7363,10 @@ button {
   background: var(--vscode-button-background);
 }
 
+.smart-cleanup-selection-bar__status > span[data-selected='false'] {
+  visibility: hidden;
+}
+
 .smart-cleanup-selection-bar__status > span svg {
   width: 0.85rem;
   height: 0.85rem;
@@ -7629,7 +7633,7 @@ button {
 }
 
 .smart-cleanup-action__type {
-  align-self: center;
+  align-self: start;
   color: var(--smart-cleanup-muted);
   font-size: 0.8em;
   text-transform: capitalize;
@@ -9014,7 +9018,7 @@ body.vscode-high-contrast-light .upgrade-decision {
 .change-result__actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding-top: 16px; border-top: 1px solid var(--vscode-contrastBorder, var(--dashboard-line)); }
 .change-result__actions > [role="status"], .change-result__actions > .banner { order: 1; flex-basis: 100%; margin: 0; }
 .change-result button:focus-visible, .change-result summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
-.change-result [tabindex="-1"]:focus { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+.change-result [tabindex="-1"]:focus, .change-result [tabindex="-1"]:focus-visible { outline: none; }
 @media (max-width: 480px) {
   .change-result__section-title { flex-wrap: wrap; }
   .change-result__facts > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }

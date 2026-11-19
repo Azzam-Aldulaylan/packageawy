@@ -61,12 +61,13 @@ export function CompatibilityFindings({
   const resolverNeedsReview = resolver?.status === 'warning' || resolver?.status === 'conflict';
   const resolverItem = resolver === undefined ? null : (
     <OutcomeStatus
-      label={resolver.status === 'warning' ? `Warning: ${resolverOutcomeDisplay(resolver.status).label}` : resolverOutcomeDisplay(resolver.status).label}
+      label={resolver.code === 'RESOLUTION_PARTIAL' ? 'Package manager check was partial'
+        : resolver.status === 'warning' ? `Warning: ${resolverOutcomeDisplay(resolver.status).label}` : resolverOutcomeDisplay(resolver.status).label}
       className={resolverOutcomeDisplay(resolver.status).className}
       detail={resolverNeedsReview
         ? <>{resolver.explanation} Review the package manager findings before upgrading.</>
         : resolver.status === 'unknown'
-          ? 'Static checks completed, but npm/pnpm verification was unavailable.'
+          ? (resolver.completeness === 'partial' ? resolver.explanation : 'Static checks completed, but npm/pnpm verification was unavailable.')
           : `${resolver.packageManager} resolved the proposed dependency tree.`}
     />
   );

@@ -1685,6 +1685,7 @@ export class UpgradeAssistantCoordinator {
             packageManagerVersion: packageManagerInvocation.version ?? null,
             invocation: packageManagerInvocation,
             manifestText: preflightProject.manifestText,
+            importerId: preflightProject.importerId,
             ...(preflightProject.lockfileText === null || preflightProject.lockfileName === null
               ? {}
               : {
@@ -2788,6 +2789,7 @@ export class UpgradeAssistantCoordinator {
       invocation: packageManagerInvocation,
       manifestText: preflightProject.manifestText,
       lockfile: { name: preflightProject.lockfileName, text: preflightProject.lockfileText },
+      importerId: preflightProject.importerId,
       registry: preflightProject.registry,
       resolvedRegistry: preflightProject.resolvedRegistry,
       policy: preflightProject.peerPolicy,

@@ -705,6 +705,34 @@ test('dependency warnings stay visible while Show more still reveals supporting 
   assert.equal(area.querySelector('.analysis-card__more'), null);
 });
 
+for (const [name, Component, props] of [['single', UpgradeReviewPanel, panelProps], ['bulk', UpgradeAnalysisModal, common]]) {
+  test(`${name} review shows partial npm coverage with an unknown icon and incomplete verdict`, () => {
+    const explanation = 'Checked with this package.json and the lockfile only. Other packages in this workspace were not included. A real install may differ.';
+    const value = analysis({ compatibility: { status: 'unknown', completeness: 'partial', findings: [],
+      resolverVerification: { status: 'unknown', completeness: 'partial', packageManager: 'npm', packageManagerVersion: '10', code: 'RESOLUTION_PARTIAL', explanation } } });
+    const dom = new JSDOM(render(Component, { ...props, analysis: value }));
+    try {
+      const area = reviewArea(dom.window.document, name, 'dependency');
+      const result = area.querySelector('.outcome-status--unknown');
+      assert.ok(result.querySelector('svg'), 'coverage has an icon as well as text');
+      assert.match(result.textContent, /Package manager check was partial/);
+      assert.ok(result.textContent.includes(explanation));
+      assert.match(dom.window.document.body.textContent, /Checks incomplete/);
+      assert.doesNotMatch(area.textContent, /resolution succeeded|resolved the proposed dependency tree|verification was unavailable/);
+      assert.equal(area.querySelector('.outcome-status--compatible'), null);
+    } finally { dom.window.close(); }
+  });
+}
+
+test('an unknown resolver result with full coverage keeps the plain unavailable line', () => {
+  const explanation = 'Package-manager resolution verification was unavailable.';
+  const value = analysis({ compatibility: { status: 'unknown', completeness: 'partial', findings: [],
+    resolverVerification: { status: 'unknown', packageManager: 'npm', packageManagerVersion: '10', code: 'RESOLVER_UNAVAILABLE', explanation } } });
+  const html = render(UpgradeReviewPanel, { ...panelProps, analysis: value });
+  assert.ok(html.includes('Static checks completed, but npm/pnpm verification was unavailable.'));
+  assert.ok(!html.includes(explanation));
+});
+
 test('resolver conflicts display their reason without claiming resolution succeeded', () => {
   const value = analysis({ compatibility: { status: 'conflict', completeness: 'complete', findings: [],
     resolverVerification: { status: 'conflict', packageManager: 'npm', packageManagerVersion: '10', code: 'ERESOLVE', explanation: 'Required peer versions conflict.' } } });

@@ -25,7 +25,7 @@ const bundle = await build({ entryPoints: ['src/host/upgradeAssistantCoordinator
 const { UpgradeAssistantCoordinator } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 import { resolvedTarget } from './helpers/mutation-target.mjs';
 
-async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false, cancelAt, disableAtAdvisory = false, toggleAfterSecurity, toggleAtFinalRead = false, toggleDuringRecheck = false, toggleDuringSmartPlan = false, confirm = false } = {}) {
+async function analyze({ coordinated = false, bulk = false, off = false, resolverFails = false, advisoryFails = false, cancelAt, disableAtAdvisory = false, toggleAfterSecurity, toggleAtFinalRead = false, toggleDuringRecheck = false, toggleDuringSmartPlan = false, confirm = false, sourceOverrides = {} } = {}) {
   const messages = [];
   const posts = [];
   const resolvedManifests = [];
@@ -46,7 +46,7 @@ async function analyze({ coordinated = false, bulk = false, off = false, resolve
   const source = { root: '/fixture', manifestText: JSON.stringify({ dependencies }), lockfileText: JSON.stringify({ lockfileVersion: 3, packages }),
     lockfilePath: '/fixture/package-lock.json', lockfileRoot: '/fixture', lockfileName: 'package-lock.json', importerId: '.',
     registry: 'https://registry.npmjs.org/', resolvedRegistry: { url: 'https://registry.npmjs.org/', source: 'default', scoped: {} },
-    peerPolicy: { strictPeerDeps: true, legacyPeerDeps: false }, packageManager: 'npm', mutationTarget: resolvedTarget('/fixture') };
+    peerPolicy: { strictPeerDeps: true, legacyPeerDeps: false }, packageManager: 'npm', mutationTarget: resolvedTarget('/fixture'), ...sourceOverrides };
   const changes = [{ packageName: 'app', currentVersion: '1.0.0', target: bulk ? '3.0.0' : '2.0.0', classification: 'prod' },
     ...(bulk ? [{ packageName: 'peer', currentVersion: '1.0.0', target: '2.0.0', classification: 'prod' }] : [])];
   globalThis.__reviewSecurityRunner = { async run(_, args, cwd, signal) {
@@ -211,6 +211,23 @@ for (const off of [false, true]) {
       if (off) assert.equal(messages.at(-1).error?.code, 'SECURITY_ACKNOWLEDGEMENT_REQUIRED', 'confirmation uses the reconciled evidence');
     });
   }
+}
+
+for (const [name, sourceOverrides, reason] of [
+  ['npm root', { manifestText: JSON.stringify({ dependencies: { app: '^1.0.0' }, workspaces: ['packages/*'] }) }, /Other packages in this workspace/],
+  ['npm member', { importerId: 'packages/app' }, /root package\.json settings/],
+  ['npm local source', { manifestText: JSON.stringify({ dependencies: { app: '^1.0.0', local: 'file:../local' } }) }, /Local dependency files and linked packages/],
+]) {
+  test(`coordinator carries ${name} omissions through compatibility and security`, async () => {
+    const { result, posts, resolvedManifests } = await analyze({ sourceOverrides });
+    assert.equal(result.compatibility.status, 'unknown');
+    assert.equal(result.compatibility.completeness, 'partial');
+    assert.equal(result.compatibility.resolverVerification.code, 'RESOLUTION_PARTIAL');
+    assert.match(result.compatibility.resolverVerification.explanation, reason);
+    assert.equal(result.security.checkState, 'unavailable');
+    assert.equal(posts.length, 0, 'a partial graph cannot prove security outcomes');
+    assert.equal(resolvedManifests.length, 1, 'the partial resolver still runs once');
+  });
 }
 
 test('reconciliation checks the executable coordinated proposal after enabling security', async () => {

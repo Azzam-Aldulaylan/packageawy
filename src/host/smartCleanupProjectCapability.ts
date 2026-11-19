@@ -1,12 +1,14 @@
 import type { OtherPackageManager } from '../core/manifest/parse.js';
 import type { PackageManagerKind } from '../core/types.js';
-import { otherPackageManagerMessage } from './packageManagerSupport.js';
+import type { MutationTargetResolution } from './mutationTarget.js';
+import { otherPackageManagerMessage, requireMutationTarget } from './packageManagerSupport.js';
 
 export interface SmartCleanupProjectSource {
   packageManager: PackageManagerKind;
   importerId: string;
   lockfileName: 'package-lock.json' | 'npm-shrinkwrap.json' | 'pnpm-lock.yaml' | null;
   otherPackageManager?: OtherPackageManager | null;
+  mutationTarget?: MutationTargetResolution | null;
 }
 
 export type SmartCleanupProjectCapability =
@@ -26,27 +28,31 @@ export function smartCleanupProjectCapability(
     return { executionSupported: false, reason: otherPackageManagerMessage(source.otherPackageManager) };
   }
   if (source.importerId !== '.') {
+    const removal = requireMutationTarget(source);
+    const advice = removal.ok
+      ? 'You can remove it from Manage dependency.'
+      : removal.error.message;
     return {
       executionSupported: false,
-      reason: 'This workspace member shares a root lockfile, so Smart Cleanup is analysis-only here.',
+      reason: ["This package shares the workspace lockfile, so Smart Cleanup can't remove it here.", advice].filter(Boolean).join(' '),
     };
   }
   if (source.lockfileName === null) {
     return {
       executionSupported: false,
-      reason: 'Smart Cleanup needs a supported lockfile before it can execute removals.',
+      reason: 'Smart Cleanup needs a package-lock.json or pnpm-lock.yaml to remove packages.',
     };
   }
   if (source.lockfileName === 'npm-shrinkwrap.json') {
     return {
       executionSupported: false,
-      reason: 'npm-shrinkwrap projects are analysis-only in this Smart Cleanup release.',
+      reason: "Smart Cleanup can't remove packages in projects that use npm-shrinkwrap.json.",
     };
   }
   if (source.packageManager !== 'npm' && source.packageManager !== 'pnpm') {
     return {
       executionSupported: false,
-      reason: `Smart Cleanup cannot execute with the ${source.packageManager} package manager.`,
+      reason: `Smart Cleanup can't remove packages in projects that use ${source.packageManager}.`,
     };
   }
   return { executionSupported: true };

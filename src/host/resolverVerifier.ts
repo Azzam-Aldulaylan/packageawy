@@ -32,6 +32,7 @@ import { stripUrlCredentials } from '../core/cache/keys.js';
 import { NodePackageManagerProcessRunner } from './packageManagerProcessRunner.js';
 import { throwIfAborted } from './npmResolverAsync.js';
 import { sanitizeProcessDiagnostic } from './sanitizeProcessDiagnostic.js';
+import { npmManifestResolverLimitations } from './isolatedResolverContext.js';
 
 export interface PackageManagerInvocation {
   executable: string;
@@ -103,6 +104,8 @@ export interface IsolatedResolverVerifierOptions {
   retainResolvedGraph?: boolean;
   /** Set for a pnpm workspace. The lockfile then belongs to the workspace root. */
   workspace?: IsolatedWorkspaceLayout;
+  /** Lock-root-relative project identity, including npm workspace members. */
+  importerId?: string;
 }
 
 /**
@@ -285,6 +288,7 @@ function verificationForResult(
 
 export class IsolatedResolverVerifier implements ResolverVerifier {
   private readonly runner: ResolverProcessRunner;
+  private readonly partialExplanation: string | undefined;
   private readonly reviewResolutions = new Map<string, Promise<ResolverVerification>>();
   private readonly reviewGraphs = new Map<string, DependencyGraph>();
 
@@ -296,6 +300,19 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
 
   constructor(private readonly options: IsolatedResolverVerifierOptions) {
     this.runner = options.runner ?? new NodeResolverProcessRunner();
+    // pnpm workspace staging and its fail-closed availability rules stay unchanged.
+    const reasons = options.packageManager === 'npm'
+      ? npmManifestResolverLimitations(options.manifestText, options.importerId)
+      : [];
+    if (reasons.length > 0) {
+      const checked = options.lockfile === undefined ? 'Checked with this package.json only.'
+        : 'Checked with this package.json and the lockfile only.';
+      this.partialExplanation = `${checked} ${[...new Set(reasons)].join(' ')} A real install may differ.`;
+    }
+  }
+
+  get partialCoverage(): string | undefined {
+    return this.partialExplanation;
   }
 
   /** pnpm can succeed while leaving a member out of the workspace, so its importer must be in the written lockfile. */
@@ -404,7 +421,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
           explanation: 'Isolated resolver verification finished without resolving this workspace project.',
         };
       }
-      if (this.options.retainResolvedGraph && result.exitCode === 0) {
+      if (this.options.retainResolvedGraph && result.exitCode === 0 && this.partialExplanation === undefined) {
         try {
           const lockfileName = this.options.packageManager === 'pnpm' ? 'pnpm-lock.yaml'
             : this.options.lockfile?.name ?? 'package-lock.json';
@@ -418,12 +435,19 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
           // Resolution can succeed without a parseable graph. Security stays unavailable.
         }
       }
-      return verificationForResult(
+      const verification = verificationForResult(
         this.options.packageManager,
         this.options.packageManagerVersion,
         result,
         tempRoot
       );
+      if (this.partialExplanation !== undefined) {
+        if (result.exitCode === 0) {
+          return { ...verification, status: 'unknown', completeness: 'partial', code: 'RESOLUTION_PARTIAL', explanation: this.partialExplanation };
+        }
+        return { ...verification, completeness: 'partial', explanation: `${verification.explanation} ${this.partialExplanation}` };
+      }
+      return verification;
     } finally {
       // Windows may release process handles after settlement. Retry briefly;
       // cleanup remains best effort even if a descendant or handle survives.
@@ -454,7 +478,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     proposal: UpgradeProposal,
     signal?: AbortSignal
   ): Promise<{ ok: true; graph: DependencyGraph } | { ok: false }> {
-    if (this.options.workspace?.unavailableReason !== undefined) return { ok: false };
+    if (this.options.workspace?.unavailableReason !== undefined || this.partialExplanation !== undefined) return { ok: false };
     if (this.options.retainResolvedGraph && proposal.changes.length > 0) {
       await this.verify(proposal, signal);
       const graph = this.reviewGraphs.get(this.proposalKey(proposal));
@@ -522,6 +546,7 @@ export class IsolatedResolverVerifier implements ResolverVerifier {
     | { ok: true; graph: DependencyGraph; beforeGraph: DependencyGraph; lockfileText: string }
     | { ok: false; reason: string; code?: 'RESOLVER_TIMEOUT' }
   > {
+    if (this.partialExplanation !== undefined) return { ok: false, reason: this.partialExplanation };
     if (this.options.lockfile === undefined) {
       return { ok: false, reason: 'A supported active lockfile is required for an automatic transitive fix.' };
     }

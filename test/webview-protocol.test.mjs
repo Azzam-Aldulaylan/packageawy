@@ -704,6 +704,26 @@ test('upgrade-analysis rejects an unknown compatibility status or classification
   );
 });
 
+test('resolver completeness is optional and validated independently of failure status', () => {
+  const resolver = {
+    status: 'conflict', packageManager: 'npm', packageManagerVersion: '10.0.0',
+    code: 'RESOLUTION_CONFLICT', explanation: 'ERESOLVE peer dependency conflict. Other workspace packages were not included.',
+  };
+  const accepts = resolverVerification => isHostToWebviewMessage({
+    status: 'upgrade-analysis', requestId: 'req-1',
+    analysis: { ...MINIMAL_ANALYSIS, compatibility: {
+      status: 'conflict', completeness: 'partial', findings: [], resolverVerification,
+    } },
+  });
+  assert.equal(accepts(resolver), true);
+  for (const completeness of ['complete', 'partial']) {
+    assert.equal(accepts({ ...resolver, completeness }), true);
+  }
+  for (const completeness of ['invalid', null, false, 0, {}, []]) {
+    assert.equal(accepts({ ...resolver, completeness }), false);
+  }
+});
+
 test('upgrade-analysis accepts one structurally valid compatibility finding, and rejects one with an unknown kind', () => {
   const finding = {
     id: '["peer-incompatible","some-library","react-toastify","10.0.6"]',

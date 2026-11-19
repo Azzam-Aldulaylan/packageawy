@@ -355,14 +355,18 @@ async function runResolverVerification(
   } catch (cause) {
     if (cancellationCause(cause, options.signal)) throw new CompatibilityCancelledError();
     const timedOut = cause instanceof Error && cause.name === 'TimeoutError';
+    const explanation = timedOut
+      ? 'Package-manager resolution exceeded the analysis time limit. Check registry access and retry. Dependency compatibility is not verified.'
+      : 'Package-manager resolution verification was unavailable.';
+    // A thrown failure keeps the coverage the verifier already knew about.
+    const partial = options.resolverVerifier.partialCoverage;
     return {
       status: 'unknown',
+      ...(partial === undefined ? {} : { completeness: 'partial' as const }),
       packageManager: graphPackageManager(options.graph),
       packageManagerVersion: null,
       code: timedOut ? 'RESOLVER_TIMEOUT' : 'RESOLVER_UNAVAILABLE',
-      explanation: timedOut
-        ? 'Package-manager resolution exceeded the analysis time limit. Check registry access and retry. Dependency compatibility is not verified.'
-        : 'Package-manager resolution verification was unavailable.',
+      explanation: partial === undefined ? explanation : `${explanation} ${partial}`,
     };
   }
 }
@@ -490,7 +494,8 @@ export async function analyzeCompatibility(
   }
 
   throwIfCancelled(options.signal);
-  if (findings.some((finding) => finding.status === 'unknown')) completeness = 'partial';
+  if (findings.some((finding) => finding.status === 'unknown') ||
+      resolverVerification?.completeness === 'partial' || resolverVerification?.code === 'RESOLUTION_PARTIAL') completeness = 'partial';
 
   const result: CompatibilityAnalysis = {
     proposal: options.proposal,
