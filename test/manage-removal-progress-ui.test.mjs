@@ -32,7 +32,7 @@ const bundle = await build({
   plugins: [{
     name: 'shared-react',
     setup(plugin) {
-      plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, (args) => ({
+      plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, (args) => ({
         path: pathToFileURL(require.resolve(args.path)).href,
         external: true,
       }));
@@ -280,7 +280,7 @@ test('a removal error after the package left shows the failure and rollback outc
   const manage = text(renderManage({ removalRun: { phase: 'error', error: { code: 'ROLLBACK_FAILED', message: 'Rollback failed.' } } }));
   assert.match(manage, /Removal partly failed/);
   assert.match(manage, /Rollback Failed/);
-  assert.doesNotMatch(manage, /\bClose\b/);
+  assert.match(manage, /\bClose\b/);
 });
 
 test('focus moves to the heading of each new removal view', () => {

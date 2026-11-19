@@ -1,3 +1,4 @@
+import { DialogFooter } from './DialogFooter.js';
 import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
@@ -204,19 +205,19 @@ export function RemoveAnalysisModal({
           />}
         </div>
 
-        <footer className="modal__footer">
+        <DialogFooter>
           <button type="button" className="button button--secondary" onClick={onCancel} disabled={busy}>
             Cancel
           </button>
           <button
             type="button"
-            className="button button--danger"
+            className="button button--primary button--removal"
             onClick={onConfirm}
             disabled={busy || analysis === null}
           >
             {bulk ? `Remove ${displayedPackages.length} dependencies` : `Remove ${displayedPackages[0] ?? ''}`}
           </button>
-        </footer>
+        </DialogFooter>
       </div>
     </div>
   );

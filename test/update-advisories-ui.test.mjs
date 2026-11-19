@@ -15,7 +15,7 @@ const bundle = await build({ stdin: { contents: `
   export { SeverityBadge } from './webview/src/components/SeverityBadge.tsx';
 `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser',
   define: { 'process.env.NODE_ENV': '"production"' }, plugins: [{ name: 'shared-react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }] });
 const { UpdateAdvisoryContext, AvailableVersionCell, OverviewPanel, UpgradeTargetSelector, SeverityBadge } = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);

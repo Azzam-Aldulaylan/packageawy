@@ -20,7 +20,7 @@ const bundled = await build({ stdin: { contents: `
   export { createSmartCleanupState, smartCleanupReducer } from './webview/src/smartCleanupState.ts';
 `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'node',
   plugins: [{ name: 'shared-react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
 const { buildSmartCleanupPlan, RecoveryScreen, SmartCleanupWorkspace, DependencyChangeContext, UndoBackupContext, createSmartCleanupState, smartCleanupReducer: reduce } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
@@ -70,9 +70,9 @@ test('cleanup result disables Undo and announces opening inside the dialog until
   const element = openingId => h(UndoBackupContext.Provider, { value: { entries: [], disabled: openingId !== null, openingId, review: noop } },
     workspace(state, {}, { onRestoreFiles: () => requests++ }));
   const dom = mount(t, element(null));
-  const footer = dom.document.querySelector('.smart-cleanup-footer');
+  const footer = dom.document.querySelector('.dialog-footer');
   assert.equal(footer.previousElementSibling.className, 'smart-cleanup-body');
-  assert.deepEqual(texts(footer.querySelectorAll('button')), ['Undo cleanup', 'Analyze current project']);
+  assert.deepEqual(texts(footer.querySelectorAll('button')), ['Undo cleanup', 'Analyze current project', 'Close']);
   assert.equal(dom.document.querySelector('.smart-cleanup-results__headline button'), null);
   const button = footer.querySelector('[data-undo-id]');
   assert.equal(button.disabled, false);
@@ -113,7 +113,7 @@ test('recovery decisions share a final section, consistent rows and keyboard ord
   assert.match(document.querySelector('legend').textContent, /packages[\\/]app[\\/]package\.json/);
   const css = await readFile(path.join(process.cwd(), 'webview', 'src', 'styles.css'), 'utf8');
   assert.match(css, /\.recovery__action\s*\{[^}]*flex-direction: column/);
-  assert.match(css, /\.smart-cleanup-results__actions \.button--primary \{ font-weight: 700/);
+  assert.match(css, /\.dialog-footer \.button\s*\{[^}]*white-space: normal/);
   assert.match(css, /\.recovery button:focus-visible[^}]*var\(--vscode-focusBorder\)/);
 });
 
@@ -142,18 +142,18 @@ for (const retryDiscovery of [false, true]) test(`cleanup has one blocked status
   const { document } = dom;
   assert.equal(document.querySelectorAll('.smart-cleanup-results__headline').length, 1);
   assert.equal(document.querySelector('.banner'), null);
-  assert.equal(document.querySelector('.smart-cleanup-footer').parentElement, document.querySelector('[role="dialog"]'));
-  assert.ok(document.querySelector('.smart-cleanup-footer .smart-cleanup-results__actions'));
-  assert.equal(document.querySelector('.smart-cleanup-body .smart-cleanup-results__actions'), null);
-  const group = document.querySelector('.smart-cleanup-results__actions');
-  assert.deepEqual(texts(group.querySelectorAll('button')), [retryDiscovery ? 'Retry discovery' : 'Open recovery', 'Analyze current project']);
+  assert.equal(document.querySelector('.dialog-footer').parentElement, document.querySelector('[role="dialog"]'));
+  assert.ok(document.querySelector('.dialog-footer .dialog-footer__actions'));
+  assert.equal(document.querySelector('.smart-cleanup-body .dialog-footer__actions'), null);
+  const group = document.querySelector('.dialog-footer__actions');
+  assert.deepEqual(texts(group.querySelectorAll('button')), [retryDiscovery ? 'Retry discovery' : 'Open recovery', 'Analyze current project', 'Close']);
   assert.equal(group.querySelectorAll('.button--primary').length, 1);
-  assert.equal(group.children[1].disabled, true);
+  assert.equal(group.querySelectorAll('button')[1].disabled, true);
   assert.doesNotMatch(document.body.textContent, /before the result can be trusted|Undo cleanup/);
   assert.match(document.querySelector('[role="status"]').textContent, /Finish dependency recovery/);
-  act(() => group.children[0].click());
+  act(() => group.querySelectorAll('button')[0].click());
   assert.equal(opened, 1);
-  const last = group.querySelector('button:not(:disabled)');
+  const last = [...group.querySelectorAll('button:not(:disabled)')].at(-1);
   last.focus();
   const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
   document.dispatchEvent(event);
@@ -177,9 +177,9 @@ test('resolved recovery replaces failed outcome, announces next step and keeps f
   assert.match(dom.document.querySelector('[role="status"]').textContent, /The backup was deleted. Analyze the current project/);
   assert.doesNotMatch(dom.document.body.textContent, /3 cleanup actions|Failed actions|manual review|Cleanup done|checks passed/);
   assert.equal(dom.document.querySelector('.smart-cleanup-metrics'), null);
-  const group = dom.document.querySelector('.smart-cleanup-results__actions');
-  assert.equal(group.children[0].disabled, false);
-  act(() => group.children[0].click()); assert.equal(analyzed, 1);
+  const group = dom.document.querySelector('.dialog-footer__actions');
+  assert.equal(group.querySelectorAll('button')[0].disabled, false);
+  act(() => group.querySelectorAll('button')[0].click()); assert.equal(analyzed, 1);
   act(() => dom.document.querySelector('.modal__close').click()); assert.equal(closed, 1);
   dom.unmount();
   assert.equal(dom.document.activeElement.id, 'opener');
@@ -227,8 +227,8 @@ test('successful removals show missing counts separately and announce both outco
   assert.ok(caveat.querySelector('svg'), 'the caveat uses an icon and text');
   assert.match(dom.document.querySelector('[role="status"]').textContent, /Cleanup done\. 3 packages removed\./);
   assert.ok(dom.document.querySelector('[role="status"]').textContent.includes(metricsNote));
-  const actions = dom.document.querySelector('.smart-cleanup-results__actions');
-  assert.deepEqual(texts(actions.querySelectorAll('button')), ['Undo cleanup', 'Analyze current project']);
+  const actions = dom.document.querySelector('.dialog-footer__actions');
+  assert.deepEqual(texts(actions.querySelectorAll('button')), ['Undo cleanup', 'Analyze current project', 'Close']);
   for (const button of actions.querySelectorAll('button')) { button.focus(); assert.equal(dom.document.activeElement, button); }
   assert.doesNotMatch(dom.document.body.textContent, /Failed actions|manual review|Cleanup needs attention/);
   dom.update(workspace(reduce(state, { type: 'backup-updated', analysisId: 'cleanup-a', outcome: 'changed' })));

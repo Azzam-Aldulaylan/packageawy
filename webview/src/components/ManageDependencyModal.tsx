@@ -1,3 +1,4 @@
+import { DialogFooter, DialogFooterScope } from './DialogFooter.js';
 import { UpgradeChangeResult } from './ChangeResult.js';
 import { TransitiveFixReview } from './TransitiveFixReview.js';
 import { DependencyChangeStatus } from './DependencyChangeStatus.js';
@@ -574,115 +575,126 @@ export function ManageDependencyModal({
     );
   }
 
+  const showResultFooter = (activeTab === 'upgrade' && upgradeResult !== null) ||
+    (activeTab === 'removal' && removalRun !== null && removalRun.phase !== 'running') ||
+    ((activeTab === 'overview' || activeTab === 'vulnerabilities') && remediation?.phase === 'result');
+  // Preserve the original footer's note visibility after moving notes into the body.
+  const showFooterNote = !showResultFooter &&
+    !(activeTab === 'upgrade' && upgrade.analysis !== null) &&
+    !(activeTab === 'removal' && removal.analysis !== null && removalRun === null);
+  const upgradeOwnsNavigation = activeTab === 'upgrade' && upgradeResult === null &&
+    (upgrade.active || startingUpgradeReview) && upgrade.targetVersion !== null;
+
   const worstSeverity = row.worstSeverity;
   const usageChecking = usage === undefined || usage.phase === 'analyzing';
 
   return (
+    <DialogFooterScope>
     <div className="modal-overlay modal-overlay--manage" onClick={onOverlayClick}>
       <div
-        className={`modal manage-modal${activeTab === 'upgrade' || activeTab === 'removal' ? ' manage-modal--decision-review' : ''}`}
+        className="modal manage-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="manage-dependency-title"
         tabIndex={-1}
         ref={dialogRef}
       >
-        <header className="modal__header">
-          <div className="modal__header-text">
-            <span className="manage-modal__header-icon" aria-hidden="true">
-              <IconSliders />
-            </span>
-            <div className="manage-modal__header-copy">
-              <h2 className="modal__title" id="manage-dependency-title">
-                Manage dependency
-              </h2>
-              <p className="modal__subtitle">Choose an action or review package details.</p>
-              <div className="manage-modal__identity">
-                <PackageIcon name={row.name} />
-                <span className="manage-modal__identity-name">{row.name}</span>
-                <StatusBadge label={row.current ?? row.range} />
-                <StatusBadge label={CLASSIFICATION_LABEL[classificationOf(row)]} tone="accent" />
+        <div className="manage-modal__scroll">
+          <header className="modal__header">
+            <div className="modal__header-text">
+              <span className="manage-modal__header-icon" aria-hidden="true">
+                <IconSliders />
+              </span>
+              <div className="manage-modal__header-copy">
+                <h2 className="modal__title" id="manage-dependency-title">
+                  Manage dependency
+                </h2>
+                <p className="modal__subtitle">Choose an action or review package details.</p>
+                <div className="manage-modal__identity">
+                  <PackageIcon name={row.name} />
+                  <span className="manage-modal__identity-name">{row.name}</span>
+                  <StatusBadge label={row.current ?? row.range} />
+                  <StatusBadge label={CLASSIFICATION_LABEL[classificationOf(row)]} tone="accent" />
+                </div>
+                {row.description !== undefined ? (
+                  <p className="manage-modal__identity-description">{row.description}</p>
+                ) : null}
               </div>
-              {row.description !== undefined ? (
-                <p className="manage-modal__identity-description">{row.description}</p>
-              ) : null}
             </div>
-          </div>
-          <div className="manage-modal__header-actions">
-            {closeLabel === 'Close' ? null : (
-              <DirectionalButton
-                direction="back"
-                className="button button--small button--secondary"
-                onClick={onClose}
-                disabled={blockClose}
-                data-smart-cleanup-return
-              >
-                {closeLabel}
-              </DirectionalButton>
-            )}
-            <button type="button" className="modal__close" onClick={onClose} ref={closeButtonRef} aria-label="Close dialog" disabled={blockClose}>
-              <IconX />
-            </button>
-          </div>
-        </header>
+            <div className="manage-modal__header-actions">
+              {closeLabel === 'Close' ? null : (
+                <DirectionalButton
+                  direction="back"
+                  className="button button--small button--secondary"
+                  onClick={onClose}
+                  disabled={blockClose}
+                  data-smart-cleanup-return
+                >
+                  {closeLabel}
+                </DirectionalButton>
+              )}
+              <button type="button" className="modal__close" onClick={onClose} ref={closeButtonRef} aria-label="Close dialog" disabled={blockClose}>
+                <IconX />
+              </button>
+            </div>
+          </header>
 
-        <nav className="manage-tabs" role="tablist" aria-label="Manage dependency sections" aria-orientation="horizontal">
-          <TabButton id="overview" label="Overview" icon={<IconInfo />} active={activeTab === 'overview'} onSelect={onChangeTab} />
-          <TabButton
-            id="vulnerabilities"
-            label="Vulnerabilities"
-            icon={<IconShield />}
-            active={activeTab === 'vulnerabilities'}
-            dotTone={shouldShowUpgradeVulnerabilitySeverity(upgradeEnrichment) ? worstSeverity ?? undefined : undefined}
-            onSelect={onChangeTab}
-          />
-          <TabButton
-            id="usage"
-            label="Usage & references"
-            icon={<IconFolder />}
-            active={activeTab === 'usage'}
-            dotTone={usageChecking ? 'active' : undefined}
-            onSelect={onChangeTab}
-          />
-          <TabButton
-            id="upgrade"
-            label="Upgrade review"
-            icon={<IconTrendUp />}
-            active={activeTab === 'upgrade'}
-            dotTone={upgrade.active ? 'active' : undefined}
-            onSelect={onChangeTab}
-          />
-          <TabButton
-            id="removal"
-            label="Removal review"
-            icon={<IconTrash />}
-            active={activeTab === 'removal'}
-            dotTone={removal.error !== null ? 'critical' : removal.active || removalRun?.phase === 'running' ? 'active' : undefined}
-            onSelect={onChangeTab}
-          />
-        </nav>
+          <nav className="manage-tabs" role="tablist" aria-label="Manage dependency sections" aria-orientation="horizontal">
+            <TabButton id="overview" label="Overview" icon={<IconInfo />} active={activeTab === 'overview'} onSelect={onChangeTab} />
+            <TabButton
+              id="vulnerabilities"
+              label="Vulnerabilities"
+              icon={<IconShield />}
+              active={activeTab === 'vulnerabilities'}
+              dotTone={shouldShowUpgradeVulnerabilitySeverity(upgradeEnrichment) ? worstSeverity ?? undefined : undefined}
+              onSelect={onChangeTab}
+            />
+            <TabButton
+              id="usage"
+              label="Usage & references"
+              icon={<IconFolder />}
+              active={activeTab === 'usage'}
+              dotTone={usageChecking ? 'active' : undefined}
+              onSelect={onChangeTab}
+            />
+            <TabButton
+              id="upgrade"
+              label="Upgrade review"
+              icon={<IconTrendUp />}
+              active={activeTab === 'upgrade'}
+              dotTone={upgrade.active ? 'active' : undefined}
+              onSelect={onChangeTab}
+            />
+            <TabButton
+              id="removal"
+              label="Removal review"
+              icon={<IconTrash />}
+              active={activeTab === 'removal'}
+              dotTone={removal.error !== null ? 'critical' : removal.active || removalRun?.phase === 'running' ? 'active' : undefined}
+              onSelect={onChangeTab}
+            />
+          </nav>
 
-        <div
-          className="manage-modal__body"
-          id="manage-panel"
-          role="tabpanel"
-          aria-labelledby={`manage-tab-${activeTab}`}
-        >
-          <DependencyChangeStatus />
-          {content}
-        </div>
-
-        {(activeTab === 'upgrade' && upgradeResult !== null) || (activeTab === 'removal' && removalRun !== null && removalRun.phase !== 'running') ||
-        ((activeTab === 'vulnerabilities' || activeTab === 'overview') && remediation?.phase === 'result') ||
-        (activeTab === 'upgrade' && upgrade.analysis !== null) ||
-        (activeTab === 'removal' && removal.analysis !== null && removalRun === null) ? null : (
-          <footer className="modal__footer">
-            {footerNote === null ? null : (
+          <div
+            className="manage-modal__body"
+            id="manage-panel"
+            role="tabpanel"
+            aria-labelledby={`manage-tab-${activeTab}`}
+          >
+            <DependencyChangeStatus />
+            {content}
+            {!showFooterNote || footerNote === null ? null : (
               <p className="manage-modal__footer-note">
                 <IconShield className="manage-modal__footer-note-icon" aria-hidden="true" />
                 {footerNote}
               </p>
             )}
+          </div>
+
+        </div>
+
+        <DialogFooter
+          secondary={!showResultFooter && !upgradeOwnsNavigation ? <>
             {closeLabel === 'Close' ? (
               <button type="button" className="button button--secondary" onClick={onClose} disabled={blockClose}>
                 Close
@@ -697,9 +709,15 @@ export function ManageDependencyModal({
                 {closeLabel}
               </DirectionalButton>
             )}
-          </footer>
-        )}
+          </> : null}
+          primary={showResultFooter ? (
+            closeLabel === 'Close' ? <button type="button" className="button button--primary" onClick={onClose} disabled={blockClose}>Close</button> : (
+              <DirectionalButton direction="back" className="button button--primary" onClick={onClose} disabled={blockClose}>{closeLabel}</DirectionalButton>
+            )
+          ) : null}
+        />
       </div>
     </div>
+    </DialogFooterScope>
   );
 }

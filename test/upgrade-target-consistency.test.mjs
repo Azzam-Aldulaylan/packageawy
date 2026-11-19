@@ -34,7 +34,7 @@ const bundle = await build({
   plugins: [{
     name: 'shared-react',
     setup(plugin) {
-      plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({
+      plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({
         path: pathToFileURL(require.resolve(args.path)).href,
         external: true,
       }));

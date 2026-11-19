@@ -1,3 +1,4 @@
+import { DialogFooterActions } from './DialogFooter.js';
 import { AnalysisLoading } from './AnalysisLoading.js';
 import type { ReactElement } from 'react';
 
@@ -523,17 +524,17 @@ export function RemovalReviewPanel({
           {peerBlocked ? null : (
             <p className="analysis-card__hint">The project was not changed. Review the reason above, then run the analysis again.</p>
           )}
-          <div className="removal-review__blocked-actions">
+          <DialogFooterActions>
             <button type="button" className="button button--secondary" onClick={onViewReferences}>
               View usage and references
             </button>
             {!peerBlocked ? (
-              <button type="button" className="button button--subtle" onClick={onAnalyzeRemoval}>
+              <button type="button" className="button button--primary button--removal" onClick={onAnalyzeRemoval}>
                 <IconRefresh />
                 Re-run analysis
               </button>
             ) : null}
-          </div>
+          </DialogFooterActions>
         </section>
       </div>
     );
@@ -550,13 +551,15 @@ export function RemovalReviewPanel({
           Checks source usage, configuration references, scripts, and dependency relationships. Nothing changes unless
           you review and confirm the removal.
         </p>
-        <DirectionalButton
+        <DialogFooterActions>
+          <DirectionalButton
           direction="forward"
-          className="button button--primary review-panel__empty-cta"
+          className="button button--primary button--removal"
           onClick={onAnalyzeRemoval}
         >
           Analyze removal
         </DirectionalButton>
+        </DialogFooterActions>
       </div>
     );
   }
@@ -574,10 +577,12 @@ export function RemovalReviewPanel({
             className="unknown"
             detail={removalImpact.message}
           />
-          <button type="button" className="button button--subtle" onClick={onAnalyzeRemoval}>
+          <DialogFooterActions>
+          <button type="button" className="button button--primary button--removal" onClick={onAnalyzeRemoval}>
             <IconRefresh />
             Re-run analysis
           </button>
+          </DialogFooterActions>
         </section>
       </div>
     );
@@ -625,8 +630,7 @@ export function RemovalReviewPanel({
         </div>
       </div>
 
-      <div className="review-panel__footer removal-review__footer">
-        {analysis.files.rollbackAvailable ? (
+      {analysis.files.rollbackAvailable ? (
           <p className="manage-modal__footer-note removal-review__rollback">
             <IconHistory className="manage-modal__footer-note-icon" aria-hidden="true" />
             <span>
@@ -636,9 +640,10 @@ export function RemovalReviewPanel({
             </span>
           </p>
         ) : null}
+      <DialogFooterActions>
         <button
           type="button"
-          className="button button--danger removal-review__footer-action"
+          className="button button--primary button--removal"
           onClick={onConfirm}
           disabled={busy || !removalAllowed || expired}
           title={blocked ? blockedStatus?.detail : !removalAllowed ? 'Removal impact must be known before proceeding.' : undefined}
@@ -646,7 +651,7 @@ export function RemovalReviewPanel({
           <IconTrash aria-hidden="true" />
           Remove {row.name}
         </button>
-      </div>
+      </DialogFooterActions>
     </div>
   );
 }

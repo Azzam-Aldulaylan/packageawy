@@ -1,11 +1,12 @@
-import { createContext, useContext, useId } from 'react';
+import { DialogFooterActions } from './DialogFooter.js';
+import { createContext, useContext, useId, useLayoutEffect, useRef } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { ProjectCheckResult, UpgradeResultPresentation } from '../../../src/host/webviewProtocol.js';
 import type { UpgradeEnrichmentUiState } from '../../../src/host/upgradeReviewUiState.js';
 import { IconAlertTriangle, IconBrand, IconCheck, IconChevronRight, IconInfo, IconListChecks, IconRefresh, IconShield, IconXCircle } from '../icons.js';
 import { DependencyChangeContext } from './DependencyChangeStatus.js';
 import { StatusBanner } from './StatusBanner.js';
-import { UndoBackupContext, UndoChangeButton } from './UndoChangeButton.js';
+import { UndoBackupContext, UndoChangeButton, UndoChangeFeedback } from './UndoChangeButton.js';
 
 export const ChangeResultContext = createContext<{
   analyze(): void;
@@ -32,13 +33,23 @@ export function ChangeResult({ flow, title, summary, warning = false, error = fa
   const change = useContext(DependencyChangeContext);
   const undo = useContext(UndoBackupContext);
   const backup = undo.entries.find(entry => entry.analysisId === undoId);
+  const resultRef = useRef<HTMLElement>(null);
+  const openingUndo = backup !== undefined && undo.openingId === backup.analysisId;
+  const undoError = backup !== undefined && undo.error?.id === backup.analysisId ? undo.error.message : undefined;
+  useLayoutEffect(() => {
+    if (!openingUndo && undoError === undefined) return;
+    const feedback = resultRef.current?.querySelector<HTMLElement>('.undo-change-feedback');
+    const reducedMotion = feedback?.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    // Reveal new feedback in the body while leaving keyboard focus on the current control.
+    feedback?.scrollIntoView?.({ block: 'start', inline: 'nearest', behavior: reducedMotion ? 'instant' : 'smooth' });
+  }, [openingUndo, undoError]);
   const helpId = useId();
   const failed = checks.some(check => check.status === 'failed');
   const scripts = checks.filter(check => check.kind === 'script');
   const allPassed = scripts.some(check => check.status === 'passed') && scripts.every(check => check.status === 'passed' || check.status === 'no-script' || (check.status === 'not-run' && check.reason === 'Not selected.'));
   const factList = <dl className="change-result__facts">{facts.map(fact => <div key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl>;
   return (
-    <section className="change-result" aria-labelledby={headingId}>
+    <section className="change-result" aria-labelledby={headingId} ref={resultRef}>
       <StatusBanner tone={error ? 'error' : warning ? 'warning' : 'info'} icon={warning || error ? <IconAlertTriangle /> : <IconCheck />} className="change-result__banner">
         <strong id={headingId} role="heading" aria-level={3} tabIndex={-1}>{title}</strong><span>{summary}</span>
       </StatusBanner>
@@ -83,10 +94,11 @@ export function ChangeResult({ flow, title, summary, warning = false, error = fa
       <div className="change-result__backup" id={helpId}><strong><IconShield aria-hidden="true" />{blocked || change.blocked ? 'Backup kept. Recovery needed.' : backup === undefined ? 'No Undo backup is available.' : 'Backup saved. You can undo this change.'}</strong>
         <p>{blocked || change.blocked ? 'Undo and analysis are paused until file recovery is complete.' : 'Undo restores dependency files. It does not restore script side effects.'}</p>
       </div>
-      <footer className="change-result__actions" aria-describedby={helpId}>
+      {backup === undefined ? null : <UndoChangeFeedback undoId={backup.analysisId} />}
+      <DialogFooterActions>
         <UndoChangeButton undoId={undoId} disabled={blocked || change.blocked} describedBy={helpId} />
-        <button type="button" className="button button--primary" disabled={blocked || change.blocked || change.task !== 'idle' || actions.analyzeDisabled} onClick={actions.analyze}><IconRefresh aria-hidden="true" />Analyze project</button>
-      </footer>
+        <button type="button" className="button button--secondary" aria-describedby={helpId} disabled={blocked || change.blocked || change.task !== 'idle' || actions.analyzeDisabled} onClick={actions.analyze}><IconRefresh aria-hidden="true" />Analyze project</button>
+      </DialogFooterActions>
     </section>
   );
 }

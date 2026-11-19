@@ -21,7 +21,7 @@ const bundle = await build({ stdin: { contents: `
   export { TransitiveFixReview } from './webview/src/components/TransitiveFixReview.tsx';
 `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'node',
   plugins: [{ name: 'shared-react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
 let sent;
@@ -182,8 +182,10 @@ for (const [operation, panel] of Object.entries(panels)) test(`${operation} resu
   const button = dom.document.querySelector('[data-undo-id]');
   assert.equal(button.disabled, true);
   assert.equal(button.getAttribute('aria-busy'), 'true');
-  assert.equal(button.nextElementSibling.getAttribute('role'), 'status');
-  assert.equal(button.nextElementSibling.textContent, 'Opening the backup...');
+  const feedback = dom.document.querySelector('.change-result > p[role="status"]');
+  assert.equal(feedback.textContent, 'Opening the backup...');
+  assert.equal(feedback.getAttribute('aria-live'), 'polite');
+  assert.equal(feedback.closest('.dialog-footer__standalone-actions'), null);
 });
 
 for (const outcome of ['keep backup', 'restore starts']) test(`real App upgrade result Undo returns to its remounted dialog when ${outcome}`, t => {
@@ -198,7 +200,10 @@ for (const outcome of ['keep backup', 'restore starts']) test(`real App upgrade 
   dom.click(opener);
   assert.equal(opener.disabled, true);
   assert.equal(opener.getAttribute('aria-busy'), 'true');
-  assert.equal(opener.nextElementSibling.textContent, 'Opening the backup...');
+  const feedback = dom.document.querySelector('.manage-modal__body .change-result > p[role="status"]');
+  assert.equal(feedback.textContent, 'Opening the backup...');
+  assert.equal(feedback.getAttribute('aria-live'), 'polite');
+  assert.equal(dom.document.querySelector('.dialog-footer [role="status"]'), null);
   dom.event({ status: 'recovery', recovery: { undoReview: true, undoOperation: 'upgrade',
     state: 'undo-available', message: 'The change is done.', files: [], claim: null, canApply: false, canDismiss: false } });
   assert.equal(opener.isConnected, false);

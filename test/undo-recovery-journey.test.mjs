@@ -18,7 +18,7 @@ import { RECOVERY_MESSAGES } from '../out/host/recoveryCopy.js';
 const require = createRequire(import.meta.url);
 const bundle = await build({ entryPoints: ['webview/src/App.tsx'], bundle: true, write: false, format: 'esm', platform: 'node',
   plugins: [{ name: 'react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
 let outgoing;

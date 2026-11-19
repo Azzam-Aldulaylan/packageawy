@@ -25,7 +25,7 @@ const bundle = await build({ stdin: { contents: `
     plugin.onResolve({ filter: /^react$/ }, () => ({ path: 'react-proxy', namespace: 'test' }));
     plugin.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: `export * from '${reactUrl}';
       export const useState = initial => globalThis.__securityReviewState.useState(initial);`, loader: 'js' }));
-    plugin.onResolve({ filter: /^react\// }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^(?:react\/|react-dom(?:\/|$))/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
     plugin.onResolve({ filter: /^file:/ }, args => ({ path: args.path, external: true }));
   } }] });
 const { UpgradeReviewPanel, UpgradeAnalysisModal } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);

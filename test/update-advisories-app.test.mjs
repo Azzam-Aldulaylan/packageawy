@@ -38,7 +38,7 @@ const bundle = await build({ entryPoints: ['webview/src/App.tsx'], bundle: true,
       export const useEffect = fn => { hooks.effects.push(fn); };
       export const useReducer = (reducer, initial) => { const [value, set] = hooks.state(initial); return [value, action => set(value => reducer(value, action))]; };
     ` }));
-    plugin.onResolve({ filter: /^react\// }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^(?:react\/|react-dom(?:\/|$))/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
     plugin.onResolve({ filter: /^file:/ }, args => ({ path: args.path, external: true }));
   } }] });
 const { App } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);

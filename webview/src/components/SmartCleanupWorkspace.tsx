@@ -1,3 +1,4 @@
+import { DialogFooter } from './DialogFooter.js';
 import { useContext, useEffect, useId, useRef } from 'react';
 import { RECOVERY_MESSAGES } from '../../../src/host/recoveryCopy.js';
 import { DependencyChangeContext, DependencyChangeStatus } from './DependencyChangeStatus.js';
@@ -823,12 +824,12 @@ function ResultActions({ restore, onRestoreFiles, onAnalyze, canClose }: {
   const blocked = change.blocked && !change.protocolMismatch;
   const undoAvailable = restore?.status === 'available';
   return (
-    <div className="smart-cleanup-results__actions">
+    <>
       {blocked ? <button type="button" className="button button--secondary" onClick={change.openRecovery}>{change.retryDiscovery ? 'Retry discovery' : 'Open recovery'}</button> : null}
       {!blocked && undoAvailable && onRestoreFiles !== undefined ? <button type="button" className="button button--secondary" data-undo-id={restore.analysisId} data-undo-location="result" disabled={undo.openingId != null} aria-busy={undo.openingId === restore.analysisId} onClick={() => onRestoreFiles(restore.analysisId)}>Undo cleanup</button> : null}
       {restore?.status === 'restoring' ? <button type="button" className="button button--secondary" disabled aria-busy="true">Restoring dependency files…</button> : null}
-      <button type="button" className="button button--primary" disabled={!canClose || change.blocked} onClick={onAnalyze}><IconRefresh />Analyze current project</button>
-    </div>
+      <button type="button" className="button button--secondary" disabled={!canClose || change.blocked} onClick={onAnalyze}><IconRefresh />Analyze current project</button>
+    </>
   );
 }
 
@@ -1083,6 +1084,7 @@ export function SmartCleanupWorkspace({
         {!canClose ? <p className="sr-only" id="smart-cleanup-close-reason">Wait for cleanup or restoration to finish before closing.</p> : null}
 
         <div className="smart-cleanup-body">
+          {!showResult && state.phase === 'rolling-back' ? <span className="dialog-footer__status">Restoration in progress…</span> : null}
           {showResult ? null : <DependencyChangeStatus />}
           {state.phase === 'analyzing' ? <AnalysisView state={state} /> : null}
           {showReview ? (
@@ -1114,18 +1116,18 @@ export function SmartCleanupWorkspace({
           {showTerminal && !showResult ? <TerminalView state={state} /> : null}
         </div>
 
-        {showResult ? <footer className="smart-cleanup-footer">
+        {showResult ? <DialogFooter primary={<button type="button" className="button button--primary" disabled={!canClose} onClick={onClose}>Close</button>}>
           <ResultActions restore={state.restore} onRestoreFiles={onRestoreFiles} onAnalyze={onAnalyze} canClose={canClose} />
-        </footer> : <footer className="smart-cleanup-footer">
-          {state.phase === 'unknown' ? (
-            <button type="button" className="button button--secondary" onClick={onClose}>Close</button>
+        </DialogFooter> : <DialogFooter>
+          {['unknown', 'confirming', 'executing', 'rolling-back'].includes(state.phase) ? (
+            <button type="button" className="button button--secondary" disabled={!canClose} onClick={onClose}>Close</button>
           ) : null}
           {state.phase === 'analyzing' ? (
             <button type="button" className="button button--secondary" onClick={onCancelAnalysis}>Cancel analysis</button>
           ) : null}
           {showReview ? (
             <>
-              <button type="button" className="button button--secondary" onClick={onClose}>Close</button>
+              <button type="button" className="button button--secondary" disabled={!canClose} onClick={onClose}>Close</button>
               <button
                 type="button"
                 className="button button--primary"
@@ -1146,7 +1148,7 @@ export function SmartCleanupWorkspace({
               {preflightMatchesSelection(state, removalPreflight) ? (
                 <button
                   type="button"
-                  className="button button--danger"
+                  className="button button--primary"
                   disabled={preflightBusy}
                   onClick={() => onConfirmRemoval(removalPreflight.analysisId)}
                 >
@@ -1163,16 +1165,15 @@ export function SmartCleanupWorkspace({
               )}
             </>
           ) : null}
-          {state.phase === 'rolling-back' ? <span className="smart-cleanup-footer__status">Restoration in progress…</span> : null}
           {showTerminal ? (
             <>
-              <button type="button" className="button button--secondary" onClick={onClose}>Close</button>
+              <button type="button" className="button button--secondary" disabled={!canClose} onClick={onClose}>Close</button>
               {state.phase !== 'empty' && state.phase !== 'unsupported' ? (
                 <button type="button" className="button button--primary" onClick={onAnalyze}><IconRefresh />Analyze again</button>
               ) : null}
             </>
           ) : null}
-        </footer>}
+        </DialogFooter>}
       </div>
     </div>
   );

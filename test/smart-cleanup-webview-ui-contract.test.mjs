@@ -44,7 +44,7 @@ test('the cleanup plan owns the shrinking scroll region between its fixed header
   assert.match(styles, /\.smart-cleanup-body\s*\{[\s\S]*?overscroll-behavior:\s*contain/);
   assert.match(styles, /\.smart-cleanup-body > \*\s*\{[\s\S]*?flex:\s*0 0 auto/);
   assert.match(styles, /\.smart-cleanup-header\s*\{[\s\S]*?flex-shrink:\s*0/);
-  assert.match(styles, /\.smart-cleanup-footer\s*\{[\s\S]*?flex-shrink:\s*0/);
+  assert.match(styles, /\.dialog-footer\s*\{[\s\S]*?flex:\s*0 0 auto/);
 });
 
 test('the analyzing phase stays content-sized while the completed review owns the tall workspace', () => {

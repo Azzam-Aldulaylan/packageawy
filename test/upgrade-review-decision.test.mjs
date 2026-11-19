@@ -17,7 +17,7 @@ const bundle = await build({
   bundle: true, write: false, format: 'esm', platform: 'browser',
   define: { 'process.env.NODE_ENV': '"production"' },
   plugins: [{ name: 'shared-react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
 const { UpgradeReviewPanel, UpgradeAnalysisBody } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text + '\n//# sourceURL=upgrade-review-decision.fixture.js').toString('base64')}`);
@@ -253,9 +253,9 @@ test('Manage and standalone review render the same warning; selected target is n
   }
   assert.doesNotMatch(manage, /<dt>Latest version<\/dt>/);
   assert.equal((manage.match(/>Upgrade to 15\.5\.24/g) ?? []).length, 1, 'the footer is the sole upgrade action area');
-  const footer = manage.match(/<div class="review-panel__footer">(.*?)<\/div>/s)?.[1];
+  const footer = manage.match(/<div class="dialog-footer__standalone-actions">(.*?)<\/div>/s)?.[1];
   assert.ok(footer);
-  assert.match(footer, /class="button button--caution"[^>]*>Upgrade to 15\.5\.24<\/button>/);
+  assert.match(footer, /class="button button--primary button--upgrade"[^>]*>Upgrade to 15\.5\.24<\/button>/);
 });
 
 for (const count of [1, 2]) {
