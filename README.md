@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="media/icon.png" width="96" height="96" alt="Packageawy logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Azzam-Aldulaylan/packageawy/main/media/logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Azzam-Aldulaylan/packageawy/main/media/logo-light.png">
+    <img src="media/icon.png" width="96" height="96" alt="Packageawy logo">
+  </picture>
 </p>
 
 <h1 align="center">Packageawy (بكجاوي)</h1>
