@@ -8,9 +8,11 @@ import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
 import { createElement as h, act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { smartCleanupProjectCapability } from '../out/host/smartCleanupProjectCapability.js';
 
 const require = createRequire(import.meta.url);
 const bundled = await build({ stdin: { contents: `
+  export { buildSmartCleanupPlan } from './webview/src/smartCleanupPlanAdapter.ts';
   export { RecoveryScreen } from './webview/src/components/RecoveryScreen.tsx';
   export { SmartCleanupWorkspace } from './webview/src/components/SmartCleanupWorkspace.tsx';
   export { DependencyChangeContext } from './webview/src/components/DependencyChangeStatus.tsx';
@@ -21,7 +23,7 @@ const bundled = await build({ stdin: { contents: `
     plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
-const { RecoveryScreen, SmartCleanupWorkspace, DependencyChangeContext, UndoBackupContext, createSmartCleanupState, smartCleanupReducer: reduce } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
+const { buildSmartCleanupPlan, RecoveryScreen, SmartCleanupWorkspace, DependencyChangeContext, UndoBackupContext, createSmartCleanupState, smartCleanupReducer: reduce } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
 const noop = () => {};
 const result = { analysisId: 'cleanup-a', metrics: [], completedActionIds: [], skippedActionIds: [],
   failedActionIds: ['remove-direct:a', 'remove-direct:b', 'remove-direct:c'], resolvedAdvisories: [], introducedAdvisories: [],
@@ -257,3 +259,110 @@ for (const filePath of [path.join('packages', 'app', 'package.json'), path.win32
     assert.doesNotMatch(dom.document.body.textContent, /[–—→;]/);
   });
 }
+
+
+function reviewState(confidences, phase = 'ready') {
+  return {
+    ...createSmartCleanupState('fixture'), phase, requestId: 'review',
+    expandedCategories: new Set(['unused']),
+    plan: { planId: 'review', requestId: 'review', projectName: 'fixture', generatedAt: '2026-11-18T00:00:00.000Z',
+      recommendations: confidences.map((confidence, index) => ({
+        id: `remove-direct:package-${index}`, kind: 'remove-direct-dependency', packageName: `package-${index}`,
+        dependencyType: 'production', confidence, rationale: 'Test reason.', evidence: ['Test evidence.'],
+      })), deprecated: [], security: [] },
+  };
+}
+
+for (const [confidences, phase, headline] of [
+  [[], 'ready', 'Nothing to clean up'],
+  [['blocked'], 'ready', 'No cleanup available here'],
+  [['unknown'], 'ready', 'No cleanup available here'],
+  [['safe', 'blocked'], 'ready', 'Recommended cleanup is ready'],
+  [['review', 'blocked'], 'ready', 'Cleanup plan needs your review'],
+  [['safe', 'review'], 'ready', 'Cleanup plan needs your review'],
+  [['blocked'], 'partial', 'Review the available cleanup evidence'],
+  [['safe', 'review'], 'partial', 'Review the available cleanup evidence'],
+]) test(`cleanup headline for ${phase} ${confidences.join(',') || 'empty'}`, t => {
+  const { document } = mount(t, workspace(reviewState(confidences, phase)));
+  assert.equal(document.querySelector('.smart-cleanup-outcome h3').textContent, headline);
+});
+
+for (const confidences of [[], ['blocked'], ['unknown'], ['review']]) {
+  test(`empty selection has no tick or enabled bulk action for ${confidences.join(',') || 'empty'}`, async t => {
+    const dispatched = [];
+    const { document } = mount(t, workspace(reviewState(confidences), {}, { dispatch: action => dispatched.push(action) }));
+    const status = document.querySelector('.smart-cleanup-selection-bar__status');
+    const icon = status.querySelector('span');
+    assert.equal(icon.getAttribute('aria-hidden'), 'true');
+    assert.equal(icon.getAttribute('data-selected'), 'false');
+    assert.equal(icon.querySelector('svg'), null);
+    assert.equal(status.querySelector('p').textContent, '0 selected');
+    const button = document.querySelector('.smart-cleanup-selection-bar button');
+    assert.equal(button.textContent, 'Select recommendations');
+    assert.equal(button.disabled, true);
+    assert.ok(button.classList.contains('button'));
+    act(() => button.click());
+    assert.deepEqual(dispatched, []);
+    // The empty icon slot keeps its dimensions while hiding the filled square.
+    const css = await readFile(path.join(process.cwd(), 'webview', 'src', 'styles.css'), 'utf8');
+    assert.match(css, /\.smart-cleanup-selection-bar__status > span\s*\{[^}]*width: 1\.35rem;[^}]*height: 1\.35rem;/);
+    assert.match(css, /\.smart-cleanup-selection-bar__status > span\[data-selected='false'\]\s*\{\s*visibility: hidden;/);
+  });
+}
+
+for (const confidence of ['safe', 'review']) test(`bulk selection can clear selected ${confidence} actions`, t => {
+  let state = reviewState([confidence]);
+  state = { ...state, reviewedActionIds: new Set(['remove-direct:package-0']) };
+  const dispatch = action => { state = reduce(state, action); dom.update(workspace(state, {}, { dispatch })); };
+  const dom = mount(t, workspace(state, {}, { dispatch }));
+  let button = dom.document.querySelector('.smart-cleanup-selection-bar button');
+  if (confidence === 'safe') {
+    assert.equal(button.disabled, false);
+    button.focus();
+    assert.equal(dom.document.activeElement, button);
+    act(() => button.click());
+  } else {
+    act(() => dom.document.querySelector('.smart-cleanup-action__checkbox').click());
+  }
+  button = dom.document.querySelector('.smart-cleanup-selection-bar button');
+  assert.equal(button.textContent, 'Clear selection');
+  assert.equal(button.disabled, false);
+  assert.ok(dom.document.querySelector('.smart-cleanup-selection-bar__status > span svg'));
+  act(() => button.click());
+  assert.equal(state.selectedActionIds.size, 0);
+  assert.equal(dom.document.querySelector('.smart-cleanup-selection-bar__status svg'), null);
+  assert.equal(button.textContent, 'Select recommendations');
+  assert.equal(button.disabled, confidence === 'review');
+});
+
+for (const source of [
+  { importerId: path.join('packages', 'web'), lockfileName: 'package-lock.json' },
+  { importerId: path.win32.join('packages', 'web'), lockfileName: 'package-lock.json' },
+  { importerId: '.', lockfileName: null },
+  { importerId: '.', lockfileName: 'npm-shrinkwrap.json' },
+]) test(`capability reason appears once per row for ${source.importerId} ${source.lockfileName}`, t => {
+  const capability = smartCleanupProjectCapability({ packageManager: 'npm', ...source });
+  const options = { projectName: 'fixture', requestId: 'review',
+    rows: [{ name: 'unused', dev: false, optional: false, advisories: [] }],
+    hygieneFindings: [{ packageName: 'unused', kind: 'likely-unused', evidence: { kind: 'likely-unused' } }],
+    exactDeprecatedFindings: [], capability,
+    removalImpact: { phase: 'done', assessments: new Map([['unused', { assessment: { status: 'low-risk', evidence: [
+      { summary: capability.reason }, { summary: 'No project usage found.' },
+    ] } }]]) },
+  };
+  const plan = buildSmartCleanupPlan(options);
+  const recommendation = plan.recommendations[0];
+  assert.equal(recommendation.confidence, 'blocked');
+  assert.equal(recommendation.rationale, capability.reason);
+  assert.deepEqual(recommendation.evidence, ['No project usage found.']);
+  const { document } = mount(t, workspace({ ...reviewState([]), plan }));
+  const row = document.querySelector('.smart-cleanup-action');
+  assert.equal(row.textContent.split(capability.reason).length - 1, 1);
+  assert.ok(row.querySelector('.smart-cleanup-action__reason').textContent.startsWith(capability.reason));
+  assert.equal(row.querySelector('summary').textContent, 'Why removal is blocked');
+  assert.equal(row.querySelector('details li').textContent, 'No project usage found.');
+  assert.equal(row.querySelector('input').disabled, true);
+  const noAssessment = buildSmartCleanupPlan({ ...options, removalImpact: { phase: 'idle' } }).recommendations[0];
+  assert.equal(noAssessment.rationale, capability.reason);
+  assert.deepEqual(noAssessment.evidence, []);
+});

@@ -259,3 +259,10 @@ test('the selected cleanup description sits under its heading', () => {
   assert.match(workspace, /<h3 id="smart-cleanup-selection-title">Selected cleanup<\/h3>\s*<p>These packages will be removed\.<\/p>/);
   assert.equal((workspace.match(/These packages will be removed\./g) ?? []).length, 1);
 });
+
+
+test('unused finding cells align to the top including the dependency type', () => {
+  assert.match(styles, /\.smart-cleanup-action-grid__header,\s*\.smart-cleanup-action\s*\{[^}]*align-items: start;/);
+  assert.match(styles, /\.smart-cleanup-action__type\s*\{[^}]*align-self: start;/);
+  assert.doesNotMatch(styles, /\.smart-cleanup-action__type\s*\{[^}]*align-self: center;/);
+});

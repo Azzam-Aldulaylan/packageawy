@@ -66,6 +66,8 @@ export interface CompatibilityFinding {
 
 export interface ResolverVerification {
   status: CompatibilityStatus;
+  /** Coverage of the isolated project, independent of resolver success or failure. */
+  completeness?: CompatibilityCompleteness;
   packageManager: SupportedPackageManager;
   packageManagerVersion: string | null;
   code: string;
@@ -98,4 +100,6 @@ export interface PackageMetadataProvider {
 /** Host-owned package-manager simulation seam. Core never starts a process. */
 export interface ResolverVerifier {
   verify(proposal: UpgradeProposal, signal?: AbortSignal): Promise<ResolverVerification>;
+  /** Set when the isolated copy leaves out part of the real project. Plain words, kept even when verify() throws. */
+  readonly partialCoverage?: string | undefined;
 }

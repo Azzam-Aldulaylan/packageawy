@@ -71,7 +71,8 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
         ? assessment?.evidence.map((entry) => entry.summary) ?? [
         coverageReason ?? 'Removal-safety evidence is incomplete, so this dependency cannot be selected.',
           ]
-        : [evidenceCapabilityReason, ...(assessment?.evidence.map((entry) => entry.summary) ?? [])];
+        : (assessment?.evidence.map((entry) => entry.summary) ?? [])
+          .filter((summary) => summary !== evidenceCapabilityReason);
       return [{
         id: `remove-direct:${packageName}`,
         kind: 'remove-direct-dependency' as const,
@@ -79,7 +80,7 @@ export function buildSmartCleanupPlan(options: BuildSmartCleanupPlanOptions): Sm
         dependencyType: dependencyType(row),
         confidence,
         rationale: evidenceCapabilityReason !== null
-          ? 'This project can be analyzed, but Smart Cleanup removal is disabled for its current workspace or lockfile layout.'
+          ? evidenceCapabilityReason
           : confidence === 'safe'
           ? 'No project usage or blocking dependency requirement was found.'
           : confidence === 'review'

@@ -333,7 +333,7 @@ function ReviewView({
     .filter((recommendation) => recommendation.confidence === 'safe')
     .slice(0, SMART_CLEANUP_MAX_ACTIONS)
     .every((recommendation) => state.selectedActionIds.has(recommendation.id));
-  const safeSelected = safeRemovalsSelected;
+  const clearSelection = safeRemovalsSelected && selectedCount > 0;
   const selectableActionCount = safeRemovalCount + review;
   // The header, the Unused signal and the Unused section describe the same
   // list, so they all use these three words for its counts.
@@ -369,7 +369,11 @@ function ReviewView({
               <h3>
                 {state.phase === 'partial'
                   ? 'Review the available cleanup evidence'
-                  : review > 0 ? 'Cleanup plan needs your review' : 'Recommended cleanup is ready'}
+                  : review > 0
+                    ? 'Cleanup plan needs your review'
+                    : safeRemovalCount > 0
+                      ? 'Recommended cleanup is ready'
+                      : blocked > 0 ? 'No cleanup available here' : 'Nothing to clean up'}
               </h3>
               <p>{unusedBreakdown}</p>
             </div>
@@ -424,7 +428,7 @@ function ReviewView({
 
       <div className="smart-cleanup-selection-bar">
         <div className="smart-cleanup-selection-bar__status">
-          <span aria-hidden="true"><IconCheck /></span>
+          <span aria-hidden="true" data-selected={selectedCount > 0}>{selectedCount > 0 ? <IconCheck /> : null}</span>
           <p>
             <strong>{selectedCount}</strong> selected
             {selectableActionCount > SMART_CLEANUP_MAX_ACTIONS ? ` · first batch is limited to ${SMART_CLEANUP_MAX_ACTIONS}` : ''}
@@ -434,9 +438,10 @@ function ReviewView({
           <button
             type="button"
             className="button button--small button--secondary"
-            onClick={() => dispatch({ type: safeSelected ? 'clear-selection' : 'select-all-safe' })}
+            disabled={!clearSelection && safeRemovalCount === 0}
+            onClick={() => dispatch({ type: clearSelection ? 'clear-selection' : 'select-all-safe' })}
           >
-            {safeSelected && selectedCount > 0 ? 'Clear selection' : 'Select recommendations'}
+            {clearSelection ? 'Clear selection' : 'Select recommendations'}
           </button>
         </div>
       </div>

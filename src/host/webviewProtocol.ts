@@ -115,6 +115,7 @@ export type SupportedPackageManager = 'npm' | 'pnpm';
 
 export interface ResolverVerification {
   status: CompatibilityStatus;
+  completeness?: CompatibilityCompleteness;
   packageManager: SupportedPackageManager;
   packageManagerVersion: string | null;
   code: string;
@@ -1502,9 +1503,10 @@ function isStringOrNullField(value: unknown): boolean {
 function isResolverVerification(value: unknown): value is ResolverVerification {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['status', 'packageManager', 'packageManagerVersion', 'code', 'explanation']) &&
+    hasOnlyKeys(value, ['status', 'completeness', 'packageManager', 'packageManagerVersion', 'code', 'explanation']) &&
     typeof value['status'] === 'string' &&
     COMPATIBILITY_STATUSES.has(value['status']) &&
+    isAbsentOr(value['completeness'], isCompatibilityCompleteness) &&
     typeof value['packageManager'] === 'string' &&
     PACKAGE_MANAGERS.has(value['packageManager']) &&
     isStringOrNullField(value['packageManagerVersion']) &&
