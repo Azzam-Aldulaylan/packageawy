@@ -62,9 +62,9 @@ for (const state of ['passed', 'no script', 'not selected', 'warning', 'removal'
   const rows = [...dom.document.querySelectorAll('.change-result__check')]; assert.equal(rows.length, 4);
   for (const [index, check] of checks.entries()) { assert.match(rows[index].textContent, new RegExp(check.kind === 'install' ? 'Install' : check.scriptName)); assert.ok(rows[index].querySelector('.status-badge svg')); }
   assert.equal(dom.document.querySelectorAll('details').length, 3);
-  const actions = [...dom.document.querySelectorAll('.change-result__actions button')];
+  const actions = [...dom.document.querySelectorAll('.dialog-footer__standalone-actions button')];
   assert.deepEqual(actions.map(button => button.textContent), state === 'partial' ? ['Analyze project'] : [state === 'removal' ? 'Undo removal' : 'Undo upgrade', 'Analyze project']);
-  assert.equal(actions.at(-1).classList.contains('button--primary'), true);
+  assert.equal(actions.at(-1).classList.contains('button--secondary'), true);
   assert.equal(actions.at(-1).disabled, state === 'partial');
   if (state !== 'partial') assert.match(dom.document.body.textContent, /Undo restores dependency files\. It does not restore script side effects\./);
   assert.doesNotMatch(dom.document.querySelector('.change-result').textContent, /[\u2013\u2014;]/);
@@ -77,7 +77,7 @@ for (const state of ['passed', 'no script', 'not selected', 'warning', 'removal'
 });
 test('Undo is absent without the current backup and no Close action is added', t => {
   const dom = mount(t, h(UpgradeChangeResult, { result: upgrade([install]), enrichment: null }), { backup: false });
-  assert.deepEqual([...dom.document.querySelectorAll('.change-result__actions button')].map(button => button.textContent), ['Analyze project']);
+  assert.deepEqual([...dom.document.querySelectorAll('.dialog-footer__standalone-actions button')].map(button => button.textContent), ['Analyze project']);
   assert.match(dom.document.body.textContent, /No Undo backup is available/);
 });
 for (const rollback of ['conflict', 'failed']) test(`upgrade shows ${rollback} rollback status and failure details inside the shared dialog`, t => {
@@ -89,7 +89,7 @@ for (const rollback of ['conflict', 'failed']) test(`upgrade shows ${rollback} r
   assert.equal(fact.closest('details').open, true);
   assert.equal(dom.document.querySelector('.change-result__notice').textContent, rollbackMessage);
   assert.ok(dom.document.querySelector('.change-result__notice svg'));
-  assert.equal(dom.document.querySelector('.change-result__actions button').disabled, true);
+  assert.equal(dom.document.querySelector('.dialog-footer__panel-actions button').disabled, true);
   assert.match(dom.document.body.textContent, /Backup kept\. Recovery needed\./);
 });
 test('transitive result uses the matching Undo label and retains security details', t => {
@@ -104,17 +104,16 @@ test('standalone multi-package result traps disclosures and restores focus', t =
   assert.equal(dom.document.querySelectorAll('.change-result__package').length, 2);
   const summaries = [...dom.document.querySelectorAll('summary')]; assert.equal(summaries.length, 3);
   summaries[0].focus(); assert.equal(dom.document.activeElement, summaries[0]);
-  const last = dom.document.querySelector('.change-result__actions button:last-child'); last.focus();
+  const last = [...dom.document.querySelectorAll('.dialog-footer__actions button')].at(-1); last.focus();
   dom.document.dispatchEvent(new dom.dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
   assert.equal(dom.document.activeElement, dom.document.querySelector('.modal__close'));
   dom.document.dispatchEvent(new dom.dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); assert.equal(closed, 1);
   dom.unmount(); assert.equal(dom.document.activeElement, dom.opener);
 });
 test('theme styles use editor variables, focus outlines and right aligned actions', () => {
-  assert.match(css, /\.change-result__actions\s*\{[^}]*justify-content: flex-end/);
-  assert.match(css, /\.change-result__actions > \[role="status"\], \.change-result__actions > \.banner \{[^}]*order: 1;[^}]*flex-basis: 100%/);
-  assert.match(css, /\.smart-cleanup-results__actions\s*\{[^}]*justify-content: flex-end/);
-  assert.match(css, /\.change-result button:focus-visible[^}]*var\(--vscode-focusBorder\)/);
+  assert.match(css, /\.dialog-footer__actions,[\s\S]*?justify-content: flex-end/);
+  assert.doesNotMatch(css, /\.dialog-footer__panel-actions > (?:\[role="status"\]|\.banner)/);
+  assert.match(css, /\.button:focus-visible[^}]*var\(--vscode-focusBorder/);
   assert.match(css, /\.change-result__rows[^}]*var\(--vscode-contrastBorder/);
 });
 
@@ -124,8 +123,8 @@ for (const partial of [false, true]) test(`standalone removal modal preserves ${
   const dom = mount(t, h(RemovalChangeResultModal, { outcome, onClose() {} }), { operation: 'removal', blocked: partial });
   assert.equal(dom.document.activeElement.id, partial ? 'removal-error-heading' : 'removal-result-heading');
   assert.equal(dom.document.querySelectorAll('.change-result__package').length, 2);
-  assert.equal(dom.document.querySelector('.change-result__actions .button--primary').disabled, partial);
-  assert.equal(dom.document.querySelectorAll('.modal__footer').length, 0);
+  assert.equal(dom.document.querySelector('.dialog-footer__panel-actions button:last-child').disabled, partial);
+  assert.equal(dom.document.querySelectorAll('.dialog-footer').length, 1);
   dom.unmount(); assert.equal(dom.document.activeElement, dom.opener);
 });
 
@@ -136,7 +135,7 @@ test('a manifest staging conflict is a clean removal failure with Analyze availa
   assert.match(dom.document.body.textContent, /No dependency files were changed by this removal/);
   assert.match(dom.document.body.textContent, /Not removed/);
   assert.doesNotMatch(dom.document.body.textContent, /Recovery needed|Recovery required|Removal partly failed/);
-  const analyze = dom.document.querySelector('.change-result__actions button');
+  const analyze = dom.document.querySelector('.dialog-footer__standalone-actions button');
   assert.equal(analyze.disabled, false);
   act(() => analyze.click()); assert.equal(dom.analyzed, 1);
 });
@@ -145,14 +144,14 @@ for (const completion of ['rolled-back', 'incomplete', 'unknown', undefined]) te
   const restored = completion === 'rolled-back';
   const dom = mount(t, h(RemovalErrorPanel, { row, error: { code: 'CHANGE_FAILED', message: 'Change failed.' },
     details: { completion, analysisId: 'failed-removal', packages: ['chalk'], checks: [install], install: 'failed', verification: 'not-run', rollback: restored ? 'succeeded' : 'conflict' } }), { backup: false });
-  assert.equal(dom.document.querySelector('.change-result__actions button').disabled, !restored);
+  assert.equal(dom.document.querySelector('.dialog-footer__standalone-actions button').disabled, !restored);
   assert.match(dom.document.body.textContent, restored ? /Removal rolled back.*Your dependency files were restored/s : /Removal partly failed.*Current dependency files are not confirmed/s);
 });
 
 test('a clean removal failure still respects the shared host recovery block', t => {
   const dom = mount(t, h(RemovalErrorPanel, { row, error: { code: 'MANIFEST_STAGE_FAILED', message: 'Staging stopped.' },
     details: { completion: 'not-started', analysisId: 'staging-conflict', packages: ['chalk'], checks: [], install: 'not-run', verification: 'not-run', rollback: 'not-needed' } }), { blocked: true, backup: false });
-  assert.equal(dom.document.querySelector('.change-result__actions button').disabled, true);
+  assert.equal(dom.document.querySelector('.dialog-footer__standalone-actions button').disabled, true);
 });
 
 const fixPlan = { analysisId: 'fix', rootPackage: 'chalk', currentVersion: '4.1.2', packageManager: 'npm',
@@ -198,13 +197,16 @@ for (const activeTab of ['overview', 'vulnerabilities']) test(`Manage completion
 
 for (const operation of ['upgrade', 'removal', 'remediation']) test(`shared ${operation} result keeps pending Undo feedback and both actions`, t => {
   const dom = mount(t, h(ChangeResult, { flow: 'Upgrade', headingId: 'pending-result', title: 'Change done', summary: 'Dependency files updated.', packages: [], checks: [install], undoId, facts: [] }), { operation, openingId: undoId });
-  const actions = dom.document.querySelector('.change-result__actions');
+  const actions = dom.document.querySelector('.dialog-footer__standalone-actions');
   const buttons = [...actions.querySelectorAll('button')];
   assert.equal(buttons.length, 2);
   assert.equal(buttons[0].disabled, true, 'pending requests disable Undo even if the caller has not set disabled yet');
   assert.equal(buttons[0].getAttribute('aria-busy'), 'true');
   assert.ok(dom.document.getElementById(buttons[0].getAttribute('aria-describedby')));
-  assert.equal(actions.querySelector('[role="status"]').textContent, 'Opening the backup...');
+  assert.equal(actions.querySelector('[role="status"]'), null);
+  const feedback = dom.document.querySelector('.change-result > p[role="status"]');
+  assert.equal(feedback.textContent, 'Opening the backup...');
+  assert.equal(feedback.getAttribute('aria-live'), 'polite');
   act(() => buttons[0].click());
   assert.deepEqual(dom.reviewed, []);
 });
@@ -214,6 +216,8 @@ for (const operation of ['upgrade', 'removal', 'remediation']) test(`shared ${op
   const alert = dialog.querySelector('[role="alert"]');
   assert.equal(alert.textContent, "Couldn't open the backup. The saved files could not be read.");
   assert.ok(alert.querySelector('svg'));
+  assert.ok(alert.closest('.modal__body'));
+  assert.equal(dialog.querySelector('.dialog-footer [role="alert"]'), null);
   const button = dialog.querySelector('[data-undo-id]');
   assert.equal(button.disabled, false);
   act(() => button.click());

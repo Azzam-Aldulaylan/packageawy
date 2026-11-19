@@ -41,7 +41,7 @@ const bundle = await build({ stdin: { contents: `
   export { buildUpgradeReviewSignals } from './webview/src/components/UpgradeAnalysisSections.tsx';
 `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser',
   define: { 'process.env.NODE_ENV': '"production"' }, plugins: [{ name: 'shared-react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }] });
 const { ManageDependencyModal, CompatibilityCheckCard, DependencyChangeContext, RemoveAnalysisModal, TransitiveFixReview, UpgradeReviewPanel, UpgradeAnalysisModal, UpgradeReviewAnnouncement, VerificationOptInContext, buildUpgradeReviewSignals } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 const now = Date.now();
@@ -640,22 +640,22 @@ async function reviewDom(t) {
 }
 
 for (const [name, Component, props, footer] of [
-  ['single', UpgradeReviewPanel, panelProps, '.review-panel__footer'],
+  ['single', UpgradeReviewPanel, panelProps, '.dialog-footer__standalone-actions'],
   ['bulk', UpgradeAnalysisModal, common, '.modal__footer'],
 ]) test(`${name} completion keeps the focused Cancel DOM button through settled and stale results`, async t => {
   const dom = await reviewDom(t);
   await dom.render(createElement(Component, { ...props, analysis: null, sections: WAITING_UPGRADE_ANALYSIS_SECTIONS }));
   const cancel = dom.container.querySelector(`${footer} button`);
   cancel.focus();
-  assert.equal(dom.document.activeElement, cancel);
+  assert.equal(dom.document.activeElement === cancel, true);
   for (const value of [analysis(), analysis({ compatibility: { status: 'unknown', completeness: 'partial', findings: [] }, security: null })]) {
     await dom.render(createElement(Component, { ...props, analysis: value, hardStale: true }));
-    assert.equal(dom.container.querySelector(`${footer} button`), cancel, 'the footer control is reconciled in place');
-    assert.equal(dom.document.activeElement, cancel, 'completion preserves keyboard focus');
+    assert.equal(dom.container.querySelector(`${footer} button`) === cancel, true, 'the footer control is reconciled in place');
+    assert.equal(dom.document.activeElement === cancel, true, 'completion preserves keyboard focus');
     assert.ok(cancel.nextElementSibling?.matches('button'), 'the next control remains the confirmation action');
   }
   await dom.render(createElement(Component, { ...props, analysis: null, error: 'Read failed.' }));
-  assert.equal(dom.document.activeElement, cancel, 'a refreshed review failure preserves focus too');
+  assert.equal(dom.document.activeElement === cancel, true, 'a refreshed review failure preserves focus too');
 });
 
 for (const [name, Component, props] of [['single', UpgradeReviewPanel, panelProps], ['bulk', UpgradeAnalysisModal, common]]) test(`${name} summary and verification warning follow a detected script checkbox together`, async t => {
@@ -881,19 +881,19 @@ test('upgrade review visibly loads before any host progress message and keeps Ca
   await dom.render(createElement(UpgradeReviewPanel, { ...panelProps, analysis: null, sections: WAITING_UPGRADE_ANALYSIS_SECTIONS }));
   assert.equal(dom.container.querySelector('.analysis-loading__title').textContent, 'Analyzing upgrade...');
   assert.ok(dom.container.querySelector('.analysis-loading__icon'));
-  const cancel = dom.container.querySelector('.review-panel__footer button');
+  const cancel = dom.container.querySelector('.dialog-footer__standalone-actions button');
   cancel.focus();
-  assert.equal(dom.document.activeElement, cancel);
+  assert.equal(dom.document.activeElement === cancel, true);
   await dom.render(createElement(UpgradeReviewPanel, { ...panelProps, analysis: analysis() }));
   assert.equal(dom.container.querySelector('.analysis-loading'), null);
   assert.ok(dom.container.querySelector('.upgrade-decision'));
-  assert.equal(dom.document.activeElement, cancel);
+  assert.equal(dom.document.activeElement === cancel, true);
 });
 
 test('apply focuses its loading heading when the confirmation control leaves the review', async t => {
   const dom = await reviewDom(t);
   await dom.render(createElement(UpgradeReviewPanel, { ...panelProps, analysis: analysis() }));
-  dom.container.querySelector('.review-panel__footer button:last-child').focus();
+  dom.container.querySelector('.dialog-footer__standalone-actions button:last-child').focus();
   await dom.render(createElement(UpgradeReviewPanel, { ...panelProps, analysis: analysis(), busy: true }));
   assert.equal(dom.document.activeElement.id, 'change-running-heading');
 });

@@ -20,7 +20,7 @@ const bundle = await build({
   bundle: true, write: false, format: 'esm', platform: 'browser',
   define: { 'process.env.NODE_ENV': '"production"' },
   plugins: [{ name: 'shared-react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, (args) => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, (args) => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
 const { verificationReviewSignal, manageFooterNote } = await import(

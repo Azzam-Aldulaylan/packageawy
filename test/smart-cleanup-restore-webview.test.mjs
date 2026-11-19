@@ -36,7 +36,7 @@ const bundle = await build({
   plugins: [{
     name: 'shared-react',
     setup(plugin) {
-      plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, (args) => ({
+      plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, (args) => ({
         path: pathToFileURL(require.resolve(args.path)).href,
         external: true,
       }));
@@ -128,7 +128,7 @@ test('after a restore the results describe the restored dependencies, not the re
 test('result actions follow the change list in the persistent bottom footer', () => {
   const html = render(smartCleanupReducer(completed(), { type: 'restore-available', analysisId: 'a1' }));
   assert.ok(html.indexOf('Undo cleanup') > html.indexOf('What changed'));
-  assert.match(html, /<footer class="smart-cleanup-footer"><div class="smart-cleanup-results__actions">/);
+  assert.match(html, /<footer class="modal__footer dialog-footer">[\s\S]*?<div class="dialog-footer__actions">/);
   assert.ok(html.indexOf('Undo cleanup') < html.indexOf('Analyze current project'));
 });
 

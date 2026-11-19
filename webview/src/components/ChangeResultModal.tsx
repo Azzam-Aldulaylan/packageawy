@@ -1,3 +1,4 @@
+import { DialogFooter, DialogFooterScope } from './DialogFooter.js';
 import { useEffect, useRef } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { RemovalFailureDetails, RemoveResultPresentation, ProtocolError, UpgradeResultPresentation } from '../../../src/host/webviewProtocol.js';
@@ -33,10 +34,11 @@ function ChangeResultDialog({ headingId, onClose, children }: { headingId: strin
     document.addEventListener('keydown', keydown);
     return () => { untrap(); document.removeEventListener('keydown', keydown); (previous?.isConnected && previous !== document.body ? previous : document.querySelector<HTMLElement>('.dashboard__title'))?.focus(); };
   }, [headingId, onClose]);
-  return <div className="modal-overlay" onClick={event => { if (event.currentTarget === event.target) onClose(); }}>
+  return <DialogFooterScope><div className="modal-overlay" onClick={event => { if (event.currentTarget === event.target) onClose(); }}>
     <div className="modal manage-modal" role="dialog" aria-modal="true" aria-label="Change result" ref={dialog}>
       <header className="modal__header"><h2 className="modal__title"><IconBrand aria-hidden="true" /> Change result</h2><button type="button" className="modal__close" onClick={onClose} aria-label="Close dialog"><IconX /></button></header>
       <div className="modal__body">{children}</div>
+      <DialogFooter primary={<button type="button" className="button button--primary" onClick={onClose}>Close</button>} />
     </div>
-  </div>;
+  </div></DialogFooterScope>;
 }

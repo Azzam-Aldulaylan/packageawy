@@ -15,7 +15,7 @@ const bundle = await build({
   define: { 'process.env.NODE_ENV': '"production"' },
   // Tooltip hooks must share the React instance used by the SSR renderer.
   plugins: [{ name: 'shared-react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
 const { CompatibilityCheckCard, ProjectCompatibilitySection } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text + '\n//# sourceURL=compatibility-check-card.fixture.js').toString('base64')}`);

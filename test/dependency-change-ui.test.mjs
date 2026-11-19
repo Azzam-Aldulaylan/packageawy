@@ -53,7 +53,7 @@ const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', 
     export const useMemo = (fn, deps) => h.active ? fn() : React.useMemo(fn, deps);
     export const useCallback = (fn, deps) => h.active ? fn : React.useCallback(fn, deps);
   ` }));
-  plugin.onResolve({ filter: /^react\// }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+  plugin.onResolve({ filter: /^(?:react\/|react-dom(?:\/|$))/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   plugin.onResolve({ filter: /^file:/ }, args => ({ path: args.path, external: true }));
 } }] });
 const { App, DependencyChangeContext, DependencyChangeStatus, ManageDependencyModal } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);

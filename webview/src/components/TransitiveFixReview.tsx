@@ -1,3 +1,4 @@
+import { DialogFooterActions } from './DialogFooter.js';
 import { AnalysisLoading } from './AnalysisLoading.js';
 import { ChangeResult } from './ChangeResult.js';
 import { useContext } from 'react';
@@ -192,7 +193,6 @@ function PlanUnavailable({
       <StatusBanner
         tone={unsafe ? 'warning' : 'info'}
         icon={unsafe ? <IconAlertTriangle /> : plan.outcome === 'unavailable' ? <IconHelpCircle /> : <IconXCircle />}
-        action={{ label: 'Check again', onClick: () => onRetry(plan.analysisId), disabled, icon: <IconRefresh /> }}
       >
         <strong>{unsafe ? 'Automatic fix blocked' : plan.outcome === 'unavailable' ? 'Could not verify a fix' : 'No compatible fix found'}</strong>
         <span>{plan.explanation}</span>
@@ -203,6 +203,11 @@ function PlanUnavailable({
         </ul>
       ) : null}
       {plan.changes.length > 0 ? <DetailedPlan plan={plan} onOpenAdvisory={onOpenAdvisory} /> : null}
+      <DialogFooterActions>
+        <button type="button" className="button button--primary" onClick={() => onRetry(plan.analysisId)} disabled={disabled}>
+          <IconRefresh /> Check again
+        </button>
+      </DialogFooterActions>
     </div>
   );
 }
@@ -237,9 +242,9 @@ export function TransitiveFixReview({
     return (
       <div className="transitive-review">
         <p className="transitive-review__context"><code>{subject}</code> is introduced through <code>{dependencyPath.join(' → ')}</code>.</p>
-        <DirectionalButton direction="forward" className="button button--primary transitive-review__primary" disabled={disabled} onClick={onAnalyze}>
+        <DialogFooterActions><DirectionalButton direction="forward" className="button button--primary" disabled={disabled} onClick={onAnalyze}>
           Check transitive fixes
-        </DirectionalButton>
+        </DirectionalButton></DialogFooterActions>
       </div>
     );
   }
@@ -255,10 +260,15 @@ export function TransitiveFixReview({
   if (state.phase === 'error') {
     return (
       <div className="transitive-review">
-        <StatusBanner tone="error" action={{ label: 'Try again', onClick: onAnalyze, disabled, icon: <IconRefresh /> }}>
+        <StatusBanner tone="error">
           <strong>Couldn’t check transitive fixes</strong>
           <span>{state.message}</span>
         </StatusBanner>
+        <DialogFooterActions>
+          <button type="button" className="button button--primary" onClick={onAnalyze} disabled={disabled}>
+            <IconRefresh /> Try again
+          </button>
+        </DialogFooterActions>
       </div>
     );
   }
@@ -295,10 +305,15 @@ export function TransitiveFixReview({
   if (state.phase === 'stale') {
     return (
       <div className="transitive-review">
-        <StatusBanner tone="warning" action={{ label: 'Re-check fix', onClick: () => onRetry(plan.analysisId), disabled, icon: <IconRefresh /> }}>
+        <StatusBanner tone="warning">
           <strong>Fix review is out of date</strong>
           <span>{state.message}</span>
         </StatusBanner>
+        <DialogFooterActions>
+          <button type="button" className="button button--primary" onClick={() => onRetry(plan.analysisId)} disabled={disabled}>
+            <IconRefresh /> Re-check fix
+          </button>
+        </DialogFooterActions>
       </div>
     );
   }
@@ -309,9 +324,9 @@ export function TransitiveFixReview({
         <AnalysisLoading headingId="transitive-running-heading" label={state.cancelRequested ? 'Stopping at a safe point, then restoring if needed…' : `Applying dependency fix for ${plan.rootPackage}...`}
           paused={change.task === 'still-running' || change.blocked}
           announcement={state.cancelRequested ? 'Stopping at a safe point, then restoring if needed…' : PROGRESS_LABEL[state.progress]} />
-        <button type="button" className="button button--secondary" disabled={state.cancelRequested} onClick={() => onCancel(plan.analysisId)}>
+        <DialogFooterActions><button type="button" className="button button--secondary" disabled={state.cancelRequested} onClick={() => onCancel(plan.analysisId)}>
           {state.cancelRequested ? 'Cancelling…' : 'Cancel fix'}
-        </button>
+        </button></DialogFooterActions>
       </div>
     );
   }
@@ -364,19 +379,19 @@ export function TransitiveFixReview({
       {state.reviewed ? (
         <>
           <DetailedPlan plan={plan} onOpenAdvisory={onOpenAdvisory} selectable />
-          <div className="transitive-review__actions">
+          <DialogFooterActions>
             <button type="button" className="button button--secondary" disabled={disabled} onClick={() => onRetry(plan.analysisId)}>
               <IconRefresh /> Re-check plan
             </button>
             <DirectionalButton direction="forward" className="button button--primary" disabled={disabled} onClick={() => onApply(plan.analysisId)}>
               {plan.outcome === 'partial' ? 'Apply partial fix' : 'Apply fix'}
             </DirectionalButton>
-          </div>
+          </DialogFooterActions>
         </>
       ) : (
-        <DirectionalButton direction="forward" className="button button--primary transitive-review__primary" disabled={disabled} onClick={() => onReview(plan.analysisId)}>
+        <DialogFooterActions><DirectionalButton direction="forward" className="button button--primary" disabled={disabled} onClick={() => onReview(plan.analysisId)}>
           Review fix
-        </DirectionalButton>
+        </DirectionalButton></DialogFooterActions>
       )}
     </div>
   );

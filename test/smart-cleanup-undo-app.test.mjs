@@ -22,7 +22,7 @@ const require = createRequire(import.meta.url);
 const bundle = await build({
   entryPoints: ['webview/src/components/SmartCleanupWorkspace.tsx'], bundle: true, write: false, platform: 'node', format: 'esm',
   plugins: [{ name: 'react', setup(plugin) {
-    plugin.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+    plugin.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
   } }],
 });
 const { SmartCleanupWorkspace } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);

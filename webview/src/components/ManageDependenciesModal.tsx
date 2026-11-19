@@ -1,3 +1,4 @@
+import { DialogFooter } from './DialogFooter.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, ReactElement } from 'react';
 
@@ -21,7 +22,7 @@ import type {
   TypeCriterion,
   UpdateCriterion,
 } from '../../../src/host/dependencyCriteria.js';
-import { bulkRemovalAction, semanticButtonClassName } from '../../../src/host/actionButtonSemantics.js';
+import { bulkRemovalAction } from '../../../src/host/actionButtonSemantics.js';
 import {
   criteriaCounts,
   criteriaPredicate,
@@ -574,7 +575,6 @@ export function ManageDependenciesModal({
                 className="review-controls__impact-progress"
                 live="polite"
                 icon={<IconRefresh className="banner__icon--spin" />}
-                action={{ label: 'Cancel', onClick: onCancelRemovalImpact }}
               >
                 Analyzing removal impact
                 {removalImpact.total > 0 ? ` (${removalImpact.scanned} of ${removalImpact.total} files checked)` : '…'}
@@ -662,36 +662,36 @@ export function ManageDependenciesModal({
           </div>
         )}
 
-        <footer className={`modal__footer${step === 'review' ? ' modal__footer--split' : ''}`}>
+        <DialogFooter navigation={<>
+          <button type="button" className="button button--secondary" onClick={onClose}>Close</button>
+          {step === 'review' ? <DirectionalButton direction="back" onClick={() => setStep('select')}>Back</DirectionalButton> : null}
+        </>}>
           {step === 'select' ? (
             <DirectionalButton direction="forward" className="button button--primary" onClick={() => setStep('review')} disabled={batchRows.length === 0}>
               Review {batchRows.length > 0 ? `${batchRows.length} ` : ''}dependencies
             </DirectionalButton>
           ) : (
             <>
-              <DirectionalButton direction="back" onClick={() => setStep('select')}>Back</DirectionalButton>
-              <div className="bulk-modal__step-actions">
-                <button
-                  type="button"
-                  className={semanticButtonClassName(removalAction.variant)}
-                  onClick={handleRemoveClick}
-                  disabled={reviewRows.length === 0 || removalImpact.phase === 'analyzing'}
-                >
-                  {removalAction.label}
-                </button>
-                <button
-                  type="button"
-                  className="button button--primary"
-                  onClick={submitUpgrade}
-                  disabled={upgradeCandidates.length === 0}
-                >
-                  <IconTrendUp />
-                  Upgrade {upgradeCandidates.length > 0 ? upgradeCandidates.length : ''}
-                </button>
-              </div>
+              {removalImpact.phase === 'analyzing' ? <button type="button" className="button button--secondary" onClick={onCancelRemovalImpact}>Cancel</button> : <button
+                type="button"
+                className="button button--primary button--removal"
+                onClick={handleRemoveClick}
+                disabled={reviewRows.length === 0}
+              >
+                {removalAction.label}
+              </button>}
+              <button
+                type="button"
+                className="button button--primary button--upgrade"
+                onClick={submitUpgrade}
+                disabled={upgradeCandidates.length === 0}
+              >
+                <IconTrendUp />
+                Upgrade {upgradeCandidates.length > 0 ? upgradeCandidates.length : ''}
+              </button>
             </>
           )}
-        </footer>
+        </DialogFooter>
       </div>
     </div>
   );

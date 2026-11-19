@@ -1,10 +1,11 @@
+import { DialogFooter } from './DialogFooter.js';
 import { ChangeApplyingLoading, upgradeApplyingLabel, useApplyingFailureFocus } from './AnalysisLoading.js';
 import { DependencyChangeStatus } from './DependencyChangeStatus.js';
 import { memo, useCallback, useContext, useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
 
 import { UpgradeSecurityAcknowledgement, useUpgradeSecurityAcknowledgement } from './UpgradeSecurityAcknowledgement.js';
-import { semanticButtonClassName, upgradeConfirmationAction } from '../../../src/host/actionButtonSemantics.js';
+import { upgradeConfirmationAction } from '../../../src/host/actionButtonSemantics.js';
 import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
 import { hasPlannerAddedCoordination, upgradeAnalysisFreshness } from '../../../src/host/upgradeReviewUiState.js';
 import { dependencyWarningCount } from '../../../src/host/upgradeReviewDecision.js';
@@ -345,7 +346,7 @@ export function UpgradeAnalysisModal({
           {!busy ? <UpgradeSecurityAcknowledgement consent={consent} /> : null}
         </div>
 
-        <footer className="modal__footer">
+        <DialogFooter>
           <button type="button" className="button button--secondary" onClick={onCancel} disabled={busy}>
             {analysis !== null && analysis.compatibility.status === 'conflict' && !coordinated
               ? 'Close'
@@ -354,14 +355,14 @@ export function UpgradeAnalysisModal({
           {action !== null ? (
             <button
               type="button"
-              className={semanticButtonClassName(action.variant)}
+              className="button button--primary button--upgrade"
               onClick={() => (action.onClick === 'confirm' ? onConfirm : onUseSmartPlan)(consent.acknowledged)}
               disabled={busy || analysis === null || executionBlocked || consent.blocked}
             >
               {action.label}
             </button>
           ) : null}
-        </footer>
+        </DialogFooter>
       </div>
     </div>
   );

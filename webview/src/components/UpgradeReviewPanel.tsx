@@ -1,10 +1,11 @@
+import { DialogFooterActions } from './DialogFooter.js';
 import { memo, useContext, useRef } from 'react';
 import type { ReactElement, RefObject } from 'react';
 
 import { UpgradeSecurityAcknowledgement, useUpgradeSecurityAcknowledgement } from './UpgradeSecurityAcknowledgement.js';
 import type { PackageRow } from '../../../src/core/types.js';
 import { noUpgradeExplanation } from '../../../src/host/upgradeAction.js';
-import { semanticButtonClassName, upgradeConfirmationAction } from '../../../src/host/actionButtonSemantics.js';
+import { upgradeConfirmationAction } from '../../../src/host/actionButtonSemantics.js';
 import type { UpgradeAnalysisPresentation } from '../../../src/host/webviewProtocol.js';
 import type { UpgradeAnalysisSections as UpgradeAnalysisSectionsState } from '../../../src/host/upgradeAnalysisSections.js';
 import { hasPlannerAddedCoordination, upgradeAnalysisFreshness } from '../../../src/host/upgradeReviewUiState.js';
@@ -370,14 +371,16 @@ export function UpgradeReviewPanel({
           {targetVersion}
         </p>
         <p className="review-panel__empty-status">Not analyzed yet</p>
-        <DirectionalButton
+        <DialogFooterActions key="review-footer">
+          <DirectionalButton
           direction="forward"
-          className="button button--primary review-panel__empty-cta"
+          className="button button--primary button--upgrade"
           disabled={busy || disabled || targetState.phase === 'loading'}
           onClick={() => onAnalyzeUpgrade(targetVersion)}
         >
           Analyze upgrade
         </DirectionalButton>
+        </DialogFooterActions>
       </div>
     );
   }
@@ -397,9 +400,9 @@ export function UpgradeReviewPanel({
       <div className="review-panel">
         <UpgradeDecisionBrief row={row} targetVersion={targetVersion} analysis={null} coordinated={false} signals={[]} usage={usage} onOpenArea={openReviewArea} error={error} onRetry={onRefresh} retryDisabled={busy || disabled} />
         {error === null ? <UpgradeAnalysisSections sections={sections} /> : null}
-        <div className="review-panel__footer" key="review-footer">
+        <DialogFooterActions key="review-footer">
           <button type="button" className="button button--secondary" onClick={onCancel}>Cancel</button>
-        </div>
+        </DialogFooterActions>
       </div>
     );
   }
@@ -407,9 +410,9 @@ export function UpgradeReviewPanel({
   if (busy) {
     return withTargetSelector(<div className="review-panel">
       <ChangeApplyingLoading loadingRef={loadingRef} label={upgradeApplyingLabel(analysis.smartPlan !== null && hasPlannerAddedCoordination(analysis.changes, analysis.smartPlan.changes) ? analysis.smartPlan.changes : analysis.changes)} />
-      <div className="review-panel__footer" key="review-footer">
+      <DialogFooterActions key="review-footer">
         <button type="button" className="button button--secondary" disabled onClick={onCancel}>Close review</button>
-      </div>
+      </DialogFooterActions>
     </div>);
   }
 
@@ -459,21 +462,21 @@ export function UpgradeReviewPanel({
       </div>
 
       <UpgradeSecurityAcknowledgement consent={consent} />
-      <div className="review-panel__footer" key="review-footer">
+      <DialogFooterActions key="review-footer">
         <button type="button" className="button button--secondary" onClick={onCancel} disabled={busy}>
           Close review
         </button>
         {action !== null ? (
           <button
             type="button"
-            className={semanticButtonClassName(action.variant)}
+            className="button button--primary button--upgrade"
             onClick={() => (action.onClick === 'confirm' ? onConfirm : onUseSmartPlan)(consent.acknowledged)}
             disabled={busy || executionBlocked || consent.blocked}
           >
             {action.label}
           </button>
         ) : null}
-      </div>
+      </DialogFooterActions>
     </div>
   );
 }

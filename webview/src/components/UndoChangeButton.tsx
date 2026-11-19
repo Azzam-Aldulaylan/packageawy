@@ -18,17 +18,14 @@ export function UndoChangeButton({ undoId, disabled = false, describedBy }: { un
   const entry = undo.entries.find(candidate => candidate.analysisId === undoId);
   if (entry === undefined) return null;
   const opening = undo.openingId === entry.analysisId;
-  return <>
-    <button type="button" className="button button--secondary" data-undo-id={entry.analysisId} data-undo-location="result"
-      aria-describedby={describedBy} disabled={undo.disabled || disabled || undo.openingId != null} aria-busy={opening} onClick={() => undo.review(entry.analysisId)}>{undoLabel(entry.operation)}</button>
-    <UndoChangeFeedback undoId={entry.analysisId} />
-  </>;
+  return <button type="button" className="button button--secondary" data-undo-id={entry.analysisId} data-undo-location="result"
+    aria-describedby={describedBy} disabled={undo.disabled || disabled || undo.openingId != null} aria-busy={opening} onClick={() => undo.review(entry.analysisId)}>{undoLabel(entry.operation)}</button>;
 }
 
-/** Keep request feedback beside the action on every result surface. */
+/** Render request feedback in the scrolling result body, outside footer controls. */
 export function UndoChangeFeedback({ undoId }: { undoId: string }): ReactElement | null {
   const undo = useContext(UndoBackupContext);
-  if (undo.openingId === undoId) return <p role="status" aria-live="polite">Opening the backup...</p>;
+  if (undo.openingId === undoId) return <p className="undo-change-feedback" role="status" aria-live="polite">Opening the backup...</p>;
   if (undo.error?.id !== undoId) return null;
-  return <StatusBanner tone="error">Couldn't open the backup. {undo.error.message}</StatusBanner>;
+  return <StatusBanner tone="error" className="undo-change-feedback">Couldn't open the backup. {undo.error.message}</StatusBanner>;
 }
