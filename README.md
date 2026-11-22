@@ -14,31 +14,28 @@
 </p>
 
 <p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=Azzam.packageawy">VS Code Marketplace</a> ·
-  <a href="https://open-vsx.org/extension/Azzam/packageawy">Open VSX</a> ·
-  <a href="https://plugins.jetbrains.com/plugin/35704-packageawy">JetBrains Marketplace</a> ·
-  <a href="https://github.com/Azzam-Aldulaylan/packageawy/releases">Releases</a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=Azzam.packageawy"><img src="https://img.shields.io/badge/VS%20Code%20Marketplace-Install-007ACC?style=for-the-badge" alt="Install from the VS Code Marketplace"></a>
+  <a href="https://open-vsx.org/extension/Azzam/packageawy"><img src="https://img.shields.io/badge/Open%20VSX-Install-A60EE5?style=for-the-badge" alt="Install from Open VSX"></a>
+  <a href="https://plugins.jetbrains.com/plugin/35704-packageawy"><img src="https://img.shields.io/badge/JetBrains%20Marketplace-Install-000000?style=for-the-badge" alt="Install from JetBrains Marketplace"></a>
 </p>
 
 <p align="center">
-  <a href="https://open-vsx.org/extension/Azzam/packageawy"><img src="https://img.shields.io/open-vsx/v/Azzam/packageawy?label=Open%20VSX" alt="Open VSX version"></a>
-  <a href="https://open-vsx.org/extension/Azzam/packageawy"><img src="https://img.shields.io/open-vsx/dt/Azzam/packageawy?label=downloads" alt="Open VSX downloads"></a>
-  <a href="https://plugins.jetbrains.com/plugin/35704-packageawy"><img src="https://img.shields.io/jetbrains/plugin/v/35704?label=JetBrains%20Marketplace" alt="JetBrains Marketplace version"></a>
-  <a href="https://plugins.jetbrains.com/plugin/35704-packageawy"><img src="https://img.shields.io/jetbrains/plugin/d/35704?label=downloads" alt="JetBrains Marketplace downloads"></a>
+  <a href="https://github.com/Azzam-Aldulaylan/packageawy/releases"><img src="https://img.shields.io/github/v/release/Azzam-Aldulaylan/packageawy?label=release" alt="Latest release"></a>
   <a href="https://github.com/Azzam-Aldulaylan/packageawy/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/Azzam-Aldulaylan/packageawy/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Azzam-Aldulaylan/packageawy" alt="MIT license"></a>
+  <a href="https://github.com/Azzam-Aldulaylan/packageawy/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Azzam-Aldulaylan/packageawy" alt="MIT license"></a>
 </p>
 
 ![A short tour of Packageawy: the dashboard, a package's details and vulnerabilities, and an upgrade review](media/screenshots/store/demo.gif)
 
 ## Features
 
-- **One table for every direct dependency.** See the installed version, what your range allows, the latest release, and the worst known vulnerability for each package.
+- **One table for every direct dependency.** See the installed version, the suggested upgrade, the latest release, and the worst known vulnerability for each package. Open **Manage** to review a dependency.
 - **Vulnerabilities with their full path.** Expand a row to see which transitive package is affected, how it got there, and which version fixes it. Aliased packages such as `npm:lodash@4.17.20` are checked under their real name.
 - **Upgrade Review.** Before an upgrade, Packageawy checks peer dependencies, Node engine ranges, package exports, and your own imports. When peers conflict, it looks for a set of upgrades that works together. It also checks the proposed dependency tree for known vulnerabilities and shows any the upgrade would add. The version list marks Security fix, Publisher LTS, and Latest stable versions.
 - **Upgrades that keep your style.** `^` and `~` ranges stay `^` and `~`, and `package.json` keeps its key order, indentation, and line endings.
 - **Transitive fixes.** When a vulnerable package sits deep in the tree, Packageawy can often move just that package to a patched version without touching its parent.
-- **Removal Review and Smart Cleanup.** Find packages that look unused and deprecated versions, with the evidence for each one. Nothing is removed until you confirm. A removal shows its progress and result in the dialog, and after a kept Smart Cleanup, **Restore dependency files** opens recovery to review `package.json` and the lockfile.
+- **Removal Review and Smart Cleanup.** Find packages that look unused and deprecated versions, with the evidence for each one. Nothing is removed until you confirm. A removal shows its progress and result in the dialog.
+- **Undo dependency changes.** After a kept Smart Cleanup, **Undo cleanup** opens recovery to review and restore saved `package.json` and lockfiles. Undo is also available after upgrades, removals, and transitive fixes, including after reopening the editor.
 - **Safe by default.** Install scripts are off by default, changes run as a visible task, and Packageawy checks dependency files before restoring them after a failed install. If verification fails, you choose whether to keep the change or roll back. When no verification scripts are set, reviews suggest the project's `typecheck`, `build`, `test`, and `lint` scripts.
 - **Monorepos.** Pick any `package.json` in the workspace, or right-click one and choose **Open in Packageawy**. npm workspaces and pnpm importers are supported, and each npm workspace member shows its own installed versions.
 - **Private registries.** Scoped registries from `.npmrc` are used for lookups. When a registry asks for sign-in, Packageawy says which one and keeps upgrades available for every other package.
@@ -48,10 +45,10 @@
 
 ### VS Code
 
-1. Install the Packageawy pre-release from the VS Code Marketplace or Open VSX. [Report bugs](https://github.com/Azzam-Aldulaylan/packageawy/issues).
+1. Install Packageawy from the VS Code Marketplace or Open VSX. [Report bugs](https://github.com/Azzam-Aldulaylan/packageawy/issues).
 2. Open a folder that contains a `package.json`.
 3. Click the Packageawy icon in the Activity Bar, or run **Packageawy: Open** from the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows and Linux).
-4. If the workspace has more than one `package.json`, pick the project you want to see. You can switch later with **Change Project**.
+4. If the workspace has more than one `package.json`, pick the project you want to see. You can switch later with **Change project**.
 
 You can also right-click any `package.json` and choose **Open in Packageawy** to open that project directly.
 
@@ -69,12 +66,13 @@ Settings are under **Settings**, **Tools**, **Packageawy**, with per-project opt
 
 | Column | Meaning |
 |---|---|
-| Current | The installed version, from the lockfile. Without a lockfile, the declared range is shown with a tag such as `workspace`, `git`, or `unresolved`. |
-| Wanted | The newest version your range in `package.json` allows. |
-| Latest | The registry's `latest` version. For a prerelease install, a newer prerelease on the same version line can be shown. |
-| Vulnerabilities | The worst severity found anywhere under this dependency: Critical, High, Moderate, Low, or Info. `No known vulnerabilities` means no known advisory in the installed dependency tree. |
+| Package | The dependency name, with Dev, Deprecated, Likely unused, or Possibly unused tags where applicable. Dev means it is declared in `devDependencies`. Deprecated applies to the installed version. The unused tags mean the source scan found no reference to the package. |
+| Current | The installed version recorded in the lockfile, or the declared range with a tag such as `workspace`, `git`, or `unresolved`. |
+| Available | The suggested upgrade version takes priority over Latest and Wanted. It is usually the latest release or a smaller security fix. A different Latest version appears beneath it. Major, Minor, and Patch tags describe the update, and a warning marks known vulnerabilities in the suggested version. |
+| Vulnerabilities | The worst known severity in this package or its installed dependencies: Critical, High, Moderate, Low, or Info. A green **Safe** badge means the latest security check found no published vulnerabilities in that tree. Hover, focus, or click the badge for its explanation. |
+| Action | **Manage** opens the dependency workspace with an overview, vulnerability details, usage and references, and upgrade or removal review. |
 
-These follow the same meaning as `npm outdated`.
+The Available tooltip defines **Wanted** as the newest version allowed by the range in `package.json` and **Latest** as the newest stable version published to npm. **Latest · within range** means the latest version is allowed by your declared range.
 
 ![The Packageawy dashboard showing updates, vulnerabilities, and maintenance signals for a project](media/screenshots/store/dashboard.png)
 
@@ -89,8 +87,9 @@ These follow the same meaning as `npm outdated`.
 3. You review the planned changes, the findings, and the security impact.
 4. After you confirm, it re-reads your project to make sure nothing changed, then saves a copy of `package.json` and the lockfile.
 5. The install runs as a visible VS Code task or in the JetBrains Run tool window.
-6. If you listed verification scripts (for example `test` or `build`), they run next. If you haven't, the review lists the project's `typecheck`, `build`, `test`, and `lint` scripts so you can check the ones to run, and "Remember for this project" saves your choice. Without any, the upgrade is reported as unverified.
+6. If you listed verification scripts (for example `test` or `build`), they run next. If you haven't, the review lists the project's `typecheck`, `build`, `test`, and `lint` scripts so you can check the ones to run, and **Remember for this project** saves your choice.
 7. If the install fails, or you choose to roll back after a failed verification, Packageawy restores your dependency files and stops if it sees they changed. After a successful restore with a lockfile, you can choose a frozen reinstall of `node_modules`.
+8. The result lists **What changed** and **Project checks**, with a result for the install and each script. **Show terminal** opens a failed check's output. **Undo upgrade** opens the saved dependency files for review and restoration.
 
 Only one change runs at a time.
 

@@ -4,42 +4,64 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
-- Smart Cleanup shows the current cleanup step as it runs.
-- Upgrade errors from Manage appear once in the dialog and are dismissed when it closes.
-- Keep your chosen upgrade version when refreshing the same dependency, while that version remains eligible.
-- Pause dependency changes and offer Show Log and Reload if the dashboard receives an unrecognized host message.
-- Keep results current when dependency scans overlap a successful or failed reload.
+## [1.0.0] - 2026-11-22
 
 ### Added
 
-- After a successful dependency file restore with a lockfile, Packageawy offers to reinstall node_modules with npm ci or pnpm install --frozen-lockfile. Reinstall results are reported separately from the file restore.
-- A long dependency change now shows Still running, explaining why Packageawy waits for the package manager before allowing another change or a rollback.
-- If VS Code or a JetBrains IDE closes during a dependency change, Packageawy now keeps a recovery record in the project and offers to restore each file the next time you open it.
+- Interrupted dependency changes now have saved backups and a file recovery screen when the editor reopens.
+- Undo now restores dependency files (`package.json` and lockfiles) after upgrades, removals, transitive fixes and Smart Cleanup, including after reopening the editor.
+- File recovery now offers `npm ci` or `pnpm install --frozen-lockfile` and reports reinstall results separately.
+- Long dependency changes now show Still running while the package manager continues.
+- JetBrains IDEs now check the Node.js version before starting the Packageawy engine.
 
 ### Changed
 
-- Rollback restores your dependency files and stops if it sees they changed. It checks all files before starting and keeps saved and displaced files until you remove them.
-- Likely-unused results and Smart Cleanup now read the script blocks of Vue, Svelte and Astro files, and .mts and .cts files, so packages used only there are no longer suggested for removal.
-- When a project has files Packageawy does not read yet, such as .mdx, removals are not recommended automatically and the screen says why.
-- Cleanup checks now recognize more framework and tool config files, and package names in package.json tool settings.
-- Packageawy now finds the lockfile your package manager will write, including the workspace root's, and uses it for every change and rollback.
-- The Vulnerabilities column now reads No known vulnerabilities instead of Safe, which is exactly what was checked.
+- Rollback now checks every dependency file before restoring and keeps backups and displaced files until you delete them.
+- Cleanup checks now recognize Vue, Svelte, Astro, `.mts` and `.cts` scripts, more tool config files and `package.json` tool settings.
+- Undo now selects the backed-up files for restoration by default and asks separately before keeping the change and deleting its backup.
+- Dependency changes and restores now use the correct lockfile, including the workspace root lockfile, and only change files inside the opened workspace.
+- Upgrade reviews now appear in full after checks finish and show the findings behind Dependency compatibility warnings.
+- Upgrade reviews now offer Retry when another window is changing the project.
+- Upgrade reviews in npm workspaces now show what the package manager check included.
+- Upgrade, removal and transitive fix results now list package changes and each command's result, with Show terminal for failed checks.
+- Upgrade reviews and dependency changes now share a loading display that names the current action.
+- Results now distinguish No checks selected from No test scripts to run.
+- Smart Cleanup now shows the current cleanup step as text while it runs.
+- Smart Cleanup now holds back automatic removals when an import's package name is only known when the code runs.
+- Smart Cleanup's headline now matches the result, and Select recommendations is disabled when there is nothing to select.
+- Smart Cleanup now points workspace members to Manage dependency for removals.
+- The security summary now distinguishes Affected packages from Known vulnerabilities and counts each security report once.
+- The security summary now explains both counts through an info button.
+- Severity badges now fit their labels, and the green Safe badge explains the latest security check on hover, focus or click.
+- Action buttons now have visible borders, and inline info icons stay borderless.
+- Dialog actions now stay in one fixed footer, with upgrade and removal button colors that remain readable across editor themes.
+- The Packageawy logo now appears across the dashboard and VS Code editor tab, with themed README logos and a dark Marketplace icon.
+- Install and verification terminals in VS Code and run consoles in JetBrains IDEs now close after successful commands.
+- The JetBrains plugin now shows its release notes in the IDE and on JetBrains Marketplace.
 
 ### Fixed
 
-- Upgrades and removals no longer pause the editor while finding npm or pnpm.
-
-- Transitive fix analysis now stops after two minutes if the isolated package manager is still working, including children that keep its output open, and reports that project files were not changed.
-- A dependency change whose result was lost now shows the same blocked message in the dashboard and reviews, including Smart Cleanup, with a button to open recovery and no unverified restoration claims.
-- Restart in JetBrains IDEs now waits for the engine to confirm that no dependency change is running or has an unknown outcome, blocks new changes during that check, and ignores repeated requests from finished restart attempts.
-- Changing package.json or the lockfile while a scan is running no longer lets the dashboard reuse the older results as if they were current.
-- In a workspace where the lockfile sits above the opened folder, changes are now turned off with the reason shown, instead of rewriting a file Packageawy could not restore.
-- Vulnerability checks for update versions keep working after an internal error, instead of stopping until the dashboard is refreshed.
-- Internal errors now appear in the dashboard with a Show Log button. An error during a dependency change keeps its recovery files and blocks further changes until recovery. Unrelated background errors let the change finish and pause new changes until you reopen the panel. Refresh and reviews keep working.
-- An unhandled internal error in the JetBrains engine now blocks dependency changes until the engine restarts, including after closing and reopening the panel. Read-only scans can continue.
-- Opening a file, a link or Settings from Packageawy now says so when the editor could not open it, and the Packageawy log records the failure.
-- An install or check that finishes immediately no longer leaves the project waiting and locked in VS Code.
-- A confirmed upgrade, removal or Smart Cleanup restore that stops before changing any files, because the Packageawy view reloaded, now says so instead of waiting with no answer.
+- Project load errors now explain missing files, invalid formats and unsupported lockfile versions, with technical details in the Packageawy log.
+- Refreshing a project whose `package.json` was moved or deleted now finishes with a clear error.
+- Failed review and version-list requests now show their error and finish loading.
+- Cancelling an upgrade inspection now responds promptly while temporary files are removed in the background.
+- Loading and refresh spinners now respect reduced motion settings.
+- Refreshing the same dependency now keeps your chosen upgrade version while it remains eligible.
+- Overlapping scans and dependency file changes no longer let older results replace newer dashboard data.
+- Upgrade errors from Manage dependency now appear once and are dismissed when the dialog closes.
+- Finding npm and pnpm for upgrades and removals no longer pauses the editor.
+- Upgrade reviews now resolve dependency trees for pnpm workspace members with `workspace:` dependencies.
+- Dependency changes no longer leave projects locked on Windows or after a VS Code task finishes immediately.
+- Smart Cleanup no longer reports successful removals as failed when the lockfile changes during its final check.
+- Restart or reopening the panel in JetBrains IDEs now retries correctly after an engine startup failure.
+- Restart in JetBrains IDEs now checks for active dependency changes before restarting the engine.
+- Removal confirmation now detects changes to the peer dependency policy and registry since the review.
+- Internal errors and unrecognized dashboard messages now offer Show Log and pause dependency changes until recovery, Reload or an engine restart.
+- Vulnerability checks for offered upgrade versions now continue after an internal error.
+- VS Code now reports failures to open files, links or Settings and records them in the Packageawy log.
+- Transitive fix analysis now stops package manager commands that run longer than two minutes, without changing project files.
+- Dependency changes interrupted by a view reload before modifying files now report that they stopped.
+- The Vulnerabilities tab no longer claims an upgrade fixes every known vulnerability before the upgrade review checks it.
 
 ## [0.9.7] - 2026-11-12
 
@@ -187,6 +209,7 @@ First public pre-release.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
 - Re-reads the project right before every change and stops rollback if it sees dependency files changed.
 
+[1.0.0]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.0
 [0.9.7]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.7
 [0.9.6]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.6
 [0.9.5]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.5
