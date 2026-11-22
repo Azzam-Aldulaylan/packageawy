@@ -21,6 +21,9 @@
  */
 
 import { importedPackageName } from './packageNameMatch.js';
+import { CALL_TRIVIA, codePositionMask, IDENTIFIER, MAX_MATCH_LENGTH } from './jsxLex.js';
+
+export { CALL_TRIVIA } from './jsxLex.js';
 
 export interface RawImportMatch {
   /** The bare package name the specifier resolved to (subpath already stripped), never the raw specifier. */
@@ -38,283 +41,123 @@ export interface RawImportSpecifierMatch extends RawImportMatch {
 
 const MAX_SNIPPET_LENGTH = 160;
 
-function stripComments(text: string): string {
+function stripComments(text: string, jsx: boolean): string {
   const characters = text.split('');
-  codePositionMask(text, undefined, undefined, (start, end) => {
+  codePositionMask(text, undefined, (start, end) => {
     for (let index = start; index < end; index += 1) {
       if (!/[\r\n]/.test(characters[index] ?? '')) characters[index] = ' ';
     }
-  });
+  }, jsx);
   return characters.join('');
 }
 
-interface ExpressionContext {
-  previousSignificant: string;
-  previousWord: string;
-  controlParentheses: boolean[];
-  afterControlCondition: boolean;
-  delimiterDepth: number;
-  typeAssertionDepth: number | undefined;
-}
-
-/** Undefined means the lexical goal needs grammar this walker does not have. */
-function regexCanStart(context: ExpressionContext): boolean | undefined {
-  // `>` can end a TS generic/assertion or precede a regex in a comparison.
-  if (/^(?:}|>|\.|unknown)$/.test(context.previousSignificant)) return undefined;
-  // `void` ends a type in assertions but prefixes an expression in JS.
-  if (context.typeAssertionDepth !== undefined && context.previousWord === 'void') return undefined;
-  // `of` is contextual in for-of headers; deciding its role needs the grammar.
-  if (context.previousWord === 'of' && context.controlParentheses.includes(true)) return undefined;
-  return context.previousSignificant === '' || context.previousSignificant === '...' ||
-    /^[=([{,;:!?&|+\-*/%~<>^]$/.test(context.previousSignificant) ||
-    context.afterControlCondition ||
-    /^(?:return|typeof|case|do|else|in|instanceof|new|delete|void|throw|yield|await)$/.test(context.previousWord);
-}
-
-function isControlKeyword(word: string): boolean {
-  return /^(?:if|for|while|with|switch|catch)$/.test(word);
-}
-
-function expressionContext(): ExpressionContext {
-  return {
-    previousSignificant: '', previousWord: '', controlParentheses: [], afterControlCondition: false,
-    delimiterDepth: 0, typeAssertionDepth: undefined,
-  };
-}
-
-function endExpression(context: ExpressionContext): void {
-  context.previousSignificant = 'literal';
-  context.previousWord = '';
-  context.afterControlCondition = false;
-}
-
-/** Consume whole tokens so ++/-- and numeric exponent signs cannot become binary operators. */
-function expressionTokenEnd(text: string, start: number, context: ExpressionContext): number {
-  const character = text[start] ?? '';
-  const next = text[start + 1];
-  let end = start + 1;
-  if (/[0-9]/.test(character) || (character === '.' && /[0-9]/.test(next ?? ''))) {
-    const number = /^(?:0[xX][\da-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|(?:\d[\d_]*(?:\.[\d_]*)?|\.[\d_]+)(?:[eE][+-]?[\d_]+)?)n?/.exec(text.slice(start));
-    endExpression(context);
-    return start + (number?.[0].length ?? 1);
-  }
-  if (/[\p{ID_Start}$_]/u.test(character)) {
-    while (/[\p{ID_Continue}$\u200c\u200d]/u.test(text[end] ?? '')) end += 1;
-    // A property named return/typeof/etc. is still an expression end.
-    context.previousWord = context.previousSignificant === '.' ? '' : text.slice(start, end);
-    if (/^(?:as|satisfies)$/.test(context.previousWord)) {
-      context.typeAssertionDepth ??= context.delimiterDepth;
-    }
-    context.previousSignificant = 'identifier';
-    context.afterControlCondition = false;
-    return end;
-  }
-  if ((character === '+' || character === '-') && next === character) {
-    const allowed = regexCanStart(context);
-    context.previousSignificant = allowed === undefined ? 'unknown' : allowed ? character : 'literal';
-    end += 1;
-  } else if (character === '?' && next === '.') {
-    context.previousSignificant = '.';
-    end += 1;
-  } else if (text.startsWith('...', start)) {
-    context.previousSignificant = '...';
-    end += 2;
-  } else if (character === '!' && next !== '=' && regexCanStart(context) !== true) {
-    // TypeScript also uses ! as a postfix non-null assertion.
-    context.previousSignificant = 'unknown';
-  } else {
-    if (character === '(') context.controlParentheses.push(isControlKeyword(context.previousWord));
-    if (/^[([{]$/.test(character)) context.delimiterDepth += 1;
-    else if (/^[)\]}]$/.test(character)) context.delimiterDepth -= 1;
-    // Keep type context through unions, conditionals and nested type members.
-    // Only a containing delimiter or same-level semicolon safely ends it.
-    if (context.typeAssertionDepth !== undefined &&
-        (context.delimiterDepth < context.typeAssertionDepth ||
-         (character === ';' && context.delimiterDepth === context.typeAssertionDepth))) {
-      context.typeAssertionDepth = undefined;
-    }
-    context.previousSignificant = /^[()[\]{}.,;:=!?&|+\-*/%~<>^]$/.test(character) ? character : 'unknown';
-  }
-  context.afterControlCondition = character === ')' && context.controlParentheses.pop() === true;
-  context.previousWord = '';
-  return end;
-}
-
-/** A regex cannot cross a line terminator, even after an escape. */
-function regexLiteralEnd(text: string, start: number): number | undefined {
-  let index = start + 1;
-  let inClass = false;
-  while (index < text.length) {
-    const character = text[index];
-    if (/[\r\n\u2028\u2029]/.test(character ?? '')) return undefined;
-    if (character === '\\') {
-      if (index + 1 >= text.length || /[\r\n\u2028\u2029]/.test(text[index + 1] ?? '')) return undefined;
-      index += 2;
-      continue;
-    }
-    if (character === '[') inClass = true;
-    else if (character === ']') inClass = false;
-    else if (character === '/' && !inClass) {
-      index += 1;
-      while (/[\p{ID_Continue}$]/u.test(text[index] ?? '')) index += 1;
-      return index;
-    }
-    index += 1;
-  }
-  return undefined;
-}
-
-function templateLiteralEnd(text: string, start: number, onUncertain?: () => void): number {
-  const stack: Array<{ kind: 'template' } | ({ kind: 'expression'; depth: number } & ExpressionContext)> = [{ kind: 'template' }];
-  const uncertain = (): number => {
-    onUncertain?.();
-    return text.length;
-  };
-  let index = start + 1;
-  while (index < text.length && stack.length > 0) {
-    const frame = stack[stack.length - 1];
-    const character = text[index];
-    const next = text[index + 1];
-    if (frame?.kind === 'template') {
-      if (character === '\\') index += 1;
-      else if (character === '`') stack.pop();
-      else if (character === '$' && next === '{') {
-        stack.push({ kind: 'expression', depth: 1, ...expressionContext() });
-        index += 1;
-      }
-    } else if (frame?.kind === 'expression') {
-      if (character === '"' || character === "'") {
-        const quote = character;
-        index += 1;
-        while (index < text.length && text[index] !== quote) index += text[index] === '\\' ? 2 : 1;
-        if (index >= text.length) return uncertain();
-        endExpression(frame);
-      } else if (character === '/' && next === '/') {
-        while (index < text.length && !/[\r\n\u2028\u2029]/.test(text[index] ?? '')) index += 1;
-        continue;
-      } else if (character === '/' && next === '*') {
-        const end = text.indexOf('*/', index + 2);
-        if (end === -1) return uncertain();
-        index = end + 2;
-        continue;
-      } else if (character === '/' && regexCanStart(frame) !== false) {
-        if (regexCanStart(frame) === undefined) return uncertain();
-        const end = regexLiteralEnd(text, index);
-        if (end === undefined) return uncertain();
-        index = end;
-        endExpression(frame);
-        continue;
-      } else if (character === '`') {
-        endExpression(frame);
-        stack.push({ kind: 'template' });
-      } else if (!/\s/.test(character ?? '')) {
-        if (character === '{') frame.depth += 1;
-        else if (character === '}') {
-          frame.depth -= 1;
-          if (frame.depth === 0) stack.pop();
-        }
-        index = expressionTokenEnd(text, index, frame);
-        continue;
-      }
-    }
-    index += 1;
-  }
-  return stack.length > 0 ? uncertain() : Math.min(index, text.length);
-}
-
-/**
- * Marks positions that are executable source rather than comment/string/
- * template/regex contents. The regex matcher below still needs quoted
- * specifiers intact, so it checks only that the import/require keyword begins
- * in code. Conservative template masking may miss imports inside `${...}`;
- * that is preferable to promoting documentation text to confirmed evidence.
- */
-function codePositionMask(
-  text: string,
-  onTemplate?: (value: string) => void,
-  onUncertain?: () => void,
-  onComment?: (start: number, end: number) => void,
-): boolean[] {
-  const code = new Array<boolean>(text.length).fill(true);
-  const context = expressionContext();
-  const hashbangStart = text.startsWith('\ufeff') ? 1 : 0;
-  let index = 0;
-  const hideUntil = (end: number): void => {
-    while (index < end) code[index++] = false;
-  };
-  const uncertain = (): void => {
-    onUncertain?.();
-    hideUntil(text.length);
-  };
-  while (index < text.length) {
-    const character = text[index] ?? '';
-    const next = text[index + 1] ?? '';
-    const isHashbang = index === hashbangStart && character === '#' && next === '!';
-    if (isHashbang || (character === '/' && (next === '/' || next === '*'))) {
-      const start = index;
-      if (isHashbang || next === '/') {
-        while (index < text.length && !/[\r\n\u2028\u2029]/.test(text[index] ?? '')) code[index++] = false;
-      } else {
-        const end = text.indexOf('*/', index + 2);
-        if (end === -1) uncertain();
-        else hideUntil(end + 2);
-      }
-      onComment?.(start, index);
-      continue;
-    }
-    if (character === '`') {
-      const end = templateLiteralEnd(text, index, onUncertain);
-      onTemplate?.(text.slice(index + 1, end));
-      hideUntil(end);
-      endExpression(context);
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      code[index++] = false;
-      let closed = false;
-      while (index < text.length) {
-        const current = text[index];
-        code[index++] = false;
-        if (current === '\\' && index < text.length) {
-          code[index++] = false;
-        } else if (current === character) {
-          closed = true;
-          break;
-        } else if (/[\r\n]/.test(current ?? '')) break;
-      }
-      if (!closed) uncertain();
-      endExpression(context);
-      continue;
-    }
-    if (character === '/' && regexCanStart(context) !== false) {
-      const end = regexCanStart(context) === undefined ? undefined : regexLiteralEnd(text, index);
-      if (end === undefined) uncertain();
-      else hideUntil(end);
-      endExpression(context);
-      continue;
-    }
-    if (/\s/.test(character)) index += 1;
-    else index = expressionTokenEnd(text, index, context);
-  }
-  return code;
-}
-
-/** Calls permit comments anywhere whitespace is legal between tokens. */
-export const CALL_TRIVIA = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\r\n]*(?:\r?\n|$))*`;
-
+const SIMPLE_TYPE = `${IDENTIFIER}(?:${CALL_TRIVIA}\\.${CALL_TRIVIA}${IDENTIFIER})*(?:${CALL_TRIVIA}\\[${CALL_TRIVIA}\\])*`;
 const CALL_DOT = `${CALL_TRIVIA}\\.${CALL_TRIVIA}`;
 const REQUIRE_CALLEE = `require(?:${CALL_DOT}resolve(?:${CALL_DOT}paths)?)?`;
 const IMPORT_CALLEE = `import(?:${CALL_DOT}meta${CALL_DOT}resolve)?`;
-/** Shared by static source detection and coverage gates for masked executable content. */
-export const DEPENDENCY_CALL = `\\b(?:${REQUIRE_CALLEE}|${IMPORT_CALLEE})${CALL_TRIVIA}\\(`;
+const TYPE_ARGUMENTS = `<${CALL_TRIVIA}${SIMPLE_TYPE}(?:${CALL_TRIVIA},${CALL_TRIVIA}${SIMPLE_TYPE})*${CALL_TRIVIA},?${CALL_TRIVIA}>`;
+const CALL_SUFFIX = `${CALL_TRIVIA}(?:${TYPE_ARGUMENTS}${CALL_TRIVIA})?(?:\\?\\.${CALL_TRIVIA})?\\(`;
+/** Broad coverage gate also catches call shapes the static matcher cannot read. */
+export const DEPENDENCY_CALL = `\\b(?:require|import)\\b${CALL_TRIVIA}[.?(<!\\[]`;
+const KNOWN_CALL = new RegExp(`^(?:${REQUIRE_CALLEE}|${IMPORT_CALLEE})${CALL_SUFFIX}`, 'u');
+// Punctuation can touch keywords: `export*from"pkg"` and `export type{T}`.
+// Share this prefix with coverage checking so compact re-exports cannot vanish.
+const REEXPORT_PREFIX = String.raw`export\b\s*(?:type\b\s*)?(?=[{*])`;
+const REEXPORT_START = new RegExp(`^${REEXPORT_PREFIX}`);
 
-/** Report masked calls or uncertain source extraction without claiming confirmed references. */
-export function hasUnreadTemplateImports(text: string): boolean {
+export type ScriptLanguage = 'js' | 'jsx' | 'ts' | 'tsx';
+
+/** Extracted blocks use their declared language; fileless callers retain JSX support. */
+function allowsJsx(filePath?: string, language?: ScriptLanguage): boolean {
+  if (language !== undefined) return language === 'jsx' || language === 'tsx';
+  return filePath === undefined || !/\.(?:ts|mts|cts)$/i.test(filePath);
+}
+
+/** Report unreadable source and calls whose package specifier is not static.
+ * Kept under the original export name for existing coverage consumers. */
+export function hasUnreadTemplateImports(text: string, filePath?: string, language?: ScriptLanguage): boolean {
   let unread = false;
-  codePositionMask(text, (value) => {
-    if (hasUnescapedTemplateInterpolation(value) && new RegExp(DEPENDENCY_CALL).test(value)) unread = true;
-  }, () => { unread = true; });
+  const jsx = allowsJsx(filePath, language);
+  const code = codePositionMask(text, () => { unread = true; }, undefined, jsx);
+  const cleaned = stripComments(text, jsx);
+  for (const access of cleaned.matchAll(/\b(?:module|globalThis|window|require)\b\s*(?:\?\.\s*)?\[/g)) {
+    if (code[access.index] !== true) continue;
+    const key = STATIC_COMPUTED_KEY.exec(cleaned.slice(access.index + access[0].length, access.index + MAX_MATCH_LENGTH));
+    const value = key === null ? undefined : staticSpecifier(key);
+    if (value === undefined || value === 'require' || value === 'import') unread = true;
+  }
+  for (const index of executableKeywords(cleaned, code)) {
+    const candidate = cleaned.slice(index, index + MAX_MATCH_LENGTH);
+    if (isNonLoaderProperty(cleaned, code, index, candidate)) continue;
+    const call = KNOWN_CALL.exec(candidate);
+    if (call !== null) {
+      const argument = STATIC_CALL_ARGUMENT.exec(candidate.slice(call[0].length));
+      if (argument === null || staticSpecifier(argument) === undefined) unread = true;
+      continue;
+    }
+    const keyword = /^(require|import|export)\b/.exec(candidate)?.[1];
+    if (keyword === 'require') {
+      // Aliases, computed/optional members, non-null assertions and unfamiliar
+      // type arguments can all call a loader. Do not guess at their grammar.
+      unread = true;
+    } else if (keyword === 'import') {
+      const declaration = staticDeclarationMatch(candidate);
+      if (declaration !== null) {
+        if (staticSpecifier(declaration) === undefined) unread = true;
+      } else if (!/^import\s*\.\s*meta\s*\.\s*(?:url|env|hot|dirname|filename)\b/.test(candidate)) {
+        unread = true;
+      }
+    } else if (REEXPORT_START.test(candidate)) {
+      const declaration = staticDeclarationMatch(candidate);
+      if (declaration !== null) {
+        if (staticSpecifier(declaration) === undefined) unread = true;
+      } else if (candidate.length === MAX_MATCH_LENGTH || /\bfrom\b/.test(candidate)) unread = true;
+    } else if (keyword === 'export' && 'type'.startsWith(candidate.slice('export'.length).trim())) {
+      // The bound may end in trivia or partway through the optional `type`
+      // token before a re-export's opening brace/star.
+      unread = true;
+    }
+  }
   return unread;
+}
+
+/** Ignore names in clear property positions, but retain calls, aliases and computed access. */
+function isNonLoaderProperty(text: string, code: readonly boolean[], index: number, candidate: string): boolean {
+  const keyword = /^(?:require|import)\b/.exec(candidate)?.[0];
+  if (keyword === undefined) return false;
+  let previous = index - 1;
+  while (previous >= 0 && /\s/.test(text[previous] ?? '')) previous -= 1;
+  if (text[previous] === '.' && text[previous - 1] !== '.') {
+    const receiver = text.slice(Math.max(0, previous - MAX_MATCH_LENGTH), previous).trimEnd();
+    if (/\b(?:module|globalThis|window)\s*\??$/.test(receiver)) return false;
+    // A bare member name is harmless. A call or computed access may still be
+    // module.require(name), or another loader shape we cannot resolve.
+    const member = new RegExp(`^(?:require|import)(?:\\s*\\.\\s*${IDENTIFIER})*\\s*`, 'u').exec(candidate);
+    return !/^[([<!?.]/.test(candidate.slice(member?.[0].length ?? keyword.length));
+  }
+  if (!/[{,]/.test(text[previous] ?? '')) return false;
+  const after = candidate.slice(keyword.length).trimStart();
+  if (after.startsWith(':')) return true;
+  if (!/^[,}]/.test(after)) return false;
+  // Shorthand must be inside an object, not an argument such as f(0, require, 1).
+  // Bound the lookbehind just like static matching; uncertainty stays blocking.
+  const closings: string[] = [];
+  const pairs: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
+  for (let cursor = previous; cursor >= Math.max(0, index - MAX_MATCH_LENGTH); cursor -= 1) {
+    if (!code[cursor]) continue;
+    const character = text[cursor] ?? '';
+    if (pairs[character] !== undefined) closings.push(pairs[character]);
+    else if (/[([{]/.test(character)) {
+      if (closings.length > 0) {
+        if (closings.pop() !== character) return false;
+      } else {
+        if (character !== '{') return false;
+        const prefix = text.slice(Math.max(0, cursor - MAX_MATCH_LENGTH), cursor).trimEnd();
+        return /[=([{,:?]$|\breturn$/.test(prefix);
+      }
+    }
+  }
+  return false;
 }
 
 interface KeywordPattern {
@@ -322,21 +165,81 @@ interface KeywordPattern {
   regex: RegExp;
 }
 
-const QUOTED = "(['\"`])((?:\\\\.|(?!\\1).)*)\\1";
+const QUOTED = "(['\"`])((?:\\\\(?:\\r\\n|[\\s\\S])|(?!\\1)[^\\\\])*)\\1";
+const STATIC_ARGUMENT = `${QUOTED}(?=${CALL_TRIVIA}[,)])`;
+const STATIC_CALL_ARGUMENT = new RegExp(`^${CALL_TRIVIA}${STATIC_ARGUMENT}`);
+const STATIC_COMPUTED_KEY = new RegExp(`^\\s*${QUOTED}\\s*\\]`);
+
+const STATIC_DECLARATIONS = [
+  // Only import bindings and re-export lists/stars can have a from clause.
+  // In particular, never search the rest of the file after `export const`.
+  new RegExp(`^(?:import\\b(?!\\s*[('"\x60.<])|${REEXPORT_PREFIX})[^'"\x60;]*?\\bfrom\\b\\s*${QUOTED}`),
+  new RegExp(`^import\\b\\s*${QUOTED}`),
+];
+
+function staticDeclarationMatch(candidate: string): RegExpExecArray | null {
+  for (const regex of STATIC_DECLARATIONS) {
+    const match = regex.exec(candidate);
+    if (match !== null) return match;
+  }
+  return null;
+}
 
 const KEYWORD_PATTERNS: KeywordPattern[] = [
-  { kind: 'dynamic-import', regex: new RegExp(`\\b${IMPORT_CALLEE}${CALL_TRIVIA}\\(${CALL_TRIVIA}${QUOTED}`, 'g') },
-  // Keep resolution calls compatible with existing consumers by reporting
-  // require calls as `require` references. Static resolution is still concrete evidence
-  // that the package is needed at runtime or during tool configuration.
-  { kind: 'require', regex: new RegExp(`\\b${REQUIRE_CALLEE}${CALL_TRIVIA}\\(${CALL_TRIVIA}${QUOTED}`, 'g') },
-  // `import .. from '<spec>'` and `export .. from '<spec>'`: anything
-  // between the keyword and `from` that isn't a quote/semicolon (covers
-  // named/default/namespace/type imports and multi-line brace lists).
-  { kind: 'import', regex: new RegExp(`\\b(?:import|export)\\b(?!\\s*\\()[^'"\`;]*?\\bfrom\\s*${QUOTED}`, 'g') },
-  // Side-effect import: `import '<spec>'`: no `from`, so distinct from the pattern above.
-  { kind: 'import', regex: new RegExp(`\\bimport\\s*${QUOTED}`, 'g') },
+  { kind: 'dynamic-import', regex: new RegExp(`^${IMPORT_CALLEE}${CALL_SUFFIX}${CALL_TRIVIA}${STATIC_ARGUMENT}`, 'u') },
+  { kind: 'require', regex: new RegExp(`^${REQUIRE_CALLEE}${CALL_SUFFIX}${CALL_TRIVIA}${STATIC_ARGUMENT}`, 'u') },
+  ...STATIC_DECLARATIONS.map(regex => ({ kind: 'import' as const, regex })),
 ];
+
+/** Decode only specified JS escapes; legacy numeric escapes stay uncertain. */
+function decodeSpecifier(raw: string, template: boolean): string | undefined {
+  let value = '';
+  const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v' };
+  for (let index = 0; index < raw.length; index += 1) {
+    let character = raw[index] ?? '';
+    if (character !== '\\') {
+      if (template && character === '\r') {
+        if (raw[index + 1] === '\n') index += 1;
+        character = '\n';
+      }
+      value += character;
+      continue;
+    }
+    const escape = raw[++index];
+    if (escape === undefined) return undefined;
+    if (escape === '\r') {
+      if (raw[index + 1] === '\n') index += 1;
+    } else if (/[\n\u2028\u2029]/.test(escape)) {
+      // A line continuation contributes no characters.
+    } else if (escape === 'x' || escape === 'u') {
+      const braced = escape === 'u' && raw[index + 1] === '{';
+      const tail = raw.slice(index + 1);
+      const hex = (braced ? /^\{([\da-fA-F]+)\}/ : escape === 'x' ? /^([\da-fA-F]{2})/ : /^([\da-fA-F]{4})/).exec(tail);
+      if (hex === null) return undefined;
+      const point = Number.parseInt(hex[1] ?? '', 16);
+      if (point > 0x10ffff) return undefined;
+      value += String.fromCodePoint(point);
+      index += hex[0].length;
+    } else if (escape === '0' && !/[0-9]/.test(raw[index + 1] ?? '')) value += '\0';
+    else if (/[0-9]/.test(escape)) return undefined;
+    else value += escapes[escape] ?? escape;
+  }
+  return value;
+}
+
+function staticSpecifier(match: RegExpExecArray): string | undefined {
+  const raw = match[2] ?? '';
+  if (match[1] === '`' && hasUnescapedTemplateInterpolation(raw)) return undefined;
+  return decodeSpecifier(raw, match[1] === '`');
+}
+
+/** Match each executable keyword independently: literal text and interpolated
+ * arguments can overlap later calls, even when the outer match is rejected. */
+function* executableKeywords(text: string, code: readonly boolean[]): Generator<number> {
+  for (const match of text.matchAll(/\b(?:require|import|export)\b/g)) {
+    if (code[match.index] === true) yield match.index;
+  }
+}
 
 function buildLineStarts(text: string): number[] {
   const starts = [0];
@@ -360,8 +263,7 @@ function locate(lineStarts: readonly number[], index: number): { line: number; c
 
 function lineTextAt(text: string, lineStarts: readonly number[], line: number): string {
   const start = lineStarts[line - 1] ?? 0;
-  const rawEnd = text.indexOf('\n', start);
-  const end = rawEnd === -1 ? text.length : rawEnd;
+  const end = (lineStarts[line] ?? text.length + 1) - 1;
   const raw = text.slice(start, end).trim();
   return raw.length > MAX_SNIPPET_LENGTH ? `${raw.slice(0, MAX_SNIPPET_LENGTH)}…` : raw;
 }
@@ -376,28 +278,26 @@ function hasUnescapedTemplateInterpolation(value: string): boolean {
   return false;
 }
 
-export function scanSourceForImportSpecifiers(text: string): RawImportSpecifierMatch[] {
-  const cleaned = stripComments(text);
-  const codePositions = codePositionMask(text);
+export function scanSourceForImportSpecifiers(text: string, filePath?: string, language?: ScriptLanguage): RawImportSpecifierMatch[] {
+  const jsx = allowsJsx(filePath, language);
+  const cleaned = stripComments(text, jsx);
+  const codePositions = codePositionMask(text, undefined, undefined, jsx);
   const lineStarts = buildLineStarts(text);
+  const lineSnippets = new Map<number, string>();
   const matches: RawImportSpecifierMatch[] = [];
   // Avoid double-reporting the same specifier occurrence under more than one
   // pattern (the `import ... from` and side-effect-`import` patterns are
   // mutually exclusive by construction, but keyed dedupe is cheap insurance).
   const seenAtIndex = new Set<number>();
 
-  for (const { kind, regex } of KEYWORD_PATTERNS) {
-    regex.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(cleaned)) !== null) {
-      if (codePositions[match.index] !== true) continue;
-      const specifier = match[2] ?? '';
-      const quote = match[1];
-      // Interpolated templates are runtime expressions, not exact package
-      // subpaths. Treating them as literals could turn incomplete static
-      // evidence into a false confirmed missing-file finding.
-      if (quote === '`' && hasUnescapedTemplateInterpolation(specifier)) continue;
-      const specifierIndex = match.index + match[0].lastIndexOf(specifier);
+  for (const index of executableKeywords(cleaned, codePositions)) {
+    const candidate = cleaned.slice(index, index + MAX_MATCH_LENGTH);
+    for (const { kind, regex } of KEYWORD_PATTERNS) {
+      const match = regex.exec(candidate);
+      if (match === null) continue;
+      const specifier = staticSpecifier(match);
+      if (specifier === undefined) continue;
+      const specifierIndex = index + match[0].lastIndexOf(match[2] ?? '');
       if (seenAtIndex.has(specifierIndex)) continue;
       seenAtIndex.add(specifierIndex);
 
@@ -405,7 +305,12 @@ export function scanSourceForImportSpecifiers(text: string): RawImportSpecifierM
       if (packageName === null) continue;
 
       const { line, column } = locate(lineStarts, specifierIndex);
-      matches.push({ packageName, specifier, line, column, snippet: lineTextAt(text, lineStarts, line), kind });
+      let snippet = lineSnippets.get(line);
+      if (snippet === undefined) {
+        snippet = lineTextAt(text, lineStarts, line);
+        lineSnippets.set(line, snippet);
+      }
+      matches.push({ packageName, specifier, line, column, snippet, kind });
     }
   }
 
@@ -414,6 +319,6 @@ export function scanSourceForImportSpecifiers(text: string): RawImportSpecifierM
 }
 
 /** Backward-compatible usage-analysis shape. Detailed consumers opt into the function above. */
-export function scanSourceForImports(text: string): RawImportMatch[] {
-  return scanSourceForImportSpecifiers(text).map(({ specifier: _specifier, ...match }) => match);
+export function scanSourceForImports(text: string, filePath?: string, language?: ScriptLanguage): RawImportMatch[] {
+  return scanSourceForImportSpecifiers(text, filePath, language).map(({ specifier: _specifier, ...match }) => match);
 }

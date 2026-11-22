@@ -45,7 +45,7 @@ async function analyzed(entries) {
 
 for (const [name, entries, explanation] of [
   ['MDX', [['doc.mdx', `It's prose\nimport 'only-here';`]], '.mdx files'],
-  ['interpolation', [['app.ts', 'const x = `${require("only-here")}`;']], 'template-literal interpolations'],
+  ['dynamic import', [['app.ts', 'const x = import(`${name}`);']], 'could not fully check'],
 ]) {
   test(`${name} host assessments prevent Smart Cleanup selection and explain the gap on all review screens`, async t => {
     const result = await analyzed(entries);
@@ -74,7 +74,7 @@ for (const [name, entries, explanation] of [
       onPrepareRemoval: noop, onConfirmRemoval: noop, onKeepDependency: noop, onBackToReview: noop, onOpenDependencyReview: noop,
     }));
     assert.ok(cleanup.includes(explanation));
-    assert.match(cleanup, /Removals are not recommended automatically/);
+    assert.match(cleanup, /Automatic removals are unavailable/);
     assert.match(cleanup, /Maintainer message still visible/);
     assert.equal(plan.security[0].summary, 'Security finding still visible');
     assert.match(cleanup, /1 advisory finding/);
@@ -89,7 +89,7 @@ for (const [name, entries, explanation] of [
       advisoriesAvailable: true, now: Date.now(), onAnalyzeRemoval: noop, onConfirm: noop, onViewReferences: noop, onConfigureVerification: noop,
     }));
     assert.ok(removal.includes(explanation));
-    assert.match(removal, /Removals are not recommended automatically/);
+    assert.match(removal, /Automatic removals are unavailable/);
     const usageResult = (await result.workspace.analyze()).get('only-here');
     const usage = renderToStaticMarkup(createElement(UsageReferencesPanel, {
       row, usage: { phase: 'done', usageId: 'usage', result: usageResult, fromCache: false, cacheExpiresAt: '2099-01-01' },

@@ -167,7 +167,7 @@ test('review 4 generic assertion marks the source not read', async () => {
   const source = 'type Id<T> = T; const n = 4; const v = `${n as Id<number> / 2}`; import "only-here"; const r = /}`/;';
   const result = (await usageWorkspace([['page.ts', source]]).analyze()).get('only-here');
   assert.equal(result.truncated, true);
-  assert.ok(result.coverageReasons.some(reason => reason.includes('could not be read')));
+  assert.ok(result.coverageReasons.some(reason => reason.includes('could not fully check')));
   assert.equal(assessRemoval({ usage: result, peerRequirements: [], stillRequiredBy: [] }).status, 'unknown');
 });
 

@@ -2,9 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assessRemoval } from '../out/core/upgrade/removalAssessment.js';
 import { buildUnusedFinding } from '../out/core/usage/unused.js';
+import { coverageExplanation, SOURCE_IMPORT_COVERAGE_REASON } from '../out/core/usage/sourceCoverage.js';
 import { usageWorkspace } from './helpers/usage-coverage.mjs';
 
 const readable = [
+  ['Vue JSX script', 'page.vue', '<script lang="jsx">const view = <div>{require("only-here")}</div>;</script>', 1],
+  ['import interpolation', 'page.ts', 'const value = `${import("only-here")}`;', 1],
+  ['nested interpolated template', 'page.ts', 'const value = `${`hello ${require("only-here")}`}`;', 1],
+  ['nested template interpolation', 'page.ts', 'const value = `${foo(`hello`), require("only-here")}`;', 1],
+  ['require interpolation', 'page.ts', 'const value = `${require("only-here")}`;', 1],
   ['script-first Vue', 'page.vue', `<script>\nimport x from 'only-here';\n</script>\n<template>It's here</template>`, 2],
   ['template-first Vue', 'page.vue', `<template>It's here</template>\n<script lang="ts">\nimport x from 'only-here';\n</script>`, 3],
   ['Svelte', 'page.svelte', `<h1>It's here</h1>\n<script>\nimport x from 'only-here';\n</script>`, 3],
@@ -35,6 +41,11 @@ test('multiple component scripts are scanned independently and markup strings ar
 });
 
 const unread = [
+  ['interpolated dynamic import', 'page.ts', 'const value = import(`${name}`);', 'could not fully check'],
+  ['unresolved require', 'page.ts', 'const value = require(name);', 'could not fully check'],
+  ['dynamic call in JSX', 'page.tsx', '<div>{import(`${name}`)}</div>', 'could not fully check'],
+  ['unclosed JSX', 'page.tsx', '<div title="broken', 'could not fully check'],
+  ['unclosed JSX expression', 'page.jsx', '<div>{require(name)', 'could not fully check'],
   ['MDX', 'doc.mdx', `It's prose\nimport x from 'only-here';`, '.mdx files'],
   ['Svelte markup import()', 'page.svelte', `{#await import('only-here')}loading{/await}`, 'import() calls in component markup'],
   ['external script src', 'page.vue', `<script src="https://example.com/app.js"></script>`, 'script src targets'],
@@ -46,10 +57,6 @@ const unread = [
   ['failed Astro frontmatter extraction', 'page.astro', `---\nimport 'only-here';`, 'could not be extracted'],
   ['empty unclosed Astro frontmatter', 'page.astro', '---', 'could not be extracted'],
   ['malformed block opening', 'page.vue', `<script lang="ts"\nimport 'only-here';`, 'could not be extracted'],
-  ['require interpolation', 'page.ts', 'const value = `${require("only-here")}`;', 'template-literal interpolations'],
-  ['nested template interpolation', 'page.ts', 'const value = `${foo(`hello`), require("only-here")}`;', 'template-literal interpolations'],
-  ['nested interpolated template', 'page.ts', 'const value = `${`hello ${require("only-here")}`}`;', 'template-literal interpolations'],
-  ['import interpolation', 'page.ts', 'const value = `${import("only-here")}`;', 'template-literal interpolations'],
 ];
 for (const directive of ['import', 'use', 'plugin']) {
   unread.push([`component style @${directive}`, 'page.svelte', `<style>@${directive} 'only-here';</style>`, 'style blocks']);
@@ -157,4 +164,58 @@ test('nested template text cannot hide the import after it as a comment', async 
   ]).analyze()).get('only-here');
   assert.equal(result.references.length, 1);
   assert.equal(result.truncated, false);
+});
+
+for (const extension of ['jsx', 'tsx', 'js', 'mjs', 'cjs']) {
+  test(`JSX in ${extension} keeps removal coverage complete and every executable reference`, async () => {
+    const text = [
+      ...(extension === 'tsx' ? [
+        'const identity = <T,>(x: T) => x;',
+        'const constrained = <T extends unknown>(x: T) => x;',
+      ] : []),
+      'const view = <>',
+      `  <div title="require('fake') / >">`,
+      '    {ready && <Child {...require("spread")} />}',
+      '    <Child className={`${require("attribute")}`} />',
+      '    {`${import("child")}`}',
+      `    {/["'{}<>]/.test(value) ? <span /> : <span>{require("nested")}</span>}`,
+      '  </div>',
+      '</>;',
+      'const division = <Child /> / 2;',
+      'const comparison = count < 2 ? <Child /> : <Child />;',
+      'const after = require("after");',
+    ].join('\n');
+    const packages = ['spread', 'attribute', 'child', 'nested', 'after', 'fake', 'unused'];
+    const results = await usageWorkspace([[`page.${extension}`, text]]).analyze({ packageNames: packages });
+    for (const name of packages.slice(0, 5)) {
+      const result = results.get(name);
+      assert.equal(result.truncated, false);
+      assert.equal(result.references.length, 1, name);
+      const reference = result.references[0];
+      assert.equal(text.split('\n')[reference.line - 1].slice(reference.column - 1, reference.column - 1 + name.length), name);
+      assert.equal(assessRemoval({ usage: result, peerRequirements: [], stillRequiredBy: [] }).status, 'review');
+    }
+    assert.equal(results.get('fake').references.length, 0);
+    assert.equal(results.get('unused').truncated, false);
+    assert.equal(assessRemoval({ usage: results.get('unused'), peerRequirements: [], stillRequiredBy: [] }).status, 'low-risk');
+  });
+}
+
+test('unresolved imports hold back every zero-reference candidate while keeping known references', async () => {
+  const results = await usageWorkspace([['page.tsx', '<div>{require("known")}{import(`${name}`)}</div>']])
+    .analyze({ packageNames: ['known', 'unused'] });
+  assert.equal(results.get('known').references.length, 1);
+  assert.equal(results.get('unused').truncated, true);
+  assert.deepEqual(results.get('unused').coverageReasons, [SOURCE_IMPORT_COVERAGE_REASON]);
+  const assessment = assessRemoval({ usage: results.get('unused'), peerRequirements: [], stillRequiredBy: [] });
+  assert.equal(assessment.status, 'unknown');
+  assert.equal(assessment.evidence[0].summary, "Automatic removals are unavailable because Packageawy could not fully check this project's source code for package imports.");
+});
+
+test('coverage copy uses plain sentences and keeps other coverage details', () => {
+  assert.equal(coverageExplanation([SOURCE_IMPORT_COVERAGE_REASON]), SOURCE_IMPORT_COVERAGE_REASON);
+  assert.equal(coverageExplanation([SOURCE_IMPORT_COVERAGE_REASON, '.mdx files']),
+    `${SOURCE_IMPORT_COVERAGE_REASON} Coverage is incomplete for .mdx files.`);
+  assert.equal(coverageExplanation(['.mdx files', 'stylesheets with @import, @use or @plugin']),
+    `${SOURCE_IMPORT_COVERAGE_REASON} Coverage is incomplete for .mdx files, stylesheets with @import, @use or @plugin.`);
 });
