@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { scanSourceForImportSpecifiers, scanSourceForImports } from '../out/core/usage/importScan.js';
+import { hasUnreadTemplateImports, scanSourceForImportSpecifiers, scanSourceForImports } from '../out/core/usage/importScan.js';
 import { importedPackageName, specifierMatchesPackage } from '../out/core/usage/packageNameMatch.js';
 
 function names(matches) {
@@ -209,4 +209,86 @@ test('specifierMatchesPackage matches exact and subpath specifiers only', () => 
   assert.equal(specifierMatchesPackage('lodash', 'lodash'), true);
   assert.equal(specifierMatchesPackage('lodash/get', 'lodash'), true);
   assert.equal(specifierMatchesPackage('lodash-es', 'lodash'), false);
+});
+
+for (const [name, source] of [
+  ['closing tags', `<div title="it's / > import('fake')">require("fake")</div>`],
+  ['self-closing tag after a spread', '<Component {...props} />'],
+  ['fragments', `<><div /><span>it's plain text</span></>`],
+  ['nested JSX expressions', '<div>{ok ? <span>{items.map(x => <i>{x}</i>)}</span> : <></>}</div>'],
+  ['TSX generic arrow', 'const identity = <T,>(x: T) => x; const view = <div />;'],
+  ['constrained TSX generic arrow', 'const identity = <T extends unknown>(x: T) => x; const view = <div />;'],
+  ['comparison before JSX', 'const view = count < 2 && count > 0 ? <div /> : <span />;'],
+  ['division after JSX', 'const ratio = <div /> / 2;'],
+  ['comparison after JSX', 'const less = <div /> < count; const more = <div /> > count;'],
+  ['JSX after division', 'const ratio = count / <div />;'],
+  ['regex in JSX expressions', `<div>{/["'{}<>]/.test(value) ? <span /> : null}</div>`],
+  ['import text in JSX regex', `<div>{/require('fake')/.test(value)}</div>`],
+  ['regex next to JSX', String.raw`const view = /<\/div>/.test(value) ? <div /> : <span />;`],
+  ['JSX in a template expression', 'const value = `${<div>{`${1 / 2}`}</div>}`;'],
+]) {
+  test(`${name} does not hide later imports or create uncertainty`, () => {
+    const text = source + '\nimport "after";';
+    assert.equal(hasUnreadTemplateImports(text, 'page.tsx'), false, source);
+    assert.deepEqual(names(scanSourceForImports(text, 'page.tsx')), ['after'], source);
+  });
+}
+
+test('every executable JSX and template expression retains reference coordinates', () => {
+  const text = [
+    '<div {...require("spread")} prop={import("attribute")}',
+    '  className={`${require("template")}`}>',
+    '  {import("child")}',
+    '  {`${`nested ${require("nested")}`}`}',
+    '  {items.map(x => <span>{require("mapped")}</span>)}',
+    '</div>;',
+  ].join('\n');
+  const matches = scanSourceForImports(text, 'page.tsx');
+  assert.deepEqual(names(matches), ['spread', 'attribute', 'template', 'child', 'nested', 'mapped']);
+  assert.equal(hasUnreadTemplateImports(text, 'page.tsx'), false);
+  for (const match of matches) {
+    assert.equal(text.split('\n')[match.line - 1].slice(match.column - 1, match.column - 1 + match.packageName.length), match.packageName);
+  }
+});
+
+for (const source of [
+  'import(`${name}`)', 'import(`pkg/${name}`)', 'import(name)', 'require(name)',
+  'require(`pkg/${name}`)', 'import("pkg" + name)', 'require("pkg" + name)',
+  'require.resolve(name)', 'require.resolve.paths(name)', 'import.meta.resolve(name)',
+  '<div>{import(`${name}`)}</div>',
+]) {
+  test(`unresolved specifier keeps coverage incomplete: ${source}`, () => {
+    assert.equal(hasUnreadTemplateImports(source, 'page.tsx'), true);
+    assert.deepEqual(scanSourceForImports(source, 'page.tsx'), []);
+  });
+}
+
+for (const source of [
+  'const view = <div>', 'const view = <div title="unterminated>',
+  'const view = <div>{require("known")', 'const view = <div></span>',
+  'const view = <div>{/unterminated}</div>', 'const view = <div>{`unterminated}</div>',
+]) {
+  test(`unreadable JSX still blocks removals: ${source}`, () => {
+    assert.equal(hasUnreadTemplateImports(source, 'page.tsx'), true);
+  });
+}
+
+test('comments, literal text and JSX attributes do not make dynamic coverage uncertain', () => {
+  const source = [
+    '// import(name)', '/* require(name) */',
+    'const docs = "require(name)";', 'const template = `import(${name})`;',
+    '<div title="require(name)">import(name)</div>;',
+    'require(/* before */ `static` /* after */);',
+    'import("known", { with: { type: "json" } });',
+  ].join('\n');
+  assert.equal(hasUnreadTemplateImports(source, 'page.tsx'), false);
+  assert.deepEqual(names(scanSourceForImports(source, 'page.tsx')), ['static', 'known']);
+});
+
+test('TypeScript assertions stay in code in files that do not allow JSX', () => {
+  const source = 'const value = <number>count / 2; import "after";';
+  for (const extension of ['ts', 'mts', 'cts']) {
+    assert.equal(hasUnreadTemplateImports(source, `page.${extension}`), false);
+    assert.deepEqual(names(scanSourceForImports(source, `page.${extension}`)), ['after']);
+  }
 });

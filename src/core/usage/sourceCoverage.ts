@@ -1,8 +1,9 @@
 import { DEPENDENCY_CALL } from './importScan.js';
+import type { ScriptLanguage } from './importScan.js';
 
 /** Extract executable blocks before JS string masking can consume markup prose. */
 export interface SourceCoverage {
-  scripts: string[];
+  scripts: Array<{ text: string; language?: ScriptLanguage }>;
   localScripts: string[];
   reasons: string[];
 }
@@ -22,11 +23,15 @@ function attribute(attributes: string, name: string): string | undefined {
   return undefined;
 }
 
-function supportedScript(attributes: string): boolean {
+function scriptLanguage(attributes: string): ScriptLanguage | undefined {
   const lang = attribute(attributes, 'lang')?.toLowerCase();
   const type = attribute(attributes, 'type')?.toLowerCase();
-  return (lang === undefined || /^(?:js|jsx|ts|tsx|javascript|typescript)$/.test(lang)) &&
-    (type === undefined || /^(?:module|text\/(?:javascript|typescript)|application\/(?:javascript|typescript))$/.test(type));
+  if ((lang !== undefined && !/^(?:js|jsx|ts|tsx|javascript|typescript)$/.test(lang)) ||
+      (type !== undefined && !/^(?:module|text\/(?:javascript|typescript)|application\/(?:javascript|typescript))$/.test(type))) return undefined;
+  if (lang === 'typescript' || lang === 'ts') return 'ts';
+  if (lang === 'jsx' || lang === 'tsx') return lang;
+  if (lang === undefined && type?.endsWith('/typescript')) return 'ts';
+  return 'js';
 }
 
 /** A fence inside JS literal/comment text belongs to the script, not Astro markup. */
@@ -78,17 +83,17 @@ function frontmatterEnd(text: string, start: number): number | null {
 }
 
 export function extractSourceCoverage(filePath: string, text: string): SourceCoverage {
-  if (!/\.(vue|svelte|astro)$/i.test(filePath)) return { scripts: [text], localScripts: [], reasons: [] };
-  const scripts: string[] = [];
+  if (!/\.(vue|svelte|astro)$/i.test(filePath)) return { scripts: [{ text }], localScripts: [], reasons: [] };
+  const scripts: SourceCoverage['scripts'] = [];
   const localScripts: string[] = [];
   const reasons = new Set<string>();
   const markup = text.split('');
   const hide = (start: number, end: number): void => {
     for (let i = start; i < end; i += 1) markup[i] = /[\r\n]/.test(text[i] ?? '') ? text[i] ?? '' : ' ';
   };
-  const addScript = (start: number, end: number): void => {
+  const addScript = (start: number, end: number, language: ScriptLanguage): void => {
     // Padding retains the original coordinates while isolating each block's lexical state.
-    scripts.push(blank(text.slice(0, start)) + text.slice(start, end));
+    scripts.push({ text: blank(text.slice(0, start)) + text.slice(start, end), language });
   };
 
   let offset = 0;
@@ -104,7 +109,7 @@ export function extractSourceCoverage(filePath: string, text: string): SourceCov
         hide(0, text.length);
         offset = text.length;
       } else {
-        addScript(opening[0].length, end.index);
+        addScript(opening[0].length, end.index, 'ts');
         offset = end.index + end[0].length;
         hide(0, offset);
       }
@@ -137,14 +142,15 @@ export function extractSourceCoverage(filePath: string, text: string): SourceCov
       break;
     }
     const body = text.slice(bodyStart, end.index);
+    const language = scriptLanguage(attributes);
     if (kind === 'style') {
       if (STYLE_DEPENDENCY_DIRECTIVE.test(body)) reasons.add('style blocks with @import, @use or @plugin');
-    } else if (!supportedScript(attributes)) {
+    } else if (language === undefined) {
       reasons.add('script blocks with unsupported languages or types');
     } else {
       const src = attribute(attributes, 'src');
       if (src !== undefined) localScripts.push(src);
-      addScript(bodyStart, end.index);
+      addScript(bodyStart, end.index, language);
     }
     hide(tag.index, closing.lastIndex);
     tags.lastIndex = closing.lastIndex;
@@ -155,6 +161,10 @@ export function extractSourceCoverage(filePath: string, text: string): SourceCov
   return { scripts, localScripts, reasons: [...reasons] };
 }
 
+export const SOURCE_IMPORT_COVERAGE_REASON = "Automatic removals are unavailable because Packageawy could not fully check this project's source code for package imports.";
+
 export function coverageExplanation(reasons: readonly string[]): string {
-  return `Removals are not recommended automatically here because this project has ${reasons.join('; ')}, which are not read yet.`;
+  const details = reasons.filter(reason => reason !== SOURCE_IMPORT_COVERAGE_REASON);
+  return details.length === 0 ? SOURCE_IMPORT_COVERAGE_REASON
+    : `${SOURCE_IMPORT_COVERAGE_REASON} Coverage is incomplete for ${details.join(', ')}.`;
 }

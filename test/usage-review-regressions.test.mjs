@@ -94,9 +94,9 @@ for (const keyword of ['require', 'import']) {
           : location === 'template' ? 'const value = `${' + call + '}`;' : `{#await ${call}}loading{/await}`;
         const file = location === 'markup' ? 'page.svelte' : 'page.ts';
         const result = (await usageWorkspace([[file, text]]).analyze()).get('only-here');
-        assert.equal(result.references.length, location === 'source' ? 1 : 0);
-        assert.equal(result.truncated, location !== 'source');
-        if (location !== 'source') assert.equal(assessRemoval({ usage: result, peerRequirements: [], stillRequiredBy: [] }).status, 'unknown');
+        assert.equal(result.references.length, location === 'markup' ? 0 : 1);
+        assert.equal(result.truncated, location === 'markup');
+        if (location === 'markup') assert.equal(assessRemoval({ usage: result, peerRequirements: [], stillRequiredBy: [] }).status, 'unknown');
       });
     }
   }

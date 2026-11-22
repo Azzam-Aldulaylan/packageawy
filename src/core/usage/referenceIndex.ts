@@ -1,4 +1,5 @@
 import { scanSourceForImports } from './importScan.js';
+import type { ScriptLanguage } from './importScan.js';
 import { typesPackageTarget } from './packageNameMatch.js';
 import type { DependencyReference } from './types.js';
 
@@ -31,8 +32,8 @@ export class UsageReferenceIndex {
     }
   }
 
-  addSourceFile(filePath: string, text: string): void {
-    for (const match of this.scan(text)) {
+  addSourceFile(filePath: string, text: string, language?: ScriptLanguage): void {
+    for (const match of this.scan(text, filePath, language)) {
       const owners = this.typesPackagesByTarget.get(match.packageName) ?? [];
       if (!this.requested.has(match.packageName) && owners.length === 0) continue;
       const reference: DependencyReference = {

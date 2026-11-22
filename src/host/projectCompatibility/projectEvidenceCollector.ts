@@ -3,7 +3,8 @@
 import { createHash } from 'node:crypto';
 
 import { scanFilesBounded } from '../../core/usage/boundedFileScan.js';
-import { scanSourceForImportSpecifiers } from '../../core/usage/importScan.js';
+import { hasUnreadTemplateImports, scanSourceForImportSpecifiers } from '../../core/usage/importScan.js';
+import { extractSourceCoverage } from '../../core/usage/sourceCoverage.js';
 import type { ProjectImportReference } from '../../core/projectCompatibility/imports.js';
 import type { NextRuleProjectFile } from '../../core/projectCompatibility/rules/next/index.js';
 import { CancellationTokenSource } from '../platform/cancellation.js';
@@ -92,21 +93,28 @@ export async function collectProjectCompatibilityEvidence(input: {
       isCancelled: () => cancellation.token.isCancellationRequested,
       consume: (file, content) => {
         if (file.source) {
-          for (const match of scanSourceForImportSpecifiers(content)) {
-            if (match.packageName !== input.packageName) continue;
-            if (imports.length >= MAX_IMPORT_REFERENCES) {
-              evidenceLimitReached = true;
-              scanLimitations.add('project-import-reference-limit');
-              continue;
+          const coverage = extractSourceCoverage(file.filePath, content);
+          if (coverage.reasons.length > 0) scanLimitations.add('project-source-extraction-incomplete');
+          for (const script of coverage.scripts) {
+            if (hasUnreadTemplateImports(script.text, file.filePath, script.language)) {
+              scanLimitations.add('project-source-import-scan-incomplete');
             }
-            imports.push({
-              specifier: match.specifier,
-              kind: match.kind,
-              filePath: file.filePath,
-              line: match.line,
-              column: match.column,
-              snippet: match.snippet,
-            });
+            for (const match of scanSourceForImportSpecifiers(script.text, file.filePath, script.language)) {
+              if (match.packageName !== input.packageName) continue;
+              if (imports.length >= MAX_IMPORT_REFERENCES) {
+                evidenceLimitReached = true;
+                scanLimitations.add('project-import-reference-limit');
+                continue;
+              }
+              imports.push({
+                specifier: match.specifier,
+                kind: match.kind,
+                filePath: file.filePath,
+                line: match.line,
+                column: match.column,
+                snippet: match.snippet,
+              });
+            }
           }
           if (shouldRetainFrameworkRuleFile(input.packageName, file.filePath)) {
             if (retainedFiles.size >= MAX_FRAMEWORK_RULE_FILES) {
@@ -156,7 +164,7 @@ export async function collectProjectCompatibilityEvidence(input: {
       configCancelled,
       failedReadCount,
       evidenceLimitReached,
-    });
+    }) || scanLimitations.size > 0;
     if (sourceFiles.length >= maxFiles) scanLimitations.add('project-source-file-limit');
     if (sourceCancelled || configCancelled) scanLimitations.add('project-source-scan-cancelled');
     if (failedReadCount > 0) scanLimitations.add('project-source-file-unreadable');

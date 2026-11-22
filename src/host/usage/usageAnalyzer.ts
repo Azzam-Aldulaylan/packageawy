@@ -20,7 +20,7 @@ import { configReferencesPackage } from '../../core/usage/configHeuristics.js';
 import { scanFilesBounded } from '../../core/usage/boundedFileScan.js';
 import { findPackageInManifestConfig, findPackageInScripts } from '../../core/usage/packageScripts.js';
 import { hasUnreadTemplateImports } from '../../core/usage/importScan.js';
-import { extractSourceCoverage, STYLESHEET_EXTENSION } from '../../core/usage/sourceCoverage.js';
+import { extractSourceCoverage, SOURCE_IMPORT_COVERAGE_REASON, STYLESHEET_EXTENSION } from '../../core/usage/sourceCoverage.js';
 import { prettierAutoLoadReference } from '../../core/usage/prettierPlugins.js';
 import type { DependencyUsageResult } from '../../core/usage/types.js';
 import { UsageReferenceIndex } from '../../core/usage/referenceIndex.js';
@@ -114,8 +114,8 @@ export async function analyzeDependencyUsage(
     const coverage = extractSourceCoverage(filePath, text);
     for (const reason of coverage.reasons) coverageReasons.add(reason);
     for (const script of coverage.scripts) {
-      referenceIndex.addSourceFile(filePath, script);
-      if (hasUnreadTemplateImports(script)) coverageReasons.add('source text or template-literal interpolations that could not be read');
+      referenceIndex.addSourceFile(filePath, script.text, script.language);
+      if (hasUnreadTemplateImports(script.text, filePath, script.language)) coverageReasons.add(SOURCE_IMPORT_COVERAGE_REASON);
     }
     for (const src of coverage.localScripts) {
       const local = src.startsWith('/')
