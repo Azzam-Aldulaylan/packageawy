@@ -5,7 +5,8 @@
 //   node scripts/release/release-checks.mjs notes [version]
 //   node scripts/release/release-checks.mjs version
 //
-// `verify` fails when package.json's version has no dated changelog section,
+// `verify` fails when the pre-release input conflicts with the minor version,
+// when package.json's version has no dated changelog section,
 // when the tag v<version> is already on the remote, or when the version is
 // already on the Marketplace or Open VSX. The two store lookups are best
 // effort: when a store cannot be reached the check is skipped with a warning.
@@ -128,10 +129,10 @@ export function evaluateRelease({ version, changelog, preRelease, remoteTags, ma
   }
 
   if (preRelease !== undefined && isPreReleaseMinor(version) !== preRelease) {
-    warnings.push(
+    errors.push(
       preRelease
-        ? `${version} has an even minor version, which the release checklist keeps for stable releases.`
-        : `${version} has an odd minor version, which the release checklist keeps for pre-releases.`
+        ? `${version} has an even minor version and requires --pre-release false for a stable release.`
+        : `${version} has an odd minor version and requires --pre-release true for a pre-release.`
     );
   }
 

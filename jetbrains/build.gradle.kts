@@ -95,7 +95,22 @@ val checkBundledFiles = tasks.register("checkBundledFiles") {
     }
 }
 
+// The publish job downloads an archive that has already passed build and verification.
+// Override both inputs only in that path so signing never queries an excluded buildPlugin.
+val publishArchive = providers.gradleProperty("packageawy.publishArchive")
+
 tasks {
+    if (publishArchive.isPresent) {
+        signPlugin {
+            val verifiedArchive = layout.projectDirectory.file(publishArchive.get())
+            archiveFile.set(verifiedArchive)
+            signedArchiveFile.set(layout.buildDirectory.file("distributions/${verifiedArchive.asFile.nameWithoutExtension}-signed.zip"))
+        }
+        publishPlugin {
+            archiveFiles.setFrom(signPlugin.flatMap { it.signedArchiveFile })
+        }
+    }
+
     jar {
         from(rootDist) {
             include("webview.js", "webview.css", "ThirdPartyNotices.txt")

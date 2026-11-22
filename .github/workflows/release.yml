@@ -1,15 +1,15 @@
 name: Release
 
-# Run by hand from the Actions tab. It checks the version, builds the VSIX
-# once, smoke tests that exact file on Linux, Windows and macOS, then publishes
-# it and creates the v<version> tag and GitHub release on the same commit.
+# Run by hand from the Actions tab. It checks the version, builds and verifies
+# the JetBrains plugin, and smoke tests the VSIX on Linux, Windows and macOS.
+# Publishing uses those artifacts and tags the dispatched commit.
 on:
   workflow_dispatch:
     inputs:
       pre_release:
         description: Publish as a pre-release (odd minor versions are pre-releases)
         type: boolean
-        default: true
+        default: false
       publish_marketplace:
         description: Publish to the Visual Studio Marketplace
         type: boolean
@@ -274,20 +274,79 @@ jobs:
         env:
           VSCODE_TEST_VERSION: ${{ steps.vscode.outputs.version }}
 
-  publish:
-    needs: [verify, smoke]
+  jetbrains:
+    needs: verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The production bundles, the same build the VSIX ships.
+      - name: Build the webview and sidecar
+        run: |
+          npm ci
+          node esbuild.mjs --production
+
+      - name: Require the real sidecar
+        run: |
+          if [ ! -f dist/sidecar.js ]; then
+            echo "::error::dist/sidecar.js was not built. The release plugin must not bundle the stub sidecar."
+            exit 1
+          fi
+
+      - name: Build and test
+        working-directory: jetbrains
+        run: ./gradlew build buildPlugin -Ppackageawy.stubSidecar=false
+
+      - name: Verify against WebStorm
+        working-directory: jetbrains
+        run: ./gradlew verifyPlugin -Ppackageawy.stubSidecar=false
+
+      - name: Check the plugin archive
+        working-directory: jetbrains/build/distributions
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "::error::Expected one verified plugin zip, found ${#zips[@]}."
+            exit 1
+          fi
+          sha256sum "${zips[0]}" > plugin.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jetbrains
+          path: jetbrains/build/distributions/
+          if-no-files-found: error
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetbrains-test-reports
+          path: jetbrains/build/reports
+
+  secrets-preflight:
+    needs: [verify, smoke, jetbrains]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    # Add a required reviewer to this environment in the repository settings
-    # to approve each release before anything is published.
+    # Add a required reviewer to this environment to approve publication.
     environment: release
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ needs.verify.outputs.version }}
-      VSIX: packageawy-${{ needs.verify.outputs.version }}.vsix
-      PRE_RELEASE: ${{ inputs.pre_release }}
-
     steps:
       # Fails before anything is published when a chosen store has no token.
       - name: Check publish secrets
@@ -296,6 +355,11 @@ jobs:
           PUBLISH_OPEN_VSX: ${{ inputs.publish_open_vsx }}
           HAS_VSCE_PAT: ${{ secrets.VSCE_PAT != '' }}
           HAS_OVSX_PAT: ${{ secrets.OVSX_PAT != '' }}
+          PUBLISH_JETBRAINS: ${{ inputs.publish_jetbrains }}
+          HAS_TOKEN: ${{ secrets.JETBRAINS_PUBLISH_TOKEN != '' }}
+          HAS_CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN != '' }}
+          HAS_KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY != '' }}
+          HAS_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD != '' }}
         run: |
           missing=0
           if [ "$PUBLISH_MARKETPLACE" = "true" ] && [ "$HAS_VSCE_PAT" != "true" ]; then
@@ -306,8 +370,101 @@ jobs:
             echo "::error::publish_open_vsx is on but the OVSX_PAT secret is not set in the release environment."
             missing=1
           fi
+          if [ "$PUBLISH_JETBRAINS" = "true" ]; then
+            for pair in "JETBRAINS_PUBLISH_TOKEN:$HAS_TOKEN" "JETBRAINS_CERTIFICATE_CHAIN:$HAS_CHAIN" \
+                        "JETBRAINS_PRIVATE_KEY:$HAS_KEY" "JETBRAINS_PRIVATE_KEY_PASSWORD:$HAS_PASSWORD"; do
+              if [ "${pair#*:}" != "true" ]; then
+                echo "::error::publish_jetbrains is on but the ${pair%%:*} secret is not set in the release environment."
+                missing=1
+              fi
+            done
+          fi
           exit "$missing"
 
+  publish-jetbrains:
+    needs: [verify, smoke, jetbrains, secrets-preflight]
+    if: ${{ !inputs.dry_run && inputs.publish_jetbrains }}
+    runs-on: ubuntu-latest
+    environment: release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: jetbrains
+          path: jetbrains/verified
+
+      - name: Confirm the verified plugin
+        working-directory: jetbrains/verified
+        run: sha256sum -c plugin.sha256
+
+      # Bind signing directly to the downloaded archive without querying buildPlugin.
+      # Disable the configuration cache so signing secrets are not cached on disk.
+      - name: Sign the JetBrains plugin
+        id: sign
+        working-directory: jetbrains
+        env:
+          JETBRAINS_CERTIFICATE_CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN }}
+          JETBRAINS_PRIVATE_KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY }}
+          JETBRAINS_PRIVATE_KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
+        run: |
+          shopt -s nullglob
+          zips=(verified/*.zip)
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "::error::Expected one verified plugin zip, found ${#zips[@]}."
+            exit 1
+          fi
+          ./gradlew signPlugin -x buildPlugin -Ppackageawy.publishArchive="${zips[0]}" -Ppackageawy.stubSidecar=false --no-configuration-cache
+          echo "archive=${zips[0]}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jetbrains-signed
+          path: jetbrains/build/distributions/*-signed.zip
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Check the JetBrains Marketplace version
+        id: jetbrains-version
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: node scripts/release/check-jetbrains-version.mjs "$VERSION"
+
+      - name: Publish the JetBrains plugin
+        if: ${{ steps.jetbrains-version.outputs.exists == 'false' }}
+        working-directory: jetbrains
+        env:
+          JETBRAINS_PUBLISH_TOKEN: ${{ secrets.JETBRAINS_PUBLISH_TOKEN }}
+          VERIFIED_ARCHIVE: ${{ steps.sign.outputs.archive }}
+        run: ./gradlew publishPlugin -x buildPlugin -x signPlugin -Ppackageawy.publishArchive="$VERIFIED_ARCHIVE" -Ppackageawy.stubSidecar=false --no-configuration-cache
+
+  publish-marketplace:
+    needs: [verify, smoke, jetbrains, secrets-preflight]
+    if: ${{ !inputs.dry_run && inputs.publish_marketplace }}
+    runs-on: ubuntu-latest
+    environment: release
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      VSIX: packageawy-${{ needs.verify.outputs.version }}.vsix
+      PRE_RELEASE: ${{ inputs.pre_release }}
+
+    steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -315,7 +472,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      # Gives npx the pinned @vscode/vsce from package-lock.json.
       - name: Install
         run: npm ci
 
@@ -326,10 +482,7 @@ jobs:
       - name: Confirm the tested VSIX
         run: sha256sum -c "$VSIX.sha256"
 
-      # --skip-duplicate lets a re-run of this job continue past a store that
-      # already took this version.
       - name: Publish to the Marketplace
-        if: ${{ inputs.publish_marketplace }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
@@ -337,15 +490,83 @@ jobs:
           if [ "$PRE_RELEASE" = "true" ]; then args+=(--pre-release); fi
           npx vsce "${args[@]}"
 
+  publish-open-vsx:
+    needs: [verify, smoke, jetbrains, secrets-preflight]
+    if: ${{ !inputs.dry_run && inputs.publish_open_vsx }}
+    runs-on: ubuntu-latest
+    environment: release
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      VSIX: packageawy-${{ needs.verify.outputs.version }}.vsix
+      PRE_RELEASE: ${{ inputs.pre_release }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+
+      - name: Confirm the tested VSIX
+        run: sha256sum -c "$VSIX.sha256"
+
       # ovsx reads the token from OVSX_PAT, so it stays off the command line.
       - name: Publish to Open VSX
-        if: ${{ inputs.publish_open_vsx }}
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
           args=(publish "$VSIX" --skip-duplicate)
           if [ "$PRE_RELEASE" = "true" ]; then args+=(--pre-release); fi
           npx --yes ovsx@1.3.0 "${args[@]}"
+
+  release:
+    needs: [verify, smoke, jetbrains, secrets-preflight, publish-jetbrains, publish-marketplace, publish-open-vsx]
+    # Evaluate even when unselected store jobs are skipped, but never after a failure.
+    if: >-
+      ${{ !cancelled() && !inputs.dry_run &&
+          needs.verify.result == 'success' &&
+          needs.smoke.result == 'success' &&
+          needs.jetbrains.result == 'success' &&
+          needs.secrets-preflight.result == 'success' &&
+          (needs.publish-jetbrains.result == 'success' || needs.publish-jetbrains.result == 'skipped') &&
+          (needs.publish-marketplace.result == 'success' || needs.publish-marketplace.result == 'skipped') &&
+          (needs.publish-open-vsx.result == 'success' || needs.publish-open-vsx.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      VSIX: packageawy-${{ needs.verify.outputs.version }}.vsix
+      PRE_RELEASE: ${{ inputs.pre_release }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+
+      - name: Confirm the tested VSIX
+        run: sha256sum -c "$VSIX.sha256"
+
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.publish_jetbrains }}
+        with:
+          name: jetbrains-signed
+          path: jetbrains-signed
 
       # gh creates the tag on the dispatched commit along with the release.
       - name: Create the tag and GitHub release
@@ -367,90 +588,16 @@ jobs:
             gh release create "${args[@]}"
           fi
 
-  jetbrains:
-    needs: [verify, publish]
-    if: ${{ inputs.publish_jetbrains && !inputs.dry_run }}
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: write
-    defaults:
-      run:
-        shell: bash
-    env:
-      VERSION: ${{ needs.verify.outputs.version }}
-
-    steps:
-      - name: Check publish secrets
-        env:
-          HAS_TOKEN: ${{ secrets.JETBRAINS_PUBLISH_TOKEN != '' }}
-          HAS_CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN != '' }}
-          HAS_KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY != '' }}
-          HAS_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD != '' }}
-        run: |
-          missing=0
-          for pair in "JETBRAINS_PUBLISH_TOKEN:$HAS_TOKEN" "JETBRAINS_CERTIFICATE_CHAIN:$HAS_CHAIN" \
-                      "JETBRAINS_PRIVATE_KEY:$HAS_KEY" "JETBRAINS_PRIVATE_KEY_PASSWORD:$HAS_PASSWORD"; do
-            if [ "${pair#*:}" != "true" ]; then
-              echo "::error::publish_jetbrains is on but the ${pair%%:*} secret is not set in the release environment."
-              missing=1
-            fi
-          done
-          exit "$missing"
-
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-
-      # Read only, so nothing from a signing run is saved to the shared cache.
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: true
-
-      # The production bundles, the same build the VSIX ships.
-      - name: Build the webview and sidecar
-        run: |
-          npm ci
-          node esbuild.mjs --production
-
-      - name: Require the real sidecar
-        run: |
-          if [ ! -f dist/sidecar.js ]; then
-            echo "::error::dist/sidecar.js was not built. The release plugin must not bundle the stub sidecar."
-            exit 1
-          fi
-
-      - name: Build and test
-        working-directory: jetbrains
-        run: ./gradlew build buildPlugin -Ppackageawy.stubSidecar=false
-
-      # The configuration cache is off so the signing values are never written to disk.
-      - name: Sign and publish
-        working-directory: jetbrains
-        env:
-          JETBRAINS_PUBLISH_TOKEN: ${{ secrets.JETBRAINS_PUBLISH_TOKEN }}
-          JETBRAINS_CERTIFICATE_CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN }}
-          JETBRAINS_PRIVATE_KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY }}
-          JETBRAINS_PRIVATE_KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew publishPlugin -Ppackageawy.stubSidecar=false --no-configuration-cache
-
       - name: Attach the plugin to the GitHub release
+        if: ${{ inputs.publish_jetbrains }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           shopt -s nullglob
-          zips=(jetbrains/build/distributions/*-signed.zip)
+          zips=(jetbrains-signed/*-signed.zip)
           if [ "${#zips[@]}" -ne 1 ]; then
-            echo "::error::Expected one signed plugin zip in jetbrains/build/distributions, found ${#zips[@]}."
+            echo "::error::Expected one signed plugin zip in jetbrains-signed, found ${#zips[@]}."
             exit 1
           fi
           gh release upload "v$VERSION" "${zips[0]}" --clobber
