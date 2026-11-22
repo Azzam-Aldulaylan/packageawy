@@ -7,6 +7,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import {
   evaluateRelease,
@@ -113,15 +117,39 @@ test('lookups that could not run are skipped with a warning', () => {
   assert.equal(result.warnings.length, 3);
 });
 
-test('the odd and even minor rule only warns', () => {
+test('the odd and even minor rule rejects mismatched channels', () => {
   assert.equal(isPreReleaseMinor('0.9.5'), true);
   assert.equal(isPreReleaseMinor('1.10.0'), false);
   const stableOnOdd = evaluateRelease({ ...CLEAN, preRelease: false });
-  assert.equal(stableOnOdd.ok, true);
-  assert.match(stableOnOdd.warnings[0], /odd minor/);
-  const preOnEven = evaluateRelease({ ...CLEAN, version: '0.10.0', changelog: '## [0.10.0] - 2026-11-10\n\n- x\n' });
-  assert.equal(preOnEven.ok, true);
-  assert.match(preOnEven.warnings[0], /even minor/);
+  assert.equal(stableOnOdd.ok, false);
+  assert.deepEqual(stableOnOdd.warnings, []);
+  assert.match(stableOnOdd.errors[0], /odd minor.*--pre-release true/);
+  const preOnEven = evaluateRelease({ ...CLEAN, version: '1.0.0', changelog: '## [1.0.0] - 2026-11-10\n\n- x\n' });
+  assert.equal(preOnEven.ok, false);
+  assert.deepEqual(preOnEven.warnings, []);
+  assert.match(preOnEven.errors[0], /even minor.*--pre-release false/);
+  const stable = evaluateRelease({ ...CLEAN, version: '1.0.0', preRelease: false, changelog: '## [1.0.0] - 2026-11-10\n\n- x\n' });
+  assert.equal(stable.ok, true);
+  assert.deepEqual(stable.errors, []);
+  assert.deepEqual(stable.warnings, []);
+});
+
+test('verify exits with an error for each mismatched channel', (t) => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'release-checks-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const script = path.join(root, 'scripts/release/release-checks.mjs');
+  mkdirSync(path.dirname(script), { recursive: true });
+  copyFileSync('scripts/release/release-checks.mjs', script);
+  for (const [version, flag, expected] of [['1.0.0', 'true', 'false'], ['1.1.0', 'false', 'true']]) {
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version }));
+    writeFileSync(path.join(root, 'CHANGELOG.md'), `## [${version}] - 2026-11-10\n\n- Release.\n`);
+    const result = spawnSync(process.execPath, [script, 'verify', '--offline', '--pre-release', flag], { encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, new RegExp(`requires --pre-release ${expected}`));
+    const matched = spawnSync(process.execPath, [script, 'verify', '--offline', '--pre-release', expected], { encoding: 'utf8' });
+    assert.equal(matched.status, 0);
+    assert.match(matched.stdout, /Release checks passed/);
+  }
 });
 
 test('dates must be real calendar dates', () => {

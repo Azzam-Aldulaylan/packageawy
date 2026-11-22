@@ -29,26 +29,32 @@ Releases are published by the **Release** workflow. It runs only when started by
 1. Open the repository's **Actions** tab and choose **Release**.
 2. Choose **Run workflow** and keep the default branch selected.
 3. Choose the inputs:
-   - **pre_release**: on for a pre-release. The workflow warns when the minor version does not follow the odd and even rule above.
+   - **pre_release**: on for a pre-release. The workflow fails when the channel does not match the odd and even minor version rule above.
    - **publish_marketplace**: publish to the Visual Studio Marketplace.
    - **publish_open_vsx**: publish to Open VSX.
    - **publish_jetbrains**: publish the JetBrains plugin to JetBrains Marketplace.
-   - **dry_run**: run release verification, VSIX packaging and VSIX smoke tests without publishing or creating a tag or release.
+   - **dry_run**: run release verification, VSIX packaging, VSIX smoke tests, and JetBrains builds and verification. Stop before signing, publishing, or creating a tag or release.
 4. Choose **Run workflow** again to start it.
 
 The workflow then does the following:
 
-- Checks that `package.json` has a version with a dated changelog section, that the tag `v<version>` does not exist yet, and that neither store already has the version. It also runs the typecheck and the tests.
+- Runs lint first. Checks the version, dated changelog section, release channel, existing tag, and existing versions in the VS Code Marketplace and Open VSX. Runs the typecheck and tests.
 - Packages the VSIX once, checks its contents, and records its SHA-256.
 - Installs that VSIX into a clean VS Code on Linux, Windows and macOS and opens the dashboard.
-- Publishes the same VSIX to each chosen store, creates the tag `v<version>` on the commit the run started from, and creates the GitHub release with the changelog section as notes and the VSIX and its `.sha256` file attached.
-- When **publish_jetbrains** is on, builds the plugin with the production bundles and the real sidecar, signs it, publishes it, and attaches the signed plugin zip to the same GitHub release.
+- Always builds and tests the JetBrains plugin with the production bundles and real sidecar. Verifies it against WebStorm and records the plugin ZIP's SHA-256 before any publishing starts.
+- Runs a shared secrets preflight job that checks every selected store's secrets before any store job starts. Dry runs stop before this job.
+- Runs a separate job for each selected store: JetBrains Marketplace, Visual Studio Marketplace, and Open VSX. Each job waits for release verification, VSIX smoke tests, JetBrains verification, and secrets preflight. The JetBrains job signs and publishes the verified ZIP. The other store jobs publish the tested VSIX.
+- Creates the tag `v<version>` on the dispatched commit and creates the GitHub release after all selected store jobs succeed. Skipped stores count as success. Attaches the changelog notes, VSIX, its `.sha256` file, and the signed JetBrains ZIP when selected.
+
+If a store job fails after another store succeeds, use **Re-run failed jobs**. The successful store jobs stay complete. The JetBrains job signs the verified ZIP and saves the signed artifact before publishing. On retry, it replaces that artifact and checks Marketplace for the same plugin version across channels. If the version is already present, including pending review when the API shows it, the job logs a notice and skips publication successfully. Any API error fails the job. Every job that checks secrets or publishes uses the `release` environment.
 
 The release checks can also be run locally before starting the workflow:
 
 ```bash
 node scripts/release/release-checks.mjs verify --pre-release true
 ```
+
+To check signing locally, use Java 21 and OpenSSL and run `node scripts/release/check-jetbrains-signing.mjs`. The check generates a temporary self-signed certificate, signs a fixture ZIP with `buildPlugin` excluded, and verifies the signature. It replaces the upload action with local assertions and removes the temporary files afterward. Add `--offline` when the Gradle dependencies are already cached.
 
 - [ ] Install from the Marketplace on a clean profile and confirm the version, commands, and one refresh.
 
@@ -66,7 +72,7 @@ node scripts/release/release-checks.mjs verify --pre-release true
 | `JETBRAINS_PRIVATE_KEY` | Plugin signing | The full text of the private key, `private.pem`. |
 | `JETBRAINS_PRIVATE_KEY_PASSWORD` | Plugin signing | The password for that private key. |
 
-JetBrains documents how to create the certificate chain and private key in its plugin signing guide. The four JetBrains secrets are only needed when **publish_jetbrains** is on. Marketplace and Open VSX secrets are checked before the VSIX publish steps. JetBrains secrets are checked at the start of the JetBrains job, after the GitHub release is created. Each check names missing secrets and stops its job.
+JetBrains documents how to create the certificate chain and private key in its plugin signing guide. The four JetBrains secrets are only needed when **publish_jetbrains** is on. The shared secrets preflight job checks all secrets required by the selected stores before any signing or publishing. It names every missing secret and stops all store jobs if any are missing.
 
 ### Manual fallback
 
