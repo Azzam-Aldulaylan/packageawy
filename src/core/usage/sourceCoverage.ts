@@ -1,26 +1,35 @@
 import { DEPENDENCY_CALL } from './importScan.js';
 import type { ScriptLanguage } from './importScan.js';
+import { scanStylesheet, styleDialect } from './styleScan.js';
+import type { StyleDialect } from './styleScan.js';
 
 /** Extract executable blocks before JS string masking can consume markup prose. */
 export interface SourceCoverage {
   scripts: Array<{ text: string; language?: ScriptLanguage }>;
   localScripts: string[];
+  styles: Array<{ text: string; dialect: StyleDialect; src?: string; offset: number }>;
   reasons: string[];
 }
 
-export const STYLE_DEPENDENCY_DIRECTIVE = /@(?:import|use|plugin)\b/i;
 export const STYLESHEET_EXTENSION = /\.(?:css|scss|sass|less|styl|stylus|pcss|postcss)$/i;
 
 function blank(text: string): string {
   return text.replace(/[^\r\n]/g, ' ');
 }
 
-function attribute(attributes: string, name: string): string | undefined {
+function attributeDetails(attributes: string, name: string): { value: string; offset: number } | undefined {
   const pattern = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
   for (const match of attributes.matchAll(pattern)) {
-    if (match[1]?.toLowerCase() === name) return match[2] ?? match[3] ?? match[4] ?? '';
+    if (match[1]?.toLowerCase() !== name) continue;
+    const value = match[2] ?? match[3] ?? match[4] ?? '';
+    const quote = match[2] !== undefined || match[3] !== undefined ? 1 : 0;
+    return { value, offset: match.index + match[0].length - value.length - quote };
   }
   return undefined;
+}
+
+function attribute(attributes: string, name: string): string | undefined {
+  return attributeDetails(attributes, name)?.value;
 }
 
 function scriptLanguage(attributes: string): ScriptLanguage | undefined {
@@ -82,10 +91,11 @@ function frontmatterEnd(text: string, start: number): number | null {
   return null;
 }
 
-export function extractSourceCoverage(filePath: string, text: string): SourceCoverage {
-  if (!/\.(vue|svelte|astro)$/i.test(filePath)) return { scripts: [{ text }], localScripts: [], reasons: [] };
+export function extractSourceCoverage(filePath: string, text: string, stylesHandled = false): SourceCoverage {
+  if (!/\.(vue|svelte|astro)$/i.test(filePath)) return { scripts: [{ text }], localScripts: [], styles: [], reasons: [] };
   const scripts: SourceCoverage['scripts'] = [];
   const localScripts: string[] = [];
+  const styles: SourceCoverage['styles'] = [];
   const reasons = new Set<string>();
   const markup = text.split('');
   const hide = (start: number, end: number): void => {
@@ -144,7 +154,19 @@ export function extractSourceCoverage(filePath: string, text: string): SourceCov
     const body = text.slice(bodyStart, end.index);
     const language = scriptLanguage(attributes);
     if (kind === 'style') {
-      if (STYLE_DEPENDENCY_DIRECTIVE.test(body)) reasons.add('style blocks with @import, @use or @plugin');
+      const lang = attribute(attributes, 'lang') ?? 'css';
+      const dialect = styleDialect(lang);
+      const src = attribute(attributes, 'src');
+      if (dialect === undefined) reasons.add(`style blocks in ${filePath} with an unsupported language`);
+      else {
+        const padded = blank(text.slice(0, bodyStart)) + body;
+        styles.push({ text: padded, dialect, offset: tag.index + kind.length + 1 + (attributeDetails(attributes, 'src')?.offset ?? 0), ...(src === undefined ? {} : { src }) });
+        const scan = stylesHandled ? undefined : scanStylesheet(body, dialect);
+        // Compatibility and any future consumers must opt in only after reading these targets.
+        if (!stylesHandled && (src !== undefined || (scan?.targets.length ?? 0) > 0 || (scan?.unread.length ?? 0) > 0)) {
+          reasons.add(`style dependencies in ${filePath} that were not read`);
+        }
+      }
     } else if (language === undefined) {
       reasons.add('script blocks with unsupported languages or types');
     } else {
@@ -158,7 +180,7 @@ export function extractSourceCoverage(filePath: string, text: string): SourceCov
   const outside = markup.join('');
   if (/<\/?(?:script|style)\b/i.test(outside)) reasons.add('component blocks that could not be extracted');
   if (new RegExp(DEPENDENCY_CALL).test(outside)) reasons.add('import() calls in component markup');
-  return { scripts, localScripts, reasons: [...reasons] };
+  return { scripts, localScripts, styles, reasons: [...reasons] };
 }
 
 export const SOURCE_IMPORT_COVERAGE_REASON = "Automatic removals are unavailable because Packageawy could not fully check this project's source code for package imports.";

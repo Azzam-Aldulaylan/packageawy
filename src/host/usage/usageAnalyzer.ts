@@ -21,6 +21,7 @@ import { scanFilesBounded } from '../../core/usage/boundedFileScan.js';
 import { findPackageInManifestConfig, findPackageInScripts } from '../../core/usage/packageScripts.js';
 import { hasUnreadTemplateImports } from '../../core/usage/importScan.js';
 import { extractSourceCoverage, SOURCE_IMPORT_COVERAGE_REASON, STYLESHEET_EXTENSION } from '../../core/usage/sourceCoverage.js';
+import { styleDialect } from '../../core/usage/styleScan.js';
 import { prettierAutoLoadReference } from '../../core/usage/prettierPlugins.js';
 import type { DependencyUsageResult } from '../../core/usage/types.js';
 import { UsageReferenceIndex } from '../../core/usage/referenceIndex.js';
@@ -35,10 +36,12 @@ import {
   planWorkspaceFiles,
   readTextFileCapped,
   relativeToFolder,
-  stylesheetHasDependencies,
   USAGE_SOURCE_EXTENSIONS,
 } from './workspaceFiles.js';
 
+import { LocalImportCoverage } from './localImportCoverage.js';
+import { StylesheetReader } from './stylesheetReader.js';
+import { trackSourceEvidenceFiles } from './sourceEvidenceFiles.js';
 const DEFAULT_MAX_FILES = 6000;
 
 export interface AnalyzeUsageOptions {
@@ -92,7 +95,17 @@ export async function analyzeDependencyUsage(
   const pendingScripts = new Set<string>();
   const scannedPaths = new Set<string>();
   const projectRoot = path.resolve(options.folder.path, options.dir);
+  const evidenceFiles = trackSourceEvidenceFiles(options.platform, projectRoot, 'usage');
+  const localImports = new LocalImportCoverage(options.platform, options.folder, options.dir, maxFiles, options.token, scannedPaths, evidenceFiles.record);
   const canonicalProject = await canonicalPath(projectRoot).catch(() => null);
+  const checkSourceIdentity = (absolutePath: string, target: string): void => {
+    // Followed styles already use canonical coordinates; discovery uses the workspace spelling.
+    const expected = canonicalProject !== null && relatePaths(canonicalProject, absolutePath) !== 'outside'
+      ? absolutePath : path.resolve(canonicalProject ?? projectRoot, path.relative(projectRoot, absolutePath));
+    if (target !== expected) {
+      coverageReasons.add('symlinked source files with unproven relative import resolution');
+    }
+  };
   const containedPath = async (absolutePath: string): Promise<string | null> => {
     try {
       const target = await canonicalPath(absolutePath);
@@ -111,11 +124,17 @@ export async function analyzeDependencyUsage(
   const consumeSource = (absolutePath: string, filePath: string, text: string): void => {
     if (scannedPaths.has(absolutePath)) return;
     scannedPaths.add(absolutePath);
-    const coverage = extractSourceCoverage(filePath, text);
+    const coverage = extractSourceCoverage(filePath, text, true);
     for (const reason of coverage.reasons) coverageReasons.add(reason);
+    for (const style of coverage.styles) {
+      styles.scan(absolutePath, filePath, style.text, style.dialect);
+      if (style.src !== undefined) styles.addTarget(absolutePath, filePath, text, style.dialect, {
+        target: style.src, offset: style.offset, directive: 'style src',
+      });
+    }
     for (const script of coverage.scripts) {
       referenceIndex.addSourceFile(filePath, script.text, script.language);
-      if (hasUnreadTemplateImports(script.text, filePath, script.language)) coverageReasons.add(SOURCE_IMPORT_COVERAGE_REASON);
+      if (hasUnreadTemplateImports(script.text, filePath, script.language, options.dir, localImports.request)) coverageReasons.add(SOURCE_IMPORT_COVERAGE_REASON);
     }
     for (const src of coverage.localScripts) {
       const local = src.startsWith('/')
@@ -133,12 +152,34 @@ export async function analyzeDependencyUsage(
       }
     }
   };
+  const styles = new StylesheetReader({
+    platform: options.platform, folder: options.folder, projectRoot, token: options.token,
+    maxFiles, index: referenceIndex, globalReasons: coverageReasons, metrics: readMetrics, containedPath,
+    recordFile: evidenceFiles.record,
+    consumeScript: (absolutePath, filePath, text, canonical) => {
+      checkSourceIdentity(absolutePath, canonical);
+      // Followed plugins/configs may import other excluded scripts. Without a
+      // module-resolution proof, relative dependencies must remain uncertain.
+      if (hasUnreadTemplateImports(text, filePath, undefined, options.dir, localImports.request,
+        specifier => !/^(?:\.\.?($|[\\/])|[\\/]|[a-z]:)/i.test(specifier))) coverageReasons.add(SOURCE_IMPORT_COVERAGE_REASON);
+      consumeSource(absolutePath, filePath, text);
+      for (const name of requested) {
+        if (configReferencesPackage(text, name, path.basename(filePath))) referenceIndex.addReference(name, {
+          filePath, line: 0, column: 0, snippet: path.basename(filePath), kind: 'config', context: filePath,
+        });
+      }
+    },
+  });
   const endWorkspaceScan = performance.start('usage workspace scan');
   const workspaceScan = await scanFilesBounded({
     items: files.filter((file) => !/\.mdx$/i.test(file.filePath) && !STYLESHEET_EXTENSION.test(file.filePath)),
-    read: async ({ absolutePath }) => {
+    read: async ({ absolutePath, source }) => {
       // Discovery can return symlinks too, so enforce the same authority before every read.
       const target = await containedPath(absolutePath);
+      if (target !== null) {
+        evidenceFiles.record(absolutePath);
+        if (source) checkSourceIdentity(absolutePath, target);
+      }
       return target === null ? null : readTextFileCapped(options.platform, target, readMetrics);
     },
     consume: (file, text) => {
@@ -172,10 +213,17 @@ export async function analyzeDependencyUsage(
   for (const file of files.filter((entry) => STYLESHEET_EXTENSION.test(entry.filePath))) {
     if (options.token.isCancellationRequested) break;
     const target = await containedPath(file.absolutePath);
-    const dependencies = target === null ? null : await stylesheetHasDependencies(options.platform, target, options.token, readMetrics);
-    if (dependencies !== false) {
-      coverageReasons.add(dependencies === true ? 'stylesheets with @import, @use or @plugin' : 'stylesheets that could not be read');
-      break;
+    if (target !== null) evidenceFiles.record(file.absolutePath);
+    const text = target === null ? null : await readTextFileCapped(options.platform, target, readMetrics);
+    const dialect = styleDialect(file.filePath) ?? 'css';
+    if (text === null) {
+      styles.protectPreprocessor(file.filePath, dialect);
+      coverageReasons.add(`stylesheets in ${file.filePath} that could not be read`);
+    }
+    else {
+      scannedPaths.add(file.absolutePath);
+      // Preserve canonical ownership and resolve nested imports beside the real file.
+      styles.scan(target ?? file.absolutePath, file.filePath, text, dialect);
     }
   }
   // A local src may be excluded from discovery or beyond its cap. Read it explicitly before claiming coverage.
@@ -187,11 +235,15 @@ export async function analyzeDependencyUsage(
       continue;
     }
     if (scannedPaths.has(absolutePath)) continue;
+    evidenceFiles.record(absolutePath);
+    checkSourceIdentity(absolutePath, target);
     const text = await readTextFileCapped(options.platform, target, readMetrics);
     const filePath = relativeToFolder(options.folder, absolutePath);
     if (text === null || filePath === null) coverageReasons.add('script src targets that could not be read');
     else consumeSource(absolutePath, filePath, text);
   }
+  await styles.drain();
+  if (!await localImports.complete()) coverageReasons.add(SOURCE_IMPORT_COVERAGE_REASON);
   // A cancellation can settle during discovery with an empty/partial result,
   // before the bounded scanner has an item on which to observe it. Never
   // publish that degraded pass as complete.
@@ -229,17 +281,19 @@ export async function analyzeDependencyUsage(
   // just like a file-cap or cancellation. References found elsewhere remain
   // valid, but a zero-reference result from this pass cannot honestly prove
   // that the package is unused or low-risk to remove.
-  const truncated = fileCapReached || cancelledEarly || failedReadCount > 0 || coverageReasons.size > 0;
+  const truncated = fileCapReached || cancelledEarly || failedReadCount > 0;
   const results = new Map<string, DependencyUsageResult>();
   for (const name of requested) {
+    const reasons = [...new Set([...coverageReasons, ...(styles.packageReasons.get(name) ?? [])])].sort();
     results.set(name, {
       packageName: name,
       references: referenceIndex.forPackage(name),
-      truncated,
-      ...(coverageReasons.size === 0 ? {} : { coverageReasons: [...coverageReasons].sort() }),
+      truncated: truncated || reasons.length > 0,
+      ...(reasons.length === 0 ? {} : { coverageReasons: reasons }),
       scannedFileCount: scannedSourceFiles,
       scannedAt,
     });
   }
+  evidenceFiles.finish(!cancelledEarly);
   return results;
 }

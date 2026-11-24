@@ -15,7 +15,11 @@ export function usageWorkspace(entries, { hidden = [], manifest = '{}', pathModu
       return [...files.keys()].filter(file => !hidden.includes(file) && pathModule.matchesGlob(file, search.include))
         .map(file => pathModule.resolve(workspaceFolder.path, file)).slice(0, search.maxResults);
     },
-    async statFile() { return { size: 100 }; },
+    async statFile(absolutePath) {
+      const file = fileKey(absolutePath);
+      if (!files.has(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return { size: Buffer.byteLength(files.get(file) ?? '') };
+    },
     async readFile(absolutePath) {
       const file = fileKey(absolutePath);
       reads.push(file);

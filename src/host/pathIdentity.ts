@@ -63,7 +63,7 @@ export async function canonicalPath(candidate: string, system: PathSystem = HOST
 }
 
 /** Synchronous canonical spelling for the lock key, which is computed on synchronous paths. */
-function canonicalPathSync(candidate: string): string {
+export function canonicalPathSync(candidate: string): string {
   const tail: string[] = [];
   let current = path.resolve(candidate);
   for (;;) {

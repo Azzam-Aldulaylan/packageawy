@@ -110,38 +110,26 @@ test('coverage-only MDX presence gates without any content reads, even when disc
   assert.deepEqual(result.coverageReasons, ['.mdx files']);
 });
 
-test('coverage stylesheet inspection stops at its first directive and skips remaining stylesheets', async () => {
+test('stylesheet inspection reads every stylesheet before completing coverage', async () => {
   const workspace = usageWorkspace(Array.from({ length: 100 }, (_, index) => [
     `${String(index).padStart(3, '0')}.scss`, '@import "only-here";\n' + 'x'.repeat(100000),
   ]));
   const result = (await workspace.analyze()).get('only-here');
-  assert.deepEqual(workspace.reads, []);
-  assert.deepEqual(workspace.chunkReads, [{ file: '000.scss', bytes: 4096 }]);
-  assert.deepEqual(result.coverageReasons, ['stylesheets with @import, @use or @plugin']);
+  assert.equal(workspace.reads.filter(file => /^\d{3}\.scss$/.test(file)).length, 100);
+  assert.deepEqual(workspace.chunkReads, []);
+  assert.equal(result.truncated, true);
+  assert.ok(result.coverageReasons.some(reason => reason.includes('known load paths')));
 });
 
 for (const directive of ['import', 'use', 'plugin']) {
-  test(`stylesheet streaming recognizes @${directive} across chunk boundaries and closes the file`, async () => {
+  test(`stylesheet reader recognizes @${directive} across former chunk boundaries`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'usage-style-'));
     const file = path.join(root, 'style.scss');
     const text = ' '.repeat(4094) + `@${directive} "only-here";` + 'x'.repeat(100000);
-    let bytes = 0;
-    let closed = false;
     try {
       await writeFile(file, text);
-      const platform = {
-        async *readFileChunks(target) {
-          try {
-            for await (const chunk of readFileChunks(target)) {
-              bytes += chunk.byteLength;
-              yield chunk;
-            }
-          } finally { closed = true; }
-        },
-      };
+      const platform = { statFile: async () => ({ size: Buffer.byteLength(text) }), readFile: async () => Buffer.from(text) };
       assert.equal(await stylesheetHasDependencies(platform, file, token), true);
-      assert.equal(bytes, 8192);
-      assert.equal(closed, true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }

@@ -1,16 +1,22 @@
 /** Host-owned, bounded project evidence collection for pre-upgrade checks. */
 
 import { createHash } from 'node:crypto';
+import * as path from 'node:path';
 
 import { scanFilesBounded } from '../../core/usage/boundedFileScan.js';
 import { hasUnreadTemplateImports, scanSourceForImportSpecifiers } from '../../core/usage/importScan.js';
-import { extractSourceCoverage } from '../../core/usage/sourceCoverage.js';
+import { extractSourceCoverage, STYLESHEET_EXTENSION } from '../../core/usage/sourceCoverage.js';
+import { scanStylesheet, styleDialect } from '../../core/usage/styleScan.js';
 import type { ProjectImportReference } from '../../core/projectCompatibility/imports.js';
 import type { NextRuleProjectFile } from '../../core/projectCompatibility/rules/next/index.js';
+import { LocalImportCoverage } from '../usage/localImportCoverage.js';
+import { trackSourceEvidenceFiles } from '../usage/sourceEvidenceFiles.js';
+import { canonicalPath } from '../pathIdentity.js';
 import { CancellationTokenSource } from '../platform/cancellation.js';
 import type { HostPlatform, WorkspaceFolder } from '../platform/hostPlatform.js';
 import {
   findConfigFiles,
+  findStylesheetFiles,
   findSourceFiles,
   planWorkspaceFiles,
   readTextFileCapped,
@@ -68,17 +74,24 @@ export async function collectProjectCompatibilityEvidence(input: {
   maxFiles?: number;
 }): Promise<CollectedProjectCompatibilityEvidence> {
   const manifest = parseProjectManifestCompatibilityEvidence(input.manifestText);
+  const projectRoot = path.resolve(input.folder.path, input.dir);
+  const evidenceFiles = trackSourceEvidenceFiles(input.platform, projectRoot, 'compatibility');
+  let completed = false;
   const cancellation = new CancellationTokenSource();
   const abort = (): void => cancellation.cancel();
   input.signal?.addEventListener('abort', abort, { once: true });
   if (input.signal?.aborted) abort();
   try {
     const maxFiles = input.maxFiles ?? DEFAULT_MAX_FILES;
-    const [sourceFiles, configFiles] = await Promise.all([
+    const [sourceFiles, configFiles, coverageFiles] = await Promise.all([
       findSourceFiles(input.platform, input.folder, input.dir, maxFiles, cancellation.token),
       findConfigFiles(input.platform, input.folder, input.dir, cancellation.token),
+      findStylesheetFiles(input.platform, input.folder, input.dir, maxFiles, cancellation.token),
     ]);
-    const files = planWorkspaceFiles(input.folder, sourceFiles, configFiles);
+    const stylesheetFiles = coverageFiles.filter(file => STYLESHEET_EXTENSION.test(file));
+    const files = planWorkspaceFiles(input.folder, sourceFiles, configFiles, stylesheetFiles);
+    const scannedPaths = new Set<string>();
+    const localImports = new LocalImportCoverage(input.platform, input.folder, input.dir, maxFiles, cancellation.token, scannedPaths, evidenceFiles.record);
     const imports: ProjectImportReference[] = [];
     const retainedFiles = new Map<string, NextRuleProjectFile>();
     let evidenceLimitReached = false;
@@ -87,16 +100,29 @@ export async function collectProjectCompatibilityEvidence(input: {
     let scannedSourceFiles = 0;
     let sourceCancelled = false;
     let configCancelled = false;
+    const canonicalProject = await canonicalPath(projectRoot);
     const workspaceScan = await scanFilesBounded({
       items: files,
-      read: ({ absolutePath }) => readTextFileCapped(input.platform, absolutePath),
+      read: async ({ absolutePath }) => {
+        const target = await canonicalPath(absolutePath);
+        evidenceFiles.record(absolutePath);
+        if (target !== path.resolve(canonicalProject, path.relative(projectRoot, absolutePath))) {
+          scanLimitations.add('project-source-import-scan-incomplete');
+        }
+        return readTextFileCapped(input.platform, absolutePath);
+      },
       isCancelled: () => cancellation.token.isCancellationRequested,
       consume: (file, content) => {
+        if (file.source || STYLESHEET_EXTENSION.test(file.filePath)) scannedPaths.add(file.absolutePath);
+        if (STYLESHEET_EXTENSION.test(file.filePath)) {
+          const style = scanStylesheet(content, styleDialect(file.filePath));
+          if (style.targets.length > 0 || style.unread.length > 0) scanLimitations.add('project-stylesheet-dependencies-unread');
+        }
         if (file.source) {
           const coverage = extractSourceCoverage(file.filePath, content);
           if (coverage.reasons.length > 0) scanLimitations.add('project-source-extraction-incomplete');
           for (const script of coverage.scripts) {
-            if (hasUnreadTemplateImports(script.text, file.filePath, script.language)) {
+            if (hasUnreadTemplateImports(script.text, file.filePath, script.language, input.dir, localImports.request)) {
               scanLimitations.add('project-source-import-scan-incomplete');
             }
             for (const match of scanSourceForImportSpecifiers(script.text, file.filePath, script.language)) {
@@ -137,6 +163,7 @@ export async function collectProjectCompatibilityEvidence(input: {
         if (file.source) scannedSourceFiles += 1;
       },
     });
+    if (!await localImports.complete()) scanLimitations.add('project-source-import-scan-incomplete');
     if (workspaceScan.cancelled || cancellation.token.isCancellationRequested) {
       sourceCancelled = scannedSourceFiles < sourceFiles.length;
       const processedConfigFiles = files
@@ -164,10 +191,12 @@ export async function collectProjectCompatibilityEvidence(input: {
       configCancelled,
       failedReadCount,
       evidenceLimitReached,
-    }) || scanLimitations.size > 0;
+    }) || scanLimitations.size > 0 || stylesheetFiles.length >= maxFiles;
+    if (stylesheetFiles.length >= maxFiles) scanLimitations.add('project-stylesheet-file-limit');
     if (sourceFiles.length >= maxFiles) scanLimitations.add('project-source-file-limit');
     if (sourceCancelled || configCancelled) scanLimitations.add('project-source-scan-cancelled');
     if (failedReadCount > 0) scanLimitations.add('project-source-file-unreadable');
+    completed = true;
     return {
       ...manifest,
       imports,
@@ -178,6 +207,7 @@ export async function collectProjectCompatibilityEvidence(input: {
       evidenceFingerprint: evidenceFingerprint({ manifest, imports, ruleFiles, truncated }),
     };
   } finally {
+    evidenceFiles.finish(completed && !cancellation.token.isCancellationRequested);
     input.signal?.removeEventListener('abort', abort);
     cancellation.dispose();
   }
