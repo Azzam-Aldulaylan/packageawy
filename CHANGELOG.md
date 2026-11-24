@@ -4,6 +4,17 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-24
+
+### Fixed
+
+- Smart Cleanup now reads stylesheet imports, so one `@import`, `@use` or `@plugin` no longer holds back automatic removals for the whole project.
+- Packages used only from stylesheets now count as used, including Sass `@forward` and `load-css`, `url()` assets, CSS Modules `composes` and `<style src>`.
+- `sass`, `sass-embedded`, `node-sass`, `less` and `stylus` now count as used when the project has matching style files.
+- Comments between JSX props and generic JSX elements no longer hold back automatic removals.
+- `require.context` and `import.meta.glob` on project folders no longer hold back automatic removals.
+- Local export lists followed by imports are no longer read as re-exports.
+
 ## [1.0.0] - 2026-11-22
 
 ### Added
@@ -209,6 +220,7 @@ First public pre-release.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
 - Re-reads the project right before every change and stops rollback if it sees dependency files changed.
 
+[1.0.1]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.0
 [0.9.7]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.7
 [0.9.6]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.6
