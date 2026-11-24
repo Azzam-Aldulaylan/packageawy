@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, mkdir, writeFile, readdir, readFile, stat, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readdir, readFile, stat, rm } from 'node:fs/promises';
 import { hasUnreadTemplateImports, scanSourceForImports } from '../out/core/usage/importScan.js';
 import { scanStylesheet } from '../out/core/usage/styleScan.js';
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
 import { collectProjectCompatibilityEvidence } from '../out/host/projectCompatibility/projectEvidenceCollector.js';
-import { usageWorkspace, token } from './helpers/usage-coverage.mjs';
+import { usageWorkspace, token, symlinkOrSkip } from './helpers/usage-coverage.mjs';
 
 async function diskWorkspace(t, entries) {
   const root = await mkdtemp(path.join(tmpdir(), 'packageawy-local-coverage-'));
@@ -41,19 +41,19 @@ async function diskWorkspace(t, entries) {
 }
 
 for (const call of ['require.context("./build", true, /\\.js$/)', 'import.meta.glob("./build/**/*.js")']) {
-  test(`1: excluded bulk directory cannot prove coverage: ${call}`, async t => {
+  test(`excluded bulk directory cannot prove coverage: ${call}`, async t => {
     const s = await diskWorkspace(t, [['index.js', call], ['build/a.js', 'require("only-here")']]);
     assert.equal((await s.analyze()).get('only-here').truncated, true);
     assert.ok((await s.compatibility()).scanLimitations.includes('project-source-import-scan-incomplete'));
   });
 }
 for (const call of ['require.context("./linked", true, /\\.js$/)', 'import.meta.glob("./linked/**/*.js")']) {
-  test(`1: canonical bulk directory cannot escape through symlinks: ${call}`, async t => {
+  test(`canonical bulk directory cannot escape through symlinks: ${call}`, async t => {
     const s = await diskWorkspace(t, [['index.js', call]]);
     const external = await mkdtemp(path.join(tmpdir(), 'packageawy-outside-'));
     t.after(() => rm(external, { recursive: true, force: true }));
     await writeFile(path.join(external, 'a.js'), 'require("only-here")');
-    await symlink(external, path.join(s.root, 'linked'), 'dir');
+    if (!await symlinkOrSkip(t, external, path.join(s.root, 'linked'), 'dir')) return;
     assert.equal((await s.analyze()).get('only-here').truncated, true);
   });
 }
@@ -69,14 +69,14 @@ for (const [file, source] of [
   ['theme.scss', '$part: "../only-here/theme"; @use "pkg:prefix/#{$part}";'],
   ['theme.styl', 'part = "../only-here/theme"\n@import "prefix/{part}"'],
 ]) {
-  test(`3: interpolation can escape a package prefix in ${file}`, async () => {
+  test(`interpolation can escape a package prefix in ${file}`, async () => {
     const usage = (await usageWorkspace([[file, source]]).analyze()).get('only-here');
     assert.equal(usage.truncated, true);
     assert.ok(usage.coverageReasons.length);
   });
 }
 for (const file of ['theme.less', 'theme.styl']) {
-  test(`4: unresolved bare include paths in ${file} block all packages and retain plausible package usage`, async () => {
+  test(`unresolved bare include paths in ${file} block all packages and retain plausible package usage`, async () => {
     const results = await usageWorkspace([[file, '@import "tokens";']]).analyze({ packageNames: ['tokens', 'only-here'] });
     assert.equal(results.get('only-here').truncated, true);
     assert.equal(results.get('tokens').references.length, 1);
@@ -84,7 +84,7 @@ for (const file of ['theme.less', 'theme.styl']) {
 }
 for (const extension of ['scss', 'sass']) {
   for (const partial of ['_tokens', 'tokens']) {
-    test(`5: Sass import-only ${partial}.import.${extension} wins for import only`, async () => {
+    test(`Sass import-only ${partial}.import.${extension} wins for import only`, async () => {
       const entries = [['theme.scss', '@import "./vendor/tokens";'],
         ['vendor/_tokens.scss', '.x { color: red; }'],
         [`vendor/${partial}.import.${extension}`, '@import "pkg:only-here";']];
@@ -99,7 +99,7 @@ for (const extension of ['scss', 'sass']) {
   }
 }
 for (const pair of [['_tokens.scss', 'tokens.scss'], ['_tokens.scss', '_tokens.sass'], ['_tokens.import.scss', 'tokens.import.scss'], ['_index.import.scss', 'index.import.sass']]) {
-  test(`5: ambiguous Sass candidates stay uncertain: ${pair.join(', ')}`, async () => {
+  test(`ambiguous Sass candidates stay uncertain: ${pair.join(', ')}`, async () => {
     const base = pair[0].includes('index') ? 'vendor/tokens/' : 'vendor/';
     const entries = [['theme.scss', '@import "./vendor/tokens";'], ...pair.map(file => [base + file, '.x {}'])];
     assert.equal((await usageWorkspace(entries, { hidden: entries.slice(1).map(([file]) => file) }).analyze()).get('only-here').truncated, true);
@@ -116,7 +116,7 @@ test('large semicolonless Stylus composes scans in linear time', () => {
 });
 
 for (const clause of ['export { projects };', 'export type { ProtocolError };', 'export { projects }\n', 'export { from as projects };']) {
-  test(`7: local export ends before a following import: ${clause}`, () => {
+  test(`local export ends before a following import: ${clause}`, () => {
     const text = `const projects = 1;\n${clause}\nimport x from "y";`;
     assert.equal(hasUnreadTemplateImports(text, 'index.ts'), false);
     assert.deepEqual(scanSourceForImports(text, 'index.ts').map(match => match.packageName), ['y']);
@@ -130,14 +130,14 @@ test('export-clause fix retains real reexports and unread truncated clauses', ()
 });
 
 for (const loader of ['import', 'require']) {
-  test(`8: relative next-intl template ${loader} with covered JSON stays uncertain`, async t => {
+  test(`relative next-intl template ${loader} with covered JSON stays uncertain`, async t => {
     const s = await diskWorkspace(t, [['src/i18n/request.ts', `const messages = (await ${loader}(\`../../messages/\${locale}.json\`)).default;`], ['messages/en.json', '{"hello":"Hello"}']]);
     assert.equal((await s.analyze()).get('only-here').truncated, true);
     assert.equal((await s.compatibility()).truncated, true);
   });
 }
 for (const target of ['../../messages/${locale}.js', '../../build/${locale}.js', '../../../outside/${locale}.json', '../../messages/${locale}/../x.json', '../../node_modules/${locale}.json']) {
-  test(`8: template targets require containment and actual scan coverage: ${target}`, async t => {
+  test(`template targets require containment and actual scan coverage: ${target}`, async t => {
     const s = await diskWorkspace(t, [['src/i18n/request.ts', `import(\`${target}\`)`], ['messages/en.js', 'require("only-here")'], ['build/en.js', 'require("only-here")']]);
     // A discovered use can coexist with incomplete coverage.
     const usage = (await s.analyze({ maxFiles: target.includes('/messages/${locale}.js') ? 1 : 6000 })).get('only-here');
@@ -160,7 +160,7 @@ for (const [call, complete] of [
   ['import.meta.glob("./local/**/*.js")', true],
   ['import(`./local/${name}.js`)', false],
 ]) {
-  test(`1/8: local directory proof only covers static bulk loaders: ${call}`, async t => {
+  test(`local directory proof only covers static bulk loaders: ${call}`, async t => {
     const s = await diskWorkspace(t, [['index.js', call], ['local/a.js', 'require("only-here")']]);
     const usage = (await s.analyze()).get('only-here');
     assert.equal(usage.truncated, !complete);
@@ -174,18 +174,18 @@ test('an external symlink nested under a local glob prefix keeps uncertainty', a
   const external = await mkdtemp(path.join(tmpdir(), 'packageawy-outside-'));
   t.after(() => rm(external, { recursive: true, force: true }));
   await writeFile(path.join(external, 'b.js'), 'require("only-here")');
-  await symlink(external, path.join(s.root, 'local/escape'), 'dir');
+  if (!await symlinkOrSkip(t, external, path.join(s.root, 'local/escape'), 'dir')) return;
   assert.equal((await s.analyze()).get('only-here').truncated, true);
 });
 
 for (const content of ['not JSON', '"' + 'x'.repeat(2 * 1024 * 1024) + '"']) {
-  test(`8: JSON proof rejects ${content.length > 100 ? 'oversized' : 'invalid'} data`, async t => {
+  test(`JSON proof rejects ${content.length > 100 ? 'oversized' : 'invalid'} data`, async t => {
     const s = await diskWorkspace(t, [['index.js', 'import(`./messages/${locale}.json`)'], ['messages/en.json', content]]);
     assert.equal((await s.analyze()).get('only-here').truncated, true);
   });
 }
 
-test('1/8: core callers cannot claim local coverage without a host proof', () => {
+test('core callers cannot claim local coverage without a host proof', () => {
   for (const source of ['require.context("./local")', 'import.meta.glob("./local/*")', 'import(`./local/${name}.js`)']) {
     assert.equal(hasUnreadTemplateImports(source, 'index.js'), true);
   }
@@ -197,13 +197,13 @@ test('an import-only symlink outside the project cannot fall back to a normal pa
   const external = await mkdtemp(path.join(tmpdir(), 'packageawy-outside-'));
   t.after(() => rm(external, { recursive: true, force: true }));
   await writeFile(path.join(external, 'tokens.scss'), '@import "only-here";');
-  await symlink(path.join(external, 'tokens.scss'), path.join(s.root, 'vendor/_tokens.import.scss'));
+  if (!await symlinkOrSkip(t, path.join(external, 'tokens.scss'), path.join(s.root, 'vendor/_tokens.import.scss'))) return;
   assert.equal((await s.analyze()).get('only-here').truncated, true);
 });
 
 
 for (const clause of ["export { \"a } from 'fake'\" as a } from \"real\";", "export * as \"x from 'fake'\" from \"real\";"]) {
-  test(`7: quoted export names cannot hide a real from clause: ${clause}`, () => {
+  test(`quoted export names cannot hide a real from clause: ${clause}`, () => {
     assert.equal(hasUnreadTemplateImports(clause, 'index.ts'), false);
     assert.deepEqual(scanSourceForImports(clause, 'index.ts').map(match => match.packageName), ['real']);
   });

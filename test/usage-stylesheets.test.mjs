@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
-import { folder, token } from './helpers/usage-coverage.mjs';
+import { folder, token, symlinkOrSkip } from './helpers/usage-coverage.mjs';
 import { assessRemoval } from '../out/core/upgrade/removalAssessment.js';
 import { UsageAnalysisState } from '../out/host/usage/usageAnalysisState.js';
 import { computeSourceFingerprint } from '../out/core/cache/sourceFingerprint.js';
@@ -98,7 +98,7 @@ for (const [target, content] of [
     const stats = [];
     const originalStat = workspace.platform.statFile;
     workspace.platform.statFile = async absolutePath => {
-      stats.push(path.relative(folder.path, absolutePath));
+      stats.push(path.relative(folder.path, absolutePath).split(path.sep).join('/'));
       return originalStat(absolutePath);
     };
     const results = await workspace.analyze({ packageNames: ['only-here', 'second', 'unused'] });
@@ -322,7 +322,7 @@ test('native Sass resolution follows a real directory index', async t => {
 
 test('native symlink stylesheet cycles use canonical file identities', async t => {
   const fixture = await nativeStyles(t, [['theme.css', '@import "./link/theme.css"; @import "only-here";']]);
-  await symlink(fixture.root, path.join(fixture.root, 'link'), 'dir');
+  if (!await symlinkOrSkip(t, fixture.root, path.join(fixture.root, 'link'), 'dir')) return;
   const results = await fixture.analyze();
   assert.equal(status(results.get('only-here')), 'review');
   assert.equal(status(results.get('unused')), 'low-risk');
@@ -333,7 +333,7 @@ test('a relative style symlink outside the project is uncertain and never read',
   const fixture = await nativeStyles(t, [['theme.css', '@import "./escape.css";']]);
   const external = path.join(fixture.base, 'external.css');
   await writeFile(external, '@import "only-here";');
-  await symlink(external, path.join(fixture.root, 'escape.css'));
+  if (!await symlinkOrSkip(t, external, path.join(fixture.root, 'escape.css'))) return;
   const results = await fixture.analyze();
   assert.equal(status(results.get('only-here')), 'unknown');
   assert.equal(status(results.get('unused')), 'unknown');

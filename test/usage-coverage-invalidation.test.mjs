@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
-import { mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { collectProjectCompatibilityEvidence } from '../out/host/projectCompatibility/projectEvidenceCollector.js';
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
-import { token } from './helpers/usage-coverage.mjs';
+import { token, symlinkOrSkip } from './helpers/usage-coverage.mjs';
 import { panel, until } from './helpers/dashboard-startup.mjs';
 
 for (const [file, content] of [['doc.mdx', '# New document'], ['style.scss', '@use "only-here";'], ['style-fragment', '@import "only-here";'], ['vendor/theme.css', '@import "clean-pkg";']]) {
@@ -53,7 +53,7 @@ for (const [file, content] of [['doc.mdx', '# New document'], ['style.scss', '@u
 }
 
 for (const file of ['.next/cache/generated.js', 'node_modules/unfollowed/index.js', 'vendor/unfollowed.css']) {
-  test(`R5.5: unfollowed ${file} preserves removal evidence and schedules no refresh`, async t => {
+  test(`unfollowed ${file} preserves removal evidence and schedules no refresh`, async t => {
     const s = await panel(t);
     await s.prepared();
     s.gate.resolve();
@@ -78,7 +78,7 @@ for (const file of ['.next/cache/generated.js', 'node_modules/unfollowed/index.j
   });
 }
 
-test('R6: creating a preferred Sass import-only partial revokes real removal evidence', async t => {
+test('creating a preferred Sass import-only partial revokes real removal evidence', async t => {
   const s = await panel(t);
   await s.prepared();
   const root = path.join(s.root, 'a');
@@ -114,7 +114,7 @@ test('R6: creating a preferred Sass import-only partial revokes real removal evi
 
 for (const followed of ['stylesheet', 'plugin', 'compatibility']) {
   for (const event of ['change', 'delete']) {
-    test(`R5.5: ${event} of a canonical ${followed} target in vendor revokes evidence`, async t => {
+    test(`${event} of a canonical ${followed} target in vendor revokes evidence`, async t => {
       const s = await panel(t);
       await s.prepared();
       const root = path.join(s.root, 'a');
@@ -123,7 +123,7 @@ for (const followed of ['stylesheet', 'plugin', 'compatibility']) {
       const actual = path.join(root, `vendor/actual.${extension}`);
       const link = path.join(root, `vendor/linked.${extension}`);
       await writeFile(actual, followed === 'stylesheet' ? '.x {}' : 'module.exports = {};');
-      await symlink(`actual.${extension}`, link);
+      if (!await symlinkOrSkip(t, `actual.${extension}`, link)) return;
       const source = followed === 'stylesheet' ? '@import "./vendor/linked.css";'
         : '@plugin "./vendor/actual.cjs";';
       await writeFile(path.join(root, 'theme.css'), source);
@@ -140,7 +140,7 @@ for (const followed of ['stylesheet', 'plugin', 'compatibility']) {
       if (followed === 'compatibility') {
         s.platform.findFiles = async search => path.matchesGlob('entry.cjs', search.include)
           ? [path.join(root, 'entry.cjs')] : [];
-        await symlink('vendor/actual.cjs', path.join(root, 'entry.cjs'));
+        if (!await symlinkOrSkip(t, 'vendor/actual.cjs', path.join(root, 'entry.cjs'))) return;
         await collectProjectCompatibilityEvidence({ platform: s.platform,
           folder: { id: s.root, name: 'workspace', path: s.root }, dir: 'a', manifestText: '{}', packageName: 'clean-pkg' });
         s.platform.findFiles = findFiles;
@@ -155,7 +155,7 @@ for (const followed of ['stylesheet', 'plugin', 'compatibility']) {
   }
 }
 
-test('R5.5: a replacement usage scan stops watching excluded files it no longer follows', async t => {
+test('a replacement usage scan stops watching excluded files it no longer follows', async t => {
   const s = await panel(t);
   await s.prepared();
   const root = path.join(s.root, 'a');

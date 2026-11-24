@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, mkdir, writeFile, readFile, realpath, stat, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, realpath, stat, rm } from 'node:fs/promises';
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
 import { collectProjectCompatibilityEvidence } from '../out/host/projectCompatibility/projectEvidenceCollector.js';
 import { scanBulkImport } from '../out/core/usage/bulkImportScan.js';
 import { assessRemoval } from '../out/core/upgrade/removalAssessment.js';
 import { shouldInvalidateSourceEvidence } from '../out/host/usage/sourceEvidenceFiles.js';
-import { token } from './helpers/usage-coverage.mjs';
+import { token, symlinkOrSkip } from './helpers/usage-coverage.mjs';
 
 async function fixture(t, entries, discovered) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'packageawy-usage5-')));
@@ -33,7 +33,7 @@ async function fixture(t, entries, discovered) {
 const magic = ['@(pages|vendor)', '!(pages)', '+(vendor)', '*(vendor)', '?(vendor)', '{pages,vendor}', '[pv]*', '*', '?', '**'];
 for (const segment of magic) {
   for (const loader of ['glob', 'context']) {
-    test(`R5.1: ${loader} ${segment} proves only the directory before the magic segment`, () => {
+    test(`${loader} ${segment} proves only the directory before the magic segment`, () => {
       const target = `./src/${segment}/nested/${loader === 'glob' ? '*.js' : ''}`;
       const source = loader === 'glob' ? `import.meta.glob(${JSON.stringify(target)})` : `require.context(${JSON.stringify(target)})`;
       assert.deepEqual(scanBulkImport(source, 'main.js').localDirectories, ['src']);
@@ -42,7 +42,7 @@ for (const segment of magic) {
 }
 
 for (const segment of ['@(pages|vendor)', '+(vendor)']) {
-  test(`R5.1: ${segment} cannot hide excluded imports in usage or compatibility`, async t => {
+  test(`${segment} cannot hide excluded imports in usage or compatibility`, async t => {
     const s = await fixture(t, [['main.js', `import.meta.glob("./${segment}/*.js");`],
       ['vendor/feature.js', 'import "only-here";']], ['main.js']);
     assert.equal((await s.analyze()).get('only-here').truncated, true);
@@ -58,7 +58,7 @@ for (const [file, source] of [
 ]) {
   for (const dependency of ['module.exports = require("./helper.cjs");', String.raw`module.exports = require(".\\helper.cjs");`,
     'import "./helper.cjs";', 'export * from "./helper.cjs";']) {
-    test(`R5.2: ${source} with ${dependency} retains uncertainty`, async t => {
+    test(`${source} with ${dependency} retains uncertainty`, async t => {
       const s = await fixture(t, [[file, source], ['vendor/plugin.cjs', dependency],
         ['vendor/helper.cjs', 'require("only-here");']], [file]);
       const usage = (await s.analyze()).get('only-here');
@@ -71,7 +71,7 @@ for (const [file, source] of [
 test('a source symlink cannot prove a bulk directory beside the link', async t => {
   const s = await fixture(t, [['vendor/main.js', 'require.context("./locales", true, /\\.js$/);'],
     ['vendor/locales/en.js', 'import "only-here";']], ['main.js']);
-  await symlink('vendor/main.js', path.join(s.root, 'main.js'));
+  if (!await symlinkOrSkip(t, 'vendor/main.js', path.join(s.root, 'main.js'))) return;
   assert.equal((await s.analyze()).get('only-here').truncated, true);
   assert.equal((await s.compatibility()).truncated, true);
 });
@@ -89,9 +89,9 @@ test('Less (css) overrides an imported Less extension', async t => {
 });
 
 for (const kind of ['analyze', 'compatibility']) {
-  test(`R5.5: cancelled ${kind} keeps the preceding followed-file identities`, async t => {
+  test(`cancelled ${kind} keeps the preceding followed-file identities`, async t => {
     const s = await fixture(t, [['vendor/main.js', 'export const value = 1;']], ['main.js']);
-    await symlink('vendor/main.js', path.join(s.root, 'main.js'));
+    if (!await symlinkOrSkip(t, 'vendor/main.js', path.join(s.root, 'main.js'))) return;
     await s[kind]();
     s.platform.findFiles = async () => [];
     const controller = new AbortController();

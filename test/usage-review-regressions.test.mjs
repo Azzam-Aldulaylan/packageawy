@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,11 +8,11 @@ import { findPackageInManifestConfig } from '../out/core/usage/packageScripts.js
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
 import { readFileChunks } from '../out/host/platform/fileChunks.js';
 import { stylesheetHasDependencies } from '../out/host/usage/workspaceFiles.js';
-import { token, usageWorkspace } from './helpers/usage-coverage.mjs';
+import { token, usageWorkspace, symlinkOrSkip } from './helpers/usage-coverage.mjs';
 
 for (const kind of ['relative escape', 'symlink file', 'symlink parent']) {
   for (const discovered of [false, true]) {
-    test(`script src containment refuses a readable ${kind}, discovered=${discovered}, before any outside read`, async () => {
+    test(`script src containment refuses a readable ${kind}, discovered=${discovered}, before any outside read`, async t => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'usage-containment-'));
       try {
         const project = path.join(root, 'project');
@@ -24,10 +24,10 @@ for (const kind of ['relative escape', 'symlink file', 'symlink parent']) {
         let src = '../external/outside.ts';
         if (kind === 'symlink file') {
           src = './link.ts';
-          await symlink(outside, path.join(project, 'link.ts'));
+          if (!await symlinkOrSkip(t, outside, path.join(project, 'link.ts'))) return;
         } else if (kind === 'symlink parent') {
           src = './linked/outside.ts';
-          await symlink(path.dirname(outside), path.join(project, 'linked'));
+          if (!await symlinkOrSkip(t, path.dirname(outside), path.join(project, 'linked'), 'dir')) return;
         }
         const component = path.join(project, 'z.vue');
         const target = path.resolve(project, src);

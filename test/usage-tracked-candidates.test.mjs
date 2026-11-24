@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, mkdir, writeFile, readFile, realpath, stat, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, realpath, stat, rm } from 'node:fs/promises';
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
 import { shouldInvalidateSourceEvidence } from '../out/host/usage/sourceEvidenceFiles.js';
-import { token } from './helpers/usage-coverage.mjs';
+import { token, symlinkOrSkip } from './helpers/usage-coverage.mjs';
 
 async function fixture(t, file, source, entries = []) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'packageawy-usage6-')));
@@ -35,7 +35,7 @@ test('cached missing candidates retain their lexical identity after a directory 
     '@import "./vendor/original/theme"; @import "./vendor/alias/theme";',
     [['vendor/original/_theme.scss', '.x { color: red; }']]);
   const alias = path.join(s.root, 'vendor/alias');
-  await symlink('original', alias, 'dir');
+  if (!await symlinkOrSkip(t, 'original', alias, 'dir')) return;
   const candidate = 'vendor/alias/_theme.import.scss';
   let misses = 0;
   s.platform.statFile = async file => {
@@ -66,7 +66,7 @@ for (const [file, source, fallback, candidate] of [
   ['theme.less', '@plugin "./vendor/plugin";', 'vendor/plugin.cjs', 'vendor/plugin.mjs'],
   ['theme.styl', 'use("./vendor/plugin")', 'vendor/plugin.cjs', 'vendor/plugin.js'],
 ]) {
-  test(`R6: missing ${candidate} for ${source} is tracked and retired on replacement`, async t => {
+  test(`missing ${candidate} for ${source} is tracked and retired on replacement`, async t => {
     const s = await fixture(t, file, source, [[fallback, '/* no dependencies */']]);
     const initial = (await s.analyze()).get('only-here');
     assert.equal(initial.truncated, false);
@@ -90,7 +90,7 @@ for (const [file, source, candidate, entries] of [
   ['theme.css', '@plugin "./vendor/plugin.cjs";', 'vendor/locales',
     [['vendor/plugin.cjs', 'require.context("./locales", true, /\\.js$/);']]],
 ]) {
-  test(`R6: inspected missing input ${candidate} is tracked for ${source}`, async t => {
+  test(`inspected missing input ${candidate} is tracked for ${source}`, async t => {
     const s = await fixture(t, file, source, entries);
     await s.analyze();
     assert.equal(s.tracked(candidate), true);
