@@ -1,8 +1,20 @@
 import path from 'node:path';
+import { symlink } from 'node:fs/promises';
 import { analyzeDependencyUsage } from '../../out/host/usage/usageAnalyzer.js';
 
 export const folder = { id: 'file:///workspace', name: 'workspace', path: path.resolve('/workspace') };
 export const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
+
+export async function symlinkOrSkip(t, target, link, type = 'file') {
+  try {
+    await symlink(target, link, type);
+    return true;
+  } catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'ENOSYS', 'ENOTSUP'].includes(error.code)) throw error;
+    t.skip('creating symlinks requires Windows privileges or filesystem support');
+    return false;
+  }
+}
 
 export function usageWorkspace(entries, { hidden = [], manifest = '{}', pathModule = path, workspaceFolder = folder } = {}) {
   const files = new Map(entries);
@@ -15,7 +27,11 @@ export function usageWorkspace(entries, { hidden = [], manifest = '{}', pathModu
       return [...files.keys()].filter(file => !hidden.includes(file) && pathModule.matchesGlob(file, search.include))
         .map(file => pathModule.resolve(workspaceFolder.path, file)).slice(0, search.maxResults);
     },
-    async statFile() { return { size: 100 }; },
+    async statFile(absolutePath) {
+      const file = fileKey(absolutePath);
+      if (!files.has(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return { size: Buffer.byteLength(files.get(file) ?? '') };
+    },
     async readFile(absolutePath) {
       const file = fileKey(absolutePath);
       reads.push(file);

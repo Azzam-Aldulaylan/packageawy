@@ -45,3 +45,20 @@ for (const [filePath, text, limitation] of [
     assert.equal(evidence.imports[0].specifier, 'only-here/private');
   });
 }
+
+for (const [filePath, text, limitation] of [
+  ['theme.css', '@import "only-here/theme.css";', 'project-stylesheet-dependencies-unread'],
+  ['theme.scss', '@forward "pkg:only-here";', 'project-stylesheet-dependencies-unread'],
+  ['theme.module.css', '.x { composes: base from "only-here"; }', 'project-stylesheet-dependencies-unread'],
+  ['page.vue', '<style src="only-here/styles.css"></style>', 'project-source-extraction-incomplete'],
+  ['page.svelte', '<style>@import "only-here";</style>', 'project-source-extraction-incomplete'],
+]) {
+  test(`compatibility never claims complete coverage for unread styles in ${filePath}`, async () => {
+    const { platform } = usageWorkspace([[filePath, text]]);
+    const evidence = await collectProjectCompatibilityEvidence({
+      platform, folder, dir: '', manifestText: '{}', packageName: 'only-here',
+    });
+    assert.equal(evidence.truncated, true);
+    assert.ok(evidence.scanLimitations.includes(limitation));
+  });
+}

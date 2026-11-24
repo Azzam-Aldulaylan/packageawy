@@ -20,6 +20,8 @@
  * common, statically visible forms, not a promise of perfect detection.
  */
 
+import { QUOTED, staticSpecifier } from './staticSpecifier.js';
+import { scanBulkImport } from './bulkImportScan.js';
 import { importedPackageName } from './packageNameMatch.js';
 import { CALL_TRIVIA, codePositionMask, IDENTIFIER, MAX_MATCH_LENGTH } from './jsxLex.js';
 
@@ -74,8 +76,9 @@ function allowsJsx(filePath?: string, language?: ScriptLanguage): boolean {
 }
 
 /** Report unreadable source and calls whose package specifier is not static.
+ * filePath and projectDir use workspace-relative POSIX paths for local loaders.
  * Kept under the original export name for existing coverage consumers. */
-export function hasUnreadTemplateImports(text: string, filePath?: string, language?: ScriptLanguage): boolean {
+export function hasUnreadTemplateImports(text: string, filePath?: string, language?: ScriptLanguage, projectDir = '', isLocalCovered: (directory: string) => boolean = () => false, isSpecifierCovered: (specifier: string) => boolean = () => true): boolean {
   let unread = false;
   const jsx = allowsJsx(filePath, language);
   const code = codePositionMask(text, () => { unread = true; }, undefined, jsx);
@@ -89,10 +92,20 @@ export function hasUnreadTemplateImports(text: string, filePath?: string, langua
   for (const index of executableKeywords(cleaned, code)) {
     const candidate = cleaned.slice(index, index + MAX_MATCH_LENGTH);
     if (isNonLoaderProperty(cleaned, code, index, candidate)) continue;
+    const bulk = scanBulkImport(candidate, filePath, projectDir);
+    if (bulk !== undefined) {
+      if (bulk.unread || bulk.localDirectories.some(directory => !isLocalCovered(directory))) unread = true;
+      continue;
+    }
     const call = KNOWN_CALL.exec(candidate);
     if (call !== null) {
       const argument = STATIC_CALL_ARGUMENT.exec(candidate.slice(call[0].length));
-      if (argument === null || staticSpecifier(argument) === undefined) unread = true;
+      const specifier = argument === null ? undefined : staticSpecifier(argument);
+      if (specifier === undefined || !isSpecifierCovered(specifier)) {
+        // Interpolation can introduce separators or traversal. Scanning the
+        // static prefix directory cannot prove coverage of all possible targets.
+        unread = true;
+      }
       continue;
     }
     const keyword = /^(require|import|export)\b/.exec(candidate)?.[1];
@@ -103,15 +116,17 @@ export function hasUnreadTemplateImports(text: string, filePath?: string, langua
     } else if (keyword === 'import') {
       const declaration = staticDeclarationMatch(candidate);
       if (declaration !== null) {
-        if (staticSpecifier(declaration) === undefined) unread = true;
+        const specifier = staticSpecifier(declaration);
+        if (specifier === undefined || !isSpecifierCovered(specifier)) unread = true;
       } else if (!/^import\s*\.\s*meta\s*\.\s*(?:url|env|hot|dirname|filename)\b/.test(candidate)) {
         unread = true;
       }
     } else if (REEXPORT_START.test(candidate)) {
+      const clause = exportClause(candidate);
+      if (clause === undefined) continue;
       const declaration = staticDeclarationMatch(candidate);
-      if (declaration !== null) {
-        if (staticSpecifier(declaration) === undefined) unread = true;
-      } else if (candidate.length === MAX_MATCH_LENGTH || /\bfrom\b/.test(candidate)) unread = true;
+      const specifier = declaration === null ? undefined : staticSpecifier(declaration);
+      if (specifier === undefined || !isSpecifierCovered(specifier)) unread = true;
     } else if (keyword === 'export' && 'type'.startsWith(candidate.slice('export'.length).trim())) {
       // The bound may end in trivia or partway through the optional `type`
       // token before a re-export's opening brace/star.
@@ -165,7 +180,6 @@ interface KeywordPattern {
   regex: RegExp;
 }
 
-const QUOTED = "(['\"`])((?:\\\\(?:\\r\\n|[\\s\\S])|(?!\\1)[^\\\\])*)\\1";
 const STATIC_ARGUMENT = `${QUOTED}(?=${CALL_TRIVIA}[,)])`;
 const STATIC_CALL_ARGUMENT = new RegExp(`^${CALL_TRIVIA}${STATIC_ARGUMENT}`);
 const STATIC_COMPUTED_KEY = new RegExp(`^\\s*${QUOTED}\\s*\\]`);
@@ -173,11 +187,54 @@ const STATIC_COMPUTED_KEY = new RegExp(`^\\s*${QUOTED}\\s*\\]`);
 const STATIC_DECLARATIONS = [
   // Only import bindings and re-export lists/stars can have a from clause.
   // In particular, never search the rest of the file after `export const`.
-  new RegExp(`^(?:import\\b(?!\\s*[('"\x60.<])|${REEXPORT_PREFIX})[^'"\x60;]*?\\bfrom\\b\\s*${QUOTED}`),
+  new RegExp(`^import\\b(?!\\s*[('"\x60.<])[^'"\x60;]*?\\bfrom\\b\\s*${QUOTED}`),
   new RegExp(`^import\\b\\s*${QUOTED}`),
 ];
 
+const EXPORT_STRING = new RegExp(`^${QUOTED}`);
+const EXPORT_STAR = new RegExp(`^\\*(?:\\s*as\\s+(?:${QUOTED}|${IDENTIFIER}))?`, 'u');
+
+/** Undefined proves a closed local list; null means an ambiguous/truncated clause. */
+function exportClause(candidate: string): string | null | undefined {
+  const prefix = REEXPORT_START.exec(candidate);
+  if (prefix === null) return null;
+  let end = prefix[0].length;
+  if (candidate[end] === '{') {
+    end += 1;
+    while (end < candidate.length && candidate[end] !== '}') {
+      const character = candidate[end] ?? '';
+      if (character === '"' || character === "'") {
+        const literal = EXPORT_STRING.exec(candidate.slice(end));
+        if (literal === null) return null;
+        end += literal[0].length;
+      } else {
+        if (/[{;`]/.test(character)) return null;
+        end += 1;
+      }
+    }
+    if (candidate[end] !== '}') return null;
+    end += 1;
+    const tail = candidate.slice(end).trimStart();
+    if (tail === '') return candidate.length === MAX_MATCH_LENGTH ? null : undefined;
+    if (/^[;}]|^(?:import|export|const|let|var|function|class)\b/.test(tail)) return undefined;
+    if (!/^from\b/.test(tail)) return null;
+  } else {
+    const star = EXPORT_STAR.exec(candidate.slice(end));
+    if (star === null) return null;
+    end += star[0].length;
+  }
+  return candidate.slice(end);
+}
+
+const EXPORT_ARGUMENT = new RegExp(`^\\s*from\\b\\s*${QUOTED}`);
 function staticDeclarationMatch(candidate: string): RegExpExecArray | null {
+  if (REEXPORT_START.test(candidate)) {
+    const clause = exportClause(candidate);
+    if (clause == null) return null;
+    const match = EXPORT_ARGUMENT.exec(clause);
+    if (match !== null) match[0] = candidate.slice(0, candidate.length - clause.length) + match[0];
+    return match;
+  }
   for (const regex of STATIC_DECLARATIONS) {
     const match = regex.exec(candidate);
     if (match !== null) return match;
@@ -188,50 +245,7 @@ function staticDeclarationMatch(candidate: string): RegExpExecArray | null {
 const KEYWORD_PATTERNS: KeywordPattern[] = [
   { kind: 'dynamic-import', regex: new RegExp(`^${IMPORT_CALLEE}${CALL_SUFFIX}${CALL_TRIVIA}${STATIC_ARGUMENT}`, 'u') },
   { kind: 'require', regex: new RegExp(`^${REQUIRE_CALLEE}${CALL_SUFFIX}${CALL_TRIVIA}${STATIC_ARGUMENT}`, 'u') },
-  ...STATIC_DECLARATIONS.map(regex => ({ kind: 'import' as const, regex })),
 ];
-
-/** Decode only specified JS escapes; legacy numeric escapes stay uncertain. */
-function decodeSpecifier(raw: string, template: boolean): string | undefined {
-  let value = '';
-  const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v' };
-  for (let index = 0; index < raw.length; index += 1) {
-    let character = raw[index] ?? '';
-    if (character !== '\\') {
-      if (template && character === '\r') {
-        if (raw[index + 1] === '\n') index += 1;
-        character = '\n';
-      }
-      value += character;
-      continue;
-    }
-    const escape = raw[++index];
-    if (escape === undefined) return undefined;
-    if (escape === '\r') {
-      if (raw[index + 1] === '\n') index += 1;
-    } else if (/[\n\u2028\u2029]/.test(escape)) {
-      // A line continuation contributes no characters.
-    } else if (escape === 'x' || escape === 'u') {
-      const braced = escape === 'u' && raw[index + 1] === '{';
-      const tail = raw.slice(index + 1);
-      const hex = (braced ? /^\{([\da-fA-F]+)\}/ : escape === 'x' ? /^([\da-fA-F]{2})/ : /^([\da-fA-F]{4})/).exec(tail);
-      if (hex === null) return undefined;
-      const point = Number.parseInt(hex[1] ?? '', 16);
-      if (point > 0x10ffff) return undefined;
-      value += String.fromCodePoint(point);
-      index += hex[0].length;
-    } else if (escape === '0' && !/[0-9]/.test(raw[index + 1] ?? '')) value += '\0';
-    else if (/[0-9]/.test(escape)) return undefined;
-    else value += escapes[escape] ?? escape;
-  }
-  return value;
-}
-
-function staticSpecifier(match: RegExpExecArray): string | undefined {
-  const raw = match[2] ?? '';
-  if (match[1] === '`' && hasUnescapedTemplateInterpolation(raw)) return undefined;
-  return decodeSpecifier(raw, match[1] === '`');
-}
 
 /** Match each executable keyword independently: literal text and interpolated
  * arguments can overlap later calls, even when the outer match is rejected. */
@@ -268,16 +282,6 @@ function lineTextAt(text: string, lineStarts: readonly number[], line: number): 
   return raw.length > MAX_SNIPPET_LENGTH ? `${raw.slice(0, MAX_SNIPPET_LENGTH)}…` : raw;
 }
 
-function hasUnescapedTemplateInterpolation(value: string): boolean {
-  for (let index = 0; index < value.length - 1; index += 1) {
-    if (value[index] !== '$' || value[index + 1] !== '{') continue;
-    let backslashes = 0;
-    for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) backslashes += 1;
-    if (backslashes % 2 === 0) return true;
-  }
-  return false;
-}
-
 export function scanSourceForImportSpecifiers(text: string, filePath?: string, language?: ScriptLanguage): RawImportSpecifierMatch[] {
   const jsx = allowsJsx(filePath, language);
   const cleaned = stripComments(text, jsx);
@@ -292,12 +296,23 @@ export function scanSourceForImportSpecifiers(text: string, filePath?: string, l
 
   for (const index of executableKeywords(cleaned, codePositions)) {
     const candidate = cleaned.slice(index, index + MAX_MATCH_LENGTH);
+    const bulk = scanBulkImport(candidate, filePath);
+    const imports: Array<{ kind: RawImportMatch['kind']; specifier: string; specifierIndex: number }> = (bulk?.targets ?? []).map(target => ({
+      kind: bulk?.kind ?? 'require', specifier: target.specifier, specifierIndex: index + target.offset,
+    }));
+    const declaration = staticDeclarationMatch(candidate);
+    const patterns: Array<{ kind: RawImportMatch['kind']; match: RegExpExecArray }> = declaration === null ? [] : [{ kind: 'import' as const, match: declaration }];
     for (const { kind, regex } of KEYWORD_PATTERNS) {
       const match = regex.exec(candidate);
-      if (match === null) continue;
+      if (match !== null) patterns.push({ kind, match });
+    }
+    for (const { kind, match } of patterns) {
       const specifier = staticSpecifier(match);
       if (specifier === undefined) continue;
       const specifierIndex = index + match[0].lastIndexOf(match[2] ?? '');
+      imports.push({ kind, specifier, specifierIndex });
+    }
+    for (const { kind, specifier, specifierIndex } of imports) {
       if (seenAtIndex.has(specifierIndex)) continue;
       seenAtIndex.add(specifierIndex);
 

@@ -58,12 +58,6 @@ const unread = [
   ['empty unclosed Astro frontmatter', 'page.astro', '---', 'could not be extracted'],
   ['malformed block opening', 'page.vue', `<script lang="ts"\nimport 'only-here';`, 'could not be extracted'],
 ];
-for (const directive of ['import', 'use', 'plugin']) {
-  unread.push([`component style @${directive}`, 'page.svelte', `<style>@${directive} 'only-here';</style>`, 'style blocks']);
-  for (const extension of ['css', 'scss', 'sass', 'less', 'styl', 'stylus', 'pcss', 'postcss']) {
-    unread.push([`${extension} @${directive}`, `style.${extension}`, `@${directive} 'only-here';`, 'stylesheets']);
-  }
-}
 for (const [name, file, text, reason] of unread) {
   test(`${name} reaches both finding confidence and the removal gate with a reason`, async () => {
     const result = (await usageWorkspace([[file, text]]).analyze()).get('only-here');
@@ -147,7 +141,7 @@ test('package.json config matches nested object keys and ESLint shorthand withou
 test('a stylesheet also discovered as config still makes coverage incomplete', async () => {
   const result = (await usageWorkspace([['.storybook/theme.scss', '@use "a-different-package";']]).analyze()).get('only-here');
   assert.equal(result.truncated, true);
-  assert.ok(result.coverageReasons.includes('stylesheets with @import, @use or @plugin'));
+  assert.ok(result.coverageReasons.some(reason => reason.includes('@use target in .storybook/theme.scss')));
 });
 
 for (const file of ['unreadable.mdx', 'unreadable.scss']) {

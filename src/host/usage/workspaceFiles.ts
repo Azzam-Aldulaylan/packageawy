@@ -13,7 +13,7 @@ import * as path from 'node:path';
 
 import { DEFAULT_EXCLUDED_DIRS, isExcluded } from '../../core/workspace/scan.js';
 import { CONFIG_FILE_GLOBS } from '../../core/usage/configHeuristics.js';
-import { STYLE_DEPENDENCY_DIRECTIVE } from '../../core/usage/sourceCoverage.js';
+import { scanStylesheet, styleDialect } from '../../core/usage/styleScan.js';
 import { planWorkspaceAnalysisFiles } from '../../core/usage/workspaceAnalysisPlan.js';
 import type { CancellationToken, HostPlatform, WorkspaceFolder } from '../platform/hostPlatform.js';
 
@@ -52,9 +52,10 @@ export const USAGE_CONFIG_FILE_GLOB = `{${CONFIG_FILE_GLOBS.join(',')}}`;
 /**
  * Exact watcher authority for usage-analysis identity. Config entries are
  * deliberately shared with discovery, including extensionless `.eslintrc`
- * and `.babelrc`, so a cached result cannot outlive an input change.
+ * and `.babelrc`. The final glob also watches extensionless or asset targets
+ * followed by stylesheet resolution, so cached coverage cannot outlive a change.
  */
-export const USAGE_FILE_WATCH_GLOB = `{${USAGE_SOURCE_FILE_GLOB},${USAGE_COVERAGE_FILE_GLOB},${CONFIG_FILE_GLOBS.join(',')}}`;
+export const USAGE_FILE_WATCH_GLOB = `{${USAGE_SOURCE_FILE_GLOB},${USAGE_COVERAGE_FILE_GLOB},${CONFIG_FILE_GLOBS.join(',')},**/*}`;
 const EXCLUDE_GLOB = `**/{${DEFAULT_EXCLUDED_DIRS.join(',')}}/**`;
 
 /** `dir` is the project's workspace-folder-relative directory ("" for the folder root. See DiscoveredProject.dir). */
@@ -92,6 +93,20 @@ export async function findCoverageFiles(
   return platform.findFiles(
     { folder, dir, include: USAGE_COVERAGE_FILE_GLOB, exclude: EXCLUDE_GLOB, maxResults: maxFiles }, token
   );
+}
+
+/** Compatibility checks discover styles separately without changing their source-file limit. */
+export async function findStylesheetFiles(
+  platform: HostPlatform,
+  folder: WorkspaceFolder,
+  dir: string,
+  maxFiles: number,
+  token: CancellationToken
+): Promise<string[]> {
+  return platform.findFiles({
+    folder, dir, include: '**/*.{css,scss,sass,less,styl,stylus,pcss,postcss}',
+    exclude: EXCLUDE_GLOB, maxResults: maxFiles,
+  }, token);
 }
 
 /** Merge source/config discoveries into one stable, de-duplicated read plan. */
@@ -136,31 +151,17 @@ export function planWorkspaceFiles(
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-/** Keep only a directive-sized overlap and stop reading as soon as coverage is known. */
+/** Compatibility helper. All stylesheet dependencies use the same lexical scanner. */
 export async function stylesheetHasDependencies(
   platform: HostPlatform,
   absolutePath: string,
   token: CancellationToken,
   metrics: WorkspaceFileReadMetrics = {}
 ): Promise<boolean | null> {
-  let tail = '';
-  let bytes = 0;
-  try {
-    for await (const chunk of platform.readFileChunks(absolutePath)) {
-      if (token.isCancellationRequested) return null;
-      bytes += chunk.byteLength;
-      metrics.onRead?.(chunk.byteLength);
-      const text = tail + Buffer.from(chunk).toString('latin1');
-      const match = STYLE_DEPENDENCY_DIRECTIVE.exec(text);
-      // Wait for the next byte before deciding a word boundary at a chunk edge.
-      if (match !== null && match.index + match[0].length < text.length) return true;
-      if (bytes > MAX_FILE_BYTES) return null;
-      tail = text.slice(-8);
-    }
-    return STYLE_DEPENDENCY_DIRECTIVE.test(tail);
-  } catch {
-    return null;
-  }
+  const text = await readTextFileCapped(platform, absolutePath, metrics);
+  if (text === null || token.isCancellationRequested) return null;
+  const scan = scanStylesheet(text, styleDialect(absolutePath));
+  return scan.targets.length > 0 || scan.unread.length > 0;
 }
 
 /** Reads a file's UTF-8 text, or null when it's missing, unreadable, or too large to be worth scanning. */

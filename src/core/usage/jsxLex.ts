@@ -105,7 +105,7 @@ function expressionTokenEnd(text: string, start: number, context: ExpressionCont
 }
 
 /** A regex cannot cross a line terminator, even after an escape. */
-function regexLiteralEnd(text: string, start: number): number | undefined {
+export function regexLiteralEnd(text: string, start: number): number | undefined {
   let index = start + 1;
   let inClass = false;
   while (index < text.length) {
@@ -135,7 +135,7 @@ type LexicalFrame =
 
 /** Only enter markup where an expression may start. */
 function jsxOpening(text: string, index: number): RegExpExecArray | null {
-  return /^<(>|[\p{ID_Start}$_][\p{ID_Continue}$.:\-]*(?=[\s/>]|$))/u.exec(text.slice(index));
+  return /^<(>|[\p{ID_Start}$_][\p{ID_Continue}$.:\-]*(?=[\s/<>]|$))/u.exec(text.slice(index));
 }
 
 /**
@@ -160,10 +160,40 @@ export function codePositionMask(
     onUncertain?.();
     hideUntil(text.length);
   };
+  const comment = (): void => {
+    const start = index;
+    if (text[index + 1] === '/' || text[index] === '#') {
+      while (index < text.length && !/[\r\n\u2028\u2029]/.test(text[index] ?? '')) code[index++] = false;
+    } else {
+      const end = text.indexOf('*/', index + 2);
+      if (end === -1) uncertain();
+      else hideUntil(end + 2);
+    }
+    onComment?.(start, index);
+  };
   const openJsx = (opening: RegExpExecArray): void => {
     const name = opening[1] === '>' ? '' : opening[1] ?? '';
     stack.push({ kind: 'jsx', name, inTag: name !== '' });
     hideUntil(index + opening[0].length);
+    // Type arguments may be separated from the element name by tag trivia.
+    while (name !== '' && index < text.length) {
+      if (/\s/.test(text[index] ?? '')) hideUntil(index + 1);
+      else if (text[index] === '/' && /[/*]/.test(text[index + 1] ?? '')) comment();
+      else break;
+    }
+    if (name !== '' && text[index] === '<') {
+      const start = index;
+      const end = genericEnd(text.slice(start, start + MAX_MATCH_LENGTH));
+      if (end === undefined) { uncertain(); return; }
+      // Types can contain import("pkg"). Keep their tokens visible, using
+      // the non-JSX goal so nested generic angles cannot become markup.
+      const mask = codePositionMask(text.slice(start, start + end), onUncertain,
+        (from, to) => onComment?.(start + from, start + to), false);
+      while (index < start + end) {
+        code[index] = mask[index - start] ?? false;
+        index += 1;
+      }
+    }
   };
   while (index < text.length) {
     const frame = stack[stack.length - 1];
@@ -182,7 +212,7 @@ export function codePositionMask(
     }
     if (frame?.kind === 'jsx') {
       // Once the opening tag has ended, slashes are ordinary JSX text.
-      if (frame.inTag && character === '/' && (next === '/' || next === '*')) uncertain();
+      if (frame.inTag && character === '/' && (next === '/' || next === '*')) comment();
       else if (character === '{') {
         hideUntil(index + 1);
         stack.push({ kind: 'code', braces: 1, ...expressionContext() });
@@ -214,15 +244,7 @@ export function codePositionMask(
     if (frame?.kind !== 'code') break;
     const isHashbang = index === hashbangStart && character === '#' && next === '!';
     if (isHashbang || (character === '/' && (next === '/' || next === '*'))) {
-      const start = index;
-      if (isHashbang || next === '/') {
-        while (index < text.length && !/[\r\n\u2028\u2029]/.test(text[index] ?? '')) code[index++] = false;
-      } else {
-        const end = text.indexOf('*/', index + 2);
-        if (end === -1) uncertain();
-        else hideUntil(end + 2);
-      }
-      onComment?.(start, index);
+      comment();
       continue;
     }
     if (character === '`') {
@@ -270,14 +292,15 @@ export function codePositionMask(
       // type tokens executable so this classification cannot hide loader calls.
       const genericLooking = GENERIC_PREFIX.test(candidate) ||
         (candidate.length === MAX_MATCH_LENGTH && INCOMPLETE_GENERIC_PREFIX.test(candidate));
-      if (genericLooking && hasGenericParameters(candidate)) {
+      const end = genericLooking ? genericEnd(candidate) : undefined;
+      if (end !== undefined && GENERIC_ARGUMENTS_START.test(candidate.slice(end))) {
         index = expressionTokenEnd(text, index, frame);
         continue;
       }
       const opening = jsxOpening(text, index);
       const afterName = opening === null ? '' : candidate.slice(opening[0].length);
-      const clearTag = opening !== null && (opening[1] === '>' ||
-        /^(?:\s*(?:\/?>|\{)|\s+[\p{ID_Start}$_])/u.test(afterName));
+      const clearTag = opening !== null && (opening[1] === '>' || afterName.startsWith('<') ||
+        TAG_CONTENT_START.test(afterName));
       if (genericLooking || !clearTag) uncertain();
       else if (opening !== null) {
         endExpression(frame);
@@ -314,9 +337,10 @@ const GENERIC_PREFIX = new RegExp(`^<${CALL_TRIVIA}(?:const\\b|${IDENTIFIER}${CA
 // Exhausting the window before or inside `extends` cannot rule out a generic.
 const INCOMPLETE_GENERIC_PREFIX = new RegExp(`^<${CALL_TRIVIA}${IDENTIFIER}${CALL_TRIVIA}(?:e|ex|ext|exte|exten|extend)?$`, 'u');
 const GENERIC_ARGUMENTS_START = new RegExp(`^${CALL_TRIVIA}\\(`);
+const TAG_CONTENT_START = new RegExp(`^${CALL_TRIVIA}(?:/?>|\\{|<|${IDENTIFIER})`, 'u');
 
 /** Bounded delimiter matching supports object/array constraints and nested defaults. */
-function hasGenericParameters(candidate: string): boolean {
+function genericEnd(candidate: string): number | undefined {
   const closings: string[] = [];
   const pairs: Record<string, string> = { '<': '>', '{': '}', '[': ']', '(': ')' };
   for (let index = 0; index < candidate.length; index += 1) {
@@ -325,21 +349,21 @@ function hasGenericParameters(candidate: string): boolean {
       while (index < candidate.length && !/[\r\n\u2028\u2029]/.test(candidate[index] ?? '')) index += 1;
     } else if (candidate.startsWith('/*', index)) {
       const end = candidate.indexOf('*/', index + 2);
-      if (end === -1) return false;
+      if (end === -1) return undefined;
       index = end + 1;
     } else if (character === '"' || character === "'") {
       const quote = character;
       for (index += 1; index < candidate.length && candidate[index] !== quote; index += 1) {
-        if (/[\r\n]/.test(candidate[index] ?? '')) return false;
+        if (/[\r\n]/.test(candidate[index] ?? '')) return undefined;
         if (candidate[index] === '\\') index += 1;
       }
-      if (index >= candidate.length) return false;
+      if (index >= candidate.length) return undefined;
     } else if (pairs[character] !== undefined) closings.push(pairs[character]);
     else if (/[>})\]]/.test(character)) {
       if (character === '>' && candidate[index - 1] === '=') continue; // Function type arrow.
-      if (closings.pop() !== character) return false;
-      if (closings.length === 0) return GENERIC_ARGUMENTS_START.test(candidate.slice(index + 1));
-    } else if (!/[\p{ID_Continue}$\s.,;:=?&|!+*\-]/u.test(character)) return false;
+      if (closings.pop() !== character) return undefined;
+      if (closings.length === 0) return index + 1;
+    } else if (!/[\p{ID_Continue}$\s.,;:=?&|!+*\-]/u.test(character)) return undefined;
   }
-  return false;
+  return undefined;
 }

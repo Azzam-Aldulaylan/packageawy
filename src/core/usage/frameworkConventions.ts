@@ -67,3 +67,11 @@ export function isFrameworkConventionPackage(packageName: string): boolean {
   if (KNOWN_TOOLING_NAMES.has(packageName)) return true;
   return CONVENTION_PATTERNS.some((pattern) => pattern.test(packageName));
 }
+
+/** Build tools choose these implementations from the stylesheet dialect without a source import. */
+export function implicitStylePackages(dialect: string): readonly string[] {
+  if (dialect === 'scss' || dialect === 'sass') return ['sass', 'sass-embedded', 'node-sass'];
+  if (dialect === 'less') return ['less'];
+  if (dialect === 'stylus') return ['stylus'];
+  return [];
+}

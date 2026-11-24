@@ -34,7 +34,7 @@ import { deriveProjectCacheKey } from '../core/cache/keys.js';
 import { computeSourceFingerprint, sourceFingerprintsMatch } from '../core/cache/sourceFingerprint.js';
 import { PersistentEtagStore } from '../core/cache/persistentEtagStore.js';
 import { PersistentProjectCacheStore } from '../core/cache/projectCacheStore.js';
-import { DEFAULT_EXCLUDED_DIRS, isSameProjectReload, lockfileWatchDirs, projectCandidateLabel } from '../core/workspace/scan.js';
+import { isSameProjectReload, lockfileWatchDirs, projectCandidateLabel } from '../core/workspace/scan.js';
 import { NodeHttpClient } from '../core/registry/http.js';
 import type { PerformanceRecorder } from '../core/performance/measurement.js';
 import { createPerformanceSession } from '../core/performance/measurement.js';
@@ -57,6 +57,7 @@ import { UsageAnalysisCoordinator } from './usage/usageCoordinator.js';
 import { SmartCleanupMetadataCoordinator } from './smartCleanupMetadataCoordinator.js';
 import type { SmartCleanupFinalRefreshEvidence } from './smartCleanupCompletionReport.js';
 import { USAGE_FILE_WATCH_GLOB } from './usage/workspaceFiles.js';
+import { shouldInvalidateSourceEvidence } from './usage/sourceEvidenceFiles.js';
 import type { HostToWebviewMessage, ProtocolError, SelectedProjectInfo } from './webviewProtocol.js';
 import type { WebviewToHostMessage } from './webviewProtocol.js';
 import { isChangeStartingMessage, isWebviewToHostMessage } from './webviewProtocol.js';
@@ -2006,9 +2007,7 @@ export class DashboardPanel {
       ? candidate.folder.path
       : path.join(candidate.folder.path, candidate.dir);
     const onProjectCompatibilitySourceEvent = (filePath: string): void => {
-      const relative = path.relative(projectBase, filePath);
-      if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return;
-      if (relative.split(path.sep).some((segment) => DEFAULT_EXCLUDED_DIRS.includes(segment))) return;
+      if (!shouldInvalidateSourceEvidence(this.platform, projectBase, filePath)) return;
       this.projectCompatibilitySourceGeneration += 1;
       this.smartCleanupSourceGeneration += 1;
       this.usageCoordinator.invalidateProjectSource(candidate.id);

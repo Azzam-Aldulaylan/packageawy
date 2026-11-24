@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,11 +8,11 @@ import { findPackageInManifestConfig } from '../out/core/usage/packageScripts.js
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
 import { readFileChunks } from '../out/host/platform/fileChunks.js';
 import { stylesheetHasDependencies } from '../out/host/usage/workspaceFiles.js';
-import { token, usageWorkspace } from './helpers/usage-coverage.mjs';
+import { token, usageWorkspace, symlinkOrSkip } from './helpers/usage-coverage.mjs';
 
 for (const kind of ['relative escape', 'symlink file', 'symlink parent']) {
   for (const discovered of [false, true]) {
-    test(`script src containment refuses a readable ${kind}, discovered=${discovered}, before any outside read`, async () => {
+    test(`script src containment refuses a readable ${kind}, discovered=${discovered}, before any outside read`, async t => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'usage-containment-'));
       try {
         const project = path.join(root, 'project');
@@ -24,10 +24,10 @@ for (const kind of ['relative escape', 'symlink file', 'symlink parent']) {
         let src = '../external/outside.ts';
         if (kind === 'symlink file') {
           src = './link.ts';
-          await symlink(outside, path.join(project, 'link.ts'));
+          if (!await symlinkOrSkip(t, outside, path.join(project, 'link.ts'))) return;
         } else if (kind === 'symlink parent') {
           src = './linked/outside.ts';
-          await symlink(path.dirname(outside), path.join(project, 'linked'));
+          if (!await symlinkOrSkip(t, path.dirname(outside), path.join(project, 'linked'), 'dir')) return;
         }
         const component = path.join(project, 'z.vue');
         const target = path.resolve(project, src);
@@ -110,38 +110,26 @@ test('coverage-only MDX presence gates without any content reads, even when disc
   assert.deepEqual(result.coverageReasons, ['.mdx files']);
 });
 
-test('coverage stylesheet inspection stops at its first directive and skips remaining stylesheets', async () => {
+test('stylesheet inspection reads every stylesheet before completing coverage', async () => {
   const workspace = usageWorkspace(Array.from({ length: 100 }, (_, index) => [
     `${String(index).padStart(3, '0')}.scss`, '@import "only-here";\n' + 'x'.repeat(100000),
   ]));
   const result = (await workspace.analyze()).get('only-here');
-  assert.deepEqual(workspace.reads, []);
-  assert.deepEqual(workspace.chunkReads, [{ file: '000.scss', bytes: 4096 }]);
-  assert.deepEqual(result.coverageReasons, ['stylesheets with @import, @use or @plugin']);
+  assert.equal(workspace.reads.filter(file => /^\d{3}\.scss$/.test(file)).length, 100);
+  assert.deepEqual(workspace.chunkReads, []);
+  assert.equal(result.truncated, true);
+  assert.ok(result.coverageReasons.some(reason => reason.includes('known load paths')));
 });
 
 for (const directive of ['import', 'use', 'plugin']) {
-  test(`stylesheet streaming recognizes @${directive} across chunk boundaries and closes the file`, async () => {
+  test(`stylesheet reader recognizes @${directive} across former chunk boundaries`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'usage-style-'));
     const file = path.join(root, 'style.scss');
     const text = ' '.repeat(4094) + `@${directive} "only-here";` + 'x'.repeat(100000);
-    let bytes = 0;
-    let closed = false;
     try {
       await writeFile(file, text);
-      const platform = {
-        async *readFileChunks(target) {
-          try {
-            for await (const chunk of readFileChunks(target)) {
-              bytes += chunk.byteLength;
-              yield chunk;
-            }
-          } finally { closed = true; }
-        },
-      };
+      const platform = { statFile: async () => ({ size: Buffer.byteLength(text) }), readFile: async () => Buffer.from(text) };
       assert.equal(await stylesheetHasDependencies(platform, file, token), true);
-      assert.equal(bytes, 8192);
-      assert.equal(closed, true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }
