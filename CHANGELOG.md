@@ -8,11 +8,12 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Fixed
 
-- Smart Cleanup now reads stylesheet imports, so one `@import`, `@use` or `@plugin` no longer holds back automatic removals for the whole project.
+- Smart Cleanup now resolves stylesheet `@import`, `@use` and `@plugin` targets, so these lines no longer hold back automatic removals for the whole project when their targets can be resolved.
 - Packages used only from stylesheets now count as used, including Sass `@forward` and `load-css`, `url()` assets, CSS Modules `composes` and `<style src>`.
 - `sass`, `sass-embedded`, `node-sass`, `less` and `stylus` now count as used when the project has matching style files.
 - Comments between JSX props and generic JSX elements no longer hold back automatic removals.
-- `require.context` and `import.meta.glob` on project folders no longer hold back automatic removals.
+- `require.context` and `import.meta.glob` calls with fixed paths into scanned project folders no longer hold back automatic removals.
+- Upgrade compatibility checks now report stylesheet imports they could not read.
 - Local export lists followed by imports are no longer read as re-exports.
 
 ## [1.0.0] - 2026-11-22
