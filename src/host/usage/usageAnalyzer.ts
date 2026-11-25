@@ -32,6 +32,7 @@ import { canonicalPath, relatePaths } from '../pathIdentity.js';
 import {
   findConfigFiles,
   findCoverageFiles,
+  findTypeScriptConfigFiles,
   findSourceFiles,
   planWorkspaceFiles,
   readTextFileCapped,
@@ -80,9 +81,14 @@ export async function analyzeDependencyUsage(
   // Files that editor search found through a hidden link leading outside the
   // project are not project source. Leave them out instead of counting them
   // unreadable, unless the project names that folder (see outsideProjectLinks.ts).
-  const outsideLinks = new OutsideProjectLinks(projectRoot, canonicalProject);
-  await outsideLinks.prepare(listedFiles.map((file) => file.absolutePath), () => options.token.isCancellationRequested);
-  outsideLinks.checkText(options.manifestText);
+  const evidenceFiles = trackSourceEvidenceFiles(options.platform, projectRoot, 'usage');
+  const outsideLinks = new OutsideProjectLinks(projectRoot, canonicalProject, evidenceFiles.record);
+  await outsideLinks.prepare(
+    listedFiles.map((file) => file.absolutePath),
+    () => options.token.isCancellationRequested,
+    () => findTypeScriptConfigFiles(options.platform, options.folder, options.dir, options.token)
+  );
+  outsideLinks.checkFile(options.manifestText, 'package.json');
   const files = listedFiles.filter((file) => !outsideLinks.covers(file.absolutePath));
   const overlappingFiles = sourceFiles.length + configFiles.length + coverageFiles.length - listedFiles.length;
   performance.increment('usage source discoveries', sourceFiles.length);
@@ -105,7 +111,6 @@ export async function analyzeDependencyUsage(
   if (files.some((file) => /\.mdx$/i.test(file.filePath))) coverageReasons.add('.mdx files');
   const pendingScripts = new Set<string>();
   const scannedPaths = new Set<string>();
-  const evidenceFiles = trackSourceEvidenceFiles(options.platform, projectRoot, 'usage');
   const localImports = new LocalImportCoverage(options.platform, options.folder, options.dir, maxFiles, options.token, scannedPaths, evidenceFiles.record);
   const checkSourceIdentity = (absolutePath: string, target: string): void => {
     // Followed styles already use canonical coordinates; discovery uses the workspace spelling.
@@ -193,7 +198,7 @@ export async function analyzeDependencyUsage(
       return target === null ? null : readTextFileCapped(options.platform, target, readMetrics);
     },
     consume: (file, text) => {
-      outsideLinks.checkText(text);
+      outsideLinks.checkFile(text, file.absolutePath);
       if (file.source) consumeSource(file.absolutePath, file.filePath, text);
       if (!file.config) return;
       const configName = file.filePath.slice(file.filePath.lastIndexOf('/') + 1);

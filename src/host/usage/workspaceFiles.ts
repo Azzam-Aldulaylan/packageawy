@@ -82,6 +82,16 @@ export async function findConfigFiles(
   return platform.findFiles({ folder, dir, include: USAGE_CONFIG_FILE_GLOB, exclude: EXCLUDE_GLOB }, token);
 }
 
+/** Every TypeScript and JavaScript project config, at any depth. */
+export async function findTypeScriptConfigFiles(
+  platform: HostPlatform,
+  folder: WorkspaceFolder,
+  dir: string,
+  token: CancellationToken
+): Promise<string[]> {
+  return platform.findFiles({ folder, dir, include: '**/{tsconfig,jsconfig}*.json', exclude: EXCLUDE_GLOB }, token);
+}
+
 /** Discover unread types separately so their absence from the import scan cannot imply coverage. */
 export async function findCoverageFiles(
   platform: HostPlatform,

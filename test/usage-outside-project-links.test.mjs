@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { mkdtemp, mkdir, writeFile, readFile, realpath, stat, rm } from 'node:fs/promises';
 import { analyzeDependencyUsage } from '../out/host/usage/usageAnalyzer.js';
 import { assessRemoval } from '../out/core/upgrade/removalAssessment.js';
+import { shouldInvalidateSourceEvidence } from '../out/host/usage/sourceEvidenceFiles.js';
 import { token, symlinkOrSkip } from './helpers/usage-coverage.mjs';
 
 // A project with a linked folder whose real files live elsewhere, as editor
@@ -38,7 +39,8 @@ async function linkedProject(t, projectFiles, { link = '.claude', outsideFiles =
       return listed.filter(file => matches(file, search.include)).map(file => path.join(root, file));
     },
   };
-  return (packageNames, manifestText = '{}') => analyzeDependencyUsage({ platform, folder, dir: '', manifestText, packageNames, token });
+  const analyze = (packageNames, manifestText = '{}') => analyzeDependencyUsage({ platform, folder, dir: '', manifestText, packageNames, token });
+  return Object.assign(analyze, { root, outside, platform });
 }
 
 test('files reached through a link to another folder do not make the scan incomplete', async t => {
@@ -74,6 +76,20 @@ for (const [label, files] of [
   ['a tsconfig alias', [['src/main.js', 'import "@tools/helper";'], ['tsconfig.json', '{"compilerOptions":{"paths":{"@tools/*":[".claude/*"]}}}']]],
   ['a jsconfig alias', [['src/main.js', 'import "@tools/helper";'], ['jsconfig.json', '{"compilerOptions":{"paths":{"@tools/*":[".claude/*"]}}}']]],
   ['a bundler alias', [['src/main.js', 'import "@tools/helper";'], ['vite.config.js', 'export default { resolve: { alias: { "@tools": "./.claude" } } };']]],
+  ['an alias in an extended tsconfig', [['src/main.js', 'import "@tools/helper";'], ['tsconfig.json', '{"extends":"./config/base.json"}'], ['config/base.json', '{"compilerOptions":{"baseUrl":"..","paths":{"@tools/*":[".claude/*"]}}}']]],
+  ['an alias in a tsconfig extended without extension', [['src/main.js', 'import "@tools/helper";'], ['tsconfig.json', '{"extends":["./config/base"]}'], ['config/base.json', '{"compilerOptions":{"baseUrl":"..","paths":{"@tools/*":[".claude/*"]}}}']]],
+  ['an alias named exclude', [['src/main.js', 'import "exclude";'], ['tsconfig.json', '{"compilerOptions":{"paths":{"exclude":[".claude/helper.js"]}}}']]],
+  ['an escaped config alias', [['src/main.js', 'import "@tools/helper";'], ['jsconfig.json', String.raw`{"compilerOptions":{"paths":{"@tools/*":["\u002eclaude/*"]}}}`]]],
+  ['an alias in a config package', [['src/main.js', 'import "@tools/helper";'], ['tsconfig.json', '{"extends":"shared-config"}'], ['node_modules/shared-config/package.json', '{"name":"shared-config","tsconfig":"./configs/base.json"}'], ['node_modules/shared-config/configs/base.json', '{"compilerOptions":{"paths":{"@tools/*":["${configDir}/.claude/*"]}}}']]],
+  ['an alias in a config package found from a nested folder', [['packages/app/src/main.js', 'import "@tools/helper";'], ['packages/app/tsconfig.json', '{"extends":"shared-config/base.json"}'], ['node_modules/shared-config/base.json', '{"compilerOptions":{"paths":{"@tools/*":["${configDir}/../../.claude/*"]}}}']]],
+  ['an alias in a hyphenated tsconfig', [['src/main.js', 'import "@tools/helper";'], ['tsconfig-build.json', '{"compilerOptions":{"paths":{"@tools/*":[".claude/*"]}}}']]],
+  ['an alias in a config package further up the tree', [['packages/app/src/main.js', 'import "@tools/helper";'], ['packages/app/tsconfig.json', '{"extends":"shared-config/base.json"}'], ['packages/app/node_modules/shared-config/package.json', '{"name":"shared-config"}'], ['node_modules/shared-config/base.json', '{"compilerOptions":{"paths":{"@tools/*":["${configDir}/../../.claude/*"]}}}']]],
+  ['a config with extends that cannot be read', [['src/main.js', 'export {};'], ['tsconfig.json', '{"extends": "./config/base.json" ']]],
+  ['an alias in a config extended past a comment', [['src/main.js', 'import "@tools/helper";'], ['tsconfig.json', '{"extends" /* base */: "./config/base.json"}'], ['config/base.json', '{"compilerOptions":{"baseUrl":"..","paths":{"@tools/*":[".claude/*"]}}}']]],
+  ['an alias named exclude past a comment', [['src/main.js', 'import "exclude";'], ['tsconfig.json', '{"compilerOptions":{"paths": /* aliases */ {"exclude":[".claude/helper.js"]}}}']]],
+  ['an alias named exclude under an escaped key', [['src/main.js', 'import "exclude";'], ['tsconfig.json', String.raw`{"compilerOptions":{"p\u0061ths":{"exclude":[".claude/helper.js"]}}}`]]],
+  ['a percent-encoded import', [['src/main.js', 'import "../%2eclaude/helper.js";']]],
+  ['a relative import of the place the link leads to', [['src/main.js', 'import "../../outside/helper.js";']]],
 ]) {
   test(`${label} that names the linked folder keeps removals blocked`, async t => {
     const analyze = await linkedProject(t, files);
@@ -83,6 +99,63 @@ for (const [label, files] of [
     assert.ok(result.coverageReasons.includes(REASON), JSON.stringify(result.coverageReasons));
   });
 }
+
+test('an absolute import of the place the link leads to keeps removals blocked', async t => {
+  const analyze = await linkedProject(t, [['src/main.js', 'export {};']]);
+  if (analyze === null) return;
+  await writeFile(path.join(analyze.root, 'src/main.js'), `import ${JSON.stringify(path.join(analyze.outside, 'helper.js'))};`);
+  const result = (await analyze(['outside-only'])).get('outside-only');
+  assert.equal(result.truncated, true);
+  assert.ok(result.coverageReasons.includes(REASON));
+});
+
+test('an alias inherited inside a pnpm store keeps removals blocked', async t => {
+  const analyze = await linkedProject(t, [['src/main.js', 'import "@tools/helper";'], ['tsconfig.json', '{"extends":"shared-config"}']]);
+  if (analyze === null) return;
+  const store = path.join(analyze.root, 'node_modules/.pnpm/shared-config@1.0.0/node_modules');
+  await mkdir(path.join(store, 'shared-config'), { recursive: true });
+  await mkdir(path.join(store, 'inner-config'), { recursive: true });
+  await writeFile(path.join(store, 'shared-config/tsconfig.json'), '{"extends":"inner-config/tsconfig.json"}');
+  await writeFile(path.join(store, 'inner-config/tsconfig.json'), '{"compilerOptions":{"paths":{"@tools/*":["${configDir}/.claude/*"]}}}');
+  if (!await symlinkOrSkip(t, path.join(store, 'shared-config'), path.join(analyze.root, 'node_modules/shared-config'), 'dir')) return;
+  const result = (await analyze(['outside-only'])).get('outside-only');
+  assert.equal(result.truncated, true);
+  assert.ok(result.coverageReasons.includes(REASON));
+});
+
+test('a config package too large to read keeps removals blocked', async t => {
+  const analyze = await linkedProject(t, [['src/main.js', 'export {};'], ['tsconfig.json', '{"extends":"huge-config"}']]);
+  if (analyze === null) return;
+  const dir = path.join(analyze.root, 'node_modules/huge-config');
+  await mkdir(dir, { recursive: true });
+  for (let index = 0; index <= 200; index += 1) await writeFile(path.join(dir, `config-${index}.json`), '{}');
+  const result = (await analyze(['outside-only'])).get('outside-only');
+  assert.equal(result.truncated, true);
+  assert.ok(result.coverageReasons.includes(REASON));
+});
+
+test('configs read to check a linked folder are watched for changes', async t => {
+  const analyze = await linkedProject(t, [
+    ['src/main.js', 'export {};'],
+    ['tsconfig.json', '{"extends":["shared-config/tsconfig.json","./config/missing.json","shared-config/new.json"]}'],
+    ['node_modules/shared-config/tsconfig.json', '{"compilerOptions":{}}'],
+  ]);
+  if (analyze === null) return;
+  assert.equal((await analyze(['outside-only'])).get('outside-only').truncated, false);
+  for (const file of ['node_modules/shared-config/tsconfig.json', 'node_modules/shared-config/new.json', 'config/missing.json', '.claude']) {
+    assert.equal(shouldInvalidateSourceEvidence(analyze.platform, analyze.root, path.join(analyze.root, file)), true, file);
+  }
+});
+
+test('an alias to the place the link leads to, written with escaped backslashes, keeps removals blocked', async t => {
+  const analyze = await linkedProject(t, [['src/main.js', 'import "@tools/helper";'], ['vite.config.js', 'export default {};']]);
+  if (analyze === null) return;
+  const written = analyze.outside.split('/').join('\\\\');
+  await writeFile(path.join(analyze.root, 'vite.config.js'), `export default { resolve: { alias: { "@tools": "${written}" } } };`);
+  const result = (await analyze(['outside-only'])).get('outside-only');
+  assert.equal(result.truncated, true);
+  assert.ok(result.coverageReasons.includes(REASON));
+});
 
 test('a package script that names the linked folder keeps removals blocked', async t => {
   const analyze = await linkedProject(t, [['src/main.js', 'export {};']]);
@@ -108,7 +181,8 @@ for (const [label, options] of [
 test('exclude and ignore lists that name the folder do not block', async t => {
   const analyze = await linkedProject(t, [
     ['src/main.js', 'export {};'],
-    ['tsconfig.json', '{"compilerOptions":{},"exclude":["node_modules",".claude"]}'],
+    ['tsconfig.json', '{"compilerOptions":{}, // project\n"exclude":["node_modules",".claude"],}'],
+    ['tsconfig.app.json', String.raw`{"exclude":["\u002eclaude"]}`],
     ['eslint.config.js', 'export default [{ ignores: [".claude/**", ".agents/**"] }];'],
   ]);
   if (analyze === null) return;
