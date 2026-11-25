@@ -66,7 +66,13 @@ export class SmartCleanupMetadataCoordinator {
   }
 
   async analyze(requestId: string): Promise<void> {
-    if (this.active !== undefined) return;
+    if (this.active?.requestId === requestId) return;
+    // The webview follows only its newest request. Replace an older run instead
+    // of dropping this one, which would leave the newest request unanswered.
+    if (this.active !== undefined) {
+      this.active.abort.abort();
+      this.active = undefined;
+    }
     const abort = new AbortController();
     const active = { requestId, abort };
     this.active = active;
@@ -79,7 +85,14 @@ export class SmartCleanupMetadataCoordinator {
     try {
       const controller = await this.options.ensureController();
       if (abort.signal.aborted || this.active !== active || this.options.isDisposed()) return;
-      if (controller === undefined) return;
+      if (controller === undefined) {
+        this.options.sink.postMessage({
+          status: 'smart-cleanup-metadata-error',
+          requestId,
+          error: { code: 'PROJECT_UNAVAILABLE', message: 'The project could not be loaded for this check. Analyze again.' },
+        });
+        return;
+      }
       if (this.options.sourceGeneration() !== sourceGeneration) {
         this.options.sink.postMessage({
           status: 'smart-cleanup-metadata-error',
@@ -136,6 +149,8 @@ export class SmartCleanupMetadataCoordinator {
       if (abort.signal.aborted || this.active !== active || this.options.isDisposed()) return;
 
       const currentController = await this.options.ensureController();
+      // A newer request or a cancel can land during that await.
+      if (abort.signal.aborted || this.active !== active || this.options.isDisposed()) return;
       if (
         this.options.sourceGeneration() !== sourceGeneration ||
         currentController !== controller ||

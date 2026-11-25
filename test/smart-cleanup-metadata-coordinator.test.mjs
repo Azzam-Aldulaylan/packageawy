@@ -51,6 +51,7 @@ function harness(responses, overrides = {}) {
     },
     etagStore: { get: () => undefined, set: () => undefined },
     ensureController: async () => {
+      if (overrides.ensureController !== undefined) return overrides.ensureController(controller);
       if (overrides.ensureControllerGate !== undefined) await overrides.ensureControllerGate;
       return controller;
     },
@@ -237,4 +238,61 @@ test('cancelling one request does not cancel a newer request id', async () => {
 
   assert.equal(harnessResult.messages.at(-1).status, 'smart-cleanup-metadata-result');
   assert.equal(harnessResult.messages.at(-1).requestId, 'current-run');
+});
+
+const healthyResponses = () => new Map([
+  ['https://registry.npmjs.org/old-package/1.0.0', { name: 'old-package', version: '1.0.0' }],
+  ['https://registry.npmjs.org/healthy-package/2.0.0', { name: 'healthy-package', version: '2.0.0' }],
+]);
+const terminal = (messages) => messages.filter((message) => message.status !== 'smart-cleanup-metadata-analyzing');
+
+test('a newer request replaces a running one instead of being dropped', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const { coordinator, messages } = harness(healthyResponses(), {
+    ensureController: async (controller) => {
+      calls += 1;
+      if (calls === 1) await gate;
+      return controller;
+    },
+  });
+  const first = coordinator.analyze('cleanup-1');
+  await coordinator.analyze('cleanup-2');
+  release();
+  await first;
+  assert.deepEqual(terminal(messages).map((message) => [message.status, message.requestId]), [
+    ['smart-cleanup-metadata-result', 'cleanup-2'],
+  ]);
+});
+
+test('a project that cannot be loaded still answers the request', async () => {
+  const { coordinator, messages } = harness(healthyResponses(), { ensureController: async () => undefined });
+  await coordinator.analyze('cleanup-1');
+  assert.deepEqual(terminal(messages).map((message) => [message.status, message.requestId]), [
+    ['smart-cleanup-metadata-error', 'cleanup-1'],
+  ]);
+});
+
+test('a replaced run paused at its final check posts nothing and keeps the newer evidence', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const { coordinator, messages } = harness(healthyResponses(), {
+    ensureController: async (controller) => {
+      calls += 1;
+      // Call 2 is run A's final check. Runs B's two calls pass straight through.
+      if (calls === 2) await gate;
+      return controller;
+    },
+  });
+  const first = coordinator.analyze('cleanup-1');
+  while (calls < 2) await new Promise((resolve) => setImmediate(resolve));
+  await coordinator.analyze('cleanup-2');
+  release();
+  await first;
+  assert.deepEqual(terminal(messages).map((message) => [message.status, message.requestId]), [
+    ['smart-cleanup-metadata-result', 'cleanup-2'],
+  ]);
+  assert.ok(coordinator.currentDeprecationEvidence() !== undefined);
 });
