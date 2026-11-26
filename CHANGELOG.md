@@ -4,6 +4,13 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-26
+
+### Fixed
+
+- Smart Cleanup no longer holds back automatic removals in projects that link AI tool folders, such as `.claude`, `.agents` or `.codex`, from outside the project. These folders still hold back removals when project code, configs or scripts refer to them.
+- Smart Cleanup now finishes its deprecation check when a new check starts while another one is still running.
+
 ## [1.0.1] - 2026-11-24
 
 ### Fixed
@@ -221,6 +228,7 @@ First public pre-release.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
 - Re-reads the project right before every change and stops rollback if it sees dependency files changed.
 
+[1.0.2]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.0
 [0.9.7]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v0.9.7
