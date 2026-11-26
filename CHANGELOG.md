@@ -8,7 +8,7 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ### Fixed
 
-- Smart Cleanup no longer holds back automatic removals in projects that link AI tool folders, such as `.claude`, `.agents` or `.codex`, from outside the project. These folders still hold back removals when project code, configs or scripts refer to them.
+- Smart Cleanup no longer holds back automatic removals when a project links AI tool folders, such as `.claude`, `.agents` or `.codex`, from outside the project and does not use them.
 - Smart Cleanup now finishes its deprecation check when a new check starts while another one is still running.
 
 ## [1.0.1] - 2026-11-24
