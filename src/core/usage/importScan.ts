@@ -282,13 +282,14 @@ function lineTextAt(text: string, lineStarts: readonly number[], line: number): 
   return raw.length > MAX_SNIPPET_LENGTH ? `${raw.slice(0, MAX_SNIPPET_LENGTH)}…` : raw;
 }
 
-export function scanSourceForImportSpecifiers(text: string, filePath?: string, language?: ScriptLanguage): RawImportSpecifierMatch[] {
+type StaticImport = { kind: RawImportMatch['kind']; specifier: string; specifierIndex: number };
+
+/** Every static import/require/dynamic-import specifier in executable code, once per occurrence. */
+function staticImports(text: string, filePath?: string, language?: ScriptLanguage): StaticImport[] {
   const jsx = allowsJsx(filePath, language);
   const cleaned = stripComments(text, jsx);
   const codePositions = codePositionMask(text, undefined, undefined, jsx);
-  const lineStarts = buildLineStarts(text);
-  const lineSnippets = new Map<number, string>();
-  const matches: RawImportSpecifierMatch[] = [];
+  const found: StaticImport[] = [];
   // Avoid double-reporting the same specifier occurrence under more than one
   // pattern (the `import ... from` and side-effect-`import` patterns are
   // mutually exclusive by construction, but keyed dedupe is cheap insurance).
@@ -297,7 +298,7 @@ export function scanSourceForImportSpecifiers(text: string, filePath?: string, l
   for (const index of executableKeywords(cleaned, codePositions)) {
     const candidate = cleaned.slice(index, index + MAX_MATCH_LENGTH);
     const bulk = scanBulkImport(candidate, filePath);
-    const imports: Array<{ kind: RawImportMatch['kind']; specifier: string; specifierIndex: number }> = (bulk?.targets ?? []).map(target => ({
+    const imports: StaticImport[] = (bulk?.targets ?? []).map(target => ({
       kind: bulk?.kind ?? 'require', specifier: target.specifier, specifierIndex: index + target.offset,
     }));
     const declaration = staticDeclarationMatch(candidate);
@@ -312,25 +313,39 @@ export function scanSourceForImportSpecifiers(text: string, filePath?: string, l
       const specifierIndex = index + match[0].lastIndexOf(match[2] ?? '');
       imports.push({ kind, specifier, specifierIndex });
     }
-    for (const { kind, specifier, specifierIndex } of imports) {
-      if (seenAtIndex.has(specifierIndex)) continue;
-      seenAtIndex.add(specifierIndex);
-
-      const packageName = importedPackageName(specifier);
-      if (packageName === null) continue;
-
-      const { line, column } = locate(lineStarts, specifierIndex);
-      let snippet = lineSnippets.get(line);
-      if (snippet === undefined) {
-        snippet = lineTextAt(text, lineStarts, line);
-        lineSnippets.set(line, snippet);
-      }
-      matches.push({ packageName, specifier, line, column, snippet, kind });
+    for (const entry of imports) {
+      if (seenAtIndex.has(entry.specifierIndex)) continue;
+      seenAtIndex.add(entry.specifierIndex);
+      found.push(entry);
     }
+  }
+  return found;
+}
+
+export function scanSourceForImportSpecifiers(text: string, filePath?: string, language?: ScriptLanguage): RawImportSpecifierMatch[] {
+  const lineStarts = buildLineStarts(text);
+  const lineSnippets = new Map<number, string>();
+  const matches: RawImportSpecifierMatch[] = [];
+  for (const { kind, specifier, specifierIndex } of staticImports(text, filePath, language)) {
+    const packageName = importedPackageName(specifier);
+    if (packageName === null) continue;
+
+    const { line, column } = locate(lineStarts, specifierIndex);
+    let snippet = lineSnippets.get(line);
+    if (snippet === undefined) {
+      snippet = lineTextAt(text, lineStarts, line);
+      lineSnippets.set(line, snippet);
+    }
+    matches.push({ packageName, specifier, line, column, snippet, kind });
   }
 
   matches.sort((a, b) => a.line - b.line || a.column - b.column);
   return matches;
+}
+
+/** Every decoded static specifier, whether it names a package or a path. */
+export function scanSourceForStaticSpecifiers(text: string, filePath?: string, language?: ScriptLanguage): string[] {
+  return staticImports(text, filePath, language).map(({ specifier }) => specifier);
 }
 
 /** Backward-compatible usage-analysis shape. Detailed consumers opt into the function above. */

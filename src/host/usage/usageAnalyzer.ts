@@ -32,6 +32,7 @@ import { canonicalPath, relatePaths } from '../pathIdentity.js';
 import {
   findConfigFiles,
   findCoverageFiles,
+  findTypeScriptConfigFiles,
   findSourceFiles,
   planWorkspaceFiles,
   readTextFileCapped,
@@ -40,6 +41,7 @@ import {
 } from './workspaceFiles.js';
 
 import { LocalImportCoverage } from './localImportCoverage.js';
+import { OUTSIDE_LINK_REFERENCE_REASON, OutsideProjectLinks } from './outsideProjectLinks.js';
 import { StylesheetReader } from './stylesheetReader.js';
 import { trackSourceEvidenceFiles } from './sourceEvidenceFiles.js';
 const DEFAULT_MAX_FILES = 6000;
@@ -73,8 +75,22 @@ export async function analyzeDependencyUsage(
     findConfigFiles(options.platform, options.folder, options.dir, options.token),
     findCoverageFiles(options.platform, options.folder, options.dir, maxFiles, options.token),
   ]);
-  const files = planWorkspaceFiles(options.folder, sourceFiles, configFiles, coverageFiles);
-  const overlappingFiles = sourceFiles.length + configFiles.length + coverageFiles.length - files.length;
+  const listedFiles = planWorkspaceFiles(options.folder, sourceFiles, configFiles, coverageFiles);
+  const projectRoot = path.resolve(options.folder.path, options.dir);
+  const canonicalProject = await canonicalPath(projectRoot).catch(() => null);
+  // Files that editor search found through a hidden link leading outside the
+  // project are not project source. Leave them out instead of counting them
+  // unreadable, unless the project names that folder (see outsideProjectLinks.ts).
+  const evidenceFiles = trackSourceEvidenceFiles(options.platform, projectRoot, 'usage');
+  const outsideLinks = new OutsideProjectLinks(projectRoot, canonicalProject, evidenceFiles.record);
+  await outsideLinks.prepare(
+    listedFiles.map((file) => file.absolutePath),
+    () => options.token.isCancellationRequested,
+    () => findTypeScriptConfigFiles(options.platform, options.folder, options.dir, options.token)
+  );
+  outsideLinks.checkFile(options.manifestText, 'package.json');
+  const files = listedFiles.filter((file) => !outsideLinks.covers(file.absolutePath));
+  const overlappingFiles = sourceFiles.length + configFiles.length + coverageFiles.length - listedFiles.length;
   performance.increment('usage source discoveries', sourceFiles.length);
   performance.increment('usage config discoveries', configFiles.length);
   performance.increment('usage coverage discoveries', coverageFiles.length);
@@ -89,15 +105,13 @@ export async function analyzeDependencyUsage(
   const fileCapReached = sourceFiles.length >= maxFiles || coverageFiles.length >= maxFiles;
 
   let scannedSourceFiles = 0;
+  const sourceTotal = files.filter((file) => file.source).length;
   let failedReadCount = 0;
   const coverageReasons = new Set<string>();
   if (files.some((file) => /\.mdx$/i.test(file.filePath))) coverageReasons.add('.mdx files');
   const pendingScripts = new Set<string>();
   const scannedPaths = new Set<string>();
-  const projectRoot = path.resolve(options.folder.path, options.dir);
-  const evidenceFiles = trackSourceEvidenceFiles(options.platform, projectRoot, 'usage');
   const localImports = new LocalImportCoverage(options.platform, options.folder, options.dir, maxFiles, options.token, scannedPaths, evidenceFiles.record);
-  const canonicalProject = await canonicalPath(projectRoot).catch(() => null);
   const checkSourceIdentity = (absolutePath: string, target: string): void => {
     // Followed styles already use canonical coordinates; discovery uses the workspace spelling.
     const expected = canonicalProject !== null && relatePaths(canonicalProject, absolutePath) !== 'outside'
@@ -134,6 +148,7 @@ export async function analyzeDependencyUsage(
     }
     for (const script of coverage.scripts) {
       referenceIndex.addSourceFile(filePath, script.text, script.language);
+      outsideLinks.checkScript(script.text, filePath, script.language);
       if (hasUnreadTemplateImports(script.text, filePath, script.language, options.dir, localImports.request)) coverageReasons.add(SOURCE_IMPORT_COVERAGE_REASON);
     }
     for (const src of coverage.localScripts) {
@@ -183,6 +198,7 @@ export async function analyzeDependencyUsage(
       return target === null ? null : readTextFileCapped(options.platform, target, readMetrics);
     },
     consume: (file, text) => {
+      outsideLinks.checkFile(text, file.absolutePath);
       if (file.source) consumeSource(file.absolutePath, file.filePath, text);
       if (!file.config) return;
       const configName = file.filePath.slice(file.filePath.lastIndexOf('/') + 1);
@@ -207,7 +223,7 @@ export async function analyzeDependencyUsage(
     onItemProcessed: (file) => {
       if (!file.source) return;
       scannedSourceFiles += 1;
-      options.onProgress?.(scannedSourceFiles, sourceFiles.length);
+      options.onProgress?.(scannedSourceFiles, sourceTotal);
     },
   });
   for (const file of files.filter((entry) => STYLESHEET_EXTENSION.test(entry.filePath))) {
@@ -221,6 +237,7 @@ export async function analyzeDependencyUsage(
       coverageReasons.add(`stylesheets in ${file.filePath} that could not be read`);
     }
     else {
+      outsideLinks.checkText(text);
       scannedPaths.add(file.absolutePath);
       // Preserve canonical ownership and resolve nested imports beside the real file.
       styles.scan(target ?? file.absolutePath, file.filePath, text, dialect);
@@ -244,6 +261,7 @@ export async function analyzeDependencyUsage(
   }
   await styles.drain();
   if (!await localImports.complete()) coverageReasons.add(SOURCE_IMPORT_COVERAGE_REASON);
+  if (outsideLinks.referenced) coverageReasons.add(OUTSIDE_LINK_REFERENCE_REASON);
   // A cancellation can settle during discovery with an empty/partial result,
   // before the bounded scanner has an item on which to observe it. Never
   // publish that degraded pass as complete.
