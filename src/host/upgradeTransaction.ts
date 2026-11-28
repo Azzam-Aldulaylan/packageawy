@@ -221,6 +221,8 @@ export interface TransactionFileSnapshot {
 export interface UpgradeTransactionOptions {
   /** Canonical, host-resolved files this transaction is allowed to restore. */
   allowlistedPaths: readonly string[];
+  /** Allowlisted paths this operation promises not to stage or change. */
+  unchangedPaths?: readonly string[];
   files: UpgradeTransactionFileAdapter;
   journal?: { record(step: string, phase: 'intent' | 'finished'): Promise<void>; assertWritable?(): void };
   /**
@@ -540,15 +542,16 @@ async function captureExpectedStates(
 /**
  * A host-staged manifest is never rewritten by the bare reconciliation
  * install, so its rollback expectation is the last bytes the transaction
- * wrote there, whatever is on disk now. Other files (the lockfile) are
- * legitimately written by the package manager and keep the post-install read.
+ * wrote there, whatever is on disk now. Unchanged paths keep their snapshot
+ * bytes. Files written by the package manager keep the post-install read.
  */
 function withOwnedStates(
   entries: readonly ExpectedEntry[],
-  owned: ReadonlyMap<string, FileState>
+  owned: ReadonlyMap<string, FileState>,
+  unchangedPaths: readonly string[] = []
 ): ExpectedEntry[] {
   return entries.map((entry) => {
-    const claim = owned.get(entry.snapshot.path);
+    const claim = unchangedPaths.includes(entry.snapshot.path) ? entry.snapshot.before : owned.get(entry.snapshot.path);
     return claim === undefined ? entry : { snapshot: entry.snapshot, expected: cloneState(claim) };
   });
 }
@@ -561,6 +564,16 @@ async function rollback(
 ): Promise<RollbackResult> {
   await journal?.record('rollback', 'intent');
   const results: RollbackFileResult[] = [];
+  const precheck = () => precheckRestore(entries.map(entry => ({
+    path: entry.snapshot.path,
+    check: async () => {
+      if ('captureError' in entry) throw new Error(entry.captureError);
+      return statesEqual(await files.read(entry.snapshot.path), entry.expected);
+    },
+  })));
+  let issues = await precheck();
+  if (issues.length > 0) return { status: issues.some(issue => issue.status === 'failed') ? 'failed' : 'conflict', files: issues };
+
   if (beforeRestore !== undefined && entries.length > 0) {
     let refusal: string | null;
     try {
@@ -573,13 +586,7 @@ async function rollback(
     }
   }
 
-  const issues = await precheckRestore(entries.map(entry => ({
-    path: entry.snapshot.path,
-    check: async () => {
-      if ('captureError' in entry) throw new Error(entry.captureError);
-      return statesEqual(await files.read(entry.snapshot.path), entry.expected);
-    },
-  })));
+  issues = await precheck();
   if (issues.length > 0) return { status: issues.some(issue => issue.status === 'failed') ? 'failed' : 'conflict', files: issues };
 
   for (const entry of entries) {
@@ -698,6 +705,17 @@ async function executeTransaction(
       snapshot: { status: 'not-run' },
       ...notRun,
     };
+  }
+
+  for (const path of options.unchangedPaths ?? []) {
+    const message = !paths.includes(path)
+      ? 'An unchanged path is not allowlisted by this upgrade transaction.'
+      : options.manifestStage?.path === path || options.fileStages?.some(stage => stage.path === path)
+        ? 'An unchanged path must not be staged by this upgrade transaction.'
+        : null;
+    if (message !== null) {
+      return { completion: 'not-started', reason: 'snapshot-failed', snapshot: { status: 'failed', path, message }, ...notRun };
+    }
   }
 
   const snapshot = await takeSnapshot(paths, options.files, options.journal !== undefined);
@@ -830,7 +848,8 @@ async function executeTransaction(
     verification: { status: 'not-run', reason: 'unknown' }, rollback: { status: 'not-needed' }, retentionDecision: 'not-needed',
   };
   await options.journal?.record('install', 'finished');
-  const expected = withOwnedStates(await captureExpectedStates(snapshot.entries, options.files, options.journal !== undefined), owned);
+  const captured = await captureExpectedStates(snapshot.entries, options.files, options.journal !== undefined);
+  const expected = withOwnedStates(captured, owned, options.unchangedPaths);
 
   if (install.status !== 'succeeded') {
     const rolledBack = await rollback(expected, options.files, options.beforeRestore, options.journal);

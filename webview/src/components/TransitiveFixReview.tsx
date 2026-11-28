@@ -351,9 +351,9 @@ export function TransitiveFixReview({
         { label: 'Lockfile', value: plan.files.lockfilePath },
       ]}>
       {recovery ? <section className="transitive-review__recovery"><h5>Recover the installed dependency state</h5><p>
-        Review <code>{plan.files.manifestPath}</code> and <code>{plan.files.lockfilePath}</code>, then run{' '}
-        <code>{plan.packageManager === 'pnpm' ? 'pnpm install --frozen-lockfile' : 'npm ci'}</code> from the project root.
-        Refresh the dashboard after it succeeds.
+        Select Start recovery and choose which dependency files to keep or restore first.
+        {' '}node_modules may not match the dependency files. To reinstall by hand, review the dependency files and run{' '}
+        <code>{plan.packageManager} install</code> in the project directory.
       </p></section> : null}
       <AdvisoryList title="Resolved" advisories={result.resolvedAdvisories} tone="resolved" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />
       <AdvisoryList title="Still present" advisories={result.remainingAdvisories} tone="remaining" rootPackage={plan.rootPackage} onOpenAdvisory={onOpenAdvisory} />

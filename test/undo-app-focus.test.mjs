@@ -236,6 +236,30 @@ const remediationPlan = {
   changes: [{ packageName: 'minimist', fromVersions: ['1.0.0'], toVersions: ['1.2.8'], affectedPaths: [['react', 'minimist']], targeted: true }],
   resolvedAdvisories: [{ advisoryId: 'GHSA-AAAA-BBBB-CCCC', identifiers: [], title: 'Issue', severity: 'high', flaggedPackage: 'minimist', affectedPaths: [['react', 'minimist']] }], remainingAdvisories: [], introducedAdvisories: [], blockingReasons: [], verification: { configured: false, suggestedScriptNames: [] },
 };
+test('real App keeps the manifest conflict result in Manage when recovery marks dashboard rows stale', t => {
+  const dom = mount(t);
+  const source = { ...snapshot, data: { ...snapshot.data, rows: [row] } };
+  dom.event(source);
+  dom.click([...dom.document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Manage'));
+  dom.event({ status: 'remediation-plan', package: 'react', plan: remediationPlan });
+  const message = 'package.json changed while the fix was installing. Your edit was kept and the fix was not rolled back.';
+  dom.event({ status: 'remediation-apply-result', package: 'react', analysisId: 'fix', result: {
+    outcome: 'recovery-required', rollback: 'conflict', verification: 'failed', message,
+    resolvedAdvisories: [], remainingAdvisories: [], introducedAdvisories: [],
+  } });
+  dom.click([...dom.document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Vulnerabilities'));
+  dom.event({ ...source, status: 'stale' });
+  dom.event({ status: 'recovery', recovery: { state: 'incomplete', message: 'Recovery needed.', claim: null,
+    files: [], canApply: false, canDismiss: false } });
+  const result = dom.document.querySelector('#transitive-result-heading');
+  assert.equal(result.textContent, 'Recovery required');
+  assert.ok(result.closest('[role="dialog"]'));
+  assert.match(dom.document.body.textContent, /Your edit was kept and the fix was not rolled back/);
+  assert.match(dom.document.body.textContent, /Current version unknown/);
+  assert.match(dom.document.body.textContent, /Select Start recovery and choose which dependency files to keep or restore first/);
+  assert.match(dom.document.body.textContent, /npm install in the project directory/);
+  assert.doesNotMatch(dom.document.body.textContent, /npm ci|--frozen-lockfile/);
+});
 function openResult(dom, operation, label) {
   const clickText = text => {
     const button = [...dom.document.querySelectorAll('button')].find(button => button.textContent.trim() === text);

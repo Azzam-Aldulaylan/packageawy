@@ -307,6 +307,7 @@ export class DashboardPanel {
       getSmartCleanupDeprecationEvidence: () => this.smartCleanupMetadataCoordinator.currentDeprecationEvidence(),
       isDisposed: () => this.disposed,
       reloadFinalState: () => this.reloadAndScan(undefined, { forceUsageRecheck: true, strict: true }),
+      deferManifestConflictRefresh: () => this.onWatchedFileEvent('manifest'),
       invalidateSnapshot: () => {
         this.clearCurrentProject();
         this.sink.postMessage({ status: 'fatal-error', error: {
