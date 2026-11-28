@@ -13,6 +13,7 @@ import { JSDOM } from 'jsdom';
 import { act, createElement as h } from 'react';
 import { createRoot } from 'react-dom/client';
 import { buildUpgradeAnalysisPresentation } from '../out/host/upgradeAnalysisPresentation.js';
+import { browserSkip } from './helpers/browser.mjs';
 
 const bundle = await build({ stdin: { contents: `
   export { ManageDependencyModal } from './webview/src/components/ManageDependencyModal.tsx';
@@ -516,7 +517,7 @@ for (const phase of ['unavailable', 'no-fix', 'unsafe', 'error', 'stale']) for (
 }
 
 test('dialog footer controls fit short and narrow viewports in both host themes', {
-  skip: !process.env.PACKAGEAWY_CHROMIUM_PATH && 'Set PACKAGEAWY_CHROMIUM_PATH to run rendered footer geometry checks',
+  skip: browserSkip('Set PACKAGEAWY_CHROMIUM_PATH to run rendered footer geometry checks'),
   timeout: 30_000,
 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'packageawy-footer-layout-'));

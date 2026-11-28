@@ -51,7 +51,37 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
+      - name: Cache browser
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/packageawy-browser
+          key: chrome-headless-shell-${{ runner.os }}-${{ runner.arch }}-158.0.8127.88
+
+      - name: Install browser
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          output=$(npx --yes @puppeteer/browsers@3.2.7 install chrome-headless-shell@158.0.8127.88 --path "$RUNNER_TEMP/packageawy-browser")
+          printf '%s\n' "$output"
+          executable=$(printf '%s\n' "$output" | sed -n 's/^chrome-headless-shell@158\.0\.8127\.88 //p')
+          if [ ! -f "$executable" ] || [ ! -x "$executable" ]; then
+            echo "::error::The browser installer did not report one executable path"
+            exit 1
+          fi
+          echo "PACKAGEAWY_CHROMIUM_PATH=$executable" >> "$GITHUB_ENV"
+          echo "PACKAGEAWY_REQUIRE_BROWSER_TESTS=1" >> "$GITHUB_ENV"
+
+      - name: Test (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run test:ci
+
+      - name: Require browser tests ran
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/ci/require-tests-ran.mjs
+
+      - name: Test (Windows)
+        if: matrix.os == 'windows-latest'
         run: npm test
 
       - name: Disposable npm and pnpm project transactions

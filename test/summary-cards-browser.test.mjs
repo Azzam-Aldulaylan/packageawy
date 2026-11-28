@@ -6,16 +6,17 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { build } from 'esbuild';
+import { browserSkip } from './helpers/browser.mjs';
 
 // Opt in with PACKAGEAWY_CHROMIUM_PATH pointing to a Chromium executable.
 // CDP input uses browser hit testing, unlike JSDOM's element.click().
 test('keyboard-focused security card still allows pointer help', {
-  skip: !process.env.PACKAGEAWY_CHROMIUM_PATH && 'Set PACKAGEAWY_CHROMIUM_PATH to run rendered pointer checks',
+  skip: browserSkip('Set PACKAGEAWY_CHROMIUM_PATH to run rendered pointer checks'),
   timeout: 30_000,
 }, async t => {
   const profile = await mkdtemp(join(tmpdir(), 'packageawy-summary-browser-'));
   const browser = spawn(process.env.PACKAGEAWY_CHROMIUM_PATH, [
-    '--headless', '--no-first-run', '--no-default-browser-check',
+    '--headless', '--no-sandbox', '--no-first-run', '--no-default-browser-check',
     '--remote-debugging-pipe', `--user-data-dir=${profile}`, 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
   const exited = new Promise(resolve => browser.once('close', resolve));
