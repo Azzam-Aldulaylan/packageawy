@@ -4,12 +4,9 @@
  * sharing the same analyzer (usageAnalyzer.ts) and the same trusted
  * reference store (usageReferenceStore.ts).
  *
- * At most one usage analysis runs at a time for the whole panel: a second
- * request while one is in flight is rejected, mirroring the existing "one
- * upgrade at a time" rule (UpgradeAssistantCoordinator) rather than
- * introducing a new concurrency model. Entirely read-only: no manifest/
- * lockfile write, so unlike an upgrade this never needs the panel's mutation
- * lock, only its single-flight guard.
+ * One source scan runs at a time. Foreground cleanup can observe a compatible
+ * background scan or wait for another scan to finish. Entirely read-only:
+ * no manifest/lockfile write, so it never needs the panel's mutation lock.
  *
  * Caching: an in-memory, per-project, per-package cache keyed by both the
  * manifest/lockfile source fingerprint and a watcher-owned source/config
@@ -55,7 +52,7 @@ import { assessRemoval } from '../../core/upgrade/removalAssessment.js';
 import { createPerformanceSession } from '../../core/performance/measurement.js';
 import type { DashboardController, MessageSink } from '../dashboardController.js';
 import { CancellationTokenSource } from '../platform/cancellation.js';
-import type { CancellationToken, HostPlatform, ProgressReporter, WorkspaceFolder } from '../platform/hostPlatform.js';
+import type { HostPlatform, ProgressReporter, WorkspaceFolder } from '../platform/hostPlatform.js';
 import type { DiscoveredProject } from '../projectResolution.js';
 import type { RemovalImpactAssessment } from '../webviewProtocol.js';
 import { shouldRunBackgroundUsageRefresh } from './backgroundUsageRefreshGate.js';
@@ -161,6 +158,7 @@ interface ActiveUsageScan {
   cts: CancellationTokenSource;
   progressSubscribers: Set<(scanned: number, total: number) => void>;
   promise: Promise<Map<string, DependencyUsageResult>>;
+  cleanupPublication?: Promise<boolean>;
 }
 
 interface ForegroundUsageConsumerValue {
@@ -169,6 +167,25 @@ interface ForegroundUsageConsumerValue {
 }
 
 type ForegroundUsageConsumer = import('./usageAnalysisState.js').ForegroundUsageOperation<ForegroundUsageConsumerValue>;
+
+interface CleanupRequest {
+  cancelled: boolean;
+  superseded: boolean;
+  promise: Promise<boolean>;
+  consumer?: ForegroundUsageConsumer;
+  snapshot?: { projectId: string; identity: UsageSourceIdentity; packageNames: readonly string[]; isCurrent(): boolean };
+}
+
+interface PendingBackgroundRequest {
+  force: boolean;
+  sequence: number;
+}
+
+interface AnalyzeCleanupOptions {
+  background?: boolean;
+  controller?: DashboardController;
+  pendingRequest?: PendingBackgroundRequest;
+}
 
 function toProtocolError(cause: unknown): { code: string; message: string } {
   if (cause instanceof Error) return { code: cause.name, message: cause.message };
@@ -201,10 +218,14 @@ export class UsageAnalysisCoordinator {
   } | undefined;
   /** Project-wide completion marker. Explicit and automatic cleanup passes share the same one-hour reuse window. */
   private readonly lastProjectAnalysis = new Map<string, ProjectUsageAnalysisMarker>();
+  private activeCleanupRequest: CleanupRequest | undefined;
   private activeScan: ActiveUsageScan | undefined;
   private readonly foregroundOperations = new ForegroundUsageOperationRegistry<ForegroundUsageConsumerValue>();
   /** At most one slot: multiple requests before it can run collapse into it: force always wins. See requestBackgroundUsageRefresh. */
-  private pendingBackgroundRequest: { force: boolean } | undefined;
+  private pendingBackgroundRequest: PendingBackgroundRequest | undefined;
+  private backgroundRequestSequence = 0;
+  private satisfiedBackgroundSequence = 0;
+  private disposed = false;
   /** Set by stopBackground after an internal error. Foreground analyses keep working. */
   private backgroundStopped = false;
   /** Guards the async gap before handleAnalyzeCleanup claims `activeScan`, so racing callers cannot both start a scan. */
@@ -226,6 +247,10 @@ export class UsageAnalysisCoordinator {
     const generation = this.analysisState.invalidate(projectId);
     this.lastProjectAnalysis.delete(projectId);
     if (this.activeScan?.projectId === projectId) this.activeScan.cts.cancel();
+    const request = this.activeCleanupRequest;
+    if (request !== undefined && (request.snapshot?.projectId ?? this.options.getSelectedProject()?.id) === projectId) {
+      request.superseded = true;
+    }
     this.supersedeVisibleAnalysis(projectId);
     return generation;
   }
@@ -322,12 +347,14 @@ export class UsageAnalysisCoordinator {
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.pendingBackgroundRequest = undefined;
+    if (this.activeCleanupRequest !== undefined) this.cancelCleanupRequest(this.activeCleanupRequest);
     if (this.activeRemovalImpactRequest !== undefined) this.activeRemovalImpactRequest.cancelled = true;
     this.activeScan?.cts.cancel();
     this.foregroundOperations.cancelActive((consumer) => {
       if (shouldCancelUnderlyingUsageScan(consumer.ownsScan)) consumer.scan.cts.cancel();
     });
-    this.pendingBackgroundRequest = undefined;
     this.referenceStore.clear();
   }
 
@@ -617,153 +644,228 @@ export class UsageAnalysisCoordinator {
    * nothing. An explicit click always runs with `background: false`
    * (today's visible progress/error UI, unchanged).
    */
-  async handleAnalyzeCleanup(options: { background?: boolean } = {}): Promise<boolean> {
-    const background = options.background ?? false;
-    if (this.isBusy()) {
-      if (!background) {
-        this.options.sink.postMessage({
-          status: 'cleanup-error',
-          error: { code: 'ANALYSIS_IN_PROGRESS', message: 'Another usage analysis is already in progress for this project.' },
-        });
-      }
-      return false;
+  handleAnalyzeCleanup(options: AnalyzeCleanupOptions & { pendingRequest: PendingBackgroundRequest }): Promise<boolean | PendingBackgroundRequest>;
+  handleAnalyzeCleanup(options?: AnalyzeCleanupOptions): Promise<boolean>;
+  handleAnalyzeCleanup(options: AnalyzeCleanupOptions = {}): Promise<boolean | PendingBackgroundRequest> {
+    if (options.background === true) return this.runCleanup(options);
+    const active = this.activeCleanupRequest;
+    if (active !== undefined && !active.cancelled && !active.superseded) {
+      if (active.snapshot?.isCurrent() ?? true) return active.promise;
+      active.superseded = true;
     }
 
-    if (background && this.backgroundStopped) return false;
-    const controller = await this.options.ensureController();
-    if (controller === undefined) return false;
-    // Stopped while the controller was being looked up: a background pass
-    // must not start discovery. A foreground request still runs.
-    if (background && this.backgroundStopped) return false;
-    // `ensureController` may yield while another request starts a scan. Do
-    // not overwrite that scan's ownership after the initial fast-path check.
-    if (this.isBusy()) {
-      if (!background) {
-        this.options.sink.postMessage({
-          status: 'cleanup-error',
-          error: { code: 'ANALYSIS_IN_PROGRESS', message: 'Another usage analysis is already in progress for this project.' },
-        });
+    const request: CleanupRequest = { cancelled: false, superseded: false, promise: Promise.resolve(false) };
+    this.activeCleanupRequest = request;
+    request.promise = this.options.platform.withProgress(
+      'Analyzing dependency usage',
+      async (progress, token) => {
+        const cancellation = token.onCancellationRequested(() => this.cancelCleanupRequest(request, true));
+        try {
+          if (token.isCancellationRequested) this.cancelCleanupRequest(request, true);
+          return await this.runCleanup(options, request, progress) === true;
+        } finally {
+          cancellation.dispose();
+        }
       }
-      return false;
-    }
-    const rows = controller.lastResultRows();
-    const packageNames = rows.map((row) => row.name);
-    const selected = this.options.getSelectedProject();
-    if (selected === undefined) return false;
-    const identity = this.identityFor(controller, selected);
+    ).finally(() => {
+      if (this.activeCleanupRequest === request) this.activeCleanupRequest = undefined;
+      this.triggerPendingBackgroundRefresh();
+    });
+    return request.promise;
+  }
 
-    if (packageNames.length === 0) {
-      const analyzedAt = new Date().toISOString();
-      this.lastProjectAnalysis.set(selected.id, { identity, analyzedAt: Date.now() });
-      this.visibleCleanup = { projectId: selected.id, analyzedAt };
+  private cleanupHasPriority(): boolean {
+    return this.activeCleanupRequest !== undefined && !this.activeCleanupRequest.cancelled && !this.activeCleanupRequest.superseded;
+  }
+
+  private cancelCleanupRequest(request: CleanupRequest, publishError = false): void {
+    if (request.cancelled) return;
+    request.cancelled = true;
+    if (request.consumer !== undefined) {
+      this.cancelForegroundConsumer(request.consumer);
+      this.releaseForegroundConsumer(request.consumer);
+    }
+    if (publishError && this.activeCleanupRequest === request && !request.superseded && !this.disposed && !this.options.isDisposed()) {
       this.options.sink.postMessage({
-        status: 'cleanup-result',
-        findings: [],
-        analyzedAt,
-        cacheExpiresAt: new Date(Date.now() + USAGE_CACHE_TTL_MS).toISOString(),
+        status: 'cleanup-error',
+        error: { code: 'CANCELLED', message: 'Cleanup analysis was cancelled. Select Analyze again.' },
       });
-      return true;
     }
+    this.triggerPendingBackgroundRefresh();
+  }
 
+  private async runCleanup(
+    options: AnalyzeCleanupOptions,
+    request?: CleanupRequest,
+    progress?: ProgressReporter
+  ): Promise<boolean | PendingBackgroundRequest> {
+    const background = options.background === true;
+    const cancelled = (): boolean => this.disposed || this.options.isDisposed() || (request !== undefined && (
+      request.cancelled || this.activeCleanupRequest !== request
+    ));
     const performance = createPerformanceSession(
       'Packageawy cleanup usage analysis',
       this.options.performanceEnabled?.() ?? false
     );
-    performance.setMetadata('direct dependencies', packageNames.length);
     performance.setMetadata('background', background);
-    if (!background) {
-      const previousAnalyzedAt = this.visibleCleanup?.projectId === selected.id
-        ? this.visibleCleanup.analyzedAt
-        : undefined;
-      this.visibleCleanup = { projectId: selected.id, ...(previousAnalyzedAt === undefined
-        ? {}
-        : { analyzedAt: previousAnalyzedAt }) };
-      this.options.sink.postMessage({ status: 'cleanup-analyzing', scanned: 0, total: 0 });
-    }
-
-    let consumer: ForegroundUsageConsumer | undefined;
+    let currentSnapshot: (() => boolean) | undefined;
+    let scan: ActiveUsageScan | undefined;
+    let joined = false;
+    let announced = false;
+    let published = false;
+    let finishPublication: (published: boolean) => void = () => undefined;
+    const publication = new Promise<boolean>((resolve) => { finishPublication = resolve; });
+    const staleSource = (): Error => Object.assign(
+      new Error('Project files changed during the analysis. Select Analyze again.'),
+      { name: 'STALE_SOURCE' }
+    );
     try {
-      const source = controller.upgradeSource;
-      const runScan = async (
-        progress: ProgressReporter | undefined,
-        onCancellationToken: CancellationToken | undefined
-      ): Promise<Map<string, DependencyUsageResult>> => {
-        let lastScanned = 0;
-        const scan = this.startScan({
-          projectId: selected.id,
-          identity,
-          selected,
-          manifestText: source.manifestText,
-          prettierMajor: prettierMajorFor(controller.root, source),
-          packageNames,
-          backgroundOwner: background,
-          performance,
-          onProgress: (scanned, total) => {
+      while (!cancelled()) {
+        if (background && this.backgroundStopped) return false;
+        const controller = options.controller ?? await this.options.ensureController();
+        if (controller === undefined || cancelled()) return false;
+        if (request?.superseded === true) throw staleSource();
+        if (background && this.backgroundStopped) return false;
+        const selected = this.options.getSelectedProject();
+        if (selected === undefined) return false;
+        const packageNames = controller.lastResultRows().map((row) => row.name);
+        const identity = this.identityFor(controller, selected);
+        currentSnapshot = () => this.options.getSelectedProject()?.id === selected.id &&
+          this.isCurrent(selected.id, identity) &&
+          usageSourceIdentitiesMatch(identity, this.identityFor(controller, selected));
+        if (request !== undefined) request.snapshot = { projectId: selected.id, identity, packageNames, isCurrent: currentSnapshot };
+        scan = this.joinBackgroundScan(selected.id, identity, packageNames);
+        joined = scan !== undefined;
+        if (background && (this.cleanupHasPriority() || this.isBusy() || (this.options.isUpgradeBusy?.() ?? false))) {
+          return options.pendingRequest ?? false;
+        }
+        if (!background && !announced) {
+          announced = true;
+          const previousAnalyzedAt = this.visibleCleanup?.projectId === selected.id
+            ? this.visibleCleanup.analyzedAt
+            : undefined;
+          this.visibleCleanup = { projectId: selected.id, ...(previousAnalyzedAt === undefined
+            ? {}
+            : { analyzedAt: previousAnalyzedAt }) };
+          this.options.sink.postMessage({ status: 'cleanup-analyzing', scanned: 0, total: 0 });
+        }
+        if (!joined && this.activeScan !== undefined) {
+          await this.activeScan.promise.catch(() => undefined);
+          continue;
+        }
+
+        performance.setMetadata('direct dependencies', packageNames.length);
+        const source = controller.upgradeSource;
+        const sequenceAtStart = this.backgroundRequestSequence;
+        let resultsByPackage = new Map<string, DependencyUsageResult>();
+        if (packageNames.length > 0 || joined) {
+          // Keep the final priority check and scan claim in the same turn.
+          if (background && this.cleanupHasPriority()) {
+            return options.pendingRequest ?? false;
+          }
+          scan ??= this.startScan({
+            projectId: selected.id,
+            identity,
+            selected,
+            manifestText: source.manifestText,
+            prettierMajor: prettierMajorFor(controller.root, source),
+            packageNames,
+            backgroundOwner: background,
+            performance,
+          });
+          if (!joined) scan.cleanupPublication = publication;
+          if (request !== undefined && !joined) {
+            const consumer = this.createForegroundConsumer(scan, true);
+            if (consumer !== undefined) request.consumer = consumer;
+            if (consumer === undefined) {
+              scan.cts.cancel();
+              throw new Error('Another usage analysis is already in progress for this project.');
+            }
+          }
+          let lastScanned = 0;
+          const onProgress = (scanned: number, total: number): void => {
+            if (background || cancelled() || request?.superseded === true || !currentSnapshot?.()) return;
             const increment = total > 0 ? ((scanned - lastScanned) / total) * 100 : 0;
             lastScanned = scanned;
             progress?.report({ message: `${scanned} of ${total} files checked`, increment });
-            if (!background) this.options.sink.postMessage({ status: 'cleanup-analyzing', scanned, total });
-          },
-        });
-        if (!background) {
-          consumer = this.createForegroundConsumer(scan, true);
-          if (consumer === undefined) {
-            scan.cts.cancel();
-            throw new Error('Another usage analysis is already in progress for this project.');
+            this.options.sink.postMessage({ status: 'cleanup-analyzing', scanned, total });
+          };
+          try {
+            scan.progressSubscribers.add(onProgress);
+            resultsByPackage = await scan.promise;
+            // Scan completion alone does not mean the owner published findings.
+            if (joined && !await scan.cleanupPublication && !cancelled()) {
+              if (!currentSnapshot()) throw staleSource();
+              throw Object.assign(new Error('Cleanup analysis was cancelled. Select Analyze again.'), { name: 'CANCELLED' });
+            }
+          } finally {
+            scan.progressSubscribers.delete(onProgress);
+            if (request?.consumer !== undefined) this.releaseForegroundConsumer(request.consumer);
+          }
+          if (!cancelled() && scan.cts.token.isCancellationRequested) {
+            if (!currentSnapshot()) throw staleSource();
+            throw Object.assign(new Error('Cleanup analysis was cancelled. Select Analyze again.'), { name: 'CANCELLED' });
           }
         }
-        const cancellation = onCancellationToken?.onCancellationRequested(() => {
-          if (consumer !== undefined) this.cancelForegroundConsumer(consumer);
-        });
-        try {
-          return await scan.promise;
-        } finally {
-          cancellation?.dispose();
-        }
-      };
-      const resultsByPackage = background
-        ? await runScan(undefined, undefined)
-        : await this.options.platform.withProgress(
-            'Analyzing dependency usage',
-            (progress, token) => runScan(progress, token)
-          );
-      if (
-        consumer?.cancelled === true ||
-        this.options.isDisposed() ||
-        !this.isCurrent(selected.id, identity)
-      ) return false;
+        if (cancelled()) return false;
+        if (!currentSnapshot()) throw staleSource();
+        // The background cleanup owns findings and publication for observers.
+        if (joined) return true;
 
-      const findings: DependencyFinding[] = [];
-      let analyzedAt = new Date().toISOString();
-      let cacheExpiresAt = new Date(Date.now() + USAGE_CACHE_TTL_MS).toISOString();
-      const peerRequirementsOf = cleanupPeerRequirementLookup(controller.root, source);
-      const directDependencies = new Set(packageNames);
-      for (const [name, result] of resultsByPackage) {
-        const cachedEntry = this.analysisState.set(selected.id, name, identity, result);
-        analyzedAt = result.scannedAt;
-        cacheExpiresAt = new Date(cachedEntry.cachedAt + USAGE_CACHE_TTL_MS).toISOString();
-        const finding = buildUnusedFinding(name, result, {
-          peerRequirements: peerRequirementsOf(name),
-          directDependencies,
-        });
-        if (finding !== null) findings.push(finding);
+        const findings: DependencyFinding[] = [];
+        let analyzedAt = new Date().toISOString();
+        let cacheExpiresAt = new Date(Date.now() + USAGE_CACHE_TTL_MS).toISOString();
+        const peerRequirementsOf = cleanupPeerRequirementLookup(controller.root, source);
+        const directDependencies = new Set(packageNames);
+        for (const [name, result] of resultsByPackage) {
+          const cachedEntry = this.analysisState.set(selected.id, name, identity, result);
+          analyzedAt = result.scannedAt;
+          cacheExpiresAt = new Date(cachedEntry.cachedAt + USAGE_CACHE_TTL_MS).toISOString();
+          const finding = buildUnusedFinding(name, result, {
+            peerRequirements: peerRequirementsOf(name),
+            directDependencies,
+          });
+          if (finding !== null) findings.push(finding);
+        }
+        // Keep cached evidence without completing an incompatible foreground request.
+        const foregroundSnapshot = this.activeCleanupRequest?.snapshot;
+        if (background && this.cleanupHasPriority() && (foregroundSnapshot === undefined || !canJoinBackgroundUsageScan({
+          backgroundOwner: true,
+          scanProjectId: selected.id,
+          requestedProjectId: foregroundSnapshot.projectId,
+          scanIdentity: identity,
+          requestedIdentity: foregroundSnapshot.identity,
+          scannedPackages: new Set(packageNames),
+          requestedPackages: foregroundSnapshot.packageNames,
+        }))) return false;
+        this.visibleCleanup = { projectId: selected.id, analyzedAt };
+        this.lastProjectAnalysis.set(selected.id, { identity, analyzedAt: Date.now() });
+        if (request !== undefined && scan !== undefined) {
+          this.satisfiedBackgroundSequence = Math.max(this.satisfiedBackgroundSequence, sequenceAtStart);
+          if (this.pendingBackgroundRequest !== undefined && this.pendingBackgroundRequest.sequence <= sequenceAtStart) {
+            this.pendingBackgroundRequest = undefined;
+          }
+        }
+        this.options.sink.postMessage({ status: 'cleanup-result', findings, analyzedAt, cacheExpiresAt });
+        published = true;
+        return true;
       }
-      this.visibleCleanup = { projectId: selected.id, analyzedAt };
-      this.lastProjectAnalysis.set(selected.id, { identity, analyzedAt: Date.now() });
-      this.options.sink.postMessage({ status: 'cleanup-result', findings, analyzedAt, cacheExpiresAt });
-      return true;
+      return false;
     } catch (cause) {
       const failureAudience = usageScanFailureAudience({
-        backgroundOwner: background,
-        foregroundWaiters: 0,
+        backgroundOwner: scan?.backgroundOwner ?? background,
+        foregroundWaiters: request !== undefined && !cancelled() ? 1 : 0,
       });
-      if (failureAudience === 'owner' && consumer?.cancelled !== true && !this.options.isDisposed() && this.isCurrent(selected.id, identity)) {
-        this.options.sink.postMessage({ status: 'cleanup-error', error: toProtocolError(cause) });
+      if (failureAudience !== 'quiet' && !cancelled()) {
+        this.options.sink.postMessage({
+          status: 'cleanup-error',
+          error: toProtocolError(request?.superseded === true || currentSnapshot?.() === false ? staleSource() : cause),
+        });
       }
       return false;
     } finally {
-      if (consumer !== undefined) this.releaseForegroundConsumer(consumer);
-      performance.finish();
+      finishPublication(published);
+      performance.finish({ joined });
     }
   }
 
@@ -790,9 +892,17 @@ export class UsageAnalysisCoordinator {
    */
   async requestBackgroundUsageRefresh(options: { force?: boolean } = {}): Promise<void> {
     if (this.backgroundStopped) return;
-    const force = options.force === true;
-    this.pendingBackgroundRequest = { force: force || (this.pendingBackgroundRequest?.force ?? false) };
+    this.mergePendingBackgroundRequest({ force: options.force === true, sequence: ++this.backgroundRequestSequence });
     await this.runPendingBackgroundRefresh();
+  }
+
+  private mergePendingBackgroundRequest(request: PendingBackgroundRequest): void {
+    if (this.backgroundStopped || this.disposed || this.options.isDisposed()) return;
+    const pending = this.pendingBackgroundRequest;
+    this.pendingBackgroundRequest = {
+      force: request.force || (pending?.force ?? false),
+      sequence: Math.max(request.sequence, pending?.sequence ?? 0),
+    };
   }
 
   /**
@@ -802,9 +912,9 @@ export class UsageAnalysisCoordinator {
    * pending slot).
    */
   async runPendingBackgroundRefresh(): Promise<void> {
-    if (this.schedulingBackgroundRefresh || this.backgroundStopped) return;
+    if (this.schedulingBackgroundRefresh || this.backgroundStopped || this.disposed) return;
     if (this.pendingBackgroundRequest === undefined) return;
-    if (this.isBusy() || (this.options.isUpgradeBusy?.() ?? false)) return;
+    if (this.cleanupHasPriority() || this.isBusy() || (this.options.isUpgradeBusy?.() ?? false)) return;
 
     this.schedulingBackgroundRefresh = true;
     try {
@@ -815,16 +925,16 @@ export class UsageAnalysisCoordinator {
 
       const controller = await this.options.ensureController();
       // Stopped while waiting for the controller: the claimed request is dropped.
-      if (this.backgroundStopped) return;
+      if (this.backgroundStopped || this.disposed) return;
       if (
         controller === undefined ||
         this.options.isDisposed() ||
+        this.cleanupHasPriority() ||
         this.isBusy() ||
         (this.options.isUpgradeBusy?.() ?? false)
       ) {
-        // Couldn't run after all: put it back (unless something newer
-        // already replaced it) rather than dropping it silently.
-        if (this.pendingBackgroundRequest === undefined) this.pendingBackgroundRequest = pending;
+        // Keep the claimed force flag when merging a newer request.
+        this.mergePendingBackgroundRequest(pending);
         return;
       }
 
@@ -832,9 +942,15 @@ export class UsageAnalysisCoordinator {
       if (selected === undefined) return;
       const identity = this.identityFor(controller, selected);
       const last = this.lastProjectAnalysis.get(selected.id);
-      if (!shouldRunBackgroundUsageRefresh(pending.force, last, identity)) return;
-
-      await this.handleAnalyzeCleanup({ background: true });
+      // A foreground scan may have satisfied this request during lookup.
+      const force = pending.force && pending.sequence > this.satisfiedBackgroundSequence;
+      if (shouldRunBackgroundUsageRefresh(force, last, identity)) {
+        const result = await this.handleAnalyzeCleanup({ background: true, controller, pendingRequest: pending });
+        if (typeof result !== 'boolean') {
+          this.mergePendingBackgroundRequest(result);
+          return;
+        }
+      }
     } finally {
       this.schedulingBackgroundRefresh = false;
     }
@@ -1142,6 +1258,10 @@ export class UsageAnalysisCoordinator {
   }
 
   handleCancel(): void {
+    if (this.activeCleanupRequest !== undefined) {
+      this.cancelCleanupRequest(this.activeCleanupRequest);
+      return;
+    }
     this.foregroundOperations.cancelActive((consumer) => {
       if (shouldCancelUnderlyingUsageScan(consumer.ownsScan)) consumer.scan.cts.cancel();
     });
