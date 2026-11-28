@@ -200,7 +200,7 @@ test('a handler result with a throwing then getter cannot escape', async () => {
   assert.equal(lines.length, 1);
 });
 
-test('a background cleanup stopped while its own controller lookup waits starts no discovery', async () => {
+test('a background cleanup stopped while the scheduler controller lookup waits starts no discovery', async () => {
   let discoveries = 0;
   const messages = [];
   const controller = {
@@ -212,7 +212,7 @@ test('a background cleanup stopped while its own controller lookup waits starts 
     lastResultRows: () => [{ name: 'lodash' }],
   };
   let lookups = 0;
-  let releaseSecond;
+  let releaseLookup;
   const coordinator = new UsageAnalysisCoordinator({
     platform: {
       findFiles: async () => { discoveries += 1; return []; },
@@ -224,8 +224,7 @@ test('a background cleanup stopped while its own controller lookup waits starts 
     sink: { postMessage: (message) => messages.push(message) },
     ensureController: () => {
       lookups += 1;
-      // The scheduler's lookup answers at once. The cleanup's own lookup waits.
-      if (lookups === 2) return new Promise((resolve) => { releaseSecond = () => resolve(controller); });
+      if (lookups === 1) return new Promise((resolve) => { releaseLookup = () => resolve(controller); });
       return Promise.resolve(controller);
     },
     getSelectedProject: () => ({
@@ -235,10 +234,11 @@ test('a background cleanup stopped while its own controller lookup waits starts 
     isDisposed: () => false,
   });
   const scheduling = coordinator.requestBackgroundUsageRefresh({ force: true });
-  while (releaseSecond === undefined) await tick();
+  while (releaseLookup === undefined) await tick();
   coordinator.stopBackground();
-  releaseSecond();
+  releaseLookup();
   await scheduling;
+  assert.equal(lookups, 1, 'the scheduled pass uses one controller lookup');
   assert.equal(discoveries, 0, 'no source or config discovery ran');
   assert.deepEqual(messages.filter((message) => message.status === 'cleanup-result'), []);
 
