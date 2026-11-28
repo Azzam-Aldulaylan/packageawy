@@ -4,6 +4,15 @@ All notable changes to Packageawy are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-28
+
+### Fixed
+
+- Transitive fixes now keep edits saved to `package.json` during installation and show Recovery required.
+- Smart Cleanup now waits for a running background scan instead of reporting that an analysis is already in progress, including when you analyze again after Cancel.
+- Smart Cleanup now reads static JSON and JSON-LD data blocks in Vue, Svelte and Astro files, so these blocks no longer hold back automatic removals.
+- Smart Cleanup now handles division and regular expressions when reading Astro frontmatter.
+
 ## [1.0.2] - 2026-11-26
 
 ### Fixed
@@ -228,6 +237,7 @@ First public pre-release.
 - Rejects unresolved `${...}` values in project `.npmrc` registry settings and never stores auth tokens.
 - Re-reads the project right before every change and stops rollback if it sees dependency files changed.
 
+[1.0.3]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Azzam-Aldulaylan/packageawy/releases/tag/v1.0.0
