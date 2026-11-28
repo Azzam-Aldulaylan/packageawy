@@ -66,6 +66,7 @@ const frontmatter = [
   ['quoted comment markers', 'const text = "/*"; // `\nconst other = "//";'],
   ['escaped quote', 'const text = "\\\"/*";'],
   ['continued string', 'const text = "a\\\n---\\\nb";'],
+  ['regex comment markers', 'const pattern = /[/*]/;'],
 ];
 for (const [kind, prefix] of frontmatter) {
   test(`Astro lexical fence scanning retains imports after ${kind}`, async () => {
@@ -76,7 +77,7 @@ for (const [kind, prefix] of frontmatter) {
     assert.equal(result.truncated, false);
   });
 }
-for (const prefix of ['/*', 'const text = `', 'const text = "', 'const pattern = /[/*]/;']) {
+for (const prefix of ['/*', 'const text = `', 'const text = "', 'const pattern = /[/*]']) {
   test(`Astro ambiguous or unterminated frontmatter gates coverage: ${prefix}`, async () => {
     const result = (await usageWorkspace([['page.astro', `---\n${prefix}\n---\nimport "only-here";`]]).analyze()).get('only-here');
     assert.equal(result.truncated, true);

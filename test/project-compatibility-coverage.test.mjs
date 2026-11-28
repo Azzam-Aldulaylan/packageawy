@@ -7,6 +7,9 @@ import { projectCompatibilityLimitations } from '../out/host/projectCompatibilit
 import { analyzeProjectCompatibilityMedium, appendProjectCompatibilityImportAnalysis } from '../out/host/projectCompatibility/projectCompatibilityAnalysis.js';
 import { collectProjectCompatibilityEvidence } from '../out/host/projectCompatibility/projectEvidenceCollector.js';
 import { folder, usageWorkspace } from './helpers/usage-coverage.mjs';
+import { assessRemoval } from '../out/core/upgrade/removalAssessment.js';
+import { extractSourceCoverage } from '../out/core/usage/sourceCoverage.js';
+import { walkExpressionCode } from '../out/core/usage/jsxLex.js';
 
 const identity = { packageName: 'next', currentVersion: '15.5.0', targetVersion: '16.0.0', requestId: 'coverage', sourceFingerprint: 'coverage-source' };
 const reference = (specifier) => ({ specifier, kind: 'import', filePath: 'src/page.tsx', line: 1, column: 1, snippet: `import x from '${specifier}'`, usageId: 'trusted', referenceIndex: 3 });
@@ -395,4 +398,101 @@ test('coverage messages are actionable, deduplicated and never echo raw failures
   assert.match(unknown, /Next|nextStep/);
   assert.match(projectCompatibilityLimitations('runtime-node-version-unknown', 'cancelled')[0].reason, /cancelled/);
   assert.match(projectCompatibilityLimitations('__proto__', 'unavailable')[0].reason, /could not verify/);
+});
+
+for (const [name, body, supported = true] of [
+  ['division', 'const ratio = a / b;'],
+  ['division assignment', 'a /= 2;'],
+  ['keyword property division', 'const ratio = obj.return / 2;'],
+  ['control condition regex', 'if (ready) /"/.test(v);'],
+  ['parenthesized await', 'const data = await (await fetch(url)).json();'],
+  ['for await with a block body', 'const chunks = [];\nfor await (const chunk of Astro.props.stream) { chunks.push(chunk); }'],
+  ['plain for before regex', 'for (const x of xs) /re/.test(x);'],
+  ['for await before regex', 'for await (const x of xs) /re/.test(x);'],
+  ['for await with a block comment', 'for /* c */ await (const x of xs) /re/.test(x);'],
+  ['postfix increment division', 'const ratio = i++ / 2;'],
+  ['postfix decrement division', 'const ratio = i-- / 2;'],
+  ['numeric exponent division', 'const ratio = 1e+2 / 2;'],
+  ['division after regex', 'const ratio = /"/ / 2;'],
+  ['division after string', 'const ratio = "text" / 2;'],
+  ['nested template division', 'const value = `${a / b + `${i++ / 2} ${/[/]/.test(v)}`}` / 2;'],
+  ['regex character class slash', 'const pattern = /[/"{}]/g;'],
+  ['regex escaped slash', String.raw`const pattern = /a\/b/;`],
+  ['left shift before regex', 'const value = a << /"/.source.length;'],
+  ['angle assignment before regex', 'a >>>= /"/.source.length;'],
+  ['non-JSX angle assertion', 'const ratio = <number>a / 2;'],
+  ['template fence', 'const value = `before\n---\nafter`;'],
+  ['nested template fence', 'const value = `${`before\n---\nafter ${a / b}`}`;'],
+  ['string fence', String.raw`const value = "---"; const other = '---';`],
+  ['continued string fence', 'const value = "before\\\n---";'],
+  ['regex fence', 'const pattern = /---["/]/;'],
+  ['block comment fence', '/* before\n---\nafter */'],
+  ['line comment fence', '// ---\nconst ratio = a / b;'],
+  ['closing brace slash', 'if (ready) {} /"/.test(v);', false],
+  ['generic closing angle slash', 'fn<T> / 2;', false],
+  ['void assertion slash', 'value as void / 2;', false],
+  ['unterminated regex', 'const pattern = /unterminated', false],
+  ['unterminated template', 'const value = `unterminated', false],
+  ['unterminated string', 'const value = "unterminated', false],
+  ['unterminated comment', '/* unterminated', false],
+  ['unclosed delimiter', 'fn(', false],
+  ...['\n', '\r', '\u2028', '\u2029'].flatMap(terminator => [
+    [`regex terminator ${JSON.stringify(terminator)}`, `const pattern = /a${terminator}b/;`, false],
+    [`escaped regex terminator ${JSON.stringify(terminator)}`, `const pattern = /a\\${terminator}b/;`, false],
+  ]),
+]) {
+  for (const newline of ['\n', '\r\n']) {
+    test(`Astro frontmatter ${name} preserves extraction and both coverage consumers (${JSON.stringify(newline)})`, async () => {
+      // Unreadable markup after the fence must never enter the frontmatter walker.
+      const text = `---${newline}${body}${newline}import 'only-here/real';${newline}---${newline}<h1>It's here / "</h1>`;
+      const filePath = 'page.astro';
+      const reason = 'Astro frontmatter that could not be extracted';
+      const importOffset = text.indexOf("import 'only-here/real'");
+      const fenceOffset = text.indexOf('---', importOffset);
+      const end = walkExpressionCode(text, 3 + newline.length, index =>
+        text[index - 1] === '\n' && /^---[^\S\r\n]*(?:\r?\n|$)/.test(text.slice(index)));
+      assert.equal(end, supported ? fenceOffset : null);
+      const extraction = extractSourceCoverage(filePath, text);
+      assert.deepEqual(extraction.reasons, supported ? [] : [reason]);
+      assert.equal(extraction.scripts.length, supported ? 1 : 0);
+      if (supported) assert.equal(extraction.scripts[0].text.trim(), `${body}${newline}import 'only-here/real';`);
+
+      const workspace = usageWorkspace([[filePath, text]]);
+      const results = await workspace.analyze({ packageNames: ['only-here', 'unused'] });
+      const known = results.get('only-here');
+      assert.equal(known.references.length, supported ? 1 : 0);
+      const unused = results.get('unused');
+      assert.equal(unused.truncated, !supported);
+      assert.equal(unused.coverageReasons?.includes(reason) ?? false, !supported);
+      assert.equal(assessRemoval({ usage: unused, peerRequirements: [], stillRequiredBy: [] }).status, supported ? 'low-risk' : 'unknown');
+
+      const evidence = await collectProjectCompatibilityEvidence({ platform: workspace.platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+      assert.equal(evidence.truncated, !supported);
+      assert.deepEqual(evidence.scanLimitations ?? [], supported ? [] : ['project-source-extraction-incomplete']);
+      assert.deepEqual(evidence.imports.map(reference => reference.specifier), supported ? ['only-here/real'] : []);
+      if (supported) {
+        const line = text.slice(0, importOffset).split('\n').length;
+        assert.equal(known.references[0].line, line);
+        assert.equal(known.references[0].column, 9);
+        assert.equal(evidence.imports[0].line, line);
+        assert.equal(evidence.imports[0].column, 9);
+      }
+    });
+  }
+}
+
+test('Astro escaped identifiers preserve imports in compatibility evidence', async () => {
+  const text = `---\n${String.raw`const \u0061 = 1;`}\nimport "only-here";\n---\n<p>Hello</p>`;
+  const workspace = usageWorkspace([['page.astro', text]]);
+  const extraction = extractSourceCoverage('page.astro', text);
+  assert.deepEqual(extraction.reasons, []);
+  const evidence = await collectProjectCompatibilityEvidence({
+    platform: workspace.platform, folder, dir: '', manifestText: '{}', packageName: 'only-here',
+  });
+  assert.deepEqual(evidence.imports.map(reference => reference.specifier), ['only-here']);
+  assert.equal(evidence.imports[0].line, 3);
+  assert.equal(evidence.imports[0].column, 9);
+  assert.equal(evidence.truncated, true);
+  assert.ok(evidence.scanLimitations.length > 0);
+  assert.ok(!evidence.scanLimitations.includes('project-source-extraction-incomplete'));
 });

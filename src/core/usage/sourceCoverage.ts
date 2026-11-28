@@ -1,4 +1,5 @@
 import { DEPENDENCY_CALL } from './importScan.js';
+import { walkExpressionCode } from './jsxLex.js';
 import type { ScriptLanguage } from './importScan.js';
 import { scanStylesheet, styleDialect } from './styleScan.js';
 import type { StyleDialect } from './styleScan.js';
@@ -79,50 +80,8 @@ function scriptLanguage(attributes: string): ScriptLanguage | undefined {
 
 /** A fence inside JS literal/comment text belongs to the script, not Astro markup. */
 function frontmatterEnd(text: string, start: number): number | null {
-  const stack: Array<{ kind: 'code' | 'template' | 'expression'; depth: number }> = [{ kind: 'code', depth: 0 }];
-  let index = start;
-  while (index < text.length) {
-    const frame = stack[stack.length - 1];
-    const character = text[index];
-    const next = text[index + 1];
-    if (frame?.kind === 'code' && (index === start || text[index - 1] === '\n') &&
-        /^---[^\S\r\n]*(?:\r?\n|$)/.test(text.slice(index))) return index;
-    if (frame?.kind === 'template') {
-      if (character === '\\') index += 1;
-      else if (character === '`') stack.pop();
-      else if (character === '$' && next === '{') {
-        stack.push({ kind: 'expression', depth: 1 });
-        index += 1;
-      }
-    } else if (character === '/' && next === '/') {
-      while (index < text.length && text[index] !== '\n') index += 1;
-      continue;
-    } else if (character === '/' && next === '*') {
-      const end = text.indexOf('*/', index + 2);
-      if (end === -1) return null;
-      index = end + 2;
-      continue;
-    } else if (character === '/') {
-      // Without parsing expressions, division and regex literals are ambiguous.
-      return null;
-    } else if (character === '"' || character === "'") {
-      const quote = character;
-      index += 1;
-      while (index < text.length && text[index] !== quote) {
-        if (text[index] === '\\') {
-          index += text[index + 1] === '\r' && text[index + 2] === '\n' ? 3 : 2;
-        } else if (text[index] === '\n' || text[index] === '\r') return null;
-        else index += 1;
-      }
-      if (index >= text.length) return null;
-    } else if (character === '`') stack.push({ kind: 'template', depth: 0 });
-    else if (frame?.kind === 'expression') {
-      if (character === '{') frame.depth += 1;
-      else if (character === '}' && --frame.depth === 0) stack.pop();
-    }
-    index += 1;
-  }
-  return null;
+  return walkExpressionCode(text, start, index =>
+    (index === start || text[index - 1] === '\n') && /^---[^\S\r\n]*(?:\r?\n|$)/.test(text.slice(index)));
 }
 
 export function extractSourceCoverage(filePath: string, text: string, stylesHandled = false): SourceCoverage {
