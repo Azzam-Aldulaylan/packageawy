@@ -5,9 +5,231 @@ import { analyzeImportCompatibility, analyzeRuntimeCompatibility, runProjectComp
 import { scanSourceForImportSpecifiers } from '../out/core/usage/importScan.js';
 import { projectCompatibilityLimitations } from '../out/host/projectCompatibilityCoverage.js';
 import { analyzeProjectCompatibilityMedium, appendProjectCompatibilityImportAnalysis } from '../out/host/projectCompatibility/projectCompatibilityAnalysis.js';
+import { collectProjectCompatibilityEvidence } from '../out/host/projectCompatibility/projectEvidenceCollector.js';
+import { folder, usageWorkspace } from './helpers/usage-coverage.mjs';
 
 const identity = { packageName: 'next', currentVersion: '15.5.0', targetVersion: '16.0.0', requestId: 'coverage', sourceFingerprint: 'coverage-source' };
 const reference = (specifier) => ({ specifier, kind: 'import', filePath: 'src/page.tsx', line: 1, column: 1, snippet: `import x from '${specifier}'`, usageId: 'trusted', referenceIndex: 3 });
+
+for (const extension of ['vue', 'astro']) {
+  for (const [name, attributes] of [
+    ['nested define:vars', `define:vars={{ config: { theme: 'dark' } }}`],
+    ['is:inline', 'is:inline'],
+    ['double-quoted attribute text', `is:inline data-example="import('fake')"`],
+    ['single-quoted attribute text', `data-example='require("fake")'`],
+    ['define:vars call', `define:vars={{ config: import('fake') }}`],
+    ['set:html call', `set:html={import('fake')}`],
+    ['bound type', ':type="scriptType"'],
+    ['spread attributes', '{...attributes}'],
+  ]) {
+    test(`${extension} ordinary script ${name} keeps main compatibility evidence`, async () => {
+      const filePath = `page.${extension}`;
+      const text = `<script ${attributes}>\r\n  import 'only-here/real';\r\n</script>`;
+      const { platform } = usageWorkspace([[filePath, text]]);
+      const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+      assert.equal(evidence.truncated, false);
+      assert.deepEqual(evidence.scanLimitations ?? [], []);
+      assert.deepEqual(evidence.imports.map(reference => reference.specifier), ['only-here/real']);
+      assert.equal(evidence.imports[0].line, 2);
+      assert.equal(evidence.imports[0].column, 11);
+    });
+  }
+}
+
+for (const extension of ['vue', 'svelte', 'astro']) {
+  const json = '<script type="application/ld+json">{}</script>';
+  const expression = value => extension === 'vue' ? `<template>{{${value}}}</template>` : `{${value}}`;
+  for (const [name, markup, uncertain, laterReadable = true] of [
+    ['string hiding a static import', `${expression(`'<script type="application/json">"'`)}<script>import 'only-here'; //"</script>`, true],
+    ['string hiding a computed require', expression(`'<script type="application/json">"' + module['require']('only-here') + '"</script>'`), true],
+    ['string brace that rebalances before a fake tag', expression(`'}<script type="application/json">"' + module['require']('only-here') + '"</script>{'`), true],
+    ['unbalanced brace after a JSON block', `${json}<p>{</p>`, true],
+    ['stray closing brace before a tag', `}${json}`, true],
+    ['recovered depth after a stray closing brace', `}{${json}`, true],
+    ['conditional expression', expression(`cond && ${json}`), true],
+    ['attribute expression', `<div title={cond && ${json}}></div>`, true],
+    ['balanced conditional block', `{#if ready}${json}{/if}`, false],
+    ['earlier executable and style braces', `<script>const text = "}";</script><style>/* { */</style>${json}`, false],
+    ['earlier JSON braces', `<script type="application/json">"}"</script>${json}`, false],
+    ['earlier comment braces', `<!-- } -->${json}`, false],
+    ['raw opening script in JSON', `<script type="application/json">${JSON.stringify({ text: '<ScRiPt' })}</script>`, true],
+    ['raw closing script in JSON', `<script type="application/json">${JSON.stringify({ text: '</ScRiPt>' })}</script>`, true],
+    ['HTML closing tag in a JSON string', `<script type="application/json">${JSON.stringify({ text: '<p>Follow our guide.</p>' })}</script>`, false],
+    ['comment opener in JSON', `<script type="application/json">${JSON.stringify({ text: '<!-- note' })}</script>`, true],
+    ['comment braces around a fake tag', extension === 'vue'
+      ? `<template>{{(/* } } */ '<script type="application/json">"' + module['require']('only-here') + '"</script>' /* { { */)}}</template>`
+      : `{(/* } */ '<script type="application/json">"' + module['require']('only-here') + '"</script>' /* { */)}`, true],
+    ['line comment brace before a fake tag', extension === 'vue'
+      ? `<template>{{ value // } }\r\n + '<script type="application/json">"' + module['require']('only-here') + '"</script>' }}</template>`
+      : `{ value // }\r\n + '<script type="application/json">"' + module['require']('only-here') + '"</script>' }`, true],
+    ['escaped script text in JSON', String.raw`<script type="application/json">{"text":"<\/script><\u0073cript"}</script>`, false],
+    ...(extension === 'astro' ? [
+      ['self-closing JSON in an expression', '{cond && <script type="application/ld+json" />}', true, false],
+      ['self-closing JSON after negative depth', '}{<script type="application/ld+json" />', true, false],
+      ['frontmatter braces before JSON', `---\r\nconst text = "}";\r\n---\r\n${json}`, false],
+    ] : []),
+  ]) {
+    test(`${extension} ${name} has conservative compatibility coverage`, async () => {
+      const filePath = `page.${extension}`;
+      const text = `${markup}\r\n<script>  import 'only-here/real';</script>`;
+      const { platform } = usageWorkspace([[filePath, text]]);
+      const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+      assert.equal(evidence.truncated, uncertain);
+      assert.deepEqual(evidence.scanLimitations ?? [], uncertain ? ['project-source-extraction-incomplete'] : []);
+      assert.deepEqual(evidence.imports.map(reference => reference.specifier), laterReadable ? ['only-here/real'] : []);
+      if (laterReadable) {
+        const line = text.split('\r\n').length;
+        assert.equal(evidence.imports[0].line, line);
+        assert.equal(evidence.imports[0].column, text.split('\r\n')[line - 1].indexOf('only-here/real') + 1);
+      }
+    });
+  }
+}
+
+for (const extension of ['vue', 'svelte', 'astro']) {
+  for (const selfClosing of extension === 'astro' ? [false, true] : [false]) {
+    for (const [name, attributes] of [
+      ['plain attributes', 'data-label=example hidden'],
+      ['double-quoted text', `data-label="/> > literal \`literal\` text"`],
+      ['single-quoted text', `data-label='/> > literal \`literal\` text'`],
+    ]) {
+      test(`${extension} ${selfClosing ? 'self-closing' : 'paired'} JSON with ${name} keeps complete compatibility evidence`, async () => {
+        const filePath = `page.${extension}`;
+        const text = `<script type="application/ld+json" ${attributes}${selfClosing ? ' />' : '>{}</script>'}\r\n<script>import 'only-here/real';</script>`;
+        const { platform } = usageWorkspace([[filePath, text]]);
+        const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+        assert.equal(evidence.truncated, false);
+        assert.deepEqual(evidence.scanLimitations ?? [], []);
+        assert.deepEqual(evidence.imports.map(reference => reference.specifier), ['only-here/real']);
+        assert.equal(evidence.imports[0].line, 2);
+      });
+    }
+    for (const [name, attributes] of [
+      ['double-quoted literal import', `data-load="import('only-here')"`],
+      ['single-quoted literal require', `data-load='require("only-here")'`],
+      ['set:html call', `set:html={import('only-here')}`],
+      ['double-quoted expression', `data-load="{import('only-here')}"`],
+      ['single-quoted expression', `data-load='{import("only-here")}'`],
+    ]) {
+      test(`${extension} ${selfClosing ? 'self-closing' : 'paired'} JSON with ${name} keeps compatibility evidence incomplete`, async () => {
+        const filePath = `page.${extension}`;
+        const block = `<script type="application/ld+json" ${attributes}${selfClosing ? ' />' : '>{}</script>'}`;
+        const text = extension === 'svelte' ? `<svelte:head>${block}</svelte:head>` : block;
+        const { platform } = usageWorkspace([[filePath, text]]);
+        const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+        assert.equal(evidence.truncated, true);
+        assert.deepEqual(evidence.scanLimitations, ['project-source-extraction-incomplete']);
+        assert.deepEqual(evidence.imports, []);
+      });
+    }
+  }
+}
+
+for (const attributes of [
+  'data-label={`/>`} src="./hidden.ts"',
+  'data-label={`/>`} lang="ts"',
+  'data-label={`/>`} {...attributes}',
+  'data-label={"/>"} src="./hidden.ts"',
+  `data-label={'/>'} lang="ts"`,
+  'data-label={`>`} src="./hidden.ts"',
+  'data-label={`/>`}',
+]) {
+  test(`Astro JSON self-closing boundary keeps compatibility incomplete for ${attributes}`, async () => {
+    const { platform } = usageWorkspace([['page.astro', `<script type="application/ld+json" ${attributes} />`]]);
+    const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+    assert.equal(evidence.truncated, true);
+    assert.deepEqual(evidence.scanLimitations, ['project-source-extraction-incomplete']);
+    assert.deepEqual(evidence.imports, []);
+  });
+}
+
+for (const extension of ['vue', 'svelte', 'astro']) {
+  for (const [name, block, expression = false] of [
+    ['JSON import text', `<script type="application/json">${JSON.stringify({ text: "import('only-here')" })}</script>`],
+    ['JSON require text', `<script type="application/json">${JSON.stringify({ text: "require('only-here')" })}</script>`],
+    ['template expression body', `'<script type="application/json">"' + import('only-here') + '"</script>'`, true],
+    ['template expression attribute', `'<script type="application/json" data-label="' + import('only-here') + '">{}</script>'`, true],
+  ]) {
+    test(`${extension} ${name} keeps compatibility evidence incomplete`, async () => {
+      const filePath = `page.${extension}`;
+      const markup = expression ? (extension === 'vue' ? `<template>{{${block}}}</template>` : `{${block}}`) : block;
+      const text = `${markup}\r\n<script>  import 'only-here/real';</script>`;
+      const { platform } = usageWorkspace([[filePath, text]]);
+      const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+      assert.equal(evidence.truncated, true);
+      assert.deepEqual(evidence.scanLimitations, ['project-source-extraction-incomplete']);
+      assert.deepEqual(evidence.imports.map(reference => reference.specifier), ['only-here/real']);
+      assert.equal(evidence.imports[0].line, 2);
+      assert.equal(evidence.imports[0].column, text.split('\r\n')[1].indexOf('only-here/real') + 1);
+    });
+  }
+
+  test(`${extension} JSON-LD preserves compatibility imports and complete source evidence`, async () => {
+    const filePath = `page.${extension}`;
+    const text = [
+      '<script type="application/ld+json">',
+      JSON.stringify({ text: `import 'only-here/fake';` }),
+      '</script>',
+      '<script>',
+      `  import x from 'only-here/real';`,
+      '</script>',
+      `<script>import 'only-here/later';</script>`,
+    ].join('\r\n');
+    const { platform } = usageWorkspace([[filePath, text]]);
+    const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+    assert.equal(evidence.scannedFileCount, 1);
+    assert.equal(evidence.truncated, false);
+    assert.deepEqual(evidence.scanLimitations ?? [], []);
+    assert.deepEqual(evidence.imports.map(reference => reference.specifier), ['only-here/real', 'only-here/later']);
+    for (const [index, line] of [[0, 5], [1, 7]]) {
+      assert.equal(evidence.imports[index].filePath, filePath);
+      assert.equal(evidence.imports[index].line, line);
+      assert.equal(evidence.imports[index].column, text.split('\r\n')[line - 1].indexOf(evidence.imports[index].specifier) + 1);
+    }
+  });
+
+  for (const [name, attributes, body = '{}'] of [
+    ['invalid JSON', 'type="application/ld+json"', '{bad}'],
+    ['unknown type', 'type="application/unknown"'],
+    ['template type', 'type="text/template"'],
+    ['importmap', 'type="importmap"'],
+    ['dynamic type', 'type={scriptType}'],
+    ['bound JSON type', 'type="application/json" :type="scriptType"'],
+    ['JSON with bound data', 'type="application/json" :data-label="label"'],
+    ['JSON with v-bind', 'type="application/json" v-bind="attributes"'],
+    ['JSON with v-bind data', 'type="application/json" v-bind:data-label="label"'],
+    ['JSON with expression', 'type="application/json" data-label={label}'],
+    ['JSON with nested expression', 'type="application/json" define:vars={{ config: { theme: \'dark\' } }}'],
+    ['JSON with template literal', 'type="application/json" data-label=`label`'],
+    ['JSON with brace template', 'type="application/json" data-label={`label`}'],
+    ['JSON with lang', 'type="application/json" lang="js"'],
+    ['JSON with src', 'type="application/json" src="./hidden.js"'],
+  ]) {
+    test(`${extension} ${name} retains the compatibility extraction limitation`, async () => {
+      const filePath = `page.${extension}`;
+      const { platform } = usageWorkspace([[filePath, `<script ${attributes}>${body}</script>\n<script>import 'only-here/real';</script>`]]);
+      const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+      assert.equal(evidence.truncated, true);
+      assert.deepEqual(evidence.scanLimitations, ['project-source-extraction-incomplete']);
+      assert.deepEqual(evidence.imports.map(reference => reference.specifier), ['only-here/real']);
+      assert.equal(evidence.imports[0].line, 2);
+    });
+  }
+}
+
+for (const selfClosing of [false, true]) {
+  for (const attributes of ['', `set:html={import('only-here/attribute')}`]) {
+    test(`Astro ${selfClosing ? 'self-closing' : 'paired'} JSON dynamic attributes reach compatibility limitations`, async () => {
+      const text = `<script type="application/ld+json" ${attributes}${selfClosing ? '/>' : '>{} </script>'}\n<script>import 'only-here/real';</script>`;
+      const { platform } = usageWorkspace([['page.astro', text]]);
+      const evidence = await collectProjectCompatibilityEvidence({ platform, folder, dir: '', manifestText: '{}', packageName: 'only-here' });
+      assert.equal(evidence.truncated, Boolean(attributes));
+      assert.deepEqual(evidence.scanLimitations ?? [], attributes ? ['project-source-extraction-incomplete'] : []);
+      assert.deepEqual(evidence.imports.map(reference => reference.specifier), selfClosing && attributes ? [] : ['only-here/real']);
+      if (!selfClosing || !attributes) assert.equal(evidence.imports[0].line, 2);
+    });
+  }
+}
 
 test('classic root imports are verified only against a published runtime entry', () => {
   for (const [main, paths, status] of [
