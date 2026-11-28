@@ -129,7 +129,7 @@ export function regexLiteralEnd(text: string, start: number): number | undefined
 }
 
 type LexicalFrame =
-  | ({ kind: 'code'; braces: number | undefined } & ExpressionContext)
+  | ({ kind: 'code'; braces: number | undefined; openers: string[] | undefined; awaitAfterFor: boolean } & ExpressionContext)
   | { kind: 'template' }
   | { kind: 'jsx'; name: string; inTag: boolean };
 
@@ -150,20 +150,54 @@ export function codePositionMask(
   jsx = true,
 ): boolean[] {
   const code = new Array<boolean>(text.length).fill(true);
-  const stack: LexicalFrame[] = [{ kind: 'code', braces: undefined, ...expressionContext() }];
+  walkCode(text, { code, onUncertain, onComment, jsx });
+  return code;
+}
+
+/** Walk non-JSX code until a top-level boundary, rejecting unreadable syntax. */
+export function walkExpressionCode(text: string, start: number, stop: (index: number) => boolean): number | null {
+  return walkCode(text, { start, stop, jsx: false });
+}
+
+interface LexicalWalkOptions {
+  code?: boolean[] | undefined;
+  onUncertain?: (() => void) | undefined;
+  onComment?: ((start: number, end: number) => void) | undefined;
+  jsx?: boolean;
+  start?: number;
+  stop?: (index: number) => boolean;
+}
+
+function walkCode(
+  text: string,
+  { code, onUncertain, onComment, jsx = true, start = 0, stop }: LexicalWalkOptions,
+): number | null {
+  const codeFrame = (braces: number | undefined): Extract<LexicalFrame, { kind: 'code' }> => ({
+    kind: 'code', braces, openers: code === undefined ? [] : undefined, awaitAfterFor: false, ...expressionContext(),
+  });
+  const stack: LexicalFrame[] = [codeFrame(undefined)];
   const hashbangStart = text.startsWith('\ufeff') ? 1 : 0;
-  let index = 0;
+  let index = start;
+  let unread = false;
+  const reportUncertain = (): void => {
+    unread = true;
+    onUncertain?.();
+  };
   const hideUntil = (end: number): void => {
+    if (code === undefined) {
+      index = end;
+      return;
+    }
     while (index < end) code[index++] = false;
   };
   const uncertain = (): void => {
-    onUncertain?.();
+    reportUncertain();
     hideUntil(text.length);
   };
   const comment = (): void => {
     const start = index;
     if (text[index + 1] === '/' || text[index] === '#') {
-      while (index < text.length && !/[\r\n\u2028\u2029]/.test(text[index] ?? '')) code[index++] = false;
+      while (index < text.length && !/[\r\n\u2028\u2029]/.test(text[index] ?? '')) hideUntil(index + 1);
     } else {
       const end = text.indexOf('*/', index + 2);
       if (end === -1) uncertain();
@@ -190,7 +224,7 @@ export function codePositionMask(
       const mask = codePositionMask(text.slice(start, start + end), onUncertain,
         (from, to) => onComment?.(start + from, start + to), false);
       while (index < start + end) {
-        code[index] = mask[index - start] ?? false;
+        if (code !== undefined) code[index] = mask[index - start] ?? false;
         index += 1;
       }
     }
@@ -199,6 +233,10 @@ export function codePositionMask(
     const frame = stack[stack.length - 1];
     const character = text[index] ?? '';
     const next = text[index + 1] ?? '';
+    if (stack.length === 1 && frame?.kind === 'code' && frame.delimiterDepth === 0 &&
+        (frame.openers?.length ?? 0) === 0 && stop?.(index)) {
+      return unread ? null : index;
+    }
     if (frame?.kind === 'template') {
       if (character === '\\') hideUntil(Math.min(index + 2, text.length));
       else if (character === '`') {
@@ -206,7 +244,7 @@ export function codePositionMask(
         stack.pop();
       } else if (character === '$' && next === '{') {
         hideUntil(index + 2);
-        stack.push({ kind: 'code', braces: 1, ...expressionContext() });
+        stack.push(codeFrame(1));
       } else hideUntil(index + 1);
       continue;
     }
@@ -215,7 +253,7 @@ export function codePositionMask(
       if (frame.inTag && character === '/' && (next === '/' || next === '*')) comment();
       else if (character === '{') {
         hideUntil(index + 1);
-        stack.push({ kind: 'code', braces: 1, ...expressionContext() });
+        stack.push(codeFrame(1));
       } else if (frame.inTag && (character === '"' || character === "'")) {
         // JSX attribute strings use entities, not JS backslash escapes.
         const end = text.indexOf(character, index + 1);
@@ -254,15 +292,15 @@ export function codePositionMask(
       continue;
     }
     if (character === "'" || character === '"') {
-      code[index++] = false;
+      hideUntil(index + 1);
       let closed = false;
       while (index < text.length) {
         const current = text[index];
-        code[index++] = false;
+        hideUntil(index + 1);
         if (current === '\\' && index < text.length) {
           const escaped = text[index];
-          code[index++] = false;
-          if (escaped === '\r' && text[index] === '\n') code[index++] = false;
+          hideUntil(index + 1);
+          if (escaped === '\r' && text[index] === '\n') hideUntil(index + 1);
         } else if (current === character) {
           closed = true;
           break;
@@ -311,15 +349,39 @@ export function codePositionMask(
     if (character === '/' && regexCanStart(frame) !== false) {
       const end = regexCanStart(frame) === undefined ? undefined : regexLiteralEnd(text, index);
       if (end === undefined) uncertain();
-      else hideUntil(end);
+      else {
+        if (code === undefined) {
+          const literal = text.slice(index, end);
+          const closing = literal.lastIndexOf('/');
+          try {
+            new RegExp(literal.slice(1, closing), literal.slice(closing + 1));
+          } catch {
+            uncertain();
+            continue;
+          }
+        }
+        hideUntil(end);
+      }
       endExpression(frame);
+      continue;
+    }
+    if (code === undefined && character === '/' && divisionIsUncertain(text, index, frame.previousWord)) {
+      uncertain();
       continue;
     }
     if (frame.braces !== undefined) {
       if (character === '{') frame.braces += 1;
       else if (character === '}' && --frame.braces === 0) {
+        if ((frame.openers?.length ?? 0) > 0) { uncertain(); continue; }
         hideUntil(index + 1);
         stack.pop();
+        continue;
+      }
+    }
+    if (frame.openers !== undefined) {
+      if (/^[([{]$/.test(character)) frame.openers.push(character);
+      else if (/^[)\]}]$/.test(character) && frame.openers.pop() !== ({ ')': '(', ']': '[', '}': '{' })[character]) {
+        uncertain();
         continue;
       }
     }
@@ -327,10 +389,27 @@ export function codePositionMask(
     // does not decode identifier tokens, so never certify that code as covered.
     if (character === '\\' && next === 'u') onUncertain?.();
     if (/\s/.test(character)) index += 1;
-    else index = expressionTokenEnd(text, index, frame);
+    else {
+      const followsFor = frame.previousWord === 'for';
+      const opensForAwait = code === undefined && character === '(' && frame.previousWord === 'await' && frame.awaitAfterFor;
+      index = expressionTokenEnd(text, index, frame);
+      if (opensForAwait) frame.controlParentheses[frame.controlParentheses.length - 1] = true;
+      if (code === undefined) frame.awaitAfterFor = followsFor && frame.previousWord === 'await';
+    }
   }
-  if (stack.length > 1) onUncertain?.();
-  return code;
+  if (stack.length > 1) reportUncertain();
+  return null;
+}
+
+/** Line breaks and intervening comments can hide a statement boundary before a slash. */
+function divisionIsUncertain(text: string, index: number, previousWord: string): boolean {
+  if (/^(?:debugger|break|continue)$/.test(previousWord)) return true;
+  let previous = index - 1;
+  while (/\s/.test(text[previous] ?? '')) {
+    if (/[\r\n\u2028\u2029]/.test(text[previous] ?? '')) return true;
+    previous -= 1;
+  }
+  return text.slice(previous - 1, previous + 1) === '*/';
 }
 
 const GENERIC_PREFIX = new RegExp(`^<${CALL_TRIVIA}(?:const\\b|${IDENTIFIER}${CALL_TRIVIA}(?:[,=]|extends\\b))`, 'u');
