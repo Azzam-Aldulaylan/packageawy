@@ -26,6 +26,7 @@ import { UpgradeAssistantCoordinator } from '../out/host/upgradeAssistantCoordin
 import { ProjectMutationLocks, canonicalProjectRoot } from '../out/host/projectMutationLock.js';
 import { resolvedTarget } from './helpers/mutation-target.mjs';
 import { blocker } from './helpers/removal-project.mjs';
+import { browserSkip } from './helpers/browser.mjs';
 
 const require = createRequire(import.meta.url);
 const bundle = await build({ stdin: { contents: `
@@ -747,7 +748,7 @@ test('resolver conflicts display their reason without claiming resolution succee
 // Use a real layout engine without adding a browser dependency to the extension.
 // Set PACKAGEAWY_CHROMIUM_PATH to a local Chromium or headless-shell executable.
 test('bulk summary fits the capped dialog at wide and narrow viewport widths', {
-  skip: process.env.PACKAGEAWY_CHROMIUM_PATH ? false : 'Set PACKAGEAWY_CHROMIUM_PATH to run the rendered layout check',
+  skip: browserSkip('Set PACKAGEAWY_CHROMIUM_PATH to run the rendered layout check'),
 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'packageawy-review-layout-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -919,7 +920,7 @@ for (const [name, Component, props] of [['single', UpgradeReviewPanel, panelProp
 }
 
 test('dependency findings keep reading order, aligned edges and group spacing at 1100px and 400px in both host themes', {
-  skip: !process.env.PACKAGEAWY_CHROMIUM_PATH && 'Set PACKAGEAWY_CHROMIUM_PATH to run rendered compatibility checks',
+  skip: browserSkip('Set PACKAGEAWY_CHROMIUM_PATH to run rendered compatibility checks'),
 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'packageawy-compatibility-layout-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
