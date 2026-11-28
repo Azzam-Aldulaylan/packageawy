@@ -32,6 +32,40 @@ function attribute(attributes: string, name: string): string | undefined {
   return attributeDetails(attributes, name)?.value;
 }
 
+function staticScriptAttributes(attributes: string): boolean {
+  const pattern = /\s+([^\s"'`=<>/{}]+)(?:\s*=\s*(?:"[^"{]*"|'[^'{]*'|[^\s"'`=<>{}]+))?/gy;
+  let offset = 0;
+  while (!/^\s*\/?\s*$/.test(attributes.slice(offset))) {
+    pattern.lastIndex = offset;
+    const match = pattern.exec(attributes);
+    if (match === null || /^(?:[:@#]|v-)/i.test(match[1] ?? '')) return false;
+    offset = pattern.lastIndex;
+  }
+  return true;
+}
+
+function jsonScriptType(attributes: string): boolean {
+  const type = attribute(attributes, 'type');
+  return type !== undefined && /^application\/(?:json|[!#$%&'*+.^_`|~\da-z-]+\+json)$/i.test(type);
+}
+
+function inertJsonScript(attributes: string): boolean {
+  return jsonScriptType(attributes) && attribute(attributes, 'lang') === undefined && attribute(attributes, 'src') === undefined &&
+    staticScriptAttributes(attributes);
+}
+
+function validJsonBody(body: string): boolean {
+  // Only text that can start or end a script block or open a comment is a risk. Other HTML in strings is fine.
+  if (/<\/?script|<!--/i.test(body)) return false;
+  if (body.trim() === '') return true;
+  try {
+    JSON.parse(body.trim());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function scriptLanguage(attributes: string): ScriptLanguage | undefined {
   const lang = attribute(attributes, 'lang')?.toLowerCase();
   const type = attribute(attributes, 'type')?.toLowerCase();
@@ -129,8 +163,41 @@ export function extractSourceCoverage(filePath: string, text: string, stylesHand
   // Read HTML tags on the original text. Quotes in ordinary prose have no lexical meaning here.
   const tags = /<!--[\s\S]*?(?:-->|$)|<\/?[A-Za-z](?:[^"'<>]|"[^"]*"|'[^']*')*>/g;
   tags.lastIndex = offset;
+  let markupOffset = offset;
+  let braceDepth = 0;
+  let negativeBraceDepth = false;
+  let exemptedJson = false;
+  let quote: string | undefined;
+  // Braces inside expression strings and comments do not change the depth. Quotes in plain markup are prose.
+  const countBraces = (until: number): void => {
+    for (; markupOffset < until; markupOffset += 1) {
+      const char = markup[markupOffset];
+      const next = markup[markupOffset + 1];
+      if (quote === '//') {
+        if (char === '\n' || char === '\r') quote = undefined;
+      } else if (quote === '/*') {
+        if (char === '*' && next === '/') {
+          quote = undefined;
+          markupOffset += 1;
+        }
+      } else if (quote !== undefined) {
+        if (char === '\\') markupOffset += 1;
+        else if (char === quote) quote = undefined;
+      } else if (braceDepth > 0 && char === '/' && (next === '/' || next === '*')) {
+        quote = `/${next}`;
+        markupOffset += 1;
+      } else if (braceDepth > 0 && (char === '"' || char === "'" || char === '`')) quote = char;
+      else if (char === '{') braceDepth += 1;
+      else if (char === '}') {
+        braceDepth -= 1;
+        if (braceDepth < 0) negativeBraceDepth = true;
+      }
+    }
+  };
   let tag: RegExpExecArray | null;
   while ((tag = tags.exec(text)) !== null) {
+    // Hidden blocks do not contribute template expression braces.
+    countBraces(tag.index);
     if (tag[0].startsWith('<!--')) {
       hide(tag.index, tags.lastIndex);
       continue;
@@ -143,6 +210,20 @@ export function extractSourceCoverage(filePath: string, text: string, stylesHand
     }
     const kind = block[2]?.toLowerCase() ?? '';
     const attributes = block[3] ?? '';
+    const jsonScript = kind === 'script' && jsonScriptType(attributes);
+    const attributeCalls = jsonScript && new RegExp(DEPENDENCY_CALL).test(attributes);
+    const inertJson = kind === 'script' && braceDepth === 0 && quote === undefined && !negativeBraceDepth &&
+      inertJsonScript(attributes) && !attributeCalls;
+    if (attributeCalls) {
+      reasons.add('script blocks with unsupported languages or types');
+      reasons.add('import() calls in component markup');
+    }
+    // Only inert JSON tags can use Astro's self-closing form.
+    if (inertJson && /\.astro$/i.test(filePath) && /\/\s*>$/.test(tag[0])) {
+      exemptedJson = true;
+      hide(tag.index, tags.lastIndex);
+      continue;
+    }
     const bodyStart = tags.lastIndex;
     const closing = new RegExp(`</${kind}\\s*>`, 'gi');
     closing.lastIndex = bodyStart;
@@ -168,7 +249,10 @@ export function extractSourceCoverage(filePath: string, text: string, stylesHand
         }
       }
     } else if (language === undefined) {
-      reasons.add('script blocks with unsupported languages or types');
+      const bodyCalls = jsonScript && new RegExp(DEPENDENCY_CALL).test(body);
+      if (!inertJson || !validJsonBody(body) || bodyCalls) reasons.add('script blocks with unsupported languages or types');
+      else exemptedJson = true;
+      if (bodyCalls) reasons.add('import() calls in component markup');
     } else {
       const src = attribute(attributes, 'src');
       if (src !== undefined) localScripts.push(src);
@@ -177,6 +261,9 @@ export function extractSourceCoverage(filePath: string, text: string, stylesHand
     hide(tag.index, closing.lastIndex);
     tags.lastIndex = closing.lastIndex;
   }
+  // A string brace can make a fake tag look top-level. Exemptions need balanced braces in the whole file.
+  countBraces(markup.length);
+  if (exemptedJson && (braceDepth !== 0 || quote !== undefined || negativeBraceDepth)) reasons.add('script blocks with unsupported languages or types');
   const outside = markup.join('');
   if (/<\/?(?:script|style)\b/i.test(outside)) reasons.add('component blocks that could not be extracted');
   if (new RegExp(DEPENDENCY_CALL).test(outside)) reasons.add('import() calls in component markup');
