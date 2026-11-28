@@ -98,6 +98,164 @@ function failedVerification(run = () => {}) {
 const manifestPath = '/workspace/package.json';
 const lockfilePath = '/workspace/package-lock.json';
 
+for (const installStatus of ['succeeded', 'failed']) {
+  for (const [edit, state] of [
+    ['valid edit', present('{"name":"edited"}\n')],
+    ['malformed JSON', present('{"name":')],
+    ['deleted manifest', missing()],
+  ]) test(`unchanged manifest preserves ${edit} during a ${installStatus} install and blocks all restores`, async () => {
+    const files = new MemoryFiles({ [manifestPath]: present('{}\n'), [lockfilePath]: present('lock-before') });
+    let verified = false;
+    let guarded = false;
+    const result = await runUpgradeTransaction({
+      allowlistedPaths: [manifestPath, lockfilePath],
+      unchangedPaths: [manifestPath],
+      files,
+      fileStages: [{ path: lockfilePath, expectedContents: encoder.encode('lock-before'), contents: encoder.encode('lock-staged') }],
+      install: { async execute() {
+        files.set(manifestPath, state);
+        files.set(lockfilePath, present('lock-current'));
+        return installStatus === 'succeeded' ? { status: 'succeeded' } : { status: 'failed', code: 'INSTALL_FAILED', message: 'Install failed.' };
+      } },
+      verifier: failedVerification(() => { verified = true; }),
+      beforeRestore: async () => { guarded = true; return null; },
+    });
+    assert.equal(result.completion, 'incomplete');
+    assert.equal(result.rollback.status, 'conflict');
+    assert.deepEqual(result.rollback.files.map(({ path, status }) => ({ path, status })), [{ path: manifestPath, status: 'conflict' }]);
+    assert.ok(statesEqual(await files.read(manifestPath), state));
+    assert.equal(files.text(lockfilePath), 'lock-current');
+    assert.deepEqual(files.casCalls.map(({ path }) => path), [lockfilePath], 'only the initial lockfile stage wrote a file');
+    assert.equal(verified, installStatus === 'succeeded');
+    assert.equal(guarded, false);
+  });
+}
+
+test('unchanged manifest without an edit and a failed exact-lock install restores both snapshots', async () => {
+  const files = new MemoryFiles({ [manifestPath]: present('{}\n'), [lockfilePath]: present('lock-before') });
+  const result = await runUpgradeTransaction({
+    allowlistedPaths: [manifestPath, lockfilePath], unchangedPaths: [manifestPath], files,
+    fileStages: [{ path: lockfilePath, expectedContents: encoder.encode('lock-before'), contents: encoder.encode('lock-staged') }],
+    install: { async execute() {
+      files.set(lockfilePath, present('lock-current'));
+      return { status: 'failed', code: 'INSTALL_FAILED', message: 'Install failed.' };
+    } },
+  });
+  assert.equal(result.completion, 'rolled-back');
+  assert.equal(result.rollback.status, 'succeeded');
+  assert.equal(files.text(manifestPath), '{}\n');
+  assert.equal(files.text(lockfilePath), 'lock-before');
+  assert.deepEqual(files.casCalls.map(({ path }) => path), [lockfilePath, manifestPath, lockfilePath]);
+  assert.ok(statesEqual(files.casCalls[1].expected, files.casCalls[1].replacement), 'manifest restoration is byte-identical');
+});
+
+test('cancellation after exact staging restores only staged files even with unchanged paths', async () => {
+  const files = new MemoryFiles({ [manifestPath]: present('{}\n'), [lockfilePath]: present('lock-before') });
+  const abort = new AbortController();
+  files.onCompareAndSwapSuccess = () => {
+    files.onCompareAndSwapSuccess = undefined;
+    files.set(manifestPath, present('user edit'));
+    abort.abort();
+  };
+  const result = await runUpgradeTransaction({
+    allowlistedPaths: [manifestPath, lockfilePath], unchangedPaths: [manifestPath], files, signal: abort.signal,
+    fileStages: [{ path: lockfilePath, expectedContents: encoder.encode('lock-before'), contents: encoder.encode('lock-staged') }],
+    install: { execute: () => assert.fail('install must not start') },
+  });
+  assert.equal(result.completion, 'rolled-back');
+  assert.equal(result.reason, 'cancelled');
+  assert.equal(result.install.status, 'not-run');
+  assert.deepEqual(result.rollback.files, [{ path: lockfilePath, status: 'restored' }]);
+  assert.equal(files.text(manifestPath), 'user edit');
+  assert.equal(files.text(lockfilePath), 'lock-before');
+  assert.deepEqual(files.casCalls.map(({ path }) => path), [lockfilePath, lockfilePath]);
+});
+
+for (const invalid of ['not allowlisted', 'manifest stage', 'exact file stage']) {
+  test(`unchanged path that is ${invalid} refuses the transaction before any reads or writes`, async () => {
+    const files = new MemoryFiles({ [manifestPath]: present('before') });
+    files.onRead = () => assert.fail('invalid options must be refused before snapshot');
+    const stage = { path: manifestPath, expectedContents: encoder.encode('before'), contents: encoder.encode('staged') };
+    const result = await runUpgradeTransaction({
+      allowlistedPaths: invalid === 'not allowlisted' ? [lockfilePath] : [manifestPath],
+      unchangedPaths: [manifestPath], files,
+      ...(invalid === 'manifest stage' ? { manifestStage: stage } : {}),
+      ...(invalid === 'exact file stage' ? { fileStages: [stage] } : {}),
+      install: { execute: () => assert.fail('install must not start') },
+    });
+    assert.equal(result.completion, 'not-started');
+    assert.equal(result.snapshot.status, 'failed');
+    assert.equal(result.snapshot.path, manifestPath);
+    assert.match(result.snapshot.message, invalid === 'not allowlisted' ? /not allowlisted/ : /must not be staged/);
+    assert.equal(result.install.status, 'not-run');
+    assert.equal(result.rollback.status, 'not-needed');
+    assert.equal(files.casCalls.length, 0);
+  });
+}
+
+test('ordinary manifest upgrade still captures and restores an unstaged lockfile without unchanged paths', async () => {
+  const files = new MemoryFiles({ [manifestPath]: present('manifest-before'), [lockfilePath]: present('lock-before') });
+  const result = await runUpgradeTransaction({
+    allowlistedPaths: [manifestPath, lockfilePath], files,
+    manifestStage: { path: manifestPath, expectedContents: encoder.encode('manifest-before'), contents: encoder.encode('manifest-staged') },
+    install: { async execute() {
+      files.set(lockfilePath, present('lock-current'));
+      return { status: 'failed', code: 'INSTALL_FAILED', message: 'Install failed.' };
+    } },
+  });
+  assert.equal(result.completion, 'rolled-back');
+  assert.equal(files.text(manifestPath), 'manifest-before');
+  assert.equal(files.text(lockfilePath), 'lock-before');
+  assert.equal(decoder.decode(files.casCalls.at(-1).expected.contents), 'lock-current');
+});
+
+for (const refusal of [null, 'Topology changed.']) {
+  test(`early rollback conflict skips the guard with ${refusal === null ? 'no refusal' : 'a refusal'} and writes nothing`, async () => {
+    const files = new MemoryFiles({ [manifestPath]: present('before'), [lockfilePath]: present('lock-before') });
+    let guards = 0;
+    const result = await runUpgradeTransaction({
+      allowlistedPaths: [manifestPath, lockfilePath], files,
+      install: successfulInstall(() => {
+        files.set(manifestPath, present('installed'));
+        files.set(lockfilePath, present('lock-current'));
+      }),
+      verifier: failedVerification(() => files.set(manifestPath, present('user edit'))),
+      beforeRestore: async () => { guards++; return refusal; },
+    });
+    assert.equal(result.rollback.status, 'conflict');
+    assert.equal(guards, 0);
+    assert.equal(files.casCalls.length, 0);
+    assert.equal(files.text(manifestPath), 'user edit');
+    assert.equal(files.text(lockfilePath), 'lock-current');
+  });
+
+  test(`rollback without a conflict calls the guard before writes with ${refusal === null ? 'no refusal' : 'a refusal'}`, async () => {
+    const files = new MemoryFiles({ [manifestPath]: present('before'), [lockfilePath]: present('lock-before') });
+    let guards = 0;
+    const result = await runUpgradeTransaction({
+      allowlistedPaths: [manifestPath, lockfilePath], files,
+      install: successfulInstall(() => {
+        files.set(manifestPath, present('installed'));
+        files.set(lockfilePath, present('lock-current'));
+      }),
+      verifier: failedVerification(),
+      beforeRestore: async () => {
+        guards++;
+        assert.equal(files.casCalls.length, 0);
+        assert.equal(files.text(manifestPath), 'installed');
+        assert.equal(files.text(lockfilePath), 'lock-current');
+        return refusal;
+      },
+    });
+    assert.equal(guards, 1);
+    assert.equal(result.rollback.status, refusal === null ? 'succeeded' : 'failed');
+    assert.equal(files.casCalls.length, refusal === null ? 2 : 0);
+    if (refusal !== null) {
+      assert.deepEqual(result.rollback.files.map(({ message }) => message), [refusal, refusal]);
+    }
+  });
+}
+
 test('host-generated manifest bytes are staged by CAS after snapshot and before one reconciliation install', async () => {
   const before = '{\n  "dependencies": { "react": "^18" },\n  "devDependencies": { "types": "^18" }\n}\n';
   const staged = '{\n  "dependencies": { "react": "^19" },\n  "devDependencies": { "types": "^19" }\n}\n';

@@ -8,6 +8,7 @@ import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
 import { act, createElement as h } from 'react';
 import { createRoot } from 'react-dom/client';
+import { manualReinstallNote } from '../out/host/manualReinstallCopy.js';
 
 const bundle = await build({ stdin: { contents: `export { ChangeResult, UpgradeChangeResult, ChangeResultContext } from './webview/src/components/ChangeResult.tsx';
 export { ChangeResultModal, RemovalChangeResultModal } from './webview/src/components/ChangeResultModal.tsx';
@@ -159,6 +160,19 @@ const fixPlan = { analysisId: 'fix', rootPackage: 'chalk', currentVersion: '4.1.
   changes: [{ packageName: 'nested', fromVersions: ['1.0.0'], toVersions: ['1.0.1'], affectedPaths: [], targeted: true },
     { packageName: 'added', fromVersions: [], toVersions: ['2.0.0'], affectedPaths: [], targeted: false }] };
 const fixResult = { outcome: 'verified', rollback: 'not-needed', verification: 'passed', message: 'Fix finished.', checks: [install], resolvedAdvisories: [], remainingAdvisories: [], introducedAdvisories: [] };
+for (const packageManager of ['npm', 'pnpm']) test(`${packageManager} transitive manifest conflict explains recovery before a regular install`, t => {
+  const dom = mount(t, h(TransitiveFixReview, { rootPackage: 'chalk', subject: 'nested', dependencyPath: ['chalk', 'nested'],
+    state: { phase: 'result', plan: { ...fixPlan, packageManager }, result: { ...fixResult,
+      outcome: 'recovery-required', rollback: 'conflict', verification: 'failed',
+      message: 'package.json changed while the fix was installing. Your edit was kept and the fix was not rolled back.' } }, disabled: false }), { blocked: true });
+  const recovery = dom.document.querySelector('.transitive-review__recovery');
+  assert.equal(recovery.closest('details').open, true);
+  assert.equal(recovery.querySelector('p').textContent,
+    `Select Start recovery and choose which dependency files to keep or restore first. ${manualReinstallNote(packageManager)}`);
+  assert.doesNotMatch(recovery.textContent, /npm ci|--frozen-lockfile|Refresh/);
+  assert.match(dom.document.body.textContent, /Recovery required/);
+  assert.match(dom.document.body.textContent, /Current version unknown/);
+});
 for (const [outcome, rollback, expected] of [
   ['verified', 'not-needed', 'applied'], ['partial', 'not-needed', 'applied'], ['unverified', 'not-needed', 'applied'],
   ['rolled-back', 'succeeded', 'Restored'], ['cancelled', 'succeeded', 'Restored'], ['cancelled', 'not-needed', 'Unchanged'],

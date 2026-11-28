@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { runUpgradeTransaction } from '../out/host/upgradeTransaction.js';
 import { recoveryFixture, choices } from './helpers/recovery.mjs';
+import { RECOVERY_MESSAGES } from '../out/host/recovery/model.js';
 import { makeCoordinator, makeProject, review } from './helpers/removal-project.mjs';
 
 async function fileIdentity(file) {
@@ -14,6 +15,46 @@ async function fileIdentity(file) {
   assert.ok(ino > 0n, 'the filesystem must provide a real file identity');
   return { dev, ino };
 }
+
+test('unchanged manifest conflict retains the real journal and blocks mutation until deliberate recovery', async t => {
+  const f = await recoveryFixture(t, { operation: 'remediation' });
+  const journal = await f.prepare();
+  const originalManifest = await f.read('package.json');
+  const edit = '{"name":"user edit"}';
+  const result = await runUpgradeTransaction({
+    allowlistedPaths: f.target.allowlistedPaths, unchangedPaths: [f.manifest], files: journal.adapter(), journal,
+    fileStages: [{ path: f.lockfile, expectedContents: Buffer.from('original lockfile'), contents: Buffer.from('staged lockfile') }],
+    install: { async execute() {
+      await fs.writeFile(f.manifest, edit);
+      await fs.writeFile(f.lockfile, 'current lockfile');
+      return { status: 'failed', code: 'FAILED', message: 'Install failed.' };
+    } },
+    beforeRestore: () => assert.fail('a conflict must be detected before the guard'),
+  });
+  assert.equal(result.completion, 'incomplete');
+  assert.equal(result.rollback.status, 'conflict');
+  assert.equal(result.rollback.files[0].path, f.manifest);
+  assert.equal(await journal.finish(result.completion), false);
+  const inspected = await f.inspect();
+  assert.equal(inspected.journal.data.outcome, 'rollback-incomplete');
+  assert.equal(inspected.view.state, 'incomplete');
+  assert.equal(inspected.view.files.length, 2);
+  assert.equal(await f.read('package.json'), edit);
+  assert.equal(await f.read('package-lock.json'), 'current lockfile');
+  assert.deepEqual(await fs.readdir(path.join(f.folder, 'displaced')), []);
+  assert.equal((await journal.backupState(journal.data.files[0].backup)).contents.toString(), originalManifest);
+  await assert.rejects(f.prepare(), { message: RECOVERY_MESSAGES.blocked });
+
+  const session = await f.open();
+  const selected = choices(await session.presentation()).map(choice => ({
+    ...choice, action: choice.id === journal.data.files[1].backup.id ? 'restore' : 'keep',
+  }));
+  await session.apply(selected);
+  assert.equal(await f.read('package.json'), edit);
+  assert.equal(await f.read('package-lock.json'), 'original lockfile');
+  await session.dismiss(true, true);
+  assert.ok(await f.prepare(), 'a resolved journal permits the next mutation');
+});
 
 for (const operation of ['upgrade', 'removal']) {
   test(`${operation} rollback pre-check names a late conflict before touching any file`, async t => {

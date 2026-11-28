@@ -242,6 +242,8 @@ export interface UpgradeAssistantCoordinatorOptions {
   reloadFinalState(): Promise<BackgroundRefreshOutcome>;
   /** A completed writer stays settled even when presentation evidence cannot be refreshed. */
   invalidateSnapshot?(): void;
+  /** Keep stale rows visible and queue a reload until conflict recovery releases the lock. */
+  deferManifestConflictRefresh?(): void;
   /** Reloads and captures the exact post-transaction evidence used only by Smart Cleanup completion reporting. */
   reloadSmartCleanupFinalState?(): Promise<SmartCleanupFinalRefreshEvidence | undefined>;
   /** Reads and applies post-mutation package.json/lockfile state without waiting for registry/audit enrichment. */
@@ -3034,10 +3036,12 @@ export class UpgradeAssistantCoordinator {
 
       let securityVerificationFailed = false;
       const beforeRestore = this.restoreGuard(selected, disk.packageManager, disk.mutationTarget.identity);
+      const transactionFiles = handle.journal?.adapter() ?? files;
       const transaction = await runUpgradeTransaction({
         ...(handle.journal === undefined ? {} : { journal: handle.journal }),
         allowlistedPaths: [manifestPath, lockfilePath],
-        files: handle.journal?.adapter() ?? files,
+        unchangedPaths: [manifestPath],
+        files: transactionFiles,
         beforeRestore,
         fileStages: [{
           path: lockfilePath,
@@ -3069,6 +3073,11 @@ export class UpgradeAssistantCoordinator {
             });
             const checks: import('./upgradeTransaction.js').VerificationCheckResult[] = [];
             try {
+              const manifest = await transactionFiles.read(manifestPath);
+              if (!manifest.exists || !Buffer.from(manifest.contents).equals(Buffer.from(stored.snapshot.manifestText, 'utf8'))) {
+                securityVerificationFailed = true;
+                return { status: 'failed', checks: [{ id: 'transitive-security', status: 'failed', message: 'package.json changed while the fix was installing.' }] };
+              }
               const applied = await this.projectLoader(selected, true);
               if (
                 applied.manifestText !== stored.snapshot.manifestText ||
@@ -3248,24 +3257,29 @@ export class UpgradeAssistantCoordinator {
       const resultEvidence = transaction.completion === 'kept' && finalPresentation !== undefined
         ? finalPresentation
         : stored.presentation;
+      const manifestConflict = transaction.rollback.status === 'conflict' && transaction.rollback.files.some(
+        file => file.path === manifestPath && file.status === 'conflict'
+      );
       const result: TransitiveRemediationApplyResult = {
         ...(transaction.completion === 'kept' && handle.journal !== undefined ? { undoId: handle.journal.owner.transactionId } : {}),
         checks: projectChecks(transaction, checkSnapshot, disk.packageManager),
         outcome,
         message:
-          outcome === 'verified'
-            ? 'The transitive vulnerabilities were resolved without changing the direct dependency.'
-            : outcome === 'partial'
-              ? 'The safe transitive update was applied, but some selected vulnerabilities remain.'
-              : outcome === 'rolled-back'
-                ? 'The fix could not be verified, so the dependency files were restored.'
-                : outcome === 'cancelled'
-                  ? 'The transitive fix was cancelled and any staged dependency-file changes were restored.'
-                  : outcome === 'recovery-required'
-                    ? `Restore is incomplete. Saved and displaced files are kept. Check ${transaction.rollback.status === 'not-needed' ? 'the dependency files' : transaction.rollback.files.filter(file => file.status !== 'restored').map(file => file.path.split(/[\\/]/).at(-1)).join(', ') || 'the dependency files'}. ${manualReinstallNote(disk.packageManager)}`
-                    : finalPlan?.automaticApplyAllowed === true && transaction.verification.status === 'failed'
-                      ? 'The security outcome was verified, but project verification failed and the changes were kept.'
-                      : 'The dependency change finished, but the reviewed security outcome could not be verified.',
+          manifestConflict
+            ? `package.json changed while the fix was installing. Your edit was kept and the fix was not rolled back. ${manualReinstallNote(disk.packageManager)}`
+            : outcome === 'verified'
+              ? 'The transitive vulnerabilities were resolved without changing the direct dependency.'
+              : outcome === 'partial'
+                ? 'The safe transitive update was applied, but some selected vulnerabilities remain.'
+                : outcome === 'rolled-back'
+                  ? 'The fix could not be verified, so the dependency files were restored.'
+                  : outcome === 'cancelled'
+                    ? 'The transitive fix was cancelled and any staged dependency-file changes were restored.'
+                    : outcome === 'recovery-required'
+                      ? `Restore is incomplete. Saved and displaced files are kept. Check ${transaction.rollback.status === 'not-needed' ? 'the dependency files' : transaction.rollback.files.filter(file => file.status !== 'restored').map(file => file.path.split(/[\\/]/).at(-1)).join(', ') || 'the dependency files'}. ${manualReinstallNote(disk.packageManager)}`
+                      : finalPlan?.automaticApplyAllowed === true && transaction.verification.status === 'failed'
+                        ? 'The security outcome was verified, but project verification failed and the changes were kept.'
+                        : 'The dependency change finished, but the reviewed security outcome could not be verified.',
         verification,
         rollback,
         resolvedAdvisories: outcome === 'recovery-required'
@@ -3290,6 +3304,11 @@ export class UpgradeAssistantCoordinator {
         analysisId: stored.id,
         result,
       });
+
+      if (manifestConflict) {
+        this.options.deferManifestConflictRefresh?.();
+        return;
+      }
 
       await this.refreshAfterCompletion(async () => {
         if (this.options.readAndApplyMutationLocalState !== undefined) {
@@ -3926,7 +3945,7 @@ export class UpgradeAssistantCoordinator {
         files: handle.journal?.adapter() ?? files,
         beforeRestore: this.restoreGuard(selected, source.packageManager, disk.mutationTarget.identity),
         ...(stored.eligibilities.length === 0
-          ? {}
+          ? { unchangedPaths: [manifestPath] }
           : {
               manifestStage: {
                 path: manifestPath,
